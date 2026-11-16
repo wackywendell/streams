@@ -1,5 +1,11 @@
 # ADR: Discover document links in Session reports
 
+Superseded by [Stream references](stream-references.md) and its
+[implementation contract](stream-reference-implementation.md). The historical
+decision below records the former document-only, addition-only path. The shared
+reference collection now supports direct document URLs, all four target kinds,
+captured updates and drops, and explicit user restoration and deletion.
+
 Document links should follow useful work without a separate request to register
 each one. The old Work Cards helper collected reference additions from dialogue
 and file activity. That path was removed without an equivalent in Streams

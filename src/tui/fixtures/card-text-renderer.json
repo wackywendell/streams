@@ -1,1214 +1,2268 @@
 [
   {
-    "name": "status-active",
+    "documents": [
+      "a"
+    ],
+    "historical": {
+      "documents": [
+        "a"
+      ],
+      "lines": [
+        "Ship library | client                                                                       ● active",
+        "────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "Status: Implement | verify",
+        "Remaining: 界😀é | release",
+        "────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "[a] docs/design.md",
+        "[1] Issue #42: Track work",
+        "[2] PR #51: Review",
+        "",
+        "",
+        "",
+        "                                                                                           [q] close"
+      ],
+      "links": [
+        "https://example.com/org/repo/issues/42",
+        "https://example.com/org/repo/pull/51"
+      ]
+    },
     "lines": [
       "Ship library | client                                                                       ● active",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
       "Status: Implement | verify",
       "Remaining: 界😀é | release",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
-      "[a] docs/design.md",
-      "[1] Issue #42: Track work",
-      "[2] PR #51: Review",
-      "",
-      "",
-      "",
+      "[a] Document Design (https://example.com/lib) · Brief · Active",
+      "    Design",
+      "[1] PR Review · Deliverable · Active",
+      "    Review",
+      "[2] Issue Track work · Dependency · Active",
+      "    Track work",
       "                                                                                           [q] close"
     ],
+    "links": [
+      "https://example.com/org/repo/pull/51",
+      "https://example.com/org/repo/issues/42"
+    ],
+    "name": "status-active"
+  },
+  {
     "documents": [
       "a"
     ],
-    "links": [
-      "https://example.com/org/repo/issues/42",
-      "https://example.com/org/repo/pull/51"
-    ]
-  },
-  {
-    "name": "status-waiting",
+    "historical": {
+      "documents": [
+        "a"
+      ],
+      "lines": [
+        "Ship library | client                                                                      ○ waiting",
+        "────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "Status: Implement | verify",
+        "Remaining: 界😀é | release",
+        "────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "[a] docs/design.md",
+        "[1] Issue #42: Track work",
+        "[2] PR #51: Review",
+        "",
+        "",
+        "",
+        "                                                                                           [q] close"
+      ],
+      "links": [
+        "https://example.com/org/repo/issues/42",
+        "https://example.com/org/repo/pull/51"
+      ]
+    },
     "lines": [
       "Ship library | client                                                                      ○ waiting",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
       "Status: Implement | verify",
       "Remaining: 界😀é | release",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
-      "[a] docs/design.md",
-      "[1] Issue #42: Track work",
-      "[2] PR #51: Review",
-      "",
-      "",
-      "",
+      "[a] Document Design (https://example.com/lib) · Brief · Active",
+      "    Design",
+      "[1] PR Review · Deliverable · Active",
+      "    Review",
+      "[2] Issue Track work · Dependency · Active",
+      "    Track work",
       "                                                                                           [q] close"
     ],
+    "links": [
+      "https://example.com/org/repo/pull/51",
+      "https://example.com/org/repo/issues/42"
+    ],
+    "name": "status-waiting"
+  },
+  {
     "documents": [
       "a"
     ],
-    "links": [
-      "https://example.com/org/repo/issues/42",
-      "https://example.com/org/repo/pull/51"
-    ]
-  },
-  {
-    "name": "status-blocked",
+    "historical": {
+      "documents": [
+        "a"
+      ],
+      "lines": [
+        "Ship library | client                                                                      ! blocked",
+        "────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "Status: Implement | verify",
+        "Remaining: 界😀é | release",
+        "────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "[a] docs/design.md",
+        "[1] Issue #42: Track work",
+        "[2] PR #51: Review",
+        "",
+        "",
+        "",
+        "                                                                                           [q] close"
+      ],
+      "links": [
+        "https://example.com/org/repo/issues/42",
+        "https://example.com/org/repo/pull/51"
+      ]
+    },
     "lines": [
       "Ship library | client                                                                      ! blocked",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
       "Status: Implement | verify",
       "Remaining: 界😀é | release",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
-      "[a] docs/design.md",
-      "[1] Issue #42: Track work",
-      "[2] PR #51: Review",
-      "",
-      "",
-      "",
+      "[a] Document Design (https://example.com/lib) · Brief · Active",
+      "    Design",
+      "[1] PR Review · Deliverable · Active",
+      "    Review",
+      "[2] Issue Track work · Dependency · Active",
+      "    Track work",
       "                                                                                           [q] close"
     ],
+    "links": [
+      "https://example.com/org/repo/pull/51",
+      "https://example.com/org/repo/issues/42"
+    ],
+    "name": "status-blocked"
+  },
+  {
     "documents": [
       "a"
     ],
-    "links": [
-      "https://example.com/org/repo/issues/42",
-      "https://example.com/org/repo/pull/51"
-    ]
-  },
-  {
-    "name": "status-parked",
+    "historical": {
+      "documents": [
+        "a"
+      ],
+      "lines": [
+        "Ship library | client                                                                       ○ parked",
+        "────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "Status: Implement | verify",
+        "Remaining: 界😀é | release",
+        "────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "[a] docs/design.md",
+        "[1] Issue #42: Track work",
+        "[2] PR #51: Review",
+        "",
+        "",
+        "",
+        "                                                                                           [q] close"
+      ],
+      "links": [
+        "https://example.com/org/repo/issues/42",
+        "https://example.com/org/repo/pull/51"
+      ]
+    },
     "lines": [
       "Ship library | client                                                                       ○ parked",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
       "Status: Implement | verify",
       "Remaining: 界😀é | release",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
-      "[a] docs/design.md",
-      "[1] Issue #42: Track work",
-      "[2] PR #51: Review",
-      "",
-      "",
-      "",
+      "[a] Document Design (https://example.com/lib) · Brief · Active",
+      "    Design",
+      "[1] PR Review · Deliverable · Active",
+      "    Review",
+      "[2] Issue Track work · Dependency · Active",
+      "    Track work",
       "                                                                                           [q] close"
     ],
+    "links": [
+      "https://example.com/org/repo/pull/51",
+      "https://example.com/org/repo/issues/42"
+    ],
+    "name": "status-parked"
+  },
+  {
     "documents": [
       "a"
     ],
-    "links": [
-      "https://example.com/org/repo/issues/42",
-      "https://example.com/org/repo/pull/51"
-    ]
-  },
-  {
-    "name": "status-done",
+    "historical": {
+      "documents": [
+        "a"
+      ],
+      "lines": [
+        "Ship library | client                                                                         ✓ done",
+        "────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "Status: Implement | verify",
+        "Remaining: 界😀é | release",
+        "────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "[a] docs/design.md",
+        "[1] Issue #42: Track work",
+        "[2] PR #51: Review",
+        "",
+        "",
+        "",
+        "                                                                                           [q] close"
+      ],
+      "links": [
+        "https://example.com/org/repo/issues/42",
+        "https://example.com/org/repo/pull/51"
+      ]
+    },
     "lines": [
       "Ship library | client                                                                         ✓ done",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
       "Status: Implement | verify",
       "Remaining: 界😀é | release",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
-      "[a] docs/design.md",
-      "[1] Issue #42: Track work",
-      "[2] PR #51: Review",
-      "",
-      "",
-      "",
+      "[a] Document Design (https://example.com/lib) · Brief · Active",
+      "    Design",
+      "[1] PR Review · Deliverable · Active",
+      "    Review",
+      "[2] Issue Track work · Dependency · Active",
+      "    Track work",
       "                                                                                           [q] close"
     ],
+    "links": [
+      "https://example.com/org/repo/pull/51",
+      "https://example.com/org/repo/issues/42"
+    ],
+    "name": "status-done"
+  },
+  {
     "documents": [
       "a"
     ],
-    "links": [
-      "https://example.com/org/repo/issues/42",
-      "https://example.com/org/repo/pull/51"
-    ]
-  },
-  {
-    "name": "other-viewing-session-shared-goal-never-progress",
+    "historical": {
+      "documents": [
+        "a"
+      ],
+      "lines": [
+        "Ship library | client                                                                      ! blocked",
+        "────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "Status: Other stage",
+        "Remaining: Other todo",
+        "────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "[a] docs/design.md",
+        "[1] Issue #42: Track work",
+        "[2] PR #51: Review",
+        "",
+        "",
+        "",
+        "                                                                                           [q] close"
+      ],
+      "links": [
+        "https://example.com/org/repo/issues/42",
+        "https://example.com/org/repo/pull/51"
+      ]
+    },
     "lines": [
       "Ship library | client                                                                      ! blocked",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
       "Status: Other stage",
       "Remaining: Other todo",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
-      "[a] docs/design.md",
-      "[1] Issue #42: Track work",
-      "[2] PR #51: Review",
-      "",
-      "",
-      "",
+      "[a] Document Design (https://example.com/lib) · Brief · Active",
+      "    Design",
+      "[1] PR Review · Deliverable · Active",
+      "    Review",
+      "[2] Issue Track work · Dependency · Active",
+      "    Track work",
       "                                                                                           [q] close"
     ],
-    "documents": [
-      "a"
-    ],
     "links": [
-      "https://example.com/org/repo/issues/42",
-      "https://example.com/org/repo/pull/51"
-    ]
+      "https://example.com/org/repo/pull/51",
+      "https://example.com/org/repo/issues/42"
+    ],
+    "name": "other-viewing-session-shared-goal-never-progress"
   },
   {
-    "name": "hidden-status-active",
+    "documents": [],
+    "historical": {
+      "documents": [
+        "a"
+      ],
+      "lines": [
+        "Ship…",
+        "Stat…",
+        "Rema…",
+        "[a] …",
+        "… [q]"
+      ],
+      "links": []
+    },
     "lines": [
       "Ship…",
       "Stat…",
       "Rema…",
-      "[a] …",
+      "─────",
       "… [q]"
     ],
-    "documents": [
-      "a"
-    ],
-    "links": []
+    "links": [],
+    "name": "hidden-status-active"
   },
   {
-    "name": "hidden-status-waiting",
+    "documents": [],
+    "historical": {
+      "documents": [
+        "a"
+      ],
+      "lines": [
+        "Ship…",
+        "Stat…",
+        "Rema…",
+        "[a] …",
+        "… [q]"
+      ],
+      "links": []
+    },
     "lines": [
       "Ship…",
       "Stat…",
       "Rema…",
-      "[a] …",
+      "─────",
       "… [q]"
     ],
-    "documents": [
-      "a"
-    ],
-    "links": []
+    "links": [],
+    "name": "hidden-status-waiting"
   },
   {
-    "name": "hidden-status-blocked",
+    "documents": [],
+    "historical": {
+      "documents": [
+        "a"
+      ],
+      "lines": [
+        "Ship…",
+        "Stat…",
+        "Rema…",
+        "[a] …",
+        "… [q]"
+      ],
+      "links": []
+    },
     "lines": [
       "Ship…",
       "Stat…",
       "Rema…",
-      "[a] …",
+      "─────",
       "… [q]"
     ],
-    "documents": [
-      "a"
-    ],
-    "links": []
+    "links": [],
+    "name": "hidden-status-blocked"
   },
   {
-    "name": "hidden-status-parked",
+    "documents": [],
+    "historical": {
+      "documents": [
+        "a"
+      ],
+      "lines": [
+        "Ship…",
+        "Stat…",
+        "Rema…",
+        "[a] …",
+        "… [q]"
+      ],
+      "links": []
+    },
     "lines": [
       "Ship…",
       "Stat…",
       "Rema…",
-      "[a] …",
+      "─────",
       "… [q]"
     ],
-    "documents": [
-      "a"
-    ],
-    "links": []
+    "links": [],
+    "name": "hidden-status-parked"
   },
   {
-    "name": "hidden-status-done",
+    "documents": [],
+    "historical": {
+      "documents": [
+        "a"
+      ],
+      "lines": [
+        "Ship…",
+        "Stat…",
+        "Rema…",
+        "[a] …",
+        "… [q]"
+      ],
+      "links": []
+    },
     "lines": [
       "Ship…",
       "Stat…",
       "Rema…",
-      "[a] …",
+      "─────",
       "… [q]"
     ],
-    "documents": [
-      "a"
-    ],
-    "links": []
+    "links": [],
+    "name": "hidden-status-done"
   },
   {
-    "name": "geometry-0-0",
-    "lines": [],
     "documents": [],
-    "links": []
-  },
-  {
-    "name": "geometry-0-1",
+    "historical": {
+      "documents": [],
+      "lines": [],
+      "links": []
+    },
     "lines": [],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "geometry-0-0"
   },
   {
-    "name": "geometry-0-2",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [],
+      "links": []
+    },
     "lines": [],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "geometry-0-1"
   },
   {
-    "name": "geometry-0-3",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [],
+      "links": []
+    },
     "lines": [],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "geometry-0-2"
   },
   {
-    "name": "geometry-0-5",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [],
+      "links": []
+    },
     "lines": [],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "geometry-0-3"
   },
   {
-    "name": "geometry-0-8",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [],
+      "links": []
+    },
     "lines": [],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "geometry-0-5"
   },
   {
-    "name": "geometry-1-0",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [],
+      "links": []
+    },
     "lines": [],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "geometry-0-8"
   },
   {
-    "name": "geometry-1-1",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [],
+      "links": []
+    },
+    "lines": [],
+    "links": [],
+    "name": "geometry-1-0"
+  },
+  {
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "…"
+      ],
+      "links": []
+    },
     "lines": [
       "…"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "geometry-1-1"
   },
   {
-    "name": "geometry-1-2",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "…",
+        "…"
+      ],
+      "links": []
+    },
     "lines": [
       "…",
       "…"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "geometry-1-2"
   },
   {
-    "name": "geometry-1-3",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "…",
+        "[",
+        "…"
+      ],
+      "links": []
+    },
     "lines": [
       "…",
-      "[",
+      "─",
       "…"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "geometry-1-3"
   },
   {
-    "name": "geometry-1-5",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "…",
+        "…",
+        "…",
+        "[",
+        "…"
+      ],
+      "links": []
+    },
     "lines": [
       "…",
       "…",
       "…",
-      "[",
+      "─",
       "…"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "geometry-1-5"
   },
   {
-    "name": "geometry-1-8",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "S",
+        "…",
+        "…",
+        "…",
+        "[",
+        "[",
+        "[",
+        "…"
+      ],
+      "links": []
+    },
     "lines": [
       "S",
       "…",
       "…",
       "…",
       "[",
-      "[",
-      "[",
+      "",
+      "",
       "…"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "geometry-1-8"
   },
   {
-    "name": "geometry-2-0",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [],
+      "links": []
+    },
     "lines": [],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "geometry-2-0"
   },
   {
-    "name": "geometry-2-1",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "S…"
+      ],
+      "links": []
+    },
     "lines": [
       "S…"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "geometry-2-1"
   },
   {
-    "name": "geometry-2-2",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "S…",
+        "…"
+      ],
+      "links": []
+    },
     "lines": [
       "S…",
       "…"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "geometry-2-2"
   },
   {
-    "name": "geometry-2-3",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "S…",
+        "[a",
+        "…"
+      ],
+      "links": []
+    },
     "lines": [
       "S…",
-      "[a",
+      "──",
       "…"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "geometry-2-3"
   },
   {
-    "name": "geometry-2-5",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "S…",
+        "S…",
+        "R…",
+        "[a",
+        "…"
+      ],
+      "links": []
+    },
     "lines": [
       "S…",
       "S…",
       "R…",
-      "[a",
+      "──",
       "…"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "geometry-2-5"
   },
   {
-    "name": "geometry-2-8",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "Sh",
+        "i…",
+        "S…",
+        "R…",
+        "[a",
+        "[b",
+        "[c",
+        "…"
+      ],
+      "links": []
+    },
     "lines": [
       "Sh",
       "i…",
       "S…",
       "R…",
       "[a",
-      "[b",
-      "[c",
+      "",
+      "",
       "…"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "geometry-2-8"
   },
   {
-    "name": "geometry-3-0",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [],
+      "links": []
+    },
     "lines": [],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "geometry-3-0"
   },
   {
-    "name": "geometry-3-1",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "[q]"
+      ],
+      "links": []
+    },
     "lines": [
       "[q]"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "geometry-3-1"
   },
   {
-    "name": "geometry-3-2",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "Sh…",
+        "[q]"
+      ],
+      "links": []
+    },
     "lines": [
       "Sh…",
       "[q]"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "geometry-3-2"
   },
   {
-    "name": "geometry-3-3",
+    "documents": [],
+    "historical": {
+      "documents": [
+        "a"
+      ],
+      "lines": [
+        "Sh…",
+        "[a]",
+        "[q]"
+      ],
+      "links": []
+    },
     "lines": [
       "Sh…",
-      "[a]",
+      "───",
       "[q]"
     ],
-    "documents": [
-      "a"
-    ],
-    "links": []
+    "links": [],
+    "name": "geometry-3-3"
   },
   {
-    "name": "geometry-3-5",
+    "documents": [],
+    "historical": {
+      "documents": [
+        "a"
+      ],
+      "lines": [
+        "Sh…",
+        "St…",
+        "Re…",
+        "[a]",
+        "[q]"
+      ],
+      "links": []
+    },
     "lines": [
       "Sh…",
       "St…",
       "Re…",
-      "[a]",
+      "───",
       "[q]"
     ],
+    "links": [],
+    "name": "geometry-3-5"
+  },
+  {
     "documents": [
       "a"
     ],
-    "links": []
-  },
-  {
-    "name": "geometry-3-8",
+    "historical": {
+      "documents": [
+        "a",
+        "b",
+        "c"
+      ],
+      "lines": [
+        "Shi",
+        "p…",
+        "St…",
+        "Re…",
+        "[a]",
+        "[b]",
+        "[c]",
+        "[q]"
+      ],
+      "links": []
+    },
     "lines": [
       "Shi",
       "p…",
       "St…",
       "Re…",
       "[a]",
-      "[b]",
-      "[c]",
+      "",
+      "",
       "[q]"
     ],
-    "documents": [
-      "a",
-      "b",
-      "c"
-    ],
-    "links": []
+    "links": [],
+    "name": "geometry-3-8"
   },
   {
-    "name": "geometry-5-0",
-    "lines": [],
     "documents": [],
-    "links": []
+    "historical": {
+      "documents": [],
+      "lines": [],
+      "links": []
+    },
+    "lines": [],
+    "links": [],
+    "name": "geometry-5-0"
   },
   {
-    "name": "geometry-5-1",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "Sh[q]"
+      ],
+      "links": []
+    },
     "lines": [
       "Sh[q]"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "geometry-5-1"
   },
   {
-    "name": "geometry-5-2",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "Ship…",
+        "… [q]"
+      ],
+      "links": []
+    },
     "lines": [
       "Ship…",
       "… [q]"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "geometry-5-2"
   },
   {
-    "name": "geometry-5-3",
+    "documents": [],
+    "historical": {
+      "documents": [
+        "a"
+      ],
+      "lines": [
+        "Ship…",
+        "[a] …",
+        "… [q]"
+      ],
+      "links": []
+    },
     "lines": [
       "Ship…",
-      "[a] …",
+      "─────",
       "… [q]"
     ],
-    "documents": [
-      "a"
-    ],
-    "links": []
+    "links": [],
+    "name": "geometry-5-3"
   },
   {
-    "name": "geometry-5-5",
+    "documents": [],
+    "historical": {
+      "documents": [
+        "a"
+      ],
+      "lines": [
+        "Ship…",
+        "Stat…",
+        "Rema…",
+        "[a] …",
+        "… [q]"
+      ],
+      "links": []
+    },
     "lines": [
       "Ship…",
       "Stat…",
       "Rema…",
-      "[a] …",
+      "─────",
       "… [q]"
     ],
+    "links": [],
+    "name": "geometry-5-5"
+  },
+  {
     "documents": [
       "a"
     ],
-    "links": []
-  },
-  {
-    "name": "geometry-5-8",
+    "historical": {
+      "documents": [
+        "a",
+        "b",
+        "c"
+      ],
+      "lines": [
+        "Ship",
+        "libr…",
+        "Stat…",
+        "Rema…",
+        "[a] …",
+        "[b] …",
+        "[c] …",
+        "… [q]"
+      ],
+      "links": []
+    },
     "lines": [
       "Ship",
       "libr…",
       "Stat…",
       "Rema…",
       "[a] …",
-      "[b] …",
-      "[c] …",
+      "    G",
+      "    …",
       "… [q]"
     ],
-    "documents": [
-      "a",
-      "b",
-      "c"
-    ],
-    "links": []
+    "links": [],
+    "name": "geometry-5-8"
   },
   {
-    "name": "geometry-8-0",
-    "lines": [],
     "documents": [],
-    "links": []
+    "historical": {
+      "documents": [],
+      "lines": [],
+      "links": []
+    },
+    "lines": [],
+    "links": [],
+    "name": "geometry-8-0"
   },
   {
-    "name": "geometry-8-1",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "Ship…[q]"
+      ],
+      "links": []
+    },
     "lines": [
       "Ship…[q]"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "geometry-8-1"
   },
   {
-    "name": "geometry-8-2",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "Ship…",
+        "… 30 [q]"
+      ],
+      "links": []
+    },
     "lines": [
       "Ship…",
       "… 30 [q]"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "geometry-8-2"
   },
   {
-    "name": "geometry-8-3",
+    "documents": [],
+    "historical": {
+      "documents": [
+        "a"
+      ],
+      "lines": [
+        "Ship…",
+        "[a] doc…",
+        "… 29 [q]"
+      ],
+      "links": []
+    },
     "lines": [
       "Ship…",
-      "[a] doc…",
-      "… 29 [q]"
+      "────────",
+      "… 30 [q]"
     ],
-    "documents": [
-      "a"
-    ],
-    "links": []
+    "links": [],
+    "name": "geometry-8-3"
   },
   {
-    "name": "geometry-8-5",
+    "documents": [],
+    "historical": {
+      "documents": [
+        "a"
+      ],
+      "lines": [
+        "Ship…",
+        "Status:…",
+        "Remaini…",
+        "[a] doc…",
+        "… 29 [q]"
+      ],
+      "links": []
+    },
     "lines": [
       "Ship…",
       "Status:…",
       "Remaini…",
-      "[a] doc…",
-      "… 29 [q]"
+      "────────",
+      "… 30 [q]"
     ],
+    "links": [],
+    "name": "geometry-8-5"
+  },
+  {
     "documents": [
       "a"
     ],
-    "links": []
-  },
-  {
-    "name": "geometry-8-8",
+    "historical": {
+      "documents": [
+        "a",
+        "b",
+        "c"
+      ],
+      "lines": [
+        "Ship",
+        "library…",
+        "Status:…",
+        "Remaini…",
+        "[a] doc…",
+        "[b] doc…",
+        "[c] doc…",
+        "… 27 [q]"
+      ],
+      "links": []
+    },
     "lines": [
       "Ship",
       "library…",
       "Status:…",
       "Remaini…",
-      "[a] doc…",
-      "[b] doc…",
-      "[c] doc…",
-      "… 27 [q]"
+      "[a] Doc…",
+      "    Guid",
+      "    e…",
+      "… 29 [q]"
     ],
-    "documents": [
-      "a",
-      "b",
-      "c"
-    ],
-    "links": []
+    "links": [],
+    "name": "geometry-8-8"
   },
   {
-    "name": "geometry-9-0",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [],
+      "links": []
+    },
     "lines": [],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "geometry-9-0"
   },
   {
-    "name": "geometry-9-1",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "[q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "[q] close"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "geometry-9-1"
   },
   {
-    "name": "geometry-9-2",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "Ship…",
+        "[q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "Ship…",
       "[q] close"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "geometry-9-2"
   },
   {
-    "name": "geometry-9-3",
+    "documents": [],
+    "historical": {
+      "documents": [
+        "a"
+      ],
+      "lines": [
+        "Ship…",
+        "[a] docs…",
+        "[q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "Ship…",
-      "[a] docs…",
+      "─────────",
       "[q] close"
     ],
-    "documents": [
-      "a"
-    ],
-    "links": []
+    "links": [],
+    "name": "geometry-9-3"
   },
   {
-    "name": "geometry-9-5",
+    "documents": [],
+    "historical": {
+      "documents": [
+        "a"
+      ],
+      "lines": [
+        "Ship…",
+        "Status:…",
+        "Remainin…",
+        "[a] docs…",
+        "[q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "Ship…",
       "Status:…",
       "Remainin…",
-      "[a] docs…",
+      "─────────",
       "[q] close"
     ],
+    "links": [],
+    "name": "geometry-9-5"
+  },
+  {
     "documents": [
       "a"
     ],
-    "links": []
-  },
-  {
-    "name": "geometry-9-8",
+    "historical": {
+      "documents": [
+        "a",
+        "b",
+        "c"
+      ],
+      "lines": [
+        "Ship",
+        "library…",
+        "Status:…",
+        "Remainin…",
+        "[a] docs…",
+        "[b] docs…",
+        "[c] docs…",
+        "[q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "Ship",
       "library…",
       "Status:…",
       "Remainin…",
-      "[a] docs…",
-      "[b] docs…",
-      "[c] docs…",
+      "[a] Docu…",
+      "    Guide",
+      "    the…",
       "[q] close"
     ],
-    "documents": [
-      "a",
-      "b",
-      "c"
-    ],
-    "links": []
+    "links": [],
+    "name": "geometry-9-8"
   },
   {
-    "name": "geometry-18-0",
-    "lines": [],
     "documents": [],
-    "links": []
+    "historical": {
+      "documents": [],
+      "lines": [],
+      "links": []
+    },
+    "lines": [],
+    "links": [],
+    "name": "geometry-18-0"
   },
   {
-    "name": "geometry-18-1",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "Ship…    [q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "Ship…    [q] close"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "geometry-18-1"
   },
   {
-    "name": "geometry-18-2",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "Ship…     ● active",
+        "… 30 more[q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "Ship…     ● active",
       "… 30 more[q] close"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "geometry-18-2"
   },
   {
-    "name": "geometry-18-3",
+    "documents": [],
+    "historical": {
+      "documents": [
+        "a"
+      ],
+      "lines": [
+        "Ship…     ● active",
+        "[a] docs/é-0.md",
+        "… 29 more[q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "Ship…     ● active",
-      "[a] docs/é-0.md",
-      "… 29 more[q] close"
+      "──────────────────",
+      "… 30 more[q] close"
     ],
-    "documents": [
-      "a"
-    ],
-    "links": []
+    "links": [],
+    "name": "geometry-18-3"
   },
   {
-    "name": "geometry-18-5",
+    "documents": [],
+    "historical": {
+      "documents": [
+        "a"
+      ],
+      "lines": [
+        "Ship…     ● active",
+        "Status: Implement…",
+        "Remaining: 界😀é…",
+        "[a] docs/é-0.md",
+        "… 29 more[q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "Ship…     ● active",
       "Status: Implement…",
       "Remaining: 界😀é…",
-      "[a] docs/é-0.md",
-      "… 29 more[q] close"
+      "──────────────────",
+      "… 30 more[q] close"
     ],
+    "links": [],
+    "name": "geometry-18-5"
+  },
+  {
     "documents": [
       "a"
     ],
-    "links": []
-  },
-  {
-    "name": "geometry-18-8",
+    "historical": {
+      "documents": [
+        "a",
+        "b",
+        "c"
+      ],
+      "lines": [
+        "Ship      ● active",
+        "library | client",
+        "Status: Implement…",
+        "Remaining: 界😀é…",
+        "[a] docs/é-0.md",
+        "[b] docs/é-1.md",
+        "[c] docs/é-2.md",
+        "… 27 more[q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "Ship      ● active",
       "library | client",
       "Status: Implement…",
       "Remaining: 界😀é…",
-      "[a] docs/é-0.md",
-      "[b] docs/é-1.md",
-      "[c] docs/é-2.md",
-      "… 27 more[q] close"
+      "──────────────────",
+      "[a] Document docs…",
+      "    Guide the work",
+      "… 29 more[q] close"
     ],
-    "documents": [
-      "a",
-      "b",
-      "c"
-    ],
-    "links": []
+    "links": [],
+    "name": "geometry-18-8"
   },
   {
-    "name": "geometry-28-0",
-    "lines": [],
     "documents": [],
-    "links": []
+    "historical": {
+      "documents": [],
+      "lines": [],
+      "links": []
+    },
+    "lines": [],
+    "links": [],
+    "name": "geometry-28-0"
   },
   {
-    "name": "geometry-28-1",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "Ship libr  ● active[q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "Ship libr  ● active[q] close"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "geometry-28-1"
   },
   {
-    "name": "geometry-28-2",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "Ship library |…     ● active",
+        "… 30 more; enlarge [q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "Ship library |…     ● active",
       "… 30 more; enlarge [q] close"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "geometry-28-2"
   },
   {
-    "name": "geometry-28-3",
+    "documents": [],
+    "historical": {
+      "documents": [
+        "a"
+      ],
+      "lines": [
+        "Ship library |…     ● active",
+        "[a] docs/é-0.md",
+        "… 29 more; enlarge [q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "Ship library |…     ● active",
-      "[a] docs/é-0.md",
-      "… 29 more; enlarge [q] close"
+      "────────────────────────────",
+      "… 30 more; enlarge [q] close"
     ],
-    "documents": [
-      "a"
-    ],
-    "links": []
+    "links": [],
+    "name": "geometry-28-3"
   },
   {
-    "name": "geometry-28-5",
+    "documents": [],
+    "historical": {
+      "documents": [
+        "a"
+      ],
+      "lines": [
+        "Ship library |…     ● active",
+        "Status: Implement | verify",
+        "Remaining: 界😀é | release",
+        "[a] docs/é-0.md",
+        "… 29 more; enlarge [q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "Ship library |…     ● active",
       "Status: Implement | verify",
       "Remaining: 界😀é | release",
-      "[a] docs/é-0.md",
-      "… 29 more; enlarge [q] close"
+      "────────────────────────────",
+      "… 30 more; enlarge [q] close"
     ],
+    "links": [],
+    "name": "geometry-28-5"
+  },
+  {
     "documents": [
       "a"
     ],
-    "links": []
-  },
-  {
-    "name": "geometry-28-8",
+    "historical": {
+      "documents": [
+        "a",
+        "b",
+        "c"
+      ],
+      "lines": [
+        "Ship library |      ● active",
+        "client",
+        "Status: Implement | verify",
+        "Remaining: 界😀é | release",
+        "[a] docs/é-0.md",
+        "[b] docs/é-1.md",
+        "[c] docs/é-2.md",
+        "… 27 more; enlarge [q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "Ship library |      ● active",
       "client",
       "Status: Implement | verify",
       "Remaining: 界😀é | release",
-      "[a] docs/é-0.md",
-      "[b] docs/é-1.md",
-      "[c] docs/é-2.md",
-      "… 27 more; enlarge [q] close"
+      "────────────────────────────",
+      "[a] Document docs/é-0.md (h…",
+      "    Guide the work",
+      "… 29 more; enlarge [q] close"
     ],
-    "documents": [
-      "a",
-      "b",
-      "c"
-    ],
-    "links": []
+    "links": [],
+    "name": "geometry-28-8"
   },
   {
-    "name": "geometry-35-0",
-    "lines": [],
     "documents": [],
-    "links": []
+    "historical": {
+      "documents": [],
+      "lines": [],
+      "links": []
+    },
+    "lines": [],
+    "links": [],
+    "name": "geometry-35-0"
   },
   {
-    "name": "geometry-35-1",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "Ship library | c  ● active[q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "Ship library | c  ● active[q] close"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "geometry-35-1"
   },
   {
-    "name": "geometry-35-2",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "Ship library | client…     ● active",
+        "… 30 more; enlarge pane   [q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "Ship library | client…     ● active",
       "… 30 more; enlarge pane   [q] close"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "geometry-35-2"
   },
   {
-    "name": "geometry-35-3",
+    "documents": [],
+    "historical": {
+      "documents": [
+        "a",
+        "b"
+      ],
+      "lines": [
+        "Ship library | client…     ● active",
+        "[a] docs/é-0.md   [b] docs/é-1.md",
+        "… 28 more; enlarge pane   [q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "Ship library | client…     ● active",
-      "[a] docs/é-0.md   [b] docs/é-1.md",
-      "… 28 more; enlarge pane   [q] close"
+      "───────────────────────────────────",
+      "… 30 more; enlarge pane   [q] close"
     ],
-    "documents": [
-      "a",
-      "b"
-    ],
-    "links": []
+    "links": [],
+    "name": "geometry-35-3"
   },
   {
-    "name": "geometry-35-5",
-    "lines": [
-      "Ship library | client      ● active",
-      "Status: Implement | verify",
-      "Remaining: 界😀é | release",
-      "[a] docs/é-0.md   [b] docs/é-1.md",
-      "… 28 more; enlarge pane   [q] close"
-    ],
-    "documents": [
-      "a",
-      "b"
-    ],
-    "links": []
-  },
-  {
-    "name": "geometry-35-8",
-    "lines": [
-      "Ship library | client      ● active",
-      "Status: Implement | verify",
-      "Remaining: 界😀é | release",
-      "[a] docs/é-0.md   [b] docs/é-1.md",
-      "[c] docs/é-2.md   [d] docs/é-3.md",
-      "[e] docs/é-4.md   [f] docs/é-5.md",
-      "[g] docs/é-6.md   [h] docs/é-7.md",
-      "… 22 more; enlarge pane   [q] close"
-    ],
-    "documents": [
-      "a",
-      "b",
-      "c",
-      "d",
-      "e",
-      "f",
-      "g",
-      "h"
-    ],
-    "links": []
-  },
-  {
-    "name": "geometry-50-0",
-    "lines": [],
     "documents": [],
-    "links": []
+    "historical": {
+      "documents": [
+        "a",
+        "b"
+      ],
+      "lines": [
+        "Ship library | client      ● active",
+        "Status: Implement | verify",
+        "Remaining: 界😀é | release",
+        "[a] docs/é-0.md   [b] docs/é-1.md",
+        "… 28 more; enlarge pane   [q] close"
+      ],
+      "links": []
+    },
+    "lines": [
+      "Ship library | client      ● active",
+      "Status: Implement | verify",
+      "Remaining: 界😀é | release",
+      "───────────────────────────────────",
+      "… 30 more; enlarge pane   [q] close"
+    ],
+    "links": [],
+    "name": "geometry-35-5"
   },
   {
-    "name": "geometry-50-1",
+    "documents": [
+      "a",
+      "b"
+    ],
+    "historical": {
+      "documents": [
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f",
+        "g",
+        "h"
+      ],
+      "lines": [
+        "Ship library | client      ● active",
+        "Status: Implement | verify",
+        "Remaining: 界😀é | release",
+        "[a] docs/é-0.md   [b] docs/é-1.md",
+        "[c] docs/é-2.md   [d] docs/é-3.md",
+        "[e] docs/é-4.md   [f] docs/é-5.md",
+        "[g] docs/é-6.md   [h] docs/é-7.md",
+        "… 22 more; enlarge pane   [q] close"
+      ],
+      "links": []
+    },
+    "lines": [
+      "Ship library | client      ● active",
+      "Status: Implement | verify",
+      "Remaining: 界😀é | release",
+      "[a] Document docs/é-0.md (https://…",
+      "    Guide the work",
+      "[b] Document docs/é-1.md (https://…",
+      "    Guide the work",
+      "… 28 more; enlarge pane   [q] close"
+    ],
+    "links": [],
+    "name": "geometry-35-8"
+  },
+  {
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [],
+      "links": []
+    },
+    "lines": [],
+    "links": [],
+    "name": "geometry-50-0"
+  },
+  {
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "Ship library | client…           ● active[q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "Ship library | client…           ● active[q] close"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "geometry-50-1"
   },
   {
-    "name": "geometry-50-2",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "Ship library | client…                    ● active",
+        "… 30 more; enlarge pane                  [q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "Ship library | client…                    ● active",
       "… 30 more; enlarge pane                  [q] close"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "geometry-50-2"
   },
   {
-    "name": "geometry-50-3",
+    "documents": [],
+    "historical": {
+      "documents": [
+        "a",
+        "b"
+      ],
+      "lines": [
+        "Ship library | client…                    ● active",
+        "[a] docs/é-0.md   [b] docs/é-1.md",
+        "… 28 more; enlarge pane                  [q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "Ship library | client…                    ● active",
-      "[a] docs/é-0.md   [b] docs/é-1.md",
-      "… 28 more; enlarge pane                  [q] close"
+      "──────────────────────────────────────────────────",
+      "… 30 more; enlarge pane                  [q] close"
     ],
-    "documents": [
-      "a",
-      "b"
-    ],
-    "links": []
+    "links": [],
+    "name": "geometry-50-3"
   },
   {
-    "name": "geometry-50-5",
-    "lines": [
-      "Ship library | client                     ● active",
-      "Status: Implement | verify",
-      "Remaining: 界😀é | release",
-      "[a] docs/é-0.md   [b] docs/é-1.md",
-      "… 28 more; enlarge pane                  [q] close"
-    ],
-    "documents": [
-      "a",
-      "b"
-    ],
-    "links": []
-  },
-  {
-    "name": "geometry-50-8",
-    "lines": [
-      "Ship library | client                     ● active",
-      "Status: Implement | verify",
-      "Remaining: 界😀é | release",
-      "[a] docs/é-0.md   [b] docs/é-1.md",
-      "[c] docs/é-2.md   [d] docs/é-3.md",
-      "[e] docs/é-4.md   [f] docs/é-5.md",
-      "[g] docs/é-6.md   [h] docs/é-7.md",
-      "… 22 more; enlarge pane                  [q] close"
-    ],
-    "documents": [
-      "a",
-      "b",
-      "c",
-      "d",
-      "e",
-      "f",
-      "g",
-      "h"
-    ],
-    "links": []
-  },
-  {
-    "name": "geometry-100-0",
-    "lines": [],
     "documents": [],
-    "links": []
+    "historical": {
+      "documents": [
+        "a",
+        "b"
+      ],
+      "lines": [
+        "Ship library | client                     ● active",
+        "Status: Implement | verify",
+        "Remaining: 界😀é | release",
+        "[a] docs/é-0.md   [b] docs/é-1.md",
+        "… 28 more; enlarge pane                  [q] close"
+      ],
+      "links": []
+    },
+    "lines": [
+      "Ship library | client                     ● active",
+      "Status: Implement | verify",
+      "Remaining: 界😀é | release",
+      "──────────────────────────────────────────────────",
+      "… 30 more; enlarge pane                  [q] close"
+    ],
+    "links": [],
+    "name": "geometry-50-5"
   },
   {
-    "name": "geometry-100-1",
+    "documents": [
+      "a",
+      "b"
+    ],
+    "historical": {
+      "documents": [
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f",
+        "g",
+        "h"
+      ],
+      "lines": [
+        "Ship library | client                     ● active",
+        "Status: Implement | verify",
+        "Remaining: 界😀é | release",
+        "[a] docs/é-0.md   [b] docs/é-1.md",
+        "[c] docs/é-2.md   [d] docs/é-3.md",
+        "[e] docs/é-4.md   [f] docs/é-5.md",
+        "[g] docs/é-6.md   [h] docs/é-7.md",
+        "… 22 more; enlarge pane                  [q] close"
+      ],
+      "links": []
+    },
+    "lines": [
+      "Ship library | client                     ● active",
+      "Status: Implement | verify",
+      "Remaining: 界😀é | release",
+      "[a] Document docs/é-0.md (https://example.com/lib…",
+      "    Guide the work",
+      "[b] Document docs/é-1.md (https://example.com/lib…",
+      "    Guide the work",
+      "… 28 more; enlarge pane                  [q] close"
+    ],
+    "links": [],
+    "name": "geometry-50-8"
+  },
+  {
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [],
+      "links": []
+    },
+    "lines": [],
+    "links": [],
+    "name": "geometry-100-0"
+  },
+  {
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "Ship library | client…                                                             ● active[q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "Ship library | client…                                                             ● active[q] close"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "geometry-100-1"
   },
   {
-    "name": "geometry-100-2",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "Ship library | client…                                                                      ● active",
+        "… 30 more; enlarge pane                                                                    [q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "Ship library | client…                                                                      ● active",
       "… 30 more; enlarge pane                                                                    [q] close"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "geometry-100-2"
   },
   {
-    "name": "geometry-100-3",
+    "documents": [],
+    "historical": {
+      "documents": [
+        "a",
+        "b",
+        "c",
+        "d",
+        "e"
+      ],
+      "lines": [
+        "Ship library | client…                                                                      ● active",
+        "[a] docs/é-0.md   [b] docs/é-1.md   [c] docs/é-2.md   [d] docs/é-3.md   [e] docs/é-4.md",
+        "… 25 more; enlarge pane                                                                    [q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "Ship library | client…                                                                      ● active",
-      "[a] docs/é-0.md   [b] docs/é-1.md   [c] docs/é-2.md   [d] docs/é-3.md   [e] docs/é-4.md",
-      "… 25 more; enlarge pane                                                                    [q] close"
+      "────────────────────────────────────────────────────────────────────────────────────────────────────",
+      "… 30 more; enlarge pane                                                                    [q] close"
     ],
-    "documents": [
-      "a",
-      "b",
-      "c",
-      "d",
-      "e"
-    ],
-    "links": []
+    "links": [],
+    "name": "geometry-100-3"
   },
   {
-    "name": "geometry-100-5",
+    "documents": [],
+    "historical": {
+      "documents": [
+        "a",
+        "b",
+        "c",
+        "d",
+        "e"
+      ],
+      "lines": [
+        "Ship library | client                                                                       ● active",
+        "Status: Implement | verify",
+        "Remaining: 界😀é | release",
+        "[a] docs/é-0.md   [b] docs/é-1.md   [c] docs/é-2.md   [d] docs/é-3.md   [e] docs/é-4.md",
+        "… 25 more; enlarge pane                                                                    [q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "Ship library | client                                                                       ● active",
       "Status: Implement | verify",
       "Remaining: 界😀é | release",
-      "[a] docs/é-0.md   [b] docs/é-1.md   [c] docs/é-2.md   [d] docs/é-3.md   [e] docs/é-4.md",
-      "… 25 more; enlarge pane                                                                    [q] close"
+      "────────────────────────────────────────────────────────────────────────────────────────────────────",
+      "… 30 more; enlarge pane                                                                    [q] close"
     ],
-    "documents": [
-      "a",
-      "b",
-      "c",
-      "d",
-      "e"
-    ],
-    "links": []
+    "links": [],
+    "name": "geometry-100-5"
   },
   {
-    "name": "geometry-100-8",
+    "documents": [
+      "a",
+      "b"
+    ],
+    "historical": {
+      "documents": [
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f",
+        "g",
+        "h",
+        "i",
+        "j",
+        "k",
+        "l",
+        "m",
+        "n",
+        "o",
+        "p",
+        "r",
+        "s",
+        "t",
+        "u"
+      ],
+      "lines": [
+        "Ship library | client                                                                       ● active",
+        "Status: Implement | verify",
+        "Remaining: 界😀é | release",
+        "[a] docs/é-0.md   [b] docs/é-1.md   [c] docs/é-2.md   [d] docs/é-3.md   [e] docs/é-4.md",
+        "[f] docs/é-5.md   [g] docs/é-6.md   [h] docs/é-7.md   [i] docs/é-8.md   [j] docs/é-9.md",
+        "[k] docs/é-10.md  [l] docs/é-11.md  [m] docs/é-12.md  [n] docs/é-13.md  [o] docs/é-14.md",
+        "[p] docs/é-15.md  [r] docs/é-16.md  [s] docs/é-17.md  [t] docs/é-18.md  [u] docs/é-19.md",
+        "… 10 more; enlarge pane                                                                    [q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "Ship library | client                                                                       ● active",
       "Status: Implement | verify",
       "Remaining: 界😀é | release",
-      "[a] docs/é-0.md   [b] docs/é-1.md   [c] docs/é-2.md   [d] docs/é-3.md   [e] docs/é-4.md",
-      "[f] docs/é-5.md   [g] docs/é-6.md   [h] docs/é-7.md   [i] docs/é-8.md   [j] docs/é-9.md",
-      "[k] docs/é-10.md  [l] docs/é-11.md  [m] docs/é-12.md  [n] docs/é-13.md  [o] docs/é-14.md",
-      "[p] docs/é-15.md  [r] docs/é-16.md  [s] docs/é-17.md  [t] docs/é-18.md  [u] docs/é-19.md",
-      "… 10 more; enlarge pane                                                                    [q] close"
+      "[a] Document docs/é-0.md (https://example.com/lib) · Brief · Active",
+      "    Guide the work",
+      "[b] Document docs/é-1.md (https://example.com/lib) · Brief · Active",
+      "    Guide the work",
+      "… 28 more; enlarge pane                                                                    [q] close"
     ],
-    "documents": [
+    "links": [],
+    "name": "geometry-100-8"
+  },
+  {
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "…",
+        "…",
+        "…",
+        "…",
+        "…",
+        "…",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "links": []
+    },
+    "lines": [
+      "…",
+      "…",
+      "…",
+      "…",
+      "…",
+      "…",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      ""
+    ],
+    "links": [],
+    "name": "unicode-界界界界界界-1"
+  },
+  {
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "é",
+        "é",
+        "é",
+        "é",
+        "é",
+        "é",
+        "é",
+        "é",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "links": []
+    },
+    "lines": [
+      "é",
+      "é",
+      "é",
+      "é",
+      "é",
+      "é",
+      "é",
+      "é",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      ""
+    ],
+    "links": [],
+    "name": "unicode-éééééééé-1"
+  },
+  {
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "…",
+        "…",
+        "…",
+        "…",
+        "…",
+        "…",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "links": []
+    },
+    "lines": [
+      "…",
+      "…",
+      "…",
+      "…",
+      "…",
+      "…",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      ""
+    ],
+    "links": [],
+    "name": "unicode-👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽-1"
+  },
+  {
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "…",
+        "…",
+        "…",
+        "…",
+        "…",
+        "…",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "links": []
+    },
+    "lines": [
+      "…",
+      "…",
+      "…",
+      "…",
+      "…",
+      "…",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      ""
+    ],
+    "links": [],
+    "name": "unicode-🇫🇷🇫🇷🇫🇷🇫🇷🇫🇷🇫🇷-1"
+  },
+  {
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "…",
+        "…",
+        "…",
+        "…",
+        "…",
+        "…",
+        "…",
+        "…",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "links": []
+    },
+    "lines": [
+      "…",
+      "…",
+      "…",
+      "…",
+      "…",
+      "…",
+      "…",
+      "…",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      ""
+    ],
+    "links": [],
+    "name": "unicode-👩‍💻👩‍💻👩‍💻👩‍💻-1"
+  },
+  {
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "a",
+        "ൎa",
+        "ൎa",
+        "ൎa",
+        "ൎa",
+        "ൎa",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "links": []
+    },
+    "lines": [
       "a",
-      "b",
-      "c",
-      "d",
-      "e",
-      "f",
-      "g",
-      "h",
-      "i",
-      "j",
-      "k",
-      "l",
-      "m",
-      "n",
-      "o",
-      "p",
-      "r",
-      "s",
-      "t",
-      "u"
-    ],
-    "links": []
-  },
-  {
-    "name": "unicode-界界界界界界-1",
-    "lines": [
-      "…",
-      "…",
-      "…",
-      "…",
-      "…",
-      "…",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      ""
-    ],
-    "documents": [],
-    "links": []
-  },
-  {
-    "name": "unicode-éééééééé-1",
-    "lines": [
-      "é",
-      "é",
-      "é",
-      "é",
-      "é",
-      "é",
-      "é",
-      "é",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      ""
-    ],
-    "documents": [],
-    "links": []
-  },
-  {
-    "name": "unicode-👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽-1",
-    "lines": [
-      "…",
-      "…",
-      "…",
-      "…",
-      "…",
-      "…",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      ""
-    ],
-    "documents": [],
-    "links": []
-  },
-  {
-    "name": "unicode-🇫🇷🇫🇷🇫🇷🇫🇷🇫🇷🇫🇷-1",
-    "lines": [
-      "…",
-      "…",
-      "…",
-      "…",
-      "…",
-      "…",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      ""
-    ],
-    "documents": [],
-    "links": []
-  },
-  {
-    "name": "unicode-👩‍💻👩‍💻👩‍💻👩‍💻-1",
-    "lines": [
-      "…",
-      "…",
-      "…",
-      "…",
-      "…",
-      "…",
-      "…",
-      "…",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      ""
-    ],
-    "documents": [],
-    "links": []
-  },
-  {
-    "name": "unicode-aൎaൎaൎaൎaൎaൎ-1",
-    "lines": [
-      "a",
       "ൎa",
       "ൎa",
       "ൎa",
@@ -1239,11 +2293,47 @@
       "",
       ""
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "unicode-aൎaൎaൎaൎaൎaൎ-1"
   },
   {
-    "name": "unicode-界界界界界界-5",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "界界",
+        "界界",
+        "界界",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "  [q]"
+      ],
+      "links": []
+    },
     "lines": [
       "界界",
       "界界",
@@ -1276,11 +2366,47 @@
       "",
       "  [q]"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "unicode-界界界界界界-5"
   },
   {
-    "name": "unicode-éééééééé-5",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "ééééé",
+        "ééé",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "  [q]"
+      ],
+      "links": []
+    },
     "lines": [
       "ééééé",
       "ééé",
@@ -1313,11 +2439,47 @@
       "",
       "  [q]"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "unicode-éééééééé-5"
   },
   {
-    "name": "unicode-👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽-5",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "👍🏽👍🏽",
+        "👍🏽👍🏽",
+        "👍🏽👍🏽",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "  [q]"
+      ],
+      "links": []
+    },
     "lines": [
       "👍🏽👍🏽",
       "👍🏽👍🏽",
@@ -1350,11 +2512,47 @@
       "",
       "  [q]"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "unicode-👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽-5"
   },
   {
-    "name": "unicode-🇫🇷🇫🇷🇫🇷🇫🇷🇫🇷🇫🇷-5",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "🇫🇷🇫🇷",
+        "🇫🇷🇫🇷",
+        "🇫🇷🇫🇷",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "  [q]"
+      ],
+      "links": []
+    },
     "lines": [
       "🇫🇷🇫🇷",
       "🇫🇷🇫🇷",
@@ -1387,11 +2585,47 @@
       "",
       "  [q]"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "unicode-🇫🇷🇫🇷🇫🇷🇫🇷🇫🇷🇫🇷-5"
   },
   {
-    "name": "unicode-👩‍💻👩‍💻👩‍💻👩‍💻-5",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "👩💻",
+        "👩💻",
+        "👩💻",
+        "👩💻",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "  [q]"
+      ],
+      "links": []
+    },
     "lines": [
       "👩💻",
       "👩💻",
@@ -1424,11 +2658,47 @@
       "",
       "  [q]"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "unicode-👩‍💻👩‍💻👩‍💻👩‍💻-5"
   },
   {
-    "name": "unicode-aൎaൎaൎaൎaൎaൎ-5",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "aൎaൎaൎaൎa",
+        "ൎa",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "  [q]"
+      ],
+      "links": []
+    },
     "lines": [
       "aൎaൎaൎaൎa",
       "ൎa",
@@ -1461,11 +2731,47 @@
       "",
       "  [q]"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "unicode-aൎaൎaൎaൎaൎaൎ-5"
   },
   {
-    "name": "unicode-界界界界界界-18",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "界界界界  ● active",
+        "界界",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "         [q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "界界界界  ● active",
       "界界",
@@ -1498,11 +2804,47 @@
       "",
       "         [q] close"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "unicode-界界界界界界-18"
   },
   {
-    "name": "unicode-éééééééé-18",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "éééééééé  ● active",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "         [q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "éééééééé  ● active",
       "",
@@ -1535,11 +2877,47 @@
       "",
       "         [q] close"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "unicode-éééééééé-18"
   },
   {
-    "name": "unicode-👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽-18",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "👍🏽👍🏽👍🏽👍🏽  ● active",
+        "👍🏽👍🏽",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "         [q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "👍🏽👍🏽👍🏽👍🏽  ● active",
       "👍🏽👍🏽",
@@ -1572,11 +2950,47 @@
       "",
       "         [q] close"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "unicode-👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽-18"
   },
   {
-    "name": "unicode-🇫🇷🇫🇷🇫🇷🇫🇷🇫🇷🇫🇷-18",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "🇫🇷🇫🇷🇫🇷🇫🇷  ● active",
+        "🇫🇷🇫🇷",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "         [q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "🇫🇷🇫🇷🇫🇷🇫🇷  ● active",
       "🇫🇷🇫🇷",
@@ -1609,11 +3023,47 @@
       "",
       "         [q] close"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "unicode-🇫🇷🇫🇷🇫🇷🇫🇷🇫🇷🇫🇷-18"
   },
   {
-    "name": "unicode-👩‍💻👩‍💻👩‍💻👩‍💻-18",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "👩💻👩💻  ● active",
+        "👩💻👩💻",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "         [q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "👩💻👩💻  ● active",
       "👩💻👩💻",
@@ -1646,11 +3096,47 @@
       "",
       "         [q] close"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "unicode-👩‍💻👩‍💻👩‍💻👩‍💻-18"
   },
   {
-    "name": "unicode-aൎaൎaൎaൎaൎaൎ-18",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "aൎaൎaൎaൎaൎaൎ    ● active",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "         [q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "aൎaൎaൎaൎaൎaൎ    ● active",
       "",
@@ -1683,11 +3169,47 @@
       "",
       "         [q] close"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "unicode-aൎaൎaൎaൎaൎaൎ-18"
   },
   {
-    "name": "unicode-界界界界界界-35",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "界界界界界界               ● active",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "                          [q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "界界界界界界               ● active",
       "",
@@ -1720,11 +3242,47 @@
       "",
       "                          [q] close"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "unicode-界界界界界界-35"
   },
   {
-    "name": "unicode-éééééééé-35",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "éééééééé                   ● active",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "                          [q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "éééééééé                   ● active",
       "",
@@ -1757,11 +3315,47 @@
       "",
       "                          [q] close"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "unicode-éééééééé-35"
   },
   {
-    "name": "unicode-👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽-35",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽               ● active",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "                          [q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽               ● active",
       "",
@@ -1794,11 +3388,47 @@
       "",
       "                          [q] close"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "unicode-👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽-35"
   },
   {
-    "name": "unicode-🇫🇷🇫🇷🇫🇷🇫🇷🇫🇷🇫🇷-35",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "🇫🇷🇫🇷🇫🇷🇫🇷🇫🇷🇫🇷               ● active",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "                          [q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "🇫🇷🇫🇷🇫🇷🇫🇷🇫🇷🇫🇷               ● active",
       "",
@@ -1831,11 +3461,47 @@
       "",
       "                          [q] close"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "unicode-🇫🇷🇫🇷🇫🇷🇫🇷🇫🇷🇫🇷-35"
   },
   {
-    "name": "unicode-👩‍💻👩‍💻👩‍💻👩‍💻-35",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "👩💻👩💻👩💻👩💻           ● active",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "                          [q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "👩💻👩💻👩💻👩💻           ● active",
       "",
@@ -1868,11 +3534,47 @@
       "",
       "                          [q] close"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "unicode-👩‍💻👩‍💻👩‍💻👩‍💻-35"
   },
   {
-    "name": "unicode-aൎaൎaൎaൎaൎaൎ-35",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "aൎaൎaൎaൎaൎaൎ                     ● active",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "                          [q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "aൎaൎaൎaൎaൎaൎ                     ● active",
       "",
@@ -1905,11 +3607,47 @@
       "",
       "                          [q] close"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "unicode-aൎaൎaൎaൎaൎaൎ-35"
   },
   {
-    "name": "unicode-界界界界界界-80",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "界界界界界界                                                            ● active",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "                                                                       [q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "界界界界界界                                                            ● active",
       "",
@@ -1942,11 +3680,47 @@
       "",
       "                                                                       [q] close"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "unicode-界界界界界界-80"
   },
   {
-    "name": "unicode-éééééééé-80",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "éééééééé                                                                ● active",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "                                                                       [q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "éééééééé                                                                ● active",
       "",
@@ -1979,11 +3753,47 @@
       "",
       "                                                                       [q] close"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "unicode-éééééééé-80"
   },
   {
-    "name": "unicode-👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽-80",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽                                                            ● active",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "                                                                       [q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽                                                            ● active",
       "",
@@ -2016,11 +3826,47 @@
       "",
       "                                                                       [q] close"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "unicode-👍🏽👍🏽👍🏽👍🏽👍🏽👍🏽-80"
   },
   {
-    "name": "unicode-🇫🇷🇫🇷🇫🇷🇫🇷🇫🇷🇫🇷-80",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "🇫🇷🇫🇷🇫🇷🇫🇷🇫🇷🇫🇷                                                            ● active",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "                                                                       [q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "🇫🇷🇫🇷🇫🇷🇫🇷🇫🇷🇫🇷                                                            ● active",
       "",
@@ -2053,11 +3899,47 @@
       "",
       "                                                                       [q] close"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "unicode-🇫🇷🇫🇷🇫🇷🇫🇷🇫🇷🇫🇷-80"
   },
   {
-    "name": "unicode-👩‍💻👩‍💻👩‍💻👩‍💻-80",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "👩💻👩💻👩💻👩💻                                                        ● active",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "                                                                       [q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "👩💻👩💻👩💻👩💻                                                        ● active",
       "",
@@ -2090,11 +3972,47 @@
       "",
       "                                                                       [q] close"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "unicode-👩‍💻👩‍💻👩‍💻👩‍💻-80"
   },
   {
-    "name": "unicode-aൎaൎaൎaൎaൎaൎ-80",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "aൎaൎaൎaൎaൎaൎ                                                                  ● active",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "                                                                       [q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "aൎaൎaൎaൎaൎaൎ                                                                  ● active",
       "",
@@ -2127,517 +4045,722 @@
       "",
       "                                                                       [q] close"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "unicode-aൎaൎaൎaൎaൎaൎ-80"
   },
   {
-    "name": "quiet-grid-5",
+    "documents": [],
+    "historical": {
+      "documents": [
+        "a",
+        "b",
+        "c"
+      ],
+      "lines": [
+        "Purpose                                   ● active",
+        "Status: Stage",
+        "Remaining: Next work",
+        "[a] docs/a.md  [b] docs/b.md  [c] docs/c.md",
+        "… 5 more; enlarge pane                   [q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "Purpose                                   ● active",
       "Status: Stage",
       "Remaining: Next work",
-      "[a] docs/a.md  [b] docs/b.md  [c] docs/c.md",
-      "… 5 more; enlarge pane                   [q] close"
+      "──────────────────────────────────────────────────",
+      "… 8 more; enlarge pane                   [q] close"
     ],
-    "documents": [
-      "a",
-      "b",
-      "c"
-    ],
-    "links": []
+    "links": [],
+    "name": "quiet-grid-5"
   },
   {
-    "name": "notice-grid-5",
+    "documents": [],
+    "historical": {
+      "documents": [
+        "a",
+        "b",
+        "c"
+      ],
+      "lines": [
+        "Purpose                                   ● active",
+        "Status: Stage…",
+        "[a] docs/a.md  [b] docs/b.md  [c] docs/c.md",
+        "… 5 more; enlarge pane",
+        "Notice 界😀é                             [q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "Purpose                                   ● active",
       "Status: Stage…",
-      "[a] docs/a.md  [b] docs/b.md  [c] docs/c.md",
-      "… 5 more; enlarge pane",
+      "──────────────────────────────────────────────────",
+      "… 8 more; enlarge pane",
       "Notice 界😀é                             [q] close"
     ],
-    "documents": [
-      "a",
-      "b",
-      "c"
-    ],
-    "links": []
+    "links": [],
+    "name": "notice-grid-5"
   },
   {
-    "name": "quiet-grid-6",
+    "documents": [
+      "a"
+    ],
+    "historical": {
+      "documents": [
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f",
+        "g",
+        "h"
+      ],
+      "lines": [
+        "Purpose                                   ● active",
+        "Status: Stage",
+        "Remaining: Next work",
+        "[a] docs/a.md  [b] docs/b.md  [c] docs/c.md",
+        "[d] docs/d.md  [e] docs/e.md  [f] docs/f.md",
+        "[g] docs/g.md  [h] docs/h.md             [q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "Purpose                                   ● active",
       "Status: Stage",
       "Remaining: Next work",
-      "[a] docs/a.md  [b] docs/b.md  [c] docs/c.md",
-      "[d] docs/d.md  [e] docs/e.md  [f] docs/f.md",
-      "[g] docs/g.md  [h] docs/h.md             [q] close"
+      "[a] Document docs/a.md (https://example.com/lib) …",
+      "    Guide the work",
+      "… 7 more; enlarge pane                   [q] close"
     ],
-    "documents": [
-      "a",
-      "b",
-      "c",
-      "d",
-      "e",
-      "f",
-      "g",
-      "h"
-    ],
-    "links": []
+    "links": [],
+    "name": "quiet-grid-6"
   },
   {
-    "name": "notice-grid-6",
+    "documents": [],
+    "historical": {
+      "documents": [
+        "a",
+        "b",
+        "c"
+      ],
+      "lines": [
+        "Purpose                                   ● active",
+        "Status: Stage",
+        "Remaining: Next work",
+        "[a] docs/a.md  [b] docs/b.md  [c] docs/c.md",
+        "… 5 more; enlarge pane",
+        "Notice 界😀é                             [q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "Purpose                                   ● active",
       "Status: Stage",
       "Remaining: Next work",
-      "[a] docs/a.md  [b] docs/b.md  [c] docs/c.md",
-      "… 5 more; enlarge pane",
+      "──────────────────────────────────────────────────",
+      "… 8 more; enlarge pane",
       "Notice 界😀é                             [q] close"
     ],
-    "documents": [
-      "a",
-      "b",
-      "c"
-    ],
-    "links": []
+    "links": [],
+    "name": "notice-grid-6"
   },
   {
-    "name": "quiet-grid-7",
+    "documents": [
+      "a"
+    ],
+    "historical": {
+      "documents": [
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f",
+        "g",
+        "h"
+      ],
+      "lines": [
+        "Purpose                                   ● active",
+        "Status: Stage",
+        "Remaining: Next work",
+        "──────────────────────────────────────────────────",
+        "[a] docs/a.md  [b] docs/b.md  [c] docs/c.md",
+        "[d] docs/d.md  [e] docs/e.md  [f] docs/f.md",
+        "[g] docs/g.md  [h] docs/h.md             [q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "Purpose                                   ● active",
       "Status: Stage",
       "Remaining: Next work",
       "──────────────────────────────────────────────────",
-      "[a] docs/a.md  [b] docs/b.md  [c] docs/c.md",
-      "[d] docs/d.md  [e] docs/e.md  [f] docs/f.md",
-      "[g] docs/g.md  [h] docs/h.md             [q] close"
+      "[a] Document docs/a.md (https://example.com/lib) …",
+      "    Guide the work",
+      "… 7 more; enlarge pane                   [q] close"
     ],
-    "documents": [
-      "a",
-      "b",
-      "c",
-      "d",
-      "e",
-      "f",
-      "g",
-      "h"
-    ],
-    "links": []
+    "links": [],
+    "name": "quiet-grid-7"
   },
   {
-    "name": "notice-grid-7",
+    "documents": [
+      "a"
+    ],
+    "historical": {
+      "documents": [
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f",
+        "g",
+        "h"
+      ],
+      "lines": [
+        "Purpose                                   ● active",
+        "Status: Stage",
+        "Remaining: Next work",
+        "[a] docs/a.md  [b] docs/b.md  [c] docs/c.md",
+        "[d] docs/d.md  [e] docs/e.md  [f] docs/f.md",
+        "[g] docs/g.md  [h] docs/h.md",
+        "Notice 界😀é                             [q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "Purpose                                   ● active",
       "Status: Stage",
       "Remaining: Next work",
-      "[a] docs/a.md  [b] docs/b.md  [c] docs/c.md",
-      "[d] docs/d.md  [e] docs/e.md  [f] docs/f.md",
-      "[g] docs/g.md  [h] docs/h.md",
+      "[a] Document docs/a.md (https://example.com/lib) …",
+      "    Guide the work",
+      "… 7 more; enlarge pane",
       "Notice 界😀é                             [q] close"
     ],
-    "documents": [
-      "a",
-      "b",
-      "c",
-      "d",
-      "e",
-      "f",
-      "g",
-      "h"
-    ],
-    "links": []
+    "links": [],
+    "name": "notice-grid-7"
   },
   {
-    "name": "quiet-grid-8",
-    "lines": [
-      "Purpose                                   ● active",
-      "──────────────────────────────────────────────────",
-      "Status: Stage",
-      "Remaining: Next work",
-      "──────────────────────────────────────────────────",
-      "[a] docs/a.md  [b] docs/b.md  [c] docs/c.md",
-      "[d] docs/d.md  [e] docs/e.md  [f] docs/f.md",
-      "[g] docs/g.md  [h] docs/h.md             [q] close"
-    ],
     "documents": [
       "a",
-      "b",
-      "c",
-      "d",
-      "e",
-      "f",
-      "g",
-      "h"
+      "b"
     ],
-    "links": []
-  },
-  {
-    "name": "notice-grid-8",
+    "historical": {
+      "documents": [
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f",
+        "g",
+        "h"
+      ],
+      "lines": [
+        "Purpose                                   ● active",
+        "──────────────────────────────────────────────────",
+        "Status: Stage",
+        "Remaining: Next work",
+        "──────────────────────────────────────────────────",
+        "[a] docs/a.md  [b] docs/b.md  [c] docs/c.md",
+        "[d] docs/d.md  [e] docs/e.md  [f] docs/f.md",
+        "[g] docs/g.md  [h] docs/h.md             [q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "Purpose                                   ● active",
       "Status: Stage",
       "Remaining: Next work",
+      "[a] Document docs/a.md (https://example.com/lib) …",
+      "    Guide the work",
+      "[b] Document docs/b.md (https://example.com/lib) …",
+      "    Guide the work",
+      "… 6 more; enlarge pane                   [q] close"
+    ],
+    "links": [],
+    "name": "quiet-grid-8"
+  },
+  {
+    "documents": [
+      "a"
+    ],
+    "historical": {
+      "documents": [
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f",
+        "g",
+        "h"
+      ],
+      "lines": [
+        "Purpose                                   ● active",
+        "Status: Stage",
+        "Remaining: Next work",
+        "──────────────────────────────────────────────────",
+        "[a] docs/a.md  [b] docs/b.md  [c] docs/c.md",
+        "[d] docs/d.md  [e] docs/e.md  [f] docs/f.md",
+        "[g] docs/g.md  [h] docs/h.md",
+        "Notice 界😀é                             [q] close"
+      ],
+      "links": []
+    },
+    "lines": [
+      "Purpose                                   ● active",
+      "Status: Stage",
+      "Remaining: Next work",
       "──────────────────────────────────────────────────",
-      "[a] docs/a.md  [b] docs/b.md  [c] docs/c.md",
-      "[d] docs/d.md  [e] docs/e.md  [f] docs/f.md",
-      "[g] docs/g.md  [h] docs/h.md",
+      "[a] Document docs/a.md (https://example.com/lib) …",
+      "    Guide the work",
+      "… 7 more; enlarge pane",
       "Notice 界😀é                             [q] close"
     ],
-    "documents": [
-      "a",
-      "b",
-      "c",
-      "d",
-      "e",
-      "f",
-      "g",
-      "h"
-    ],
-    "links": []
+    "links": [],
+    "name": "notice-grid-8"
   },
   {
-    "name": "quiet-grid-9",
+    "documents": [
+      "a",
+      "b"
+    ],
+    "historical": {
+      "documents": [
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f",
+        "g",
+        "h"
+      ],
+      "lines": [
+        "Purpose                                   ● active",
+        "──────────────────────────────────────────────────",
+        "Status: Stage",
+        "Remaining: Next work",
+        "──────────────────────────────────────────────────",
+        "[a] docs/a.md  [b] docs/b.md  [c] docs/c.md",
+        "[d] docs/d.md  [e] docs/e.md  [f] docs/f.md",
+        "[g] docs/g.md  [h] docs/h.md",
+        "                                         [q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "Purpose                                   ● active",
-      "──────────────────────────────────────────────────",
       "Status: Stage",
       "Remaining: Next work",
       "──────────────────────────────────────────────────",
-      "[a] docs/a.md  [b] docs/b.md  [c] docs/c.md",
-      "[d] docs/d.md  [e] docs/e.md  [f] docs/f.md",
-      "[g] docs/g.md  [h] docs/h.md",
-      "                                         [q] close"
+      "[a] Document docs/a.md (https://example.com/lib) …",
+      "    Guide the work",
+      "[b] Document docs/b.md (https://example.com/lib) …",
+      "    Guide the work",
+      "… 6 more; enlarge pane                   [q] close"
     ],
-    "documents": [
-      "a",
-      "b",
-      "c",
-      "d",
-      "e",
-      "f",
-      "g",
-      "h"
-    ],
-    "links": []
+    "links": [],
+    "name": "quiet-grid-9"
   },
   {
-    "name": "notice-grid-9",
+    "documents": [
+      "a",
+      "b"
+    ],
+    "historical": {
+      "documents": [
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f",
+        "g",
+        "h"
+      ],
+      "lines": [
+        "Purpose                                   ● active",
+        "──────────────────────────────────────────────────",
+        "Status: Stage",
+        "Remaining: Next work",
+        "──────────────────────────────────────────────────",
+        "[a] docs/a.md  [b] docs/b.md  [c] docs/c.md",
+        "[d] docs/d.md  [e] docs/e.md  [f] docs/f.md",
+        "[g] docs/g.md  [h] docs/h.md",
+        "Notice 界😀é                             [q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "Purpose                                   ● active",
-      "──────────────────────────────────────────────────",
       "Status: Stage",
       "Remaining: Next work",
-      "──────────────────────────────────────────────────",
-      "[a] docs/a.md  [b] docs/b.md  [c] docs/c.md",
-      "[d] docs/d.md  [e] docs/e.md  [f] docs/f.md",
-      "[g] docs/g.md  [h] docs/h.md",
+      "[a] Document docs/a.md (https://example.com/lib) …",
+      "    Guide the work",
+      "[b] Document docs/b.md (https://example.com/lib) …",
+      "    Guide the work",
+      "… 6 more; enlarge pane",
       "Notice 界😀é                             [q] close"
     ],
-    "documents": [
-      "a",
-      "b",
-      "c",
-      "d",
-      "e",
-      "f",
-      "g",
-      "h"
-    ],
-    "links": []
+    "links": [],
+    "name": "notice-grid-9"
   },
   {
-    "name": "multiline-overflow",
+    "documents": [],
+    "historical": {
+      "documents": [
+        "a",
+        "b",
+        "c"
+      ],
+      "lines": [
+        "goalgoalgoalgoalgoalgoal…  ● active",
+        "Status:…",
+        "Remaining:…",
+        "[a] d0.md  [b] d1.md  [c] d2.md",
+        "… 8 more; enlarge pane    [q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "goalgoalgoalgoalgoalgoal…  ● active",
       "Status:…",
       "Remaining:…",
-      "[a] d0.md  [b] d1.md  [c] d2.md",
-      "… 8 more; enlarge pane    [q] close"
+      "───────────────────────────────────",
+      "… 11 more; enlarge pane   [q] close"
     ],
-    "documents": [
-      "a",
-      "b",
-      "c"
-    ],
-    "links": []
+    "links": [],
+    "name": "multiline-overflow"
   },
   {
-    "name": "distinguishing-roots-provenance",
-    "lines": [
-      "Ship library | client                                                                                                                                                       ● active",
-      "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
-      "Status: Implement | verify",
-      "Remaining: 界😀é | release",
-      "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
-      "[a] lib:backend/common/docs/design.md (added abcdef01)  [b] frontend/common/docs/design.md (added abcdef01)  [c] same:backend/common/docs/design.md (added abcdef01)",
-      "[d] unbound/docs/design.md (added abcdef01)",
-      "[1] Issue #42: Track work",
-      "[2] PR #51: Review",
-      "",
-      "",
-      "                                                                                                                                                                           [q] close"
-    ],
     "documents": [
       "a",
       "b",
       "c",
       "d"
     ],
-    "links": [
-      "https://example.com/org/repo/issues/42",
-      "https://example.com/org/repo/pull/51"
-    ]
-  },
-  {
-    "name": "Document not present in this checkout",
+    "historical": {
+      "documents": [
+        "a",
+        "b",
+        "c",
+        "d"
+      ],
+      "lines": [
+        "Ship library | client                                                                                                                                                       ● active",
+        "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "Status: Implement | verify",
+        "Remaining: 界😀é | release",
+        "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "[a] lib:backend/common/docs/design.md (added abcdef01)  [b] frontend/common/docs/design.md (added abcdef01)  [c] same:backend/common/docs/design.md (added abcdef01)",
+        "[d] unbound/docs/design.md (added abcdef01)",
+        "[1] Issue #42: Track work",
+        "[2] PR #51: Review",
+        "",
+        "",
+        "                                                                                                                                                                           [q] close"
+      ],
+      "links": [
+        "https://example.com/org/repo/issues/42",
+        "https://example.com/org/repo/pull/51"
+      ]
+    },
     "lines": [
-      "Ship library | client                                                                       ● active",
-      "────────────────────────────────────────────────────────────────────────────────────────────────────",
+      "Ship library | client                                                                                                                                                       ● active",
       "Status: Implement | verify",
       "Remaining: 界😀é | release",
-      "────────────────────────────────────────────────────────────────────────────────────────────────────",
-      "[a] docs/design.md",
-      "[1] Issue #42: Track work",
-      "[2] PR #51: Review",
-      "",
-      "                                                                                           [q] close"
+      "[a] Document docs/design.md (https://example.com/lib) · Brief · Active",
+      "    Guide the work",
+      "[b] Document docs/design.md (https://example.com/client) · Brief · Active",
+      "    Guide the work",
+      "[c] Document docs/design.md (https://example.com/same) · Brief · Active",
+      "    Guide the work",
+      "[d] Document docs/design.md (https://example.com/unbound) · Brief · Active",
+      "    Guide the work",
+      "… 2 more; enlarge pane                                                                                                                                                     [q] close"
     ],
+    "links": [],
+    "name": "distinguishing-roots-provenance"
+  },
+  {
     "documents": [
       "a"
     ],
-    "links": [
-      "https://example.com/org/repo/issues/42",
-      "https://example.com/org/repo/pull/51"
-    ]
-  },
-  {
-    "name": "Ambiguous viewing-session checkout binding",
+    "historical": {
+      "documents": [
+        "a"
+      ],
+      "lines": [
+        "Ship library | client                                                                       ● active",
+        "────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "Status: Implement | verify",
+        "Remaining: 界😀é | release",
+        "────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "[a] docs/design.md",
+        "[1] Issue #42: Track work",
+        "[2] PR #51: Review",
+        "",
+        "                                                                                           [q] close"
+      ],
+      "links": [
+        "https://example.com/org/repo/issues/42",
+        "https://example.com/org/repo/pull/51"
+      ]
+    },
     "lines": [
       "Ship library | client                                                                       ● active",
-      "────────────────────────────────────────────────────────────────────────────────────────────────────",
       "Status: Implement | verify",
       "Remaining: 界😀é | release",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
-      "[a] docs/design.md",
-      "[1] Issue #42: Track work",
-      "[2] PR #51: Review",
-      "",
-      "                                                                                           [q] close"
+      "[a] Document Design (https://example.com/lib) · Brief · Active",
+      "    Design",
+      "[1] PR Review · Deliverable · Active",
+      "    Review",
+      "[2] Issue Track work · Dependency · Active",
+      "    Track work                                                                             [q] close"
     ],
+    "links": [
+      "https://example.com/org/repo/pull/51",
+      "https://example.com/org/repo/issues/42"
+    ],
+    "name": "Document not present in this checkout"
+  },
+  {
     "documents": [
       "a"
     ],
-    "links": [
-      "https://example.com/org/repo/issues/42",
-      "https://example.com/org/repo/pull/51"
-    ]
-  },
-  {
-    "name": "No registered checkout",
+    "historical": {
+      "documents": [
+        "a"
+      ],
+      "lines": [
+        "Ship library | client                                                                       ● active",
+        "────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "Status: Implement | verify",
+        "Remaining: 界😀é | release",
+        "────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "[a] docs/design.md",
+        "[1] Issue #42: Track work",
+        "[2] PR #51: Review",
+        "",
+        "                                                                                           [q] close"
+      ],
+      "links": [
+        "https://example.com/org/repo/issues/42",
+        "https://example.com/org/repo/pull/51"
+      ]
+    },
     "lines": [
       "Ship library | client                                                                       ● active",
-      "────────────────────────────────────────────────────────────────────────────────────────────────────",
       "Status: Implement | verify",
       "Remaining: 界😀é | release",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
-      "[a] docs/design.md",
-      "[1] Issue #42: Track work",
-      "[2] PR #51: Review",
-      "",
-      "                                                                                           [q] close"
+      "[a] Document Design (https://example.com/lib) · Brief · Active",
+      "    Design",
+      "[1] PR Review · Deliverable · Active",
+      "    Review",
+      "[2] Issue Track work · Dependency · Active",
+      "    Track work                                                                             [q] close"
     ],
+    "links": [
+      "https://example.com/org/repo/pull/51",
+      "https://example.com/org/repo/issues/42"
+    ],
+    "name": "Ambiguous viewing-session checkout binding"
+  },
+  {
     "documents": [
       "a"
     ],
-    "links": [
-      "https://example.com/org/repo/issues/42",
-      "https://example.com/org/repo/pull/51"
-    ]
-  },
-  {
-    "name": "duplicate-link-names-order-targets",
+    "historical": {
+      "documents": [
+        "a"
+      ],
+      "lines": [
+        "Ship library | client                                                                       ● active",
+        "────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "Status: Implement | verify",
+        "Remaining: 界😀é | release",
+        "────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "[a] docs/design.md",
+        "[1] Issue #42: Track work",
+        "[2] PR #51: Review",
+        "",
+        "                                                                                           [q] close"
+      ],
+      "links": [
+        "https://example.com/org/repo/issues/42",
+        "https://example.com/org/repo/pull/51"
+      ]
+    },
     "lines": [
       "Ship library | client                                                                       ● active",
-      "────────────────────────────────────────────────────────────────────────────────────────────────────",
       "Status: Implement | verify",
       "Remaining: 界😀é | release",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
-      "[a] docs/design.md",
-      "[1] Issue #42: Duplicate",
-      "[2] Issue #456: Duplicate",
-      "[3] PR #7: Duplicate",
-      "[4] PR: https://example.com/19?pull=20#21",
-      "",
-      "                                                                                           [q] close"
+      "[a] Document Design (https://example.com/lib) · Brief · Active",
+      "    Design",
+      "[1] PR Review · Deliverable · Active",
+      "    Review",
+      "[2] Issue Track work · Dependency · Active",
+      "    Track work                                                                             [q] close"
     ],
+    "links": [
+      "https://example.com/org/repo/pull/51",
+      "https://example.com/org/repo/issues/42"
+    ],
+    "name": "No registered checkout"
+  },
+  {
     "documents": [
       "a"
     ],
+    "historical": {
+      "documents": [
+        "a"
+      ],
+      "lines": [
+        "Ship library | client                                                                       ● active",
+        "────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "Status: Implement | verify",
+        "Remaining: 界😀é | release",
+        "────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "[a] docs/design.md",
+        "[1] Issue #42: Duplicate",
+        "[2] Issue #456: Duplicate",
+        "[3] PR #7: Duplicate",
+        "[4] PR: https://example.com/19?pull=20#21",
+        "",
+        "                                                                                           [q] close"
+      ],
+      "links": [
+        "https://github.com/acme/project/issues/42#issuecomment-900",
+        "https://gitlab.example/team/subgroup/repo/-/issues/456",
+        "https://github.enterprise.test/team/repo/pull/7/files",
+        "https://example.com/19?pull=20#21"
+      ]
+    },
+    "lines": [
+      "Ship library | client                                                                       ● active",
+      "Status: Implement | verify",
+      "Remaining: 界😀é | release",
+      "[a] Document Design (https://example.com/lib) · Brief · Active",
+      "    Design",
+      "[1] PR Duplicate · Deliverable · Active",
+      "    Duplicate",
+      "[2] PR https://example.com/19?pull=20#21 · Deliverable · Active",
+      "    Guide the work",
+      "[3] Issue Duplicate · Dependency · Active",
+      "    Duplicate",
+      "… 1 more; enlarge pane                                                                     [q] close"
+    ],
     "links": [
-      "https://github.com/acme/project/issues/42#issuecomment-900",
-      "https://gitlab.example/team/subgroup/repo/-/issues/456",
       "https://github.enterprise.test/team/repo/pull/7/files",
-      "https://example.com/19?pull=20#21"
-    ]
+      "https://example.com/19?pull=20#21",
+      "https://github.com/acme/project/issues/42#issuecomment-900"
+    ],
+    "name": "duplicate-link-names-order-targets"
   },
   {
-    "name": "url-javascript:alert(1)",
+    "documents": [
+      "a"
+    ],
+    "historical": {
+      "documents": [
+        "a"
+      ],
+      "lines": [
+        "Ship library | client                                                                       ● active",
+        "────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "Status: Implement | verify",
+        "Remaining: 界😀é | release",
+        "────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "[a] docs/design.md",
+        "[1] Issue: Unsafe or canonicalized",
+        "",
+        "",
+        "                                                                                           [q] close"
+      ],
+      "links": [
+        "https://example.com/%E7%95%8C"
+      ]
+    },
     "lines": [
       "Ship library | client                                                                       ● active",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
       "Status: Implement | verify",
       "Remaining: 界😀é | release",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
-      "[a] docs/design.md",
-      "[1] Issue: Unsafe or canonicalized",
-      "",
-      "",
+      "[a] Document Design (https://example.com/lib) · Brief · Active",
+      "    Design",
+      "[1] Issue Unsafe or canonicalized · Dependency · Active",
+      "    Unsafe or canonicalized",
       "                                                                                           [q] close"
-    ],
-    "documents": [
-      "a"
-    ],
-    "links": []
-  },
-  {
-    "name": "url-https://example.com/%0Aevil",
-    "lines": [
-      "Ship library | client                                                                       ● active",
-      "────────────────────────────────────────────────────────────────────────────────────────────────────",
-      "Status: Implement | verify",
-      "Remaining: 界😀é | release",
-      "────────────────────────────────────────────────────────────────────────────────────────────────────",
-      "[a] docs/design.md",
-      "[1] Issue: Unsafe or canonicalized",
-      "",
-      "",
-      "                                                                                           [q] close"
-    ],
-    "documents": [
-      "a"
-    ],
-    "links": []
-  },
-  {
-    "name": "url-https://example.com/%E2%80%AEevil",
-    "lines": [
-      "Ship library | client                                                                       ● active",
-      "────────────────────────────────────────────────────────────────────────────────────────────────────",
-      "Status: Implement | verify",
-      "Remaining: 界😀é | release",
-      "────────────────────────────────────────────────────────────────────────────────────────────────────",
-      "[a] docs/design.md",
-      "[1] Issue: Unsafe or canonicalized",
-      "",
-      "",
-      "                                                                                           [q] close"
-    ],
-    "documents": [
-      "a"
-    ],
-    "links": []
-  },
-  {
-    "name": "url-https://example.com/%ZZ",
-    "lines": [
-      "Ship library | client                                                                       ● active",
-      "────────────────────────────────────────────────────────────────────────────────────────────────────",
-      "Status: Implement | verify",
-      "Remaining: 界😀é | release",
-      "────────────────────────────────────────────────────────────────────────────────────────────────────",
-      "[a] docs/design.md",
-      "[1] Issue: Unsafe or canonicalized",
-      "",
-      "",
-      "                                                                                           [q] close"
-    ],
-    "documents": [
-      "a"
-    ],
-    "links": []
-  },
-  {
-    "name": "url-https://example.com/a\\b",
-    "lines": [
-      "Ship library | client                                                                       ● active",
-      "────────────────────────────────────────────────────────────────────────────────────────────────────",
-      "Status: Implement | verify",
-      "Remaining: 界😀é | release",
-      "────────────────────────────────────────────────────────────────────────────────────────────────────",
-      "[a] docs/design.md",
-      "[1] Issue: Unsafe or canonicalized",
-      "",
-      "",
-      "                                                                                           [q] close"
-    ],
-    "documents": [
-      "a"
-    ],
-    "links": []
-  },
-  {
-    "name": "url-https://example.com/a b",
-    "lines": [
-      "Ship library | client                                                                       ● active",
-      "────────────────────────────────────────────────────────────────────────────────────────────────────",
-      "Status: Implement | verify",
-      "Remaining: 界😀é | release",
-      "────────────────────────────────────────────────────────────────────────────────────────────────────",
-      "[a] docs/design.md",
-      "[1] Issue: Unsafe or canonicalized",
-      "",
-      "",
-      "                                                                                           [q] close"
-    ],
-    "documents": [
-      "a"
-    ],
-    "links": []
-  },
-  {
-    "name": "url-https://example.com/界",
-    "lines": [
-      "Ship library | client                                                                       ● active",
-      "────────────────────────────────────────────────────────────────────────────────────────────────────",
-      "Status: Implement | verify",
-      "Remaining: 界😀é | release",
-      "────────────────────────────────────────────────────────────────────────────────────────────────────",
-      "[a] docs/design.md",
-      "[1] Issue: Unsafe or canonicalized",
-      "",
-      "",
-      "                                                                                           [q] close"
-    ],
-    "documents": [
-      "a"
     ],
     "links": [
-      "https://example.com/%E7%95%8C"
-    ]
+      "https://example.com/界"
+    ],
+    "name": "url-https://example.com/界"
   },
   {
-    "name": "url-https://example.com",
+    "documents": [
+      "a"
+    ],
+    "historical": {
+      "documents": [
+        "a"
+      ],
+      "lines": [
+        "Ship library | client                                                                       ● active",
+        "────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "Status: Implement | verify",
+        "Remaining: 界😀é | release",
+        "────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "[a] docs/design.md",
+        "[1] Issue: Unsafe or canonicalized",
+        "",
+        "",
+        "                                                                                           [q] close"
+      ],
+      "links": [
+        "https://example.com/"
+      ]
+    },
     "lines": [
       "Ship library | client                                                                       ● active",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
       "Status: Implement | verify",
       "Remaining: 界😀é | release",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
-      "[a] docs/design.md",
-      "[1] Issue: Unsafe or canonicalized",
-      "",
-      "",
+      "[a] Document Design (https://example.com/lib) · Brief · Active",
+      "    Design",
+      "[1] Issue Unsafe or canonicalized · Dependency · Active",
+      "    Unsafe or canonicalized",
       "                                                                                           [q] close"
     ],
-    "documents": [
-      "a"
-    ],
     "links": [
-      "https://example.com/"
-    ]
+      "https://example.com"
+    ],
+    "name": "url-https://example.com"
   },
   {
-    "name": "failed-frame",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "",
+        "",
+        "",
+        "",
+        "Card unavailable: Malformed record. Refresh to retry.                  [q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "",
       "",
@@ -2645,43 +4768,95 @@
       "",
       "Card unavailable: Malformed record. Refresh to retry.                  [q] close"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "failed-frame"
   },
   {
-    "name": "refreshing-cached-frame-paint-only",
+    "documents": [
+      "a"
+    ],
+    "historical": {
+      "documents": [
+        "a"
+      ],
+      "lines": [
+        "Ship library | client                                                                       ● active",
+        "────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "Status: Implement | verify",
+        "Remaining: 界😀é | release",
+        "────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "[a] docs/design.md",
+        "[1] Issue #42: Track work",
+        "[2] PR #51: Review",
+        "",
+        "",
+        "",
+        "Refreshing…                                                                                [q] close"
+      ],
+      "links": [
+        "https://example.com/org/repo/issues/42",
+        "https://example.com/org/repo/pull/51"
+      ]
+    },
     "lines": [
       "Ship library | client                                                                       ● active",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
       "Status: Implement | verify",
       "Remaining: 界😀é | release",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
-      "[a] docs/design.md",
-      "[1] Issue #42: Track work",
-      "[2] PR #51: Review",
-      "",
-      "",
-      "",
+      "[a] Document Design (https://example.com/lib) · Brief · Active",
+      "    Design",
+      "[1] PR Review · Deliverable · Active",
+      "    Review",
+      "[2] Issue Track work · Dependency · Active",
+      "    Track work",
       "Refreshing…                                                                                [q] close"
     ],
-    "documents": [
-      "a"
-    ],
     "links": [
-      "https://example.com/org/repo/issues/42",
-      "https://example.com/org/repo/pull/51"
-    ]
+      "https://example.com/org/repo/pull/51",
+      "https://example.com/org/repo/issues/42"
+    ],
+    "name": "refreshing-cached-frame-paint-only"
   },
   {
-    "name": "empty-frame",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "  [q]"
+      ],
+      "links": []
+    },
     "lines": [
       "  [q]"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "empty-frame"
   },
   {
-    "name": "card-text-wide",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "Help people track work across       ● active",
+        "sessions and use their cards.",
+        "────────────────────────────────────────────",
+        "Session: Built naming settings and Pi name",
+        "  import.",
+        "Status: Waiting on Argon review.",
+        "Remaining: Deploy and reload.",
+        "────────────────────────────────────────────",
+        "[1] PR #12: Naming settings",
+        "",
+        "",
+        "",
+        "",
+        "                                   [q] close"
+      ],
+      "links": [
+        "https://example.com/org/repo/pull/12"
+      ]
+    },
     "lines": [
       "Help people track work across       ● active",
       "sessions and use their cards.",
@@ -2691,20 +4866,44 @@
       "Status: Waiting on Argon review.",
       "Remaining: Deploy and reload.",
       "────────────────────────────────────────────",
-      "[1] PR #12: Naming settings",
-      "",
+      "[1] PR Naming settings · Deliverable · Acti…",
+      "    Naming settings",
       "",
       "",
       "",
       "                                   [q] close"
     ],
-    "documents": [],
     "links": [
       "https://example.com/org/repo/pull/12"
-    ]
+    ],
+    "name": "card-text-wide"
   },
   {
-    "name": "card-text-narrow",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "Help        ● active",
+        "people track work",
+        "across sessions and",
+        "use their cards.",
+        "────────────────────",
+        "Session: Built",
+        "  naming settings…",
+        "Status: Waiting on…",
+        "Remaining: Deploy…",
+        "────────────────────",
+        "[1] PR #12: Naming …",
+        "",
+        "",
+        "",
+        "",
+        "           [q] close"
+      ],
+      "links": [
+        "https://example.com/org/repo/pull/12"
+      ]
+    },
     "lines": [
       "Help        ● active",
       "people track work",
@@ -2716,67 +4915,130 @@
       "Status: Waiting on…",
       "Remaining: Deploy…",
       "────────────────────",
-      "[1] PR #12: Naming …",
-      "",
+      "[1] PR Naming setti…",
+      "    Naming settings",
       "",
       "",
       "",
       "           [q] close"
     ],
-    "documents": [],
     "links": [
       "https://example.com/org/repo/pull/12"
-    ]
+    ],
+    "name": "card-text-narrow"
   },
   {
-    "name": "card-text-short-1",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "Help people track work ac  ● active[q] close"
+      ],
+      "links": []
+    },
     "lines": [
       "Help people track work ac  ● active[q] close"
     ],
-    "documents": [],
-    "links": []
+    "links": [],
+    "name": "card-text-short-1"
   },
   {
-    "name": "card-text-short-2",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "Help people track work across…      ● active",
+        "[1] PR #12: Naming settings        [q] close"
+      ],
+      "links": [
+        "https://example.com/org/repo/pull/12"
+      ]
+    },
     "lines": [
       "Help people track work across…      ● active",
-      "[1] PR #12: Naming settings        [q] close"
+      "… 1 more; enlarge pane             [q] close"
     ],
-    "documents": [],
-    "links": [
-      "https://example.com/org/repo/pull/12"
-    ]
+    "links": [],
+    "name": "card-text-short-2"
   },
   {
-    "name": "card-text-short-4",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "Help people track work across…      ● active",
+        "Session: Built naming settings and Pi name…",
+        "Status: Waiting on Argon review.…",
+        "[1] PR #12: Naming settings        [q] close"
+      ],
+      "links": [
+        "https://example.com/org/repo/pull/12"
+      ]
+    },
     "lines": [
       "Help people track work across…      ● active",
       "Session: Built naming settings and Pi name…",
-      "Status: Waiting on Argon review.…",
-      "[1] PR #12: Naming settings        [q] close"
+      "[1] PR Naming settings · Deliverable · Acti…",
+      "    Naming settings                [q] close"
     ],
-    "documents": [],
     "links": [
       "https://example.com/org/repo/pull/12"
-    ]
+    ],
+    "name": "card-text-short-4"
   },
   {
-    "name": "card-text-short-6",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "Help people track work across…      ● active",
+        "Session: Built naming settings and Pi name…",
+        "Status: Waiting on Argon review.",
+        "Remaining: Deploy and reload.",
+        "────────────────────────────────────────────",
+        "[1] PR #12: Naming settings        [q] close"
+      ],
+      "links": [
+        "https://example.com/org/repo/pull/12"
+      ]
+    },
     "lines": [
       "Help people track work across…      ● active",
       "Session: Built naming settings and Pi name…",
       "Status: Waiting on Argon review.",
       "Remaining: Deploy and reload.",
-      "────────────────────────────────────────────",
-      "[1] PR #12: Naming settings        [q] close"
+      "[1] PR Naming settings · Deliverable · Acti…",
+      "    Naming settings                [q] close"
     ],
-    "documents": [],
     "links": [
       "https://example.com/org/repo/pull/12"
-    ]
+    ],
+    "name": "card-text-short-6"
   },
   {
-    "name": "card-text-active",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "Help people track work across       ● active",
+        "sessions and use their cards.",
+        "────────────────────────────────────────────",
+        "Session: Built naming settings and Pi name",
+        "  import.",
+        "Status: Waiting on Argon review.",
+        "Remaining: Deploy and reload.",
+        "────────────────────────────────────────────",
+        "[1] PR #12: Naming settings",
+        "",
+        "",
+        "",
+        "",
+        "                                   [q] close"
+      ],
+      "links": [
+        "https://example.com/org/repo/pull/12"
+      ]
+    },
     "lines": [
       "Help people track work across       ● active",
       "sessions and use their cards.",
@@ -2786,20 +5048,42 @@
       "Status: Waiting on Argon review.",
       "Remaining: Deploy and reload.",
       "────────────────────────────────────────────",
-      "[1] PR #12: Naming settings",
-      "",
+      "[1] PR Naming settings · Deliverable · Acti…",
+      "    Naming settings",
       "",
       "",
       "",
       "                                   [q] close"
     ],
-    "documents": [],
     "links": [
       "https://example.com/org/repo/pull/12"
-    ]
+    ],
+    "name": "card-text-active"
   },
   {
-    "name": "card-text-waiting",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "Help people track work across      ○ waiting",
+        "sessions and use their cards.",
+        "────────────────────────────────────────────",
+        "Session: Built naming settings and Pi name",
+        "  import.",
+        "Status: Waiting on Argon review.",
+        "Remaining: Deploy and reload.",
+        "────────────────────────────────────────────",
+        "[1] PR #12: Naming settings",
+        "",
+        "",
+        "",
+        "",
+        "                                   [q] close"
+      ],
+      "links": [
+        "https://example.com/org/repo/pull/12"
+      ]
+    },
     "lines": [
       "Help people track work across      ○ waiting",
       "sessions and use their cards.",
@@ -2809,20 +5093,42 @@
       "Status: Waiting on Argon review.",
       "Remaining: Deploy and reload.",
       "────────────────────────────────────────────",
-      "[1] PR #12: Naming settings",
-      "",
+      "[1] PR Naming settings · Deliverable · Acti…",
+      "    Naming settings",
       "",
       "",
       "",
       "                                   [q] close"
     ],
-    "documents": [],
     "links": [
       "https://example.com/org/repo/pull/12"
-    ]
+    ],
+    "name": "card-text-waiting"
   },
   {
-    "name": "card-text-blocked",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "Help people track work across      ! blocked",
+        "sessions and use their cards.",
+        "────────────────────────────────────────────",
+        "Session: Built naming settings and Pi name",
+        "  import.",
+        "Status: Waiting on Argon review.",
+        "Remaining: Deploy and reload.",
+        "────────────────────────────────────────────",
+        "[1] PR #12: Naming settings",
+        "",
+        "",
+        "",
+        "",
+        "                                   [q] close"
+      ],
+      "links": [
+        "https://example.com/org/repo/pull/12"
+      ]
+    },
     "lines": [
       "Help people track work across      ! blocked",
       "sessions and use their cards.",
@@ -2832,20 +5138,42 @@
       "Status: Waiting on Argon review.",
       "Remaining: Deploy and reload.",
       "────────────────────────────────────────────",
-      "[1] PR #12: Naming settings",
-      "",
+      "[1] PR Naming settings · Deliverable · Acti…",
+      "    Naming settings",
       "",
       "",
       "",
       "                                   [q] close"
     ],
-    "documents": [],
     "links": [
       "https://example.com/org/repo/pull/12"
-    ]
+    ],
+    "name": "card-text-blocked"
   },
   {
-    "name": "card-text-parked",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "Help people track work across       ○ parked",
+        "sessions and use their cards.",
+        "────────────────────────────────────────────",
+        "Session: Built naming settings and Pi name",
+        "  import.",
+        "Status: Waiting on Argon review.",
+        "Remaining: Deploy and reload.",
+        "────────────────────────────────────────────",
+        "[1] PR #12: Naming settings",
+        "",
+        "",
+        "",
+        "",
+        "                                   [q] close"
+      ],
+      "links": [
+        "https://example.com/org/repo/pull/12"
+      ]
+    },
     "lines": [
       "Help people track work across       ○ parked",
       "sessions and use their cards.",
@@ -2855,20 +5183,42 @@
       "Status: Waiting on Argon review.",
       "Remaining: Deploy and reload.",
       "────────────────────────────────────────────",
-      "[1] PR #12: Naming settings",
-      "",
+      "[1] PR Naming settings · Deliverable · Acti…",
+      "    Naming settings",
       "",
       "",
       "",
       "                                   [q] close"
     ],
-    "documents": [],
     "links": [
       "https://example.com/org/repo/pull/12"
-    ]
+    ],
+    "name": "card-text-parked"
   },
   {
-    "name": "card-text-done",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "Help people track work across         ✓ done",
+        "sessions and use their cards.",
+        "────────────────────────────────────────────",
+        "Session: Built naming settings and Pi name",
+        "  import.",
+        "Status: Waiting on Argon review.",
+        "Remaining: Deploy and reload.",
+        "────────────────────────────────────────────",
+        "[1] PR #12: Naming settings",
+        "",
+        "",
+        "",
+        "",
+        "                                   [q] close"
+      ],
+      "links": [
+        "https://example.com/org/repo/pull/12"
+      ]
+    },
     "lines": [
       "Help people track work across         ✓ done",
       "sessions and use their cards.",
@@ -2878,20 +5228,42 @@
       "Status: Waiting on Argon review.",
       "Remaining: Deploy and reload.",
       "────────────────────────────────────────────",
-      "[1] PR #12: Naming settings",
-      "",
+      "[1] PR Naming settings · Deliverable · Acti…",
+      "    Naming settings",
       "",
       "",
       "",
       "                                   [q] close"
     ],
-    "documents": [],
     "links": [
       "https://example.com/org/repo/pull/12"
-    ]
+    ],
+    "name": "card-text-done"
   },
   {
-    "name": "card-text-empty-recap",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "Help people track work across       ● active",
+        "sessions and use their cards.",
+        "────────────────────────────────────────────",
+        "Status: Waiting on Argon review.",
+        "Remaining: Deploy and reload.",
+        "────────────────────────────────────────────",
+        "[1] PR #12: Naming settings",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "                                   [q] close"
+      ],
+      "links": [
+        "https://example.com/org/repo/pull/12"
+      ]
+    },
     "lines": [
       "Help people track work across       ● active",
       "sessions and use their cards.",
@@ -2899,8 +5271,8 @@
       "Status: Waiting on Argon review.",
       "Remaining: Deploy and reload.",
       "────────────────────────────────────────────",
-      "[1] PR #12: Naming settings",
-      "",
+      "[1] PR Naming settings · Deliverable · Acti…",
+      "    Naming settings",
       "",
       "",
       "",
@@ -2908,13 +5280,35 @@
       "",
       "                                   [q] close"
     ],
-    "documents": [],
     "links": [
       "https://example.com/org/repo/pull/12"
-    ]
+    ],
+    "name": "card-text-empty-recap"
   },
   {
-    "name": "card-text-empty-state",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "Help people track work across       ● active",
+        "sessions and use their cards.",
+        "────────────────────────────────────────────",
+        "Session: Built naming settings and Pi name",
+        "  import.",
+        "Remaining: Deploy and reload.",
+        "────────────────────────────────────────────",
+        "[1] PR #12: Naming settings",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "                                   [q] close"
+      ],
+      "links": [
+        "https://example.com/org/repo/pull/12"
+      ]
+    },
     "lines": [
       "Help people track work across       ● active",
       "sessions and use their cards.",
@@ -2923,21 +5317,43 @@
       "  import.",
       "Remaining: Deploy and reload.",
       "────────────────────────────────────────────",
-      "[1] PR #12: Naming settings",
-      "",
+      "[1] PR Naming settings · Deliverable · Acti…",
+      "    Naming settings",
       "",
       "",
       "",
       "",
       "                                   [q] close"
     ],
-    "documents": [],
     "links": [
       "https://example.com/org/repo/pull/12"
-    ]
+    ],
+    "name": "card-text-empty-state"
   },
   {
-    "name": "card-text-empty-remaining",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "Help people track work across       ● active",
+        "sessions and use their cards.",
+        "────────────────────────────────────────────",
+        "Session: Built naming settings and Pi name",
+        "  import.",
+        "Status: Waiting on Argon review.",
+        "────────────────────────────────────────────",
+        "[1] PR #12: Naming settings",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "                                   [q] close"
+      ],
+      "links": [
+        "https://example.com/org/repo/pull/12"
+      ]
+    },
     "lines": [
       "Help people track work across       ● active",
       "sessions and use their cards.",
@@ -2946,27 +5362,49 @@
       "  import.",
       "Status: Waiting on Argon review.",
       "────────────────────────────────────────────",
-      "[1] PR #12: Naming settings",
-      "",
+      "[1] PR Naming settings · Deliverable · Acti…",
+      "    Naming settings",
       "",
       "",
       "",
       "",
       "                                   [q] close"
     ],
-    "documents": [],
     "links": [
       "https://example.com/org/repo/pull/12"
-    ]
+    ],
+    "name": "card-text-empty-remaining"
   },
   {
-    "name": "card-text-empty-all",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "Help people track work across       ● active",
+        "sessions and use their cards.",
+        "────────────────────────────────────────────",
+        "[1] PR #12: Naming settings",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "                                   [q] close"
+      ],
+      "links": [
+        "https://example.com/org/repo/pull/12"
+      ]
+    },
     "lines": [
       "Help people track work across       ● active",
       "sessions and use their cards.",
       "────────────────────────────────────────────",
-      "[1] PR #12: Naming settings",
-      "",
+      "[1] PR Naming settings · Deliverable · Acti…",
+      "    Naming settings",
       "",
       "",
       "",
@@ -2977,13 +5415,35 @@
       "",
       "                                   [q] close"
     ],
-    "documents": [],
     "links": [
       "https://example.com/org/repo/pull/12"
-    ]
+    ],
+    "name": "card-text-empty-all"
   },
   {
-    "name": "card-text-empty-goal",
+    "documents": [],
+    "historical": {
+      "documents": [],
+      "lines": [
+        "                                    ● active",
+        "────────────────────────────────────────────",
+        "Session: Built naming settings and Pi name",
+        "  import.",
+        "Status: Waiting on Argon review.",
+        "Remaining: Deploy and reload.",
+        "────────────────────────────────────────────",
+        "[1] PR #12: Naming settings",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "                                   [q] close"
+      ],
+      "links": [
+        "https://example.com/org/repo/pull/12"
+      ]
+    },
     "lines": [
       "                                    ● active",
       "────────────────────────────────────────────",
@@ -2992,17 +5452,17 @@
       "Status: Waiting on Argon review.",
       "Remaining: Deploy and reload.",
       "────────────────────────────────────────────",
-      "[1] PR #12: Naming settings",
-      "",
+      "[1] PR Naming settings · Deliverable · Acti…",
+      "    Naming settings",
       "",
       "",
       "",
       "",
       "                                   [q] close"
     ],
-    "documents": [],
     "links": [
       "https://example.com/org/repo/pull/12"
-    ]
+    ],
+    "name": "card-text-empty-goal"
   }
 ]

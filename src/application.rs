@@ -9,7 +9,7 @@ mod enrollment;
 pub use enrollment::{EnrollmentSave, enroll_session, enroll_session_observed, enroll_stream};
 mod record_update;
 mod records;
-pub use record_update::{save_record_update, save_user_edit};
+pub use record_update::{save_record_update, save_user_edit, save_user_references};
 pub use records::{OpenedRecords, initialize_records, open_records, open_records_observed};
 
 use crate::config::ConfigError;

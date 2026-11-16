@@ -1008,6 +1008,439 @@ fn invalid_utf8_captured_input_is_rejected_before_any_record_changes() {
     assert_eq!(catalog_files(&f.root()), before);
 }
 
+#[test]
+fn reference_commands_save_without_a_session_and_keep_exact_revisions() {
+    let f = Fixture::new();
+    f.init();
+    let stream = f.create("References");
+    let id = stream["id"].as_str().unwrap();
+    let added = f.ok(&[
+        "reference",
+        "add",
+        id,
+        "--kind",
+        "document",
+        "--repository-url",
+        "git@example.test:tools",
+        "--path",
+        "docs/plan.md",
+        "--name",
+        "Plan",
+        "--purpose",
+        "Guide work",
+        "--role",
+        "brief",
+        "--state",
+        "dropped",
+        "--ref",
+        "topic",
+        "--commit",
+        "commit",
+        "--source-session",
+        "source",
+    ]);
+    assert_eq!(added["save"]["local"], "persisted");
+    assert_eq!(
+        f.ok(&["session", "list", "--stream", id])["sessions"],
+        json!([])
+    );
+    let before = catalog_files(&f.root());
+    let listed = f.ok(&["reference", "list", id]);
+    assert_eq!(listed["references"][0]["state"], "dropped");
+    assert_eq!(listed["references"][0]["target"]["commit"], "commit");
+    assert_eq!(catalog_files(&f.root()), before);
+    let changed = f.ok(&[
+        "reference",
+        "edit",
+        id,
+        "--repository-url",
+        "git@example.test:tools",
+        "--path",
+        "docs/plan.md",
+        "--name",
+        "Updated",
+        "--clear-ref",
+    ]);
+    let reference = &changed["stream"]["references"][0];
+    assert_eq!(reference["state"], "dropped");
+    assert!(reference["target"].get("ref").is_none());
+    assert_eq!(reference["target"]["commit"], "commit");
+    let revision = reference["revision"].clone();
+    let same = f.ok(&[
+        "reference",
+        "edit",
+        id,
+        "--repository-url",
+        "git@example.test:tools",
+        "--path",
+        "docs/plan.md",
+        "--name",
+        "Updated",
+    ]);
+    assert_eq!(same["save"]["domain"]["outcome"], "no-change");
+    assert_eq!(same["stream"]["references"][0]["revision"], revision);
+    let (code, _) = f.run(
+        &[
+            "reference",
+            "edit",
+            id,
+            "--repository-url",
+            "git@example.test:tools",
+            "--path",
+            "docs/plan.md",
+            "--state",
+            "active",
+        ],
+        None,
+    );
+    assert_eq!(code, 2);
+    let restored = f.ok(&[
+        "reference",
+        "restore",
+        id,
+        "--repository-url",
+        "git@example.test:tools",
+        "--path",
+        "docs/plan.md",
+        "--state",
+        "fulfilled",
+    ]);
+    assert_eq!(restored["stream"]["references"][0]["state"], "fulfilled");
+    let corrected = f.ok(&[
+        "reference",
+        "edit",
+        id,
+        "--repository-url",
+        "git@example.test:tools",
+        "--path",
+        "docs/plan.md",
+        "--target-repository-url",
+        "other",
+        "--target-path",
+        "accepted.md",
+    ]);
+    assert_eq!(
+        corrected["stream"]["references"][0]["target"]["commit"],
+        "commit"
+    );
+    let web = f.ok(&[
+        "reference",
+        "edit",
+        id,
+        "--repository-url",
+        "other",
+        "--path",
+        "accepted.md",
+        "--kind",
+        "link",
+        "--target-url",
+        "https://example.test/accepted",
+    ]);
+    assert_eq!(
+        web["stream"]["references"][0]["target"],
+        json!({"kind":"link","url":"https://example.test/accepted"})
+    );
+    f.ok(&[
+        "reference",
+        "drop",
+        id,
+        "--url",
+        "https://example.test/accepted",
+    ]);
+    assert_eq!(
+        f.ok(&["reference", "list", id])["references"][0]["state"],
+        "dropped"
+    );
+    let before = catalog_files(&f.root());
+    assert_eq!(
+        f.run(
+            &[
+                "reference",
+                "delete",
+                id,
+                "--url",
+                "https://example.test/accepted"
+            ],
+            None
+        )
+        .0,
+        2
+    );
+    assert_eq!(catalog_files(&f.root()), before);
+    f.ok(&[
+        "reference",
+        "delete",
+        id,
+        "--url",
+        "https://example.test/accepted",
+        "--confirm",
+    ]);
+    assert_eq!(f.ok(&["reference", "list", id])["references"], json!([]));
+}
+
+#[test]
+fn reference_cli_preserves_saved_text_and_escapes_human_output_and_selectors() {
+    let f = Fixture::new();
+    f.init();
+    let stream = f.create("Exact text");
+    let id = stream["id"].as_str().unwrap();
+    let repository = "git@example.test:a'b\u{202e}";
+    let path = "docs/line\nfile=é.md";
+    let name = "Name\u{1b}[31m\u{e0001}";
+    let purpose = "Purpose\u{2028}next\u{2029}last";
+    f.ok(&[
+        "reference",
+        "add",
+        id,
+        "--kind",
+        "document",
+        "--repository-url",
+        repository,
+        "--path",
+        path,
+        "--name",
+        name,
+        "--purpose",
+        purpose,
+        "--role",
+        "background",
+    ]);
+    let listed = f.ok(&["reference", "list", id]);
+    assert_eq!(listed["references"][0]["name"], name);
+    assert_eq!(listed["references"][0]["purpose"], purpose);
+    let output = f
+        .command()
+        .args(["reference", "list", id])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let plain = String::from_utf8(output.stdout).unwrap();
+    assert!(!plain.chars().any(|c| c != '\n'
+        && matches!(
+            unicode_general_category::get_general_category(c),
+            unicode_general_category::GeneralCategory::Control
+                | unicode_general_category::GeneralCategory::Format
+                | unicode_general_category::GeneralCategory::LineSeparator
+                | unicode_general_category::GeneralCategory::ParagraphSeparator
+        )));
+    let selector = plain
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("selector-json: "))
+        .unwrap();
+    let selector: Value = serde_json::from_str(selector).unwrap();
+    assert_eq!(
+        selector,
+        json!({"kind":"document","repository_url":repository,"path":path})
+    );
+    f.ok(&[
+        "reference",
+        "edit",
+        id,
+        "--repository-url",
+        selector["repository_url"].as_str().unwrap(),
+        "--path",
+        selector["path"].as_str().unwrap(),
+        "--purpose",
+        "Accepted",
+    ]);
+    f.ok(&[
+        "reference",
+        "add",
+        id,
+        "--kind",
+        "pr",
+        "--url",
+        "https://example.test/a'b?x=y",
+        "--name",
+        "PR",
+        "--purpose",
+        "Ship",
+        "--role",
+        "deliverable",
+    ]);
+    let before = catalog_files(&f.root());
+    assert_eq!(
+        f.run(
+            &[
+                "reference",
+                "add",
+                id,
+                "--kind",
+                "issue",
+                "--url",
+                "https://example.test/a'b?x=y",
+                "--name",
+                "Issue",
+                "--purpose",
+                "Track",
+                "--role",
+                "dependency"
+            ],
+            None
+        )
+        .0,
+        2
+    );
+    assert_eq!(catalog_files(&f.root()), before);
+}
+
+#[test]
+fn live_and_capture_hints_share_selected_direct_urls_before_any_references() {
+    use crate::support::herdr::{FakeHerdr, Reply};
+    let f = Fixture::new();
+    f.init();
+    let stream = f.create("Shared hints");
+    let id = stream["id"].as_str().unwrap();
+    let attached = f.ok(&[
+        "session",
+        "attach",
+        id,
+        "--harness",
+        "pi",
+        "--session-id",
+        "native",
+        "--title",
+        "Work",
+    ]);
+    let session_id = attached["session"]["id"].as_str().unwrap();
+    assert!(attached["session"]["checkout"].is_null());
+    let url = "https://example.test/tools.git";
+    let checkout_root = f.home.join("checkout");
+    fs::create_dir(&checkout_root).unwrap();
+    let initialized = Command::new("git")
+        .args(["init", "--quiet"])
+        .arg(&checkout_root)
+        .env("GIT_CONFIG_GLOBAL", f.home.join("gitconfig"))
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .unwrap();
+    assert!(
+        initialized.status.success(),
+        "{}",
+        String::from_utf8_lossy(&initialized.stderr)
+    );
+    let registered = f.ok(&[
+        "checkout",
+        "register",
+        checkout_root.to_str().unwrap(),
+        "--repository",
+        url,
+    ]);
+    let checkout = registered["checkout"]["id"].as_str().unwrap();
+    f.ok(&["session", "directory", session_id, "--checkout", checkout]);
+    let transcript = f.home.join("native.jsonl");
+    fs::write(&transcript, "{\"type\":\"session\",\"id\":\"native\"}\n").unwrap();
+    let snapshot = json!({"workspaces":[{"workspace_id":"w","label":"Work","number":1}],
+        "tabs":[{"workspace_id":"w","tab_id":"t","label":"Work","number":1}],
+        "panes":[{"workspace_id":"w","tab_id":"t","pane_id":"p","terminal_id":"terminal"}],
+        "layouts":[{"workspace_id":"w","tab_id":"t","panes":[{"pane_id":"p"}]}],
+        "agents":[{"workspace_id":"w","tab_id":"t","pane_id":"p","terminal_id":"terminal","agent":"pi","agent_session":{"agent":"pi","kind":"path","value":transcript}}]});
+    let socket_root = tempfile::tempdir().unwrap();
+    streams::frontend::herdr::HerdrNativeSnapshot::parse(&snapshot).unwrap();
+    let server =
+        FakeHerdr::start(
+            &socket_root.path().join("native.sock"),
+            move |method, _| match method {
+                "events.subscribe" => Reply::Result(json!({"type":"subscription_started"})),
+                "session.snapshot" => {
+                    Reply::Result(json!({"type":"session_snapshot","snapshot":snapshot}))
+                }
+                _ => panic!("unexpected native request: {method}"),
+            },
+        );
+    let capture = || {
+        let output = f
+            .command()
+            .env("HERDR_SOCKET_PATH", &server.socket)
+            .env("HERDR_ENV", "1")
+            .env("HERDR_PANE_ID", "p")
+            .args(["agent", "capture-inputs", "--workspace-id", "w", "--json"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+    let live = || {
+        f.ok(&[
+            "agent",
+            "context",
+            "--harness",
+            "pi",
+            "--session-id",
+            "native",
+        ])
+    };
+    let before = catalog_files(&f.root());
+    let observed = live();
+    let frozen = capture();
+    let captured = &frozen["samples"][0]["catalog"];
+    assert_eq!(observed["stream"]["references"], json!([]));
+    assert_eq!(observed["stream"]["repositories"], json!({}));
+    assert_eq!(
+        observed["checkouts"],
+        json!([{"repository_url":url,"checkout_id":checkout,"root":checkout_root}])
+    );
+    assert_eq!(captured["checkouts"], observed["checkouts"]);
+    assert_eq!(
+        captured["document_locations"],
+        observed["document_locations"]
+    );
+    assert_eq!(catalog_files(&f.root()), before);
+    fs::write(checkout_root.join("plan.md"), "Plan").unwrap();
+    f.ok(&[
+        "reference",
+        "add",
+        id,
+        "--kind",
+        "document",
+        "--repository-url",
+        url,
+        "--path",
+        "plan.md",
+        "--name",
+        "Plan",
+        "--purpose",
+        "Guide work",
+        "--role",
+        "brief",
+    ]);
+    let observed = live();
+    let frozen = capture();
+    assert_eq!(
+        frozen["samples"][0]["catalog"]["document_locations"],
+        observed["document_locations"]
+    );
+    assert_eq!(
+        observed["document_locations"][0]["file"],
+        json!(checkout_root.join("plan.md"))
+    );
+    fs::remove_file(checkout_root.join("plan.md")).unwrap();
+    fs::rename(&checkout_root, f.home.join("moved-checkout")).unwrap();
+    let observed = live();
+    let frozen = capture();
+    assert_eq!(observed["checkouts"], json!([]));
+    assert_eq!(
+        frozen["samples"][0]["catalog"]["checkouts"],
+        observed["checkouts"]
+    );
+    assert_eq!(
+        frozen["samples"][0]["catalog"]["document_locations"],
+        observed["document_locations"]
+    );
+    assert!(observed["document_locations"][0]["error"].is_string());
+    assert!(
+        server
+            .methods()
+            .iter()
+            .all(|method| ["ping", "events.subscribe", "session.snapshot"]
+                .contains(&method.as_str()))
+    );
+}
+
 fn catalog_files(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
     fn visit(root: &Path, path: &Path, files: &mut Vec<(PathBuf, Vec<u8>)>) {
         for entry in fs::read_dir(path).unwrap() {

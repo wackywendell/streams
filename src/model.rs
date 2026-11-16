@@ -6,8 +6,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use chrono::{DateTime, FixedOffset, SecondsFormat};
+use percent_encoding::percent_decode_str;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use strum::{AsRefStr, Display, EnumString, VariantNames};
+use unicode_general_category::{GeneralCategory, get_general_category};
 
 use crate::codec::{object, object_map, objects, optional_object, required_nullable};
 
@@ -121,7 +123,37 @@ pub enum RecordKind {
     Stream,
 }
 
-crate::codec::deserialize_string_enum!(Status, NamingMode, TitleMode, RecordKind);
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, EnumString, VariantNames, Display, AsRefStr,
+)]
+#[serde(rename_all = "kebab-case")]
+#[strum(serialize_all = "kebab-case")]
+pub enum ReferenceRole {
+    Deliverable,
+    Dependency,
+    Brief,
+    Background,
+}
+
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, EnumString, VariantNames, Display, AsRefStr,
+)]
+#[serde(rename_all = "kebab-case")]
+#[strum(serialize_all = "kebab-case")]
+pub enum ReferenceState {
+    Active,
+    Fulfilled,
+    Dropped,
+}
+
+crate::codec::deserialize_string_enum!(
+    Status,
+    NamingMode,
+    TitleMode,
+    RecordKind,
+    ReferenceRole,
+    ReferenceState
+);
 
 fn checkout_directory() -> String {
     ".".into()
@@ -225,80 +257,63 @@ impl Repository {
     }
 }
 
-/// An issue or pull-request URL with optional descriptive text.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Link {
-    pub url: String,
-    #[serde(default)]
-    pub description: String,
+/// Checks browser safety without changing the exact saved URL identity.
+pub fn reference_url(value: &str) -> Option<url::Url> {
+    let unsafe_character = |c| {
+        matches!(
+            get_general_category(c),
+            GeneralCategory::Control | GeneralCategory::Format
+        )
+    };
+    if value
+        .chars()
+        .any(|c| c.is_whitespace() || c == '\\' || unsafe_character(c))
+    {
+        return None;
+    }
+    let bytes = value.as_bytes();
+    for (i, &byte) in bytes.iter().enumerate() {
+        if byte == b'%'
+            && !(bytes.get(i + 1).is_some_and(u8::is_ascii_hexdigit)
+                && bytes.get(i + 2).is_some_and(u8::is_ascii_hexdigit))
+        {
+            return None;
+        }
+    }
+    if percent_decode_str(value)
+        .decode_utf8()
+        .ok()?
+        .chars()
+        .any(unsafe_character)
+    {
+        return None;
+    }
+    let url = url::Url::parse(value).ok()?;
+    (matches!(url.scheme(), "http" | "https")
+        && url.host_str().is_some()
+        && url.username().is_empty()
+        && url.password().is_none())
+    .then_some(url)
 }
 
-impl Link {
-    /// Requires nonempty URL text; the description may be empty.
-    pub fn new(
-        url: impl Into<String>,
-        description: impl Into<String>,
-    ) -> Result<Self, ValidationError> {
-        let link = Self {
-            url: url.into(),
-            description: description.into(),
-        };
-        link.validate()?;
-        Ok(link)
-    }
-
-    /// Checks text constraints without resolving or modifying the link.
-    pub fn validate(&self) -> Result<(), ValidationError> {
-        check_text(&self.url, "link.url", false)?;
-        check_text(&self.description, "link.description", true)
-    }
-}
-
-/// A repository-relative document tracked by a stream.
+/// A document locator and recovery hints, independent of its relationship to work.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Document {
-    pub repository: String,
-    /// Optional recovery context; current-file opening uses repository and path.
+pub struct RepositoryDocument {
+    pub repository_url: String,
+    pub path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub r#ref: Option<String>,
-    pub path: String,
-    #[serde(default)]
-    pub description: String,
-    /// Latest known commit from the source session, not a timestamp.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commit: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_session_id: Option<String>,
 }
 
-impl Document {
-    /// Checks text and portable-path constraints; repository membership is stream-local.
-    pub fn new(
-        repository: impl Into<String>,
-        r#ref: impl Into<String>,
-        path: impl Into<String>,
-        description: impl Into<String>,
-        commit: Option<String>,
-    ) -> Result<Self, ValidationError> {
-        let document = Self {
-            repository: repository.into(),
-            r#ref: Some(r#ref.into()),
-            path: path.into(),
-            description: description.into(),
-            commit,
-            source_session_id: None,
-        };
-        document.validate()?;
-        Ok(document)
-    }
-
-    /// Checks local fields, not repository membership or ref existence.
+impl RepositoryDocument {
     pub fn validate(&self) -> Result<(), ValidationError> {
-        check_text(&self.repository, "document.repository", false)?;
+        check_text(&self.repository_url, "document.repository_url", false)?;
         check_relative_path(&self.path, "document.path")?;
-        check_text(&self.description, "document.description", true)?;
         for (name, value) in [
             ("document.ref", &self.r#ref),
             ("document.commit", &self.commit),
@@ -310,10 +325,139 @@ impl Document {
         }
         Ok(())
     }
+}
 
-    /// Identity within a stream excludes the ref and descriptive metadata.
-    pub fn identity(&self) -> (&str, &str) {
-        (&self.repository, &self.path)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum ReferenceTarget {
+    Document(RepositoryDocument),
+    Pr { url: String },
+    Issue { url: String },
+    Link { url: String },
+}
+
+impl ReferenceTarget {
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        match self {
+            Self::Document(document) => document.validate(),
+            Self::Pr { url } | Self::Issue { url } | Self::Link { url } => {
+                check_text(url, "reference.target.url", false)?;
+                reference_url(url).ok_or_else(|| {
+                    ValidationError::new("reference.target.url must be a safe HTTP(S) URL")
+                })?;
+                Ok(())
+            }
+        }
+    }
+
+    pub fn key(&self) -> ResourceKey {
+        match self {
+            Self::Document(document) => ResourceKey::Document {
+                repository_url: document.repository_url.clone(),
+                path: document.path.clone(),
+            },
+            Self::Pr { url } | Self::Issue { url } | Self::Link { url } => {
+                ResourceKey::Url { url: url.clone() }
+            }
+        }
+    }
+}
+
+/// Exact identity excludes classification, relationship text and recovery hints.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum ResourceKey {
+    Document {
+        repository_url: String,
+        path: String,
+    },
+    Url {
+        url: String,
+    },
+}
+
+impl ResourceKey {
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        match self {
+            Self::Document {
+                repository_url,
+                path,
+            } => {
+                check_text(repository_url, "reference.key.repository_url", false)?;
+                check_relative_path(path, "reference.key.path")
+            }
+            Self::Url { url } => {
+                check_text(url, "reference.key.url", false)?;
+                reference_url(url).ok_or_else(|| {
+                    ValidationError::new("reference.key.url must be a safe HTTP(S) URL")
+                })?;
+                Ok(())
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReferenceValue {
+    pub name: String,
+    pub purpose: String,
+    pub role: ReferenceRole,
+    pub state: ReferenceState,
+    pub target: ReferenceTarget,
+}
+
+impl ReferenceValue {
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        check_text(&self.name, "reference.name", false)?;
+        check_text(&self.purpose, "reference.purpose", false)?;
+        self.target.validate()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Reference {
+    pub name: String,
+    pub purpose: String,
+    pub role: ReferenceRole,
+    pub state: ReferenceState,
+    pub target: ReferenceTarget,
+    pub revision: String,
+}
+
+impl Reference {
+    pub fn new(
+        value: ReferenceValue,
+        revision: impl Into<String>,
+    ) -> Result<Self, ValidationError> {
+        let reference = Self {
+            name: value.name,
+            purpose: value.purpose,
+            role: value.role,
+            state: value.state,
+            target: value.target,
+            revision: revision.into(),
+        };
+        reference.validate()?;
+        Ok(reference)
+    }
+
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        check_text(&self.name, "reference.name", false)?;
+        check_text(&self.purpose, "reference.purpose", false)?;
+        check_text(&self.revision, "reference.revision", false)?;
+        self.target.validate()
+    }
+
+    pub fn value(&self) -> ReferenceValue {
+        ReferenceValue {
+            name: self.name.clone(),
+            purpose: self.purpose.clone(),
+            role: self.role,
+            state: self.state,
+            target: self.target.clone(),
+        }
     }
 }
 
@@ -384,12 +528,8 @@ pub struct Stream {
     pub archived: bool,
     #[serde(default, deserialize_with = "object_map")]
     pub repositories: BTreeMap<String, Repository>,
-    #[serde(default, deserialize_with = "objects")]
-    pub documents: Vec<Document>,
-    #[serde(default, deserialize_with = "objects")]
-    pub issues: Vec<Link>,
-    #[serde(default, deserialize_with = "objects")]
-    pub prs: Vec<Link>,
+    #[serde(deserialize_with = "objects")]
+    pub references: Vec<Reference>,
 }
 
 impl Stream {
@@ -411,9 +551,7 @@ impl Stream {
             status: Status::Active,
             archived: false,
             repositories: BTreeMap::new(),
-            documents: Vec::new(),
-            issues: Vec::new(),
-            prs: Vec::new(),
+            references: Vec::new(),
         }
         .validated()
     }
@@ -424,7 +562,7 @@ impl Stream {
         Ok(self)
     }
 
-    /// Checks fields, reference uniqueness, and document repository membership.
+    /// Checks fields and exact resource-key uniqueness.
     pub fn validate(&self) -> Result<(), ValidationError> {
         check_text(&self.id, "stream.id", false)?;
         check_text(&self.title, "stream.title", false)?;
@@ -443,33 +581,11 @@ impl Stream {
             check_text(alias, "repository alias", false)?;
             repo.validate()?;
         }
-        let mut doc_ids = BTreeSet::new();
-        for doc in &self.documents {
-            doc.validate()?;
-            if !doc_ids.insert(doc.identity()) {
-                return Err(ValidationError::new("duplicate documents"));
-            }
-        }
-        let mut issue_urls = BTreeSet::new();
-        for issue in &self.issues {
-            issue.validate()?;
-            if !issue_urls.insert(issue.url.as_str()) {
-                return Err(ValidationError::new("duplicate issues"));
-            }
-        }
-        let mut pr_urls = BTreeSet::new();
-        for pr in &self.prs {
-            pr.validate()?;
-            if !pr_urls.insert(pr.url.as_str()) {
-                return Err(ValidationError::new("duplicate prs"));
-            }
-        }
-        for doc in &self.documents {
-            if !self.repositories.contains_key(&doc.repository) {
-                return Err(ValidationError::new(format!(
-                    "unknown document repository: {}",
-                    doc.repository
-                )));
+        let mut keys = BTreeSet::new();
+        for reference in &self.references {
+            reference.validate()?;
+            if !keys.insert(reference.target.key()) {
+                return Err(ValidationError::new("duplicate reference resource key"));
             }
         }
         Ok(())

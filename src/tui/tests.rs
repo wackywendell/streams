@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 
 use super::*;
-use crate::model::{Checkout, Document, Link, Session, Stream};
+use crate::model::{
+    Checkout, Reference, ReferenceState, ReferenceTarget, RepositoryDocument, Session, Stream,
+};
 use ratatui::style::{Color, Modifier};
 use serde::Deserialize;
 use unicode_width::UnicodeWidthStr;
@@ -41,13 +43,13 @@ struct OwnerDto {
 }
 #[derive(Deserialize)]
 struct BindingDto {
-    repository: String,
+    repository_url: String,
     checkout_id: String,
     root: PathBuf,
 }
 #[derive(Deserialize)]
 struct LocationDto {
-    repository: String,
+    repository_url: String,
     path: String,
     checkout_id: Option<String>,
     root: Option<PathBuf>,
@@ -80,14 +82,7 @@ impl LocationDto {
     }
 }
 impl SnapshotDto {
-    fn snapshot(mut self) -> CardSnapshot {
-        // Frozen JavaScript fixtures predate the field rename; production accepts only commit.
-        for document in self.stream["documents"].as_array_mut().unwrap() {
-            let document = document.as_object_mut().unwrap();
-            if let Some(commit) = document.remove("added_at") {
-                document.insert("commit".into(), commit);
-            }
-        }
+    fn snapshot(self) -> CardSnapshot {
         let stream: Stream = serde_json::from_value(self.stream).unwrap();
         assert_eq!(self.scope.host_id, self.session.host_id);
         assert_eq!(self.scope.stream_id, stream.id);
@@ -110,7 +105,7 @@ impl SnapshotDto {
                     .checkouts
                     .into_iter()
                     .map(|b| CheckoutBinding {
-                        repository: b.repository,
+                        repository_url: b.repository_url,
                         selection: CheckoutSelection {
                             checkout_id: b.checkout_id,
                             root: b.root,
@@ -121,7 +116,7 @@ impl SnapshotDto {
                     .locations
                     .into_iter()
                     .map(|l| DocumentLocation {
-                        repository: l.repository.clone(),
+                        repository_url: l.repository_url.clone(),
                         path: l.path.clone(),
                         location: l.resolved(),
                     })
@@ -131,6 +126,160 @@ impl SnapshotDto {
         .unwrap()
     }
 }
+fn document_mut(reference: &mut Reference) -> &mut RepositoryDocument {
+    match &mut reference.target {
+        ReferenceTarget::Document(document) => document,
+        _ => panic!("expected document"),
+    }
+}
+fn document_reference(path: &str, name: &str) -> Reference {
+    serde_json::from_value(serde_json::json!({
+        "name":name, "purpose":"Guide the work", "role":"brief", "state":"active",
+        "target":{"kind":"document","repository_url":"https://example.com/lib","path":path,"ref":"topic"},
+        "revision":format!("fixture-{path}")
+    })).unwrap()
+}
+fn url_reference(kind: &str, url: &str, name: &str) -> Reference {
+    serde_json::from_value(serde_json::json!({
+        "name":name,"purpose":name,"role":"deliverable","state":"active","target":{"kind":kind,"url":url},"revision":"fixture-url"
+    })).unwrap()
+}
+fn reference_url_text(reference: &Reference) -> &str {
+    match &reference.target {
+        ReferenceTarget::Pr { url }
+        | ReferenceTarget::Issue { url }
+        | ReferenceTarget::Link { url } => url,
+        _ => panic!(),
+    }
+}
+#[test]
+fn reference_minima_reserve_later_headers_before_earlier_purpose_continuations() {
+    let mut snapshot = snapshot();
+    snapshot.records.stream.goal = Some("Goal".into());
+    snapshot.records.session.recap.clear();
+    snapshot.records.session.state.clear();
+    snapshot.records.session.remaining.clear();
+    snapshot.context.documents.clear();
+    snapshot.records.stream.references = ["First", "Second", "Third"]
+        .into_iter()
+        .enumerate()
+        .map(|(index, name)| {
+            let mut reference =
+                url_reference("link", &format!("https://example.test/{index}"), name);
+            reference.purpose =
+                "A long purpose with several wrapped continuations to allocate".into();
+            reference
+        })
+        .collect();
+    for (height, visible, hidden) in [(6, 2, 1), (7, 3, 0), (8, 3, 0)] {
+        let rendered = super::render::render(Some(&snapshot), Rect::new(0, 0, 40, height), None);
+        let text = lines(&rendered.buffer);
+        assert_eq!(rendered.links.len(), visible);
+        for (index, reference) in snapshot.stream().references.iter().enumerate() {
+            assert_eq!(
+                text.iter()
+                    .any(|line| line.contains(&format!("Link {}", reference.name))),
+                index < visible
+            );
+        }
+        assert_eq!(
+            text.iter()
+                .any(|line| line.starts_with(&format!("… {hidden} more"))),
+            hidden > 0
+        );
+        let first = rendered.links[0].2.y as usize;
+        let second = rendered.links[1].2.y as usize;
+        assert_eq!(second - first, if height == 8 { 3 } else { 2 });
+        assert!(text[first + 1].starts_with("    "));
+    }
+    let mut dropped = snapshot.records.stream.references[0].clone();
+    dropped.target = ReferenceTarget::Link {
+        url: "https://example.test/dropped".into(),
+    };
+    dropped.state = ReferenceState::Dropped;
+    snapshot.records.stream.references.insert(0, dropped);
+    let rendered = super::render::render(Some(&snapshot), Rect::new(0, 0, 40, 6), None);
+    assert_eq!(rendered.links.len(), 2);
+    assert!(
+        lines(&rendered.buffer)
+            .iter()
+            .any(|line| line.starts_with("… 1 more"))
+    );
+}
+
+#[test]
+fn dropped_documents_need_no_location_or_shortcut_and_artifacts_follow_visible_references() {
+    let mut snapshot = snapshot();
+    snapshot.records.stream.references[0].state = ReferenceState::Dropped;
+    snapshot.context.documents.clear();
+    snapshot.records.session.artifacts.insert(
+        snapshot.records.stream.id.clone(),
+        vec![crate::artifacts::ArtifactEntry {
+            name: "result.md".into(),
+            description: "Independent Session output".into(),
+        }],
+    );
+    let snapshot = CardSnapshot::new(
+        snapshot.records.stream,
+        snapshot.records.session,
+        snapshot.context,
+    )
+    .unwrap();
+    let rendered = super::render::render(Some(&snapshot), Rect::new(0, 0, 100, 20), None);
+    let text = lines(&rendered.buffer).join("\n");
+    assert!(!text.contains("Document Design"));
+    assert!(text.find("PR Review").unwrap() < text.find("Issue Track work").unwrap());
+    assert!(text.find("Issue Track work").unwrap() < text.find("result.md").unwrap());
+    assert_eq!(rendered.documents.len(), 1);
+    assert!(
+        matches!(&rendered.documents[&'a'], Target::Artifact(artifact) if artifact.key.name == "result.md")
+    );
+    assert!(
+        snapshot
+            .document_target("https://example.com/lib", "docs/design.md")
+            .is_none()
+    );
+}
+
+#[test]
+fn reference_groups_labels_states_and_document_qualifiers_use_saved_values() {
+    let mut snapshot = snapshot();
+    snapshot.records.stream.references.reverse();
+    snapshot.records.stream.references[0].state = ReferenceState::Fulfilled;
+    let mut link = url_reference("link", "https://example.test/background", "Dashboard");
+    link.role = crate::model::ReferenceRole::Background;
+    snapshot.records.stream.references.insert(0, link);
+    let text = |snapshot: &CardSnapshot| {
+        lines(&super::render::render(Some(snapshot), Rect::new(0, 0, 160, 30), None).buffer)
+            .join("\n")
+    };
+    let rendered = text(&snapshot);
+    assert!(rendered.contains("Document Design (https://example.com/lib) · Brief · Active"));
+    assert!(rendered.find("Document Design").unwrap() < rendered.find("PR Review").unwrap());
+    assert!(rendered.find("PR Review").unwrap() < rendered.find("Issue Track work").unwrap());
+    assert!(rendered.find("Issue Track work").unwrap() < rendered.find("Link Dashboard").unwrap());
+    assert!(rendered.contains("Dependency · Fulfilled"));
+    assert!(rendered.contains("Background · Active"));
+    let mut checkout = Checkout::new("unused-alias", "main", ".").unwrap();
+    checkout.repository_url = Some("https://example.com/lib".into());
+    snapshot.records.session.checkout = Some(checkout);
+    assert!(text(&snapshot).contains("Document Design · Brief · Active"));
+    let mut other = document_reference("other.md", "Other");
+    document_mut(&mut other).repository_url = "ssh://another/repository".into();
+    snapshot.records.stream.references.push(other);
+    snapshot.context.documents.push(DocumentLocation {
+        repository_url: "ssh://another/repository".into(),
+        path: "other.md".into(),
+        location: ResolvedDocument::Unavailable {
+            selection: None,
+            problem: DocumentProblem::MissingCheckout,
+        },
+    });
+    let rendered = text(&snapshot);
+    assert!(rendered.contains("Document Design (https://example.com/lib)"));
+    assert!(rendered.contains("Document Other (ssh://another/repository)"));
+}
+
 fn fixtures() -> Vec<Fixture> {
     serde_json::from_str(include_str!("fixtures/active-renderer.json")).unwrap()
 }
@@ -182,11 +331,13 @@ fn card_text_cases() -> Vec<CardCase> {
     card.records.session.recap = "Built naming settings and Pi name import.".into();
     card.records.session.state = "Waiting on Argon review.".into();
     card.records.session.remaining = "Deploy and reload.".into();
-    card.records.stream.documents.clear();
+    card.records.stream.references.clear();
     card.context.documents.clear();
-    card.records.stream.issues.clear();
-    card.records.stream.prs =
-        vec![Link::new("https://example.com/org/repo/pull/12", "Naming settings").unwrap()];
+    card.records.stream.references = vec![url_reference(
+        "pr",
+        "https://example.com/org/repo/pull/12",
+        "Naming settings",
+    )];
     for (name, width, height) in [
         ("wide", 44, 14),
         ("narrow", 20, 16),
@@ -235,22 +386,81 @@ fn card_text_cases() -> Vec<CardCase> {
 #[test]
 fn link_actions_require_fresh_membership_under_the_painters_url_policy() {
     let mut original = snapshot();
-    original.records.stream.issues = vec![Link::new("https://example.com", "Issue").unwrap()];
-    original.records.stream.prs.clear();
-    let url = url::Url::parse("https://example.com/").unwrap();
-    assert!(original.contains_link(&url));
-    assert!(!original.contains_link(&url::Url::parse("https://forged.example/").unwrap()));
+    let painted = url_reference("issue", "https://EXAMPLE.com/work", "Issue");
+    let equivalent = url_reference("issue", "https://example.com/work", "Issue");
+    original.records.stream.references = vec![painted.clone(), equivalent.clone()];
+    let rendered = super::render::render(Some(&original), Rect::new(0, 0, 100, 30), None);
+    assert_eq!(rendered.links.len(), 2);
+    let painted = rendered.links[0].1.clone();
+    assert_eq!(reference_url_text(&painted), "https://EXAMPLE.com/work");
+    assert!(original.contains_link(&painted));
+    assert!(original.contains_link(&equivalent));
     let mut refreshed = original.clone();
-    refreshed.records.stream.issues.clear();
-    assert!(!refreshed.contains_link(&url));
-    refreshed.records.stream.prs = vec![Link::new("file:///tmp/private", "").unwrap()];
-    assert!(!refreshed.contains_link(&url::Url::parse("file:///tmp/private").unwrap()));
+    refreshed.records.stream.references[0].state = ReferenceState::Dropped;
+    assert!(!refreshed.contains_link(&painted));
+    assert!(refreshed.contains_link(&equivalent));
+    for field in ["revision", "name", "purpose", "kind", "role", "state"] {
+        let mut changed = original.clone();
+        let reference = &mut changed.records.stream.references[0];
+        match field {
+            "revision" => reference.revision = "newer".into(),
+            "name" => reference.name = "New name".into(),
+            "purpose" => reference.purpose = "New purpose".into(),
+            "kind" => {
+                reference.target = ReferenceTarget::Link {
+                    url: "https://EXAMPLE.com/work".into(),
+                }
+            }
+            "role" => reference.role = crate::model::ReferenceRole::Background,
+            _ => reference.state = ReferenceState::Fulfilled,
+        }
+        assert!(!changed.contains_link(&painted), "{field}");
+    }
+    let mut unsafe_reference = painted;
+    unsafe_reference.target = ReferenceTarget::Link {
+        url: "file:///tmp/private".into(),
+    };
+    refreshed
+        .records
+        .stream
+        .references
+        .push(unsafe_reference.clone());
+    assert!(!refreshed.contains_link(&unsafe_reference));
 }
+
 #[test]
 fn card_text_goldens_cover_layout_actions_lifecycles_and_empty_blocks() {
     let goldens: Vec<CardGolden> =
         serde_json::from_str(include_str!("fixtures/card-text-renderer.json")).unwrap();
     let cases = card_text_cases();
+    if std::env::var_os("STREAMS_UPDATE_CARD_GOLDENS").is_some() {
+        let mut values: Vec<serde_json::Value> =
+            serde_json::from_str(include_str!("fixtures/card-text-renderer.json")).unwrap();
+        for ((name, snapshot, width, height, notice), value) in cases.iter().zip(&mut values) {
+            assert_eq!(value["name"], *name);
+            let rendered = super::render::render(
+                snapshot.as_ref(),
+                Rect::new(0, 0, *width, *height),
+                notice.as_deref(),
+            );
+            value["lines"] = serde_json::json!(lines(&rendered.buffer));
+            value["documents"] = serde_json::json!(rendered.documents.keys().collect::<Vec<_>>());
+            value["links"] = serde_json::json!(
+                rendered
+                    .links
+                    .iter()
+                    .map(|(_, reference, _)| reference_url_text(reference))
+                    .collect::<Vec<_>>()
+            );
+        }
+        std::fs::write(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("src/tui/fixtures/card-text-renderer.json"),
+            serde_json::to_string_pretty(&values).unwrap() + "\n",
+        )
+        .unwrap();
+        return;
+    }
     assert_eq!(cases.len(), goldens.len());
     for ((name, snapshot, width, height, notice), expected) in cases.into_iter().zip(goldens) {
         assert_eq!(name, expected.name);
@@ -275,7 +485,7 @@ fn card_text_goldens_cover_layout_actions_lifecycles_and_empty_blocks() {
             rendered
                 .links
                 .iter()
-                .map(|(_, url, _)| url.to_string())
+                .map(|(_, reference, _)| reference_url_text(reference).to_owned())
                 .collect::<Vec<_>>(),
             expected.links,
             "{name} links"
@@ -286,7 +496,7 @@ fn card_text_goldens_cover_layout_actions_lifecycles_and_empty_blocks() {
             assert_eq!(
                 target,
                 Target::Document(Box::new(
-                    snapshot.target(&snapshot.records.stream.documents[index])
+                    snapshot.target(&snapshot.records.stream.references[index])
                 )),
                 "{name} target {key}"
             );
@@ -297,7 +507,7 @@ fn card_text_goldens_cover_layout_actions_lifecycles_and_empty_blocks() {
 #[test]
 fn artifacts_render_from_session_metadata_with_exact_fresh_shortcuts() {
     let mut snapshot = snapshot();
-    snapshot.records.stream.documents.clear();
+    snapshot.records.stream.references.clear();
     snapshot.context.documents.clear();
     snapshot.records.session.artifacts.insert(
         snapshot.records.stream.id.clone(),
@@ -387,8 +597,8 @@ fn artifact_styles_do_not_interpret_slashes_in_descriptions_as_paths() {
     }
     let (x, y) = position("[a]");
     assert_eq!(rendered.buffer[(x, y)].fg, Color::Cyan);
-    let (x, y) = position("docs/design.md");
-    assert!(rendered.buffer[(x, y)].modifier.contains(Modifier::DIM));
+    let (x, y) = position("Document Design");
+    assert_eq!(rendered.buffer[(x, y)].fg, Color::Cyan);
     assert!(!rendered.buffer[(x + 5, y)].modifier.contains(Modifier::DIM));
     assert!(!text.join("\n").contains("Artifact "));
 }
@@ -456,15 +666,18 @@ fn artifacts_switch_to_aligned_name_columns_only_when_description_rows_do_not_fi
     snapshot.records.session.recap.clear();
     snapshot.records.session.state.clear();
     snapshot.records.session.remaining.clear();
-    snapshot.records.stream.issues.clear();
-    snapshot.records.stream.prs.clear();
     snapshot
         .records
         .stream
-        .documents
-        .push(Document::new("lib", "topic", "docs/longer-guide.md", "Guide", None).unwrap());
+        .references
+        .retain(|r| matches!(r.target, ReferenceTarget::Document(_)));
+    snapshot
+        .records
+        .stream
+        .references
+        .push(document_reference("docs/longer-guide.md", "Guide"));
     snapshot.context.documents.push(DocumentLocation {
-        repository: "lib".into(),
+        repository_url: "https://example.com/lib".into(),
         path: "docs/longer-guide.md".into(),
         location: ResolvedDocument::File {
             selection: CheckoutSelection {
@@ -484,11 +697,11 @@ fn artifacts_switch_to_aligned_name_columns_only_when_description_rows_do_not_fi
             .collect(),
     );
     for (height, notice, descriptions) in [
-        (6, None, true),
-        (5, None, false),
-        (3, None, false),
-        (7, None, true),
-        (6, Some("Diagnostic"), false),
+        (9, None, true),
+        (7, None, false),
+        (6, None, false),
+        (10, None, true),
+        (8, Some("Diagnostic"), false),
     ] {
         let rendered = super::render::render(Some(&snapshot), Rect::new(0, 0, 100, height), notice);
         let text = lines(&rendered.buffer);
@@ -509,8 +722,8 @@ fn artifacts_switch_to_aligned_name_columns_only_when_description_rows_do_not_fi
             assert!(joined.contains('…'));
         } else {
             let column = |key| text.iter().find_map(|line| line.find(key)).unwrap();
-            assert_eq!(column("[a]"), column("[c]"));
-            assert_eq!(column("[b]"), column("[d]"));
+            assert_eq!(column("[c]"), 0);
+            assert_eq!(column("[d]"), "file0.md".len() + 6);
             assert!(
                 text.iter()
                     .any(|line| line.contains("file0.md") && line.contains("file3.md"))
@@ -520,7 +733,7 @@ fn artifacts_switch_to_aligned_name_columns_only_when_description_rows_do_not_fi
     snapshot.records.session.recap = "Contribution".into();
     snapshot.records.session.state = "Current position".into();
     snapshot.records.session.remaining = "Next action".into();
-    for (height, descriptions) in [(7, false), (10, true)] {
+    for (height, descriptions) in [(10, false), (13, true)] {
         let rendered = super::render::render(Some(&snapshot), Rect::new(0, 0, 100, height), None);
         let text = lines(&rendered.buffer).join("\n");
         for row in [
@@ -648,20 +861,20 @@ fn stale_completion_failure_and_scope_switch_never_authorize_actions() {
 #[test]
 fn document_without_a_recovery_ref_is_rendered_and_opens_the_current_file() {
     let mut snapshot = snapshot();
-    snapshot.records.stream.documents[0].r#ref = None;
-    snapshot.records.stream.documents[0].commit = None;
+    document_mut(&mut snapshot.records.stream.references[0]).r#ref = None;
+    document_mut(&mut snapshot.records.stream.references[0]).commit = None;
     let snapshot = CardSnapshot::new(
         snapshot.records.stream,
         snapshot.records.session,
         snapshot.context,
     )
     .unwrap();
-    let document = &snapshot.records.stream.documents[0];
+    let reference = &snapshot.records.stream.references[0];
     let rendered = super::render::render(Some(&snapshot), Rect::new(0, 0, 160, 30), None);
     assert!(
         lines(&rendered.buffer)
             .iter()
-            .any(|line| line.contains(&document.path))
+            .any(|line| line.contains(&reference.name))
     );
     let Target::Document(target) = &rendered.documents[&'a'] else {
         panic!("expected document action")
@@ -673,28 +886,24 @@ fn document_without_a_recovery_ref_is_rendered_and_opens_the_current_file() {
 }
 
 #[test]
-fn document_revision_label_uses_optional_commit_not_source_session() {
+fn document_recovery_hints_do_not_become_branch_or_commit_labels() {
     let mut snapshot = snapshot();
-    let path = snapshot.records.stream.documents[0].path.clone();
-    snapshot.records.stream.documents[0].source_session_id = Some("source-session".into());
+    document_mut(&mut snapshot.records.stream.references[0]).source_session_id =
+        Some("source-session".into());
     for commit in [None, Some("current-123456")] {
-        snapshot.records.stream.documents[0].commit = commit.map(str::to_owned);
+        document_mut(&mut snapshot.records.stream.references[0]).commit = commit.map(str::to_owned);
         let rendered = super::render::render(Some(&snapshot), Rect::new(0, 0, 160, 30), None);
-        let rendered_lines = lines(&rendered.buffer);
-        assert!(rendered_lines.iter().any(|line| line.contains(&path)));
-        assert_eq!(
-            rendered_lines
-                .iter()
-                .any(|line| line.contains(&format!("{path} (added current-)"))),
-            commit.is_some()
+        let text = lines(&rendered.buffer).join("\n");
+        assert!(text.contains("Document Design"));
+        assert!(
+            !text.contains("(added ")
+                && !text.contains("source-session")
+                && !text.contains("topic")
         );
-        if commit.is_none() {
-            assert!(!rendered_lines.iter().any(|line| line.contains(" (added ")));
-        }
         assert_eq!(
             rendered.documents[&'a'],
             Target::Document(Box::new(
-                snapshot.target(&snapshot.records.stream.documents[0])
+                snapshot.target(&snapshot.records.stream.references[0])
             ))
         );
     }
@@ -727,19 +936,22 @@ fn every_repaint_geometry_notice_and_target_change_invalidates_old_actions() {
         let mut changed = snapshot();
         let action = view.paint(Rect::new(0, 0, 100, 12)).documents[&'a'].clone();
         match field {
-            "ref" => changed.records.stream.documents[0].r#ref = Some("other".into()),
-            "commit" => changed.records.stream.documents[0].commit = Some("latest-commit".into()),
+            "ref" => {
+                document_mut(&mut changed.records.stream.references[0]).r#ref = Some("other".into())
+            }
+            "commit" => {
+                document_mut(&mut changed.records.stream.references[0]).commit =
+                    Some("latest-commit".into())
+            }
             "source-session" => {
-                changed.records.stream.documents[0].source_session_id = Some("source".into())
+                document_mut(&mut changed.records.stream.references[0]).source_session_id =
+                    Some("source".into())
             }
             "url" => {
-                changed
-                    .records
-                    .stream
-                    .repositories
-                    .get_mut("lib")
-                    .unwrap()
-                    .url = "https://example.com/other".into()
+                document_mut(&mut changed.records.stream.references[0]).repository_url =
+                    "https://example.com/other".into();
+                changed.context.checkouts[0].repository_url = "https://example.com/other".into();
+                changed.context.documents[0].repository_url = "https://example.com/other".into();
             }
             "root" => {
                 let selection = CheckoutSelection {
@@ -766,14 +978,15 @@ fn every_repaint_geometry_notice_and_target_change_invalidates_old_actions() {
                 }
             }
             "order" => {
-                changed.records.stream.documents.insert(
-                    0,
-                    Document::new("lib", "topic", "first.md", "", None).unwrap(),
-                );
+                changed
+                    .records
+                    .stream
+                    .references
+                    .insert(0, document_reference("first.md", "First"));
                 changed.context.documents.insert(
                     0,
                     DocumentLocation {
-                        repository: "lib".into(),
+                        repository_url: "https://example.com/lib".into(),
                         path: "first.md".into(),
                         location: ResolvedDocument::Unavailable {
                             selection: None,
@@ -783,7 +996,7 @@ fn every_repaint_geometry_notice_and_target_change_invalidates_old_actions() {
                 );
             }
             "removed" => {
-                changed.records.stream.documents.clear();
+                changed.records.stream.references.clear();
                 changed.context.documents.clear();
             }
             _ => changed.records.session.state = "Fresh progress".into(),
@@ -810,12 +1023,12 @@ fn every_repaint_geometry_notice_and_target_change_invalidates_old_actions() {
 #[test]
 fn editor_identity_preserves_viewing_file_and_checkout_lifetime_not_recovery_revision() {
     let snapshot = snapshot();
-    let mut target = snapshot.target(&snapshot.records.stream.documents[0]);
+    let mut target = snapshot.target(&snapshot.records.stream.references[0]);
     let identity = target.editor_identity().unwrap();
     assert_eq!(identity.file, PathBuf::from("/code/library/docs/design.md"));
-    target.document.r#ref = Some("recovery-branch".into());
-    target.document.commit = Some("b2".into());
-    target.document.source_session_id = Some("source".into());
+    document_mut(&mut target.reference).r#ref = Some("recovery-branch".into());
+    document_mut(&mut target.reference).commit = Some("b2".into());
+    document_mut(&mut target.reference).source_session_id = Some("source".into());
     assert_eq!(identity, target.editor_identity().unwrap());
     if let ResolvedDocument::File { selection, .. } = &mut target.location {
         selection.checkout_id = "replacement-lifetime".into();
@@ -853,7 +1066,7 @@ fn domain_and_location_validation_does_not_guess_or_touch_filesystem() {
     ] {
         let mut bad = s.records.session.clone();
         bad.checkout = Some(Checkout::new(repository, "main", ".").unwrap());
-        assert!(build(s.records.stream.clone(), bad, s.context.clone()).is_err());
+        assert!(build(s.records.stream.clone(), bad, s.context.clone()).is_ok());
     }
     let mut bad = s.context.clone();
     bad.documents.clear();
@@ -871,29 +1084,45 @@ fn domain_and_location_validation_does_not_guess_or_touch_filesystem() {
 }
 
 #[test]
-fn gitlab_artifact_labels_use_the_first_artifact_not_a_suffix_path() {
+fn credential_bearing_urls_have_no_painted_controls() {
+    for url in [
+        "https://user@example.test/item",
+        "https://user:secret@example.test/item",
+        "https://:secret@example.test/item",
+        "file:///tmp/private",
+    ] {
+        let mut snapshot = snapshot();
+        let mut reference = url_reference("issue", "https://example.test/item", "Issue");
+        reference.target = ReferenceTarget::Issue { url: url.into() };
+        snapshot.records.stream.references = vec![reference.clone()];
+        assert!(!snapshot.contains_link(&reference), "{url}");
+        let rendered = super::render::render(Some(&snapshot), Rect::new(0, 0, 100, 30), None);
+        assert!(rendered.links.is_empty(), "{url}");
+        assert!(super::render::web_url(url).is_none(), "{url}");
+    }
+}
+
+#[test]
+fn resource_labels_use_saved_names_not_numbers_from_url_paths() {
     for (kind, pull_request) in [("issues", false), ("merge_requests", true)] {
         let mut snapshot = snapshot();
         let url = format!("https://gitlab.example/group/nested/project/-/{kind}/42/-/{kind}/7");
-        let link = Link::new(&url, "artifact").unwrap();
-        snapshot.records.stream.issues.clear();
-        snapshot.records.stream.prs.clear();
-        if pull_request {
-            snapshot.records.stream.prs.push(link);
-        } else {
-            snapshot.records.stream.issues.push(link);
-        }
+        snapshot.records.stream.references = vec![url_reference(
+            if pull_request { "pr" } else { "issue" },
+            &url,
+            "artifact",
+        )];
         let rendered = super::render::render(Some(&snapshot), Rect::new(0, 0, 100, 30), None);
         let text = lines(&rendered.buffer).join("\n");
         assert!(
             text.contains(if pull_request {
-                "PR #42: artifact"
+                "PR artifact"
             } else {
-                "Issue #42: artifact"
+                "Issue artifact"
             }),
             "{text}"
         );
-        assert_eq!(rendered.links[0].1.as_str(), url);
+        assert_eq!(reference_url_text(&rendered.links[0].1), url);
     }
 }
 

@@ -492,27 +492,60 @@ impl SavedFixture {
                     "source".into(),
                     streams::model::Repository::new("https://example.test/source.git").unwrap(),
                 );
-                stream.documents = ["z.md", "a.md"]
+                stream.references = ["z.md", "a.md"]
                     .into_iter()
                     .map(|path| {
-                        streams::model::Document::new(
-                            "source",
-                            "saved-ref",
-                            path,
-                            format!("Saved {path}"),
-                            Some("saved-commit".into()),
+                        streams::model::Reference::new(
+                            streams::model::ReferenceValue {
+                                name: path.into(),
+                                purpose: format!("Saved {path}"),
+                                role: streams::model::ReferenceRole::Deliverable,
+                                state: streams::model::ReferenceState::Active,
+                                target: streams::model::ReferenceTarget::Document(
+                                    streams::model::RepositoryDocument {
+                                        repository_url: "https://example.test/source.git".into(),
+                                        path: path.into(),
+                                        r#ref: Some("saved-ref".into()),
+                                        commit: Some("saved-commit".into()),
+                                        source_session_id: None,
+                                    },
+                                ),
+                            },
+                            format!("rev-{path}"),
                         )
                         .unwrap()
                     })
                     .collect();
-                stream.issues.push(streams::model::Link {
-                    url: "https://example.test/shared".into(),
-                    description: "Saved issue".into(),
-                });
-                stream.prs.push(streams::model::Link {
-                    url: "https://example.test/shared".into(),
-                    description: "Saved PR".into(),
-                });
+                stream.references.push(
+                    streams::model::Reference::new(
+                        streams::model::ReferenceValue {
+                            name: "Saved issue".into(),
+                            purpose: "Saved issue".into(),
+                            role: streams::model::ReferenceRole::Dependency,
+                            state: streams::model::ReferenceState::Active,
+                            target: streams::model::ReferenceTarget::Issue {
+                                url: "https://example.test/shared-issue".into(),
+                            },
+                        },
+                        "rev-issue",
+                    )
+                    .unwrap(),
+                );
+                stream.references.push(
+                    streams::model::Reference::new(
+                        streams::model::ReferenceValue {
+                            name: "Saved PR".into(),
+                            purpose: "Saved PR".into(),
+                            role: streams::model::ReferenceRole::Deliverable,
+                            state: streams::model::ReferenceState::Active,
+                            target: streams::model::ReferenceTarget::Pr {
+                                url: "https://example.test/shared-pr".into(),
+                            },
+                        },
+                        "rev-pr",
+                    )
+                    .unwrap(),
+                );
             }
             application::create_record(records.records(), id, &Record::Stream(stream)).unwrap();
         }
@@ -754,10 +787,6 @@ fn saved_batch_shares_host_decodes_and_producer_lists_with_standalone_artifact_p
             .map(|link| link.key.kind)
             .collect::<Vec<_>>(),
         [LinkKind::Issue, LinkKind::Pr]
-    );
-    assert_eq!(
-        work.links[0].key.url, work.links[1].key.url,
-        "kind preserves separate saved references for the same URI"
     );
     assert_eq!(work.links[0].description, "Saved issue");
     assert_eq!(work.links[1].description, "Saved PR");
@@ -1467,7 +1496,11 @@ fn describe_and_request_do_not_expose_private_configuration_failures() {
 fn link_actions_revalidate_saved_kind_and_url_without_native_or_owner_path_disclosure() {
     use streams::{
         application,
-        model::{Link, Record, Stream, TitleDefaults},
+        model::{
+            Record, Reference, ReferenceRole, ReferenceState, ReferenceTarget, ReferenceValue,
+            Stream, TitleDefaults,
+        },
+        operations::references::ReferenceChange,
     };
     let fixture = SavedFixture::new();
     let mut stream =
@@ -1478,10 +1511,21 @@ fn link_actions_revalidate_saved_kind_and_url_without_native_or_owner_path_discl
         "javascript:alert(1)",
         "file:///owner-private/file",
     ];
-    stream.issues = urls
-        .iter()
-        .map(|url| Link::new(*url, "").unwrap())
-        .collect();
+    stream.references.push(
+        Reference::new(
+            ReferenceValue {
+                name: "Issue".into(),
+                purpose: "Issue".into(),
+                role: ReferenceRole::Dependency,
+                state: ReferenceState::Active,
+                target: ReferenceTarget::Issue {
+                    url: urls[0].into(),
+                },
+            },
+            "rev-1",
+        )
+        .unwrap(),
+    );
     application::create_record(
         fixture.records.records(),
         "create-links",
@@ -1527,8 +1571,8 @@ fn link_actions_revalidate_saved_kind_and_url_without_native_or_owner_path_discl
     };
     for global in [false, true] {
         for (stream, kind, url, allowed) in [
-            ("work", "issue", "https://example.test/shared", true),
-            ("work", "pr", "https://example.test/shared", true),
+            ("work", "issue", "https://example.test/shared-issue", true),
+            ("work", "pr", "https://example.test/shared-pr", true),
             ("link-only", "issue", urls[0], true),
             ("link-only", "pr", urls[0], false),
             ("missing", "issue", urls[0], false),
@@ -1551,21 +1595,25 @@ fn link_actions_revalidate_saved_kind_and_url_without_native_or_owner_path_discl
         let result = invoke(
             "work",
             "issue",
-            "https://example.test/shared",
+            "https://example.test/shared-issue",
             json!({"kind":"follow_frame","terminal":{"adapter":"hc","endpoint":"core","key":"t1"},"expected_session":fixture.sessions[0].id}),
             global,
         );
         assert_eq!(
             result,
-            json!({"kind":"needs_viewer","value":[{"kind":"open_url","url":"https://example.test/shared"}]}),
+            json!({"kind":"needs_viewer","value":[{"kind":"open_url","url":"https://example.test/shared-issue"}]}),
             "saved links open directly without foreground process-group re-verification"
         );
     }
-    application::save_user_edit(
+    application::save_user_references(
         fixture.records.records(),
         "remove-painted-link",
-        &Record::Stream(stream),
-        json!({"issues":[]}).as_object().unwrap(),
+        &stream,
+        vec![ReferenceChange::UserDelete {
+            key: streams::model::ResourceKey::Url {
+                url: urls[0].into(),
+            },
+        }],
         TitleDefaults::default(),
     )
     .unwrap();

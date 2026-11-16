@@ -10,7 +10,7 @@ import { SessionScope, captureInputs, hasConversation } from "./session-scope.ts
 import type { SessionFence } from "./session-scope.ts";
 import type { ReportingSettings } from "./settings.ts";
 
-type Options = {scope?: SessionScope; prepare?(): Promise<void> | undefined; cli(ctx: ExtensionContext): StreamCli; settings(): ReportingSettings; infer?: typeof modelInfer; logging?(): InferenceLogOptions | undefined; notice(text: string): void; receipt(value: Receipt, quiet?: boolean): void; activity?(text?: string, completed?: boolean): void};
+type Options = {scope?: SessionScope; prepare?(): Promise<void> | undefined; cli(ctx: ExtensionContext): StreamCli; settings(): ReportingSettings; infer?: typeof modelInfer; logging?(): InferenceLogOptions | undefined; notice(text: string, level?: "info" | "warning"): void; receipt(value: Receipt, quiet?: boolean): void; activity?(text?: string, completed?: boolean): void};
 type Pending = {ctx: ExtensionContext; force: boolean; instructions?: string; reset?: boolean; auto?: boolean; target?: ResetTarget};
 export class Reporter {
  readonly scope: SessionScope;
@@ -86,6 +86,6 @@ export class Reporter {
    generate: request => generate(ctx, request, fence.signal, this.options.settings().model, this.options.logging?.()),
    apply: (request) => cli.apply(request), enroll: (request) => cli.enroll(request),
    receipt: (receipt) => {if (fence.live()) this.options.receipt(receipt, !force);},
-   notice: (text) => this.options.notice(text),
+   notice: (text, level) => {if (fence.live()) this.options.notice(text, level);},
   });
  }}

@@ -1,11 +1,11 @@
 //! Local current-file hints are not native effect authority or historical revisions.
 
 use crate::{
-    model::{Session, Stream},
+    model::{ReferenceState, ReferenceTarget, Session, Stream},
     runtime::{CheckoutRegistry, DirectoryBindings},
 };
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub fn context(
     registry: &CheckoutRegistry,
@@ -13,57 +13,111 @@ pub fn context(
     stream: &Stream,
     session: &Session,
 ) -> Value {
-    if stream.repositories.is_empty() {
-        return json!({"checkouts":[],"document_locations":[]});
+    let documents: Vec<_> = stream
+        .references
+        .iter()
+        .filter(|reference| reference.state != ReferenceState::Dropped)
+        .filter_map(|reference| match &reference.target {
+            ReferenceTarget::Document(document) => Some(document),
+            _ => None,
+        })
+        .collect();
+    let mut urls: BTreeSet<String> = documents.iter().map(|d| d.repository_url.clone()).collect();
+    if let Some(url) = session
+        .checkout
+        .as_ref()
+        .and_then(|checkout| checkout.repository_url.as_ref())
+    {
+        urls.insert(url.clone());
     }
     let mut snapshot = registry.snapshot().map_err(|error| error.to_string());
-    let selected = snapshot
-        .as_mut()
-        .map_err(|error| error.clone())
-        .and_then(|checkouts| selected_directory(locations, stream, session, checkouts));
-    let selected_id = selected
+    let selected = (|| -> Result<_, String> {
+        let checkouts = snapshot.as_mut().map_err(|error| error.clone())?;
+        let selected = locations
+            .read_with_checkouts(&stream.id, Some(&session.id), checkouts)
+            .map_err(|error| error.to_string())?;
+        if let Some(selected) = &selected {
+            if let Some(checkout) = &selected.checkout {
+                let primary = checkouts
+                    .get(&checkout.id)
+                    .map_err(|error| error.to_string())?;
+                urls.extend(primary.repository_urls.iter().cloned());
+                if primary.repository_urls.is_empty() {
+                    return Err("the Session checkout has no repository binding; register its repository URL explicitly".into());
+                }
+            } else if selected.cwd.ancestors().any(|directory| {
+                [".git", ".jj"].iter().any(|name| {
+                    let marker = directory.join(name);
+                    marker.exists() || marker.is_symlink()
+                })
+            }) {
+                return Err(
+                    "the Session checkout is not registered; use streams checkout register".into(),
+                );
+            }
+        }
+        Ok(selected)
+    })();
+    let binding = selected
         .as_ref()
         .ok()
-        .and_then(|binding| binding.checkout.as_ref())
-        .map(|checkout| checkout.id.as_str());
-    let repository_url = preferred_repository_url(session, selected.as_ref().ok());
+        .and_then(Option::as_ref)
+        .and_then(|binding| binding.checkout.as_ref());
+    let selected_id = binding.map(|checkout| checkout.id.as_str());
+    // A portable URL without a selected checkout must not prevent explicit defaults.
+    let repository_url = selected_id.and_then(|_| {
+        session
+            .checkout
+            .as_ref()
+            .and_then(|portable| portable.repository_url.as_deref())
+            .or_else(|| binding.and_then(|checkout| checkout.repository_url.as_deref()))
+    });
     let mut checkouts = Vec::new();
-    // Keep one checkout snapshot per repository for these read-only hints, not action authority.
     let mut repositories = BTreeMap::new();
-    for (alias, repository) in &stream.repositories {
+    for url in urls {
         let resolved = match &selected {
             Err(error) => Err(error.clone()),
             Ok(_) => snapshot
                 .as_mut()
-                .expect("selected directory admitted the registry")
-                .resolve(&repository.url, selected_id, repository_url)
+                .expect("selection admitted the registry")
+                .resolve(&url, selected_id, repository_url)
                 .map_err(|error| error.to_string()),
         };
         if let Ok(checkout) = &resolved {
             checkouts.push(
-                json!({"repository":alias,"checkout_id":checkout.id,"root":checkout.directory}),
+                json!({"repository_url":url,"checkout_id":checkout.id,"root":checkout.directory}),
             );
         }
-        repositories.insert(alias.as_str(), resolved);
+        repositories.insert(url, resolved);
     }
-    let document_locations:Vec<_>=stream.documents.iter().map(|document|{
-        let resolved=repositories.get(document.repository.as_str()).expect("validated document repository");
-        let (checkout,error)=match resolved {Ok(checkout)=>(Some(checkout),None),Err(error)=>(None,Some(error))};
-        let mut location=json!({"repository":document.repository,"path":document.path,
-            "checkout_id":checkout.map(|checkout|&checkout.id),"root":checkout.map(|checkout|&checkout.directory),
-            "kind":null,"file":null,"error":error});
-        if let Some(checkout)=checkout {
-            let current=checkout.document(&document.path).map_err(|error|error.to_string());
-            match current {
-                Ok(file)=>{
-                    location["file"]=json!(file);
-                    location["kind"]=json!("local");
-                },
-                Err(error)=>location["error"]=json!(format!("Document not present in this checkout: {}. {error}",document.path)),
+    let document_locations: Vec<_> = documents
+        .into_iter()
+        .map(|document| {
+            let resolved = &repositories[&document.repository_url];
+            let (checkout, error) = match resolved {
+                Ok(checkout) => (Some(checkout), None),
+                Err(error) => (None, Some(error)),
+            };
+            let mut location = json!({"repository_url":document.repository_url,"path":document.path,
+                "checkout_id":checkout.map(|checkout|&checkout.id),"root":checkout.map(|checkout|&checkout.directory),
+                "kind":null,"file":null,"error":error});
+            if let Some(checkout) = checkout {
+                match checkout.document(&document.path) {
+                    Ok(file) => {
+                        location["file"] = json!(file);
+                        location["kind"] = json!("local");
+                    }
+                    Err(error) => {
+                        location["error"] = json!(format!(
+                            "Document not present in this checkout: {}. {error}",
+                            document.path
+                        ))
+                    }
+                }
             }
-        }
-        location
-    }).collect();
+            location
+        })
+        .collect();
     json!({"checkouts":checkouts,"document_locations":document_locations})
 }
 
@@ -119,15 +173,31 @@ pub fn resolve(
     key: &crate::integration::DocumentKey,
 ) -> crate::runtime::Result<WorkingDocument> {
     use crate::runtime::RuntimeError;
-    if !stream
-        .documents
-        .iter()
-        .any(|document| document.repository == key.repository && document.path == key.path)
+    let repository_url = if stream.references.iter().any(|reference| {
+        reference.state != ReferenceState::Dropped
+            && matches!(
+                &reference.target,
+                ReferenceTarget::Document(doc)
+                    if doc.repository_url == key.repository && doc.path == key.path
+            )
+    }) {
+        key.repository.as_str()
+    } else if let Some(repo) = stream.repositories.get(&key.repository)
+        && stream.references.iter().any(|reference| {
+            reference.state != ReferenceState::Dropped
+                && matches!(
+                    &reference.target,
+                    ReferenceTarget::Document(doc)
+                        if doc.repository_url == repo.url && doc.path == key.path
+                )
+        })
     {
+        repo.url.as_str()
+    } else {
         return Err(RuntimeError::Invalid(
             "saved document reference is unavailable".into(),
         ));
-    }
+    };
     let mut checkouts = registry.snapshot()?;
     let selected = selected_directory(locations, stream, session, &mut checkouts)
         .map_err(RuntimeError::Invalid)?;
@@ -135,12 +205,8 @@ pub fn resolve(
         .checkout
         .as_ref()
         .map(|checkout| checkout.id.as_str());
-    let repository_url = preferred_repository_url(session, Some(&selected));
-    let repository = stream
-        .repositories
-        .get(&key.repository)
-        .expect("validated document repository");
-    let checkout = checkouts.resolve(&repository.url, selected_id, repository_url)?;
+    let preferred_url = preferred_repository_url(session, Some(&selected));
+    let checkout = checkouts.resolve(repository_url, selected_id, preferred_url)?;
     let file = checkout.document(&key.path)?;
     Ok(WorkingDocument { checkout, file })
 }
@@ -188,7 +254,10 @@ pub fn revalidate(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Document, Repository};
+    use crate::model::{
+        Reference, ReferenceRole, ReferenceState, ReferenceTarget, ReferenceValue, Repository,
+        RepositoryDocument,
+    };
     use crate::runtime::{Result, checkouts::RepositoryInspection};
     use std::path::Path;
 
@@ -197,6 +266,26 @@ mod tests {
             root: path.to_owned(),
             relative_cwd: ".".into(),
         }))
+    }
+
+    fn doc_ref(repo_url: &str, path: &str, name: &str) -> Reference {
+        Reference::new(
+            ReferenceValue {
+                name: name.into(),
+                purpose: "Guide".into(),
+                role: ReferenceRole::Brief,
+                state: ReferenceState::Active,
+                target: ReferenceTarget::Document(RepositoryDocument {
+                    repository_url: repo_url.into(),
+                    path: path.into(),
+                    r#ref: Some("main".into()),
+                    commit: None,
+                    source_session_id: None,
+                }),
+            },
+            "rev-1",
+        )
+        .unwrap()
     }
 
     #[test]
@@ -217,8 +306,8 @@ mod tests {
             Repository::new("https://example.test/repo").unwrap(),
         );
         stream
-            .documents
-            .push(Document::new("repo", "main", "guide.md", "Guide", None).unwrap());
+            .references
+            .push(doc_ref("https://example.test/repo", "guide.md", "Guide"));
         let session = Session::new("session", "host", "stream", "pi", "native", "Session").unwrap();
         let selected = locations
             .remember(
@@ -234,7 +323,7 @@ mod tests {
         let hints = context(&registry, &locations, &stream, &session);
         assert_eq!(
             hints["checkouts"],
-            json!([{"repository":"repo","checkout_id":id,"root":checkout}])
+            json!([{"repository_url":"https://example.test/repo","checkout_id":id,"root":checkout}])
         );
         assert_eq!(hints["document_locations"][0]["file"], json!(file));
         assert_eq!(hints["document_locations"][0]["error"], Value::Null);
@@ -255,7 +344,7 @@ mod tests {
             &stream,
             &session,
             &crate::integration::DocumentKey {
-                repository: "repo".into(),
+                repository: "https://example.test/repo".into(),
                 path: "guide.md".into(),
             },
         )
@@ -302,8 +391,8 @@ mod tests {
             Repository::new("https://example.test/repo").unwrap(),
         );
         stream
-            .documents
-            .push(Document::new("repo", "main", "guide.md", "Guide", None).unwrap());
+            .references
+            .push(doc_ref("https://example.test/repo", "guide.md", "Guide"));
         let session = Session::new("session", "host", "stream", "pi", "native", "Session").unwrap();
         let hints = context(&registry, &locations, &stream, &session);
         assert_eq!(hints["checkouts"], json!([]));
@@ -320,7 +409,7 @@ mod tests {
             &stream,
             &session,
             &crate::integration::DocumentKey {
-                repository: "repo".into(),
+                repository: "https://example.test/repo".into(),
                 path: "guide.md".into(),
             },
         )

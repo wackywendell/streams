@@ -34,6 +34,18 @@ Inspect domain, local-save and sharing outcomes separately. `changes` or `no-cha
 
 Exit code 2 can include accepted local records and receipts when publication or a later step failed. Preserve these outcomes. A null domain result or repair-required local result is not a successful edit. Do not blindly retry, recreate records or delete repair evidence.
 
+## Reference proposals
+
+A Session inference can produce progress and reference proposals from one capture. Save valid Session progress first. Construct the separate Stream reference request from the original captured Stream and Session after that save, including when progress has no changes. Validate proposals at this later stage so a malformed reference cannot erase accepted progress.
+
+The reference request uses `kind: "stream"` and `changes: {reference_changes: [...]}`, with no ordinary field edits. Each set row has an exact `key`, complete `desired` value and `next_revision` equal to this operation's ID. Use a distinct ID for each effective operation. Automatic requests include the captured Session as their sole input; user reference edits have no Session input.
+
+Automatic values contain name, purpose, role, state and target. Document targets carry kind, repository_url, path and optional nonempty ref. Runtime supplies provenance; automatic payloads forbid commit and source_session_id even when null. Existing recovery hints survive omitted automatic values. Explicit user values are complete, so copy recovery metadata before changing selected fields.
+
+Captured existing rows compare their complete value and revision. Additions require the key to be absent at capture and apply. Automatic restoration of Dropped rows is refused per row; user restoration and deletion require explicit direction. User deletion uses desired=null and omits next_revision.
+
+Inspect every `reference_results` row. A partial aggregate Changes receipt can preserve independent accepted references while refusing others. Retain the receipt and saved progress, surface unapplied rows and stop later inference without recapture or retry. New inference needs new evidence and capture. The [reference implementation contract](../../../docs/stream-reference-implementation.md) defines exact packet and result schemas.
+
 ## Initial enrollment
 
 When policy permits enrollment, send a JSON object on stdin to `streams agent enroll --json` with `version: 2`, `operation_id`, captured `catalog_source`, `harness`, `harness_session_id`, `session: {title: ...}`, `actor` and an existing absolute `cwd`. Supply either an exact `stream_id` or initial `stream: {title: ..., goal: ...}`; omit goal if unknown. Existing caller-workspace associations take precedence over inventing another effort. A conflicting explicit creation fails rather than switching membership.

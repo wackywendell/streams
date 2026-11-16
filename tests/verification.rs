@@ -3,7 +3,10 @@
 use std::collections::{BTreeSet, VecDeque};
 
 use serde_json::{Map, Value, json};
-use streams::model::{Link, NamingMode, Record, Session, Stream, TitleDefaults, TitleMode};
+use streams::model::{
+    NamingMode, Record, Reference, ReferenceRole, ReferenceState, ReferenceTarget, ReferenceValue,
+    Session, Stream, TitleDefaults, TitleMode,
+};
 use streams::operations::edits::{
     REPORT_ADMISSION_IOA, SessionEdit, StreamEdit, report_admission_allows,
     report_admission_context, report_admission_table,
@@ -438,10 +441,21 @@ fn non_prose_metadata_edits_and_session_work_remain_orthogonal_to_stream_admissi
     world.session.title_mode = TitleMode::Automatic;
     world.stream_a.title_mode = TitleMode::Automatic;
     world.stream_a.archived = true;
-    world
-        .stream_a
-        .issues
-        .push(Link::new("https://example.com/issue/1", "Issue 1").unwrap());
+    world.stream_a.references.push(
+        Reference::new(
+            ReferenceValue {
+                name: "Issue 1".into(),
+                purpose: "Supply context".into(),
+                role: ReferenceRole::Background,
+                state: ReferenceState::Active,
+                target: ReferenceTarget::Issue {
+                    url: "https://example.com/issue/1".into(),
+                },
+            },
+            "fixture",
+        )
+        .unwrap(),
+    );
     assert_eq!(world.project().booleans, baseline);
 
     let Reconciliation::Changes { record, .. } = world.session_report.apply(
@@ -469,7 +483,7 @@ fn non_prose_metadata_edits_and_session_work_remain_orthogonal_to_stream_admissi
     };
     assert!(updated_stream.archived);
     assert_eq!(updated_stream.title_mode, TitleMode::Automatic);
-    assert_eq!(updated_stream.issues.len(), 1);
+    assert_eq!(updated_stream.references.len(), 1);
     assert_eq!(
         updated_stream.goal.as_deref(),
         Some("Generated stream goal")

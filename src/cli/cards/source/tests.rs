@@ -6,7 +6,7 @@ use streams::{
     agent::{self, ContextRequest},
     config::Config,
     frontend::herdr::HerdrInventoryPane,
-    model::{Document, Record, Repository, Session, Stream},
+    model::{Record, Reference, Session, Stream},
     storage::{
         StorageError,
         records::{RecordAddress, RecordChange, RecordRequest, RecordStore},
@@ -14,6 +14,221 @@ use streams::{
     yaml_store::records::{RecordIoEvent, YamlRecordStore, relative_record_path},
 };
 const NATIVE: &str = "11234567-89ab-4def-8123-456789abcdef";
+
+fn inspect_fixture_checkout(
+    path: &std::path::Path,
+) -> std::result::Result<
+    Option<streams::runtime::checkouts::RepositoryInspection>,
+    streams::runtime::RuntimeError,
+> {
+    Ok(path
+        .ancestors()
+        .find(|root| root.join(".fixture-checkout").exists())
+        .map(|root| streams::runtime::checkouts::RepositoryInspection {
+            root: root.to_path_buf(),
+            relative_cwd: path
+                .strip_prefix(root)
+                .unwrap()
+                .to_str()
+                .filter(|s| !s.is_empty())
+                .unwrap_or(".")
+                .into(),
+        }))
+}
+
+struct Hints {
+    _temp: tempfile::TempDir,
+    root: PathBuf,
+    registry: streams::runtime::CheckoutRegistry,
+    locations: streams::runtime::DirectoryBindings,
+    stream: Stream,
+    session: Session,
+}
+impl Hints {
+    fn new() -> Self {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let registry = streams::runtime::CheckoutRegistry::new(root.join("registry"), "host")
+            .unwrap()
+            .with_inspector(inspect_fixture_checkout);
+        let locations =
+            streams::runtime::DirectoryBindings::new(root.join("locations"), registry.clone());
+        Self {
+            _temp: temp,
+            root,
+            registry,
+            locations,
+            stream: Stream::new("effort", "Effort", None, "host").unwrap(),
+            session: Session::new("session", "host", "effort", "pi", NATIVE, "Session").unwrap(),
+        }
+    }
+    fn checkout(&self, name: &str, url: &str) -> streams::runtime::checkouts::CheckoutLocation {
+        let path = self.root.join(name);
+        fs::create_dir_all(&path).unwrap();
+        fs::write(path.join(".fixture-checkout"), "").unwrap();
+        fs::write(path.join("plan.md"), "Plan").unwrap();
+        self.registry.register(&path, Some(url)).unwrap()
+    }
+    fn document(&mut self, url: &str, path: &str) {
+        self.stream.references.push(serde_json::from_value(json!({
+            "name":path,"purpose":"Guide work","role":"brief","state":"active",
+            "target":{"kind":"document","repository_url":url,"path":path},"revision":format!("fixture-{path}")
+        })).unwrap());
+    }
+    fn context(&self) -> serde_json::Value {
+        documents::context(&self.registry, &self.locations, &self.stream, &self.session)
+    }
+}
+
+#[test]
+fn direct_urls_resolve_explicit_defaults_without_selection_or_portable_checkout_id() {
+    for plain_directory in [false, true] {
+        for portable_url in [false, true] {
+            let mut f = Hints::new();
+            let checkout = f.checkout("default", "repository");
+            f.registry.set_default("repository", &checkout.id).unwrap();
+            f.document("repository", "plan.md");
+            if portable_url {
+                let mut portable =
+                    streams::model::Checkout::new("not-an-alias", "main", ".").unwrap();
+                portable.repository_url = Some("repository".into());
+                f.session.checkout = Some(portable);
+            }
+            if plain_directory {
+                let plain = f.root.join("plain");
+                fs::create_dir(&plain).unwrap();
+                f.locations
+                    .remember("effort", &plain, Some("session"), false, None, None)
+                    .unwrap();
+            }
+            let context = f.context();
+            assert!(f.stream.repositories.is_empty());
+            assert_eq!(context["checkouts"][0]["repository_url"], "repository");
+            assert_eq!(context["document_locations"][0]["checkout_id"], checkout.id);
+            assert_eq!(context["document_locations"][0]["kind"], "local");
+            assert_eq!(
+                context["document_locations"][0]["error"],
+                serde_json::Value::Null
+            );
+        }
+    }
+}
+
+#[test]
+fn selected_checkout_contributes_alias_free_hints_before_any_document_and_wins_over_defaults() {
+    let mut f = Hints::new();
+    let selected = f.checkout("selected", "repository");
+    f.registry
+        .register(&selected.directory, Some("second-url"))
+        .unwrap();
+    let default = f.checkout("default", "repository");
+    f.registry.set_default("repository", &default.id).unwrap();
+    f.locations
+        .remember(
+            "effort",
+            &selected.directory,
+            Some("session"),
+            false,
+            None,
+            Some(&selected.id),
+        )
+        .unwrap();
+    let context = f.context();
+    assert_eq!(context["checkouts"].as_array().unwrap().len(), 2);
+    assert!(
+        context["checkouts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["checkout_id"] == selected.id)
+    );
+    assert_eq!(context["document_locations"], json!([]));
+    f.document("repository", "plan.md");
+    assert_eq!(
+        f.context()["document_locations"][0]["checkout_id"],
+        selected.id
+    );
+    let foreign = f.checkout("foreign", "foreign-repository");
+    f.registry
+        .set_default("foreign-repository", &foreign.id)
+        .unwrap();
+    f.document("foreign-repository", "plan.md");
+    assert_eq!(
+        f.context()["document_locations"][1]["checkout_id"],
+        foreign.id
+    );
+    let mut portable = streams::model::Checkout::new("alias", "main", ".").unwrap();
+    portable.repository_url = Some("foreign-repository".into());
+    f.session.checkout = Some(portable);
+    assert!(
+        f.context()["document_locations"][1]["error"]
+            .as_str()
+            .unwrap()
+            .contains("lacks an explicit repository URL binding")
+    );
+}
+
+#[test]
+fn missing_defaults_and_files_preserve_unavailable_reference_locations() {
+    let mut f = Hints::new();
+    let checkout = f.checkout("checkout", "repository");
+    f.document("repository", "plan.md");
+    assert!(
+        f.context()["document_locations"][0]["error"]
+            .as_str()
+            .unwrap()
+            .contains("no explicit checkout default")
+    );
+    f.registry.set_default("repository", &checkout.id).unwrap();
+    fs::remove_file(checkout.directory.join("plan.md")).unwrap();
+    let context = f.context();
+    assert_eq!(context["document_locations"][0]["checkout_id"], checkout.id);
+    assert!(context["document_locations"][0]["kind"].is_null());
+    assert!(
+        context["document_locations"][0]["error"]
+            .as_str()
+            .unwrap()
+            .contains("Document not present")
+    );
+    assert_eq!(f.stream.references.len(), 1);
+}
+
+#[test]
+fn broken_explicit_selection_and_unregistered_vcs_never_fall_back_to_a_valid_default() {
+    for broken in [
+        "removed",
+        "corrupt-binding",
+        "unregistered-vcs",
+        "registry-error",
+    ] {
+        let mut f = Hints::new();
+        let checkout = f.checkout("default", "repository");
+        f.registry.set_default("repository", &checkout.id).unwrap();
+        f.document("repository", "plan.md");
+        let plain = f.root.join("plain");
+        fs::create_dir(&plain).unwrap();
+        f.locations
+            .remember("effort", &plain, Some("session"), false, None, None)
+            .unwrap();
+        match broken {
+            "removed" => fs::remove_dir(&plain).unwrap(),
+            "corrupt-binding" => {
+                fs::write(f.locations.path("effort", Some("session")), "invalid").unwrap()
+            }
+            "unregistered-vcs" => fs::create_dir(plain.join(".git")).unwrap(),
+            _ => fs::write(f.registry.path(), "invalid").unwrap(),
+        }
+        let context = f.context();
+        assert_eq!(context["checkouts"], json!([]), "{broken}");
+        let location = &context["document_locations"][0];
+        assert!(
+            location["kind"].is_null() && location["checkout_id"].is_null(),
+            "{broken}"
+        );
+        assert!(!location["error"].as_str().unwrap().is_empty());
+    }
+}
+
 fn save(records: &application::OpenedRecords, operation: &str, record: Record) {
     let request = RecordRequest::new(
         RecordAddress::for_record(&record),
@@ -66,14 +281,11 @@ fn source_reuses_supplied_records_and_each_later_read_addresses_only_its_session
         );
         let mut stream = Stream::new("effort", "Effort", None, host.as_str()).unwrap();
         for index in 0..4 {
-            let alias = format!("repository-{index}");
-            stream.repositories.insert(
-                alias.clone(),
-                Repository::new(format!("unavailable-{index}")).unwrap(),
-            );
-            stream
-                .documents
-                .push(Document::new(alias, "main", "not-present.md", "", None).unwrap());
+            stream.references.push(serde_json::from_value::<Reference>(json!({
+                "name":"Missing document","purpose":"Guide the work","role":"brief","state":"active",
+                "target":{"kind":"document","repository_url":format!("unavailable-{index}"),"path":"not-present.md","ref":"main"},
+                "revision":format!("fixture-{index}")
+            })).unwrap());
         }
         let mut session = Session::new(
             agent::session_id_for(host.as_str(), Harness::Pi, NATIVE),
@@ -115,7 +327,21 @@ fn source_reuses_supplied_records_and_each_later_read_addresses_only_its_session
         );
         let frame = source.read_records(&owner).unwrap();
         assert_eq!(frame.session().id, session.id);
-        assert_eq!(frame.stream().documents.len(), 4);
+        assert_eq!(frame.stream().references.len(), 4);
+        let display = source.display(frame.clone()).unwrap();
+        for reference in &display.stream().references {
+            let streams::model::ReferenceTarget::Document(document) = &reference.target else {
+                panic!()
+            };
+            let target = display
+                .document_target(&document.repository_url, &document.path)
+                .unwrap();
+            assert!(matches!(
+                target.location,
+                ResolvedDocument::Unavailable { .. }
+            ));
+            assert_eq!(&target.reference, reference);
+        }
         assert!(
             events.lock().unwrap().is_empty(),
             "provided context must not reopen or reread catalog records"

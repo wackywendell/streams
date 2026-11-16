@@ -232,7 +232,7 @@ fn local_catalog_manages_fields_visibility_and_full_unicode_literal_selection() 
 }
 
 #[test]
-fn collections_keep_identity_and_reject_invalid_intent_before_save() {
+fn repositories_keep_identity_and_reject_invalid_intent_before_save() {
     let f = Fixture::new();
     let stream = f.create("Work", None, Status::Waiting);
     let id = stream["id"].as_str().unwrap();
@@ -240,25 +240,20 @@ fn collections_keep_identity_and_reject_invalid_intent_before_save() {
         id,
         StreamFields {
             add_repository: vec!["repo".into(), "https://example.test/repo".into()],
-            add_document: vec![
-                "repo".into(),
-                "main".into(),
-                "docs/design.md".into(),
-                "Design".into(),
-            ],
-            document_commit: vec!["repo".into(), "docs/design.md".into(), "abc123".into()],
-            add_issue: vec!["https://example.test/issue".into(), "Issue".into()],
             ..Default::default()
         },
     ));
-    assert_eq!(changed["stream"]["documents"][0]["commit"], "abc123");
+    assert_eq!(
+        changed["stream"]["repositories"]["repo"]["url"],
+        "https://example.test/repo"
+    );
     let before = f.snapshot();
     let sequence = f.sequence.get();
     let error = f
         .update(
             id,
             StreamFields {
-                document_commit: vec!["repo".into(), "missing.md".into(), "abc".into()],
+                add_repository: vec!["bad".into(), "".into()],
                 ..Default::default()
             },
         )
@@ -276,11 +271,10 @@ fn collections_keep_identity_and_reject_invalid_intent_before_save() {
     let removed = ok(f.update(
         id,
         StreamFields {
-            remove_document: vec!["repo".into(), "docs/design.md".into()],
             remove_repository: vec!["repo".into()],
             ..Default::default()
         },
     ));
-    assert_eq!(removed["stream"]["documents"], json!([]));
+    assert_eq!(removed["stream"]["references"], json!([]));
     assert_eq!(removed["stream"]["repositories"], json!({}));
 }

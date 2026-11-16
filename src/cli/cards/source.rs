@@ -101,7 +101,7 @@ impl ApplicationSource {
             .checkouts
             .into_iter()
             .map(|checkout| CheckoutBinding {
-                repository: checkout.repository,
+                repository_url: checkout.repository_url,
                 selection: CheckoutSelection {
                     checkout_id: checkout.checkout_id,
                     root: checkout.root,
@@ -137,7 +137,7 @@ impl ApplicationSource {
                     _ => return Err(CliError::message("invalid application document location")),
                 };
                 Ok(DocumentLocation {
-                    repository: location.repository,
+                    repository_url: location.repository_url,
                     path: location.path,
                     location: value,
                 })
@@ -156,6 +156,9 @@ impl ApplicationSource {
                 "document is not available in the selected checkout",
             ));
         };
+        let document = target
+            .document()
+            .ok_or_else(|| CliError::message("document reference required"))?;
         let facade = application::integration::Streams::admit(
             &self.records,
             &streams::integration::WorkScope {
@@ -167,8 +170,8 @@ impl ApplicationSource {
             &streams::integration::Reference::Document {
                 stream: target.scope.stream_id.clone(),
                 document: streams::integration::DocumentKey {
-                    repository: target.document.repository.clone(),
-                    path: target.document.path.clone(),
+                    repository: document.repository_url.clone(),
+                    path: document.path.clone(),
                 },
                 viewing_session: target.scope.session_id.clone(),
             },
@@ -244,14 +247,14 @@ struct Documents {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Checkout {
-    repository: String,
+    repository_url: String,
     checkout_id: String,
     root: PathBuf,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Location {
-    repository: String,
+    repository_url: String,
     path: String,
     checkout_id: Option<String>,
     root: Option<PathBuf>,

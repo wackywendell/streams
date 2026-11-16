@@ -470,32 +470,51 @@ impl<'a> Streams<'a> {
             }
         }
         artifacts.sort_by(|left, right| left.producer.cmp(&right.producer));
-        let documents = stream
-            .documents
+        let mut documents = Vec::new();
+        let mut links = Vec::new();
+        for reference in stream
+            .references
             .iter()
-            .map(|document| DocumentReference {
-                key: DocumentKey {
-                    repository: document.repository.clone(),
-                    path: document.path.clone(),
-                },
-                description: document.description.clone(),
-            })
-            .collect();
-        let links = [
-            (LinkKind::Issue, &stream.issues),
-            (LinkKind::Pr, &stream.prs),
-        ]
-        .into_iter()
-        .flat_map(|(kind, links)| {
-            links.iter().map(move |link| LinkReference {
-                key: crate::integration::LinkKey {
-                    kind,
-                    url: link.url.clone(),
-                },
-                description: link.description.clone(),
-            })
-        })
-        .collect();
+            .filter(|r| r.state != crate::model::ReferenceState::Dropped)
+        {
+            match &reference.target {
+                crate::model::ReferenceTarget::Document(document) => {
+                    let repository = stream
+                        .repositories
+                        .iter()
+                        .find_map(|(alias, repo)| {
+                            (repo.url == document.repository_url).then(|| alias.clone())
+                        })
+                        .unwrap_or_else(|| document.repository_url.clone());
+                    documents.push(DocumentReference {
+                        key: DocumentKey {
+                            repository,
+                            path: document.path.clone(),
+                        },
+                        description: reference.purpose.clone(),
+                    });
+                }
+                crate::model::ReferenceTarget::Issue { url }
+                | crate::model::ReferenceTarget::Link { url } => {
+                    links.push(LinkReference {
+                        key: crate::integration::LinkKey {
+                            kind: LinkKind::Issue,
+                            url: url.clone(),
+                        },
+                        description: reference.purpose.clone(),
+                    });
+                }
+                crate::model::ReferenceTarget::Pr { url } => {
+                    links.push(LinkReference {
+                        key: crate::integration::LinkKey {
+                            kind: LinkKind::Pr,
+                            url: url.clone(),
+                        },
+                        description: reference.purpose.clone(),
+                    });
+                }
+            }
+        }
         Ok(StreamView {
             id: stream.id,
             title: stream.title,
@@ -567,11 +586,19 @@ impl<'a> Streams<'a> {
             .records
             .records()
             .with_reader(|reader| self.stream(reader, stream))?;
-        let links = match link.kind {
-            LinkKind::Issue => &stream.issues,
-            LinkKind::Pr => &stream.prs,
-        };
-        if !links.iter().any(|saved| saved.url == link.url) {
+        let exists = stream.references.iter().any(|reference| {
+            reference.state != crate::model::ReferenceState::Dropped
+                && match (link.kind, &reference.target) {
+                    (
+                        LinkKind::Issue,
+                        crate::model::ReferenceTarget::Issue { url }
+                        | crate::model::ReferenceTarget::Link { url },
+                    )
+                    | (LinkKind::Pr, crate::model::ReferenceTarget::Pr { url }) => url == &link.url,
+                    _ => false,
+                }
+        });
+        if !exists {
             return Err(ValidationError::new("saved link reference is unavailable").into());
         }
         Ok(link.url.parse()?)

@@ -8,8 +8,11 @@ use crate::{
     model::{NamingMode, Record, RecordKind, Session, TitleDefaults, ValidationError, check_text},
     operations::{
         Actor, agent_field_allowed,
-        documents::{DocumentAdditions, DocumentProposal},
         edits::{SessionEdit, StreamEdit},
+        references::{
+            AutomaticDocumentTarget, AutomaticReferenceTarget, AutomaticReferenceValue,
+            ReferenceChange, ReferenceChanges,
+        },
     },
     storage::records::{RecordAddress, RecordRequest},
 };
@@ -24,14 +27,14 @@ pub struct RecordUpdate {
 pub(crate) enum CapturedEdit {
     Session(SessionEdit),
     Stream(StreamEdit),
-    Documents(DocumentAdditions),
+    References(ReferenceChanges),
 }
 impl RecordUpdate {
     pub fn operation_id(&self) -> &str {
         match &self.edit {
             CapturedEdit::Session(edit) => edit.operation_id(),
             CapturedEdit::Stream(edit) => edit.operation_id(),
-            CapturedEdit::Documents(edit) => edit.operation_id(),
+            CapturedEdit::References(edit) => edit.operation_id(),
         }
     }
 }
@@ -57,6 +60,119 @@ struct Wire {
     inputs: Vec<Input>,
 }
 
+fn exact_keys(
+    object: &Map<String, Value>,
+    required: &[&str],
+    optional: &[&str],
+) -> Result<(), ValidationError> {
+    if required.iter().any(|key| !object.contains_key(*key))
+        || object
+            .keys()
+            .any(|key| !required.contains(&key.as_str()) && !optional.contains(&key.as_str()))
+    {
+        return Err(ValidationError::new("invalid reference object properties"));
+    }
+    Ok(())
+}
+
+fn parse_reference_changes(
+    actor: Actor,
+    value: &Value,
+) -> Result<Vec<ReferenceChange>, ValidationError> {
+    let rows = value
+        .as_array()
+        .ok_or_else(|| ValidationError::new("reference_changes must be an array"))?;
+    rows.iter()
+        .map(|value| {
+            let row = require_object(value, "reference change")?;
+            let desired = row
+                .get("desired")
+                .ok_or_else(|| ValidationError::new("reference desired is required"))?;
+            if desired.is_null() {
+                exact_keys(row, &["key", "desired"], &[])?;
+                if actor != Actor::User {
+                    return Err(ValidationError::new(
+                        "automatic reference deletion is invalid",
+                    ));
+                }
+                let key = serde_json::from_value(row["key"].clone()).map_err(|error| {
+                    ValidationError::new(format!("invalid reference key: {error}"))
+                })?;
+                return Ok(ReferenceChange::UserDelete { key });
+            }
+            exact_keys(row, &["key", "desired", "next_revision"], &[])?;
+            let key = serde_json::from_value(row["key"].clone())
+                .map_err(|error| ValidationError::new(format!("invalid reference key: {error}")))?;
+            let next_revision = row["next_revision"]
+                .as_str()
+                .ok_or_else(|| ValidationError::new("next_revision must be a string"))?
+                .to_owned();
+            if actor == Actor::User {
+                let desired = serde_json::from_value(desired.clone()).map_err(|error| {
+                    ValidationError::new(format!("invalid reference value: {error}"))
+                })?;
+                return Ok(ReferenceChange::UserSet {
+                    key,
+                    desired,
+                    next_revision,
+                });
+            }
+            let object = require_object(desired, "automatic reference value")?;
+            exact_keys(object, &["name", "purpose", "role", "state", "target"], &[])?;
+            let target = require_object(&object["target"], "automatic reference target")?;
+            let string =
+                |object: &Map<String, Value>, key: &str| -> Result<String, ValidationError> {
+                    let value = object.get(key).and_then(Value::as_str).ok_or_else(|| {
+                        ValidationError::new(format!("reference {key} must be a string"))
+                    })?;
+                    check_text(value, key, false)?;
+                    Ok(value.to_owned())
+                };
+            let target = match target.get("kind").and_then(Value::as_str) {
+                Some("document") => {
+                    exact_keys(target, &["kind", "repository_url", "path"], &["ref"])?;
+                    AutomaticReferenceTarget::Document(AutomaticDocumentTarget {
+                        repository_url: string(target, "repository_url")?,
+                        path: string(target, "path")?,
+                        r#ref: target
+                            .contains_key("ref")
+                            .then(|| string(target, "ref"))
+                            .transpose()?,
+                    })
+                }
+                Some(kind @ ("pr" | "issue" | "link")) => {
+                    exact_keys(target, &["kind", "url"], &[])?;
+                    let url = string(target, "url")?;
+                    match kind {
+                        "pr" => AutomaticReferenceTarget::Pr { url },
+                        "issue" => AutomaticReferenceTarget::Issue { url },
+                        _ => AutomaticReferenceTarget::Link { url },
+                    }
+                }
+                _ => {
+                    return Err(ValidationError::new(
+                        "invalid automatic reference target kind",
+                    ));
+                }
+            };
+            let desired = AutomaticReferenceValue {
+                name: string(object, "name")?,
+                purpose: string(object, "purpose")?,
+                role: serde_json::from_value(object["role"].clone())
+                    .map_err(|error| ValidationError::new(error.to_string()))?,
+                state: serde_json::from_value(object["state"].clone())
+                    .map_err(|error| ValidationError::new(error.to_string()))?,
+                target,
+            };
+            Ok(ReferenceChange::Automatic {
+                key,
+                desired,
+                next_revision,
+            })
+        })
+        .collect()
+}
+
 pub fn parse_record_update(
     source: &str,
     catalog_source: &str,
@@ -80,12 +196,11 @@ pub fn parse_record_update(
             "captured edits require user/automatic Stream or Session intent",
         ));
     }
-    let document_additions = wire.kind == RecordKind::Stream
-        && wire.actor == Actor::Automatic
+    let references = wire.kind == RecordKind::Stream
         && wire.changes.len() == 1
-        && wire.changes.contains_key("document_additions");
+        && wire.changes.contains_key("reference_changes");
     for field in wire.changes.keys() {
-        if !document_additions && !agent_field_allowed(wire.kind, wire.actor, field) {
+        if !references && !agent_field_allowed(wire.kind, wire.actor, field) {
             return Err(ValidationError::new(format!(
                 "unknown agent update field: {field}"
             )));
@@ -124,21 +239,15 @@ pub fn parse_record_update(
                     ));
                 }
             };
-            if document_additions {
-                let proposals: Vec<DocumentProposal> = serde_json::from_value(
-                    wire.changes["document_additions"].clone(),
-                )
-                .map_err(|error| {
-                    ValidationError::new(format!("invalid document additions: {error}"))
-                })?;
-                let session = captured_session.as_ref().ok_or_else(|| {
-                    ValidationError::new("document additions require a captured Session")
-                })?;
-                CapturedEdit::Documents(DocumentAdditions::new(
+            if references {
+                let changes =
+                    parse_reference_changes(wire.actor, &wire.changes["reference_changes"])?;
+                CapturedEdit::References(ReferenceChanges::new(
                     &wire.operation_id,
                     &stream,
-                    session,
-                    proposals,
+                    wire.actor,
+                    captured_session.as_ref(),
+                    changes,
                 )?)
             } else {
                 CapturedEdit::Stream(StreamEdit::new(

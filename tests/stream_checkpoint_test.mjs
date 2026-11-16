@@ -12,12 +12,12 @@ import { sessionId } from './helpers/session-id.mjs';
 const jiti = createJiti(import.meta.url);
 const load = (name) => jiti.import(new URL(`../extensions/stream-checkpoint/${name}.ts`, import.meta.url).pathname);
 const { StreamCli, StreamsCliError, receiptText, receiptCanContinue } = await load('streams');
-const { automaticFields, documentAdditionsRequest, editRequest, FieldEdit } = await load('core');
+const { automaticFields, automaticReferenceRequest, referenceRequest, referenceSelector, materialiseReference, ReferenceEdit, editRequest, FieldEdit } = await load('core');
 const { runReport } = await load('report-workflow');
 const { checkpointContext, infer, changesSchema, buildInferencePayload, parseInferenceResponse } = await load('agent');
 const { chooseInitial } = await load('chooser');
 const { openCard, compose, editField } = await load('panel');
-const { validateReferences, validateChanges } = await load('core');
+const { validateChanges } = await load('core');
 const { ModelRuntime, ModelRegistry, SessionManager, initTheme } = await import('@earendil-works/pi-coding-agent');
 initTheme('dark');
 const { createAssistantMessageEventStream } = await import('@earendil-works/pi-ai');
@@ -28,7 +28,7 @@ const settingsDialog=(ctx,settings,save,agentDir,cards)=>{
  const state={global:'automatic',session:'inherit',effective:'automatic'};
  return showSettingsDialog(ctx,settings,save,{defaults:{stream:'automatic',session:'automatic'},save:assert.fail},agentDir,cards??{settings:state,save:async(target,mode)=>{state[target]=mode;state.effective=state.session==='inherit'?state.global:state.session;return {...state};}});
 };
-const stream = { id:'effort', title:'Work', title_mode:'manual', goal:'Goal', goal_mode:'automatic', goal_short:null, status:'active', archived:false, owner:{host_id:'host'}, repositories:{repo:{url:'https://example.com/repo'}}, issues:[], prs:[], documents:[] };
+const stream = { id:'effort', title:'Work', title_mode:'manual', goal:'Goal', goal_mode:'automatic', goal_short:null, status:'active', archived:false, owner:{host_id:'host'}, repositories:{repo:{url:'https://example.com/repo'}}, references:[] };
 const session = { id:'session', host_id:'host', stream_id:'effort', harness:'pi', harness_session_id:'native', title:'Session', title_mode:'automatic', status:'active', state:'', state_short:null, remaining:'', checkout:null };
 const context = () => structuredClone({catalog_source:'source-a',host_id:'host',stream,session,sessions:[session],title_defaults:{stream:'automatic',session:'automatic'}});
 const localSync = async () => ({local:'unchanged',sharing:'local-only',domain:null});
@@ -58,51 +58,36 @@ test('typed catalog rejects nonreceipts and preserves structured failures',async
  }
 });
 test('StreamCli validates strict catalog fields and nullable document provenance',async()=>{
- const initial=context(), id=randomUUID();
- initial.session.harness_session_id=id;
- initial.stream.documents=[{repository:'repo',ref:'main',path:'design.md',description:'Design'}];
+ const initial=context(), id=randomUUID();initial.session.harness_session_id=id;
+ initial.stream.references=[{name:'Design',purpose:'Guide design',role:'brief',state:'active',revision:'initial',target:{kind:'document',repository_url:'https://example.com/repo',ref:'main',path:'design.md'}}];
  initial.native={frontend:'herdr',pane_id:'pane',tab_id:'tab',workspace_id:'workspace'};
- initial.checkouts=[{repository:'repo',checkout_id:'checkout',root:'/checkout'}];
- initial.document_locations=[{kind:'local',repository:'repo',path:'design.md',checkout_id:'checkout',root:'/checkout',file:'/checkout/design.md',error:null}];
+ initial.checkouts=[{repository_url:'https://example.com/repo',checkout_id:'checkout',root:'/checkout'}];
+ initial.document_locations=[{kind:'local',repository_url:'https://example.com/repo',path:'design.md',checkout_id:'checkout',root:'/checkout',file:'/checkout/design.md',error:null}];
  const read=value=>new StreamCli('/tmp',async()=>({status:'success',result:value})).context(id);
  for(const provenance of [{},{commit:'abc',source_session_id:'origin'},{commit:null,source_session_id:null}]) {
-  const value=structuredClone(initial);Object.assign(value.stream.documents[0],provenance);
-  const app=await read(value);
-  assert.deepEqual(app.stream,value.stream);assert.deepEqual(app.session,value.session);
+  const value=structuredClone(initial);Object.assign(value.stream.references[0].target,provenance);
+  const app=await read(value);assert.deepEqual(app.stream,value.stream);assert.deepEqual(app.session,value.session);
  }
  for(const ref of [undefined,null,'topic']) {
-  const value=structuredClone(initial);
-  if(ref===undefined)delete value.stream.documents[0].ref;else value.stream.documents[0].ref=ref;
-  assert.deepEqual((await read(value)).stream.documents,value.stream.documents);
+  const value=structuredClone(initial);if(ref===undefined)delete value.stream.references[0].target.ref;else value.stream.references[0].target.ref=ref;
+  assert.deepEqual((await read(value)).stream.references,value.stream.references);
  }
- const pinned=structuredClone(initial);
- pinned.session.checkout={repository:'old-app',repository_url:'https://example.test/original.git',ref:'topic',directory_within_checkout:'services/api'};
+ const pinned=structuredClone(initial);pinned.session.checkout={repository:'old-app',repository_url:'https://example.test/original.git',ref:'topic',directory_within_checkout:'services/api'};
  assert.deepEqual((await read(pinned)).session,pinned.session);
- for(const previous_stream_ids of [[],['earlier'],['a','b','a']]) {
-  const value=structuredClone(initial);value.session.previous_stream_ids=previous_stream_ids;
-  const app=await read(value);assert.deepEqual(app.session,value.session);
- }
+ for(const previous_stream_ids of [[],['earlier'],['a','b','a']]) {const value=structuredClone(initial);value.session.previous_stream_ids=previous_stream_ids;assert.deepEqual((await read(value)).session,value.session);}
  for(const change of [
   value=>{value.session.title_mode='other';},
   ...[null,'earlier',[42],[''],[' '],['a','a']].map(history=>value=>{value.session.previous_stream_ids=history;}),
   value=>{value.session.previous_stream_ids=['earlier',value.session.stream_id];},
-  ...[undefined,null].map(repository_url=>value=>{value.session.checkout={repository:'app',ref:'topic',directory_within_checkout:'.'};if(repository_url!==undefined)value.session.checkout.repository_url=repository_url;}),
   value=>{value.session.checkout={repository:'app',repository_url:42,ref:'topic',directory_within_checkout:'.'};},
   value=>{value.session.checkout={repository:'app',repository_url:'',ref:'topic',directory_within_checkout:'.'};},
-  value=>{value.stream.goal_mode='other';},
-  value=>{value.stream.status=['active'];},
-  value=>{value.host_id='';},
-  ...['',' ',42,false].map(ref=>value=>{value.stream.documents[0].ref=ref;}),
-  value=>{value.stream.documents[0].commit='';},
-  value=>{value.stream.documents[0].source_session_id=42;},
-  value=>{value.stream.documents.push({...value.stream.documents[0],ref:'other'});},
-  value=>{value.stream.repositories={};},
-  value=>{delete value.session.checkout;},
-  value=>{delete value.stream.owner;},
- ]) {
-  const value=structuredClone(initial);change(value);
-  await assert.rejects(read(value),StreamsCliError);
- }
+  value=>{value.stream.goal_mode='other';},value=>{value.stream.status=['active'];},value=>{value.host_id='';},
+  ...['',' ',42,false].map(ref=>value=>{value.stream.references[0].target.ref=ref;}),
+  value=>{value.stream.references[0].target.commit='';},value=>{value.stream.references[0].target.source_session_id=42;},
+  value=>{value.stream.references.push({...value.stream.references[0],target:{...value.stream.references[0].target,ref:'other'}});},
+  value=>{value.stream.documents=[];},value=>{delete value.stream.references;},
+  value=>{delete value.session.checkout;},value=>{delete value.stream.owner;},
+ ]) {const value=structuredClone(initial);change(value);await assert.rejects(read(value),StreamsCliError);}
 });
 test('catalog list accepts only the current object contract',async()=>{
  for(const value of [[],[stream],null,{}, {streams:[{...stream,title_mode:'other'}]}]) {
@@ -138,49 +123,45 @@ test('card settings use typed child requests and reject inconsistent effective m
   await assert.rejects(invalid.cardSettings(),/Invalid card settings/);
  }
 });
-test('live-shaped reports discover and save local documents without a portable checkout or a ref',async()=>{
+const proposedDocument={name:'Design',purpose:'Guide the work',role:'brief',state:'active',target:{kind:'document',repository_url:'https://example.com/repo',path:'docs/design.md',ref:'main'}};
+test('live-shaped reference proposals save without a portable checkout or a ref',async()=>{
  const cwd=mkdtempSync(join(tmpdir(),'streams-docs-no-ref-')),cli=childCli(cwd,'native');
  try {
-  let catalog=context();catalog.session.id=sessionId('host','pi','native');catalog.sessions=[structuredClone(catalog.session)];
-  catalog.stream.goal_mode='manual';
-  catalog.checkouts=[{repository:'repo',checkout_id:'checkout',root:'/repo'}];catalog.document_locations=[];
-  const initial=structuredClone(catalog),requests=[],candidate={repository:'repo',path:'docs/card-preferences-and-control.md',description:'Card preferences and lifecycle'};
-  let generations=0;
+  let catalog=context();catalog.session.id=sessionId('host','pi','native');catalog.sessions=[structuredClone(catalog.session)];catalog.stream.goal_mode='manual';
+  catalog.checkouts=[{repository_url:'https://example.com/repo',checkout_id:'checkout',root:'/repo'}];catalog.document_locations=[];
+  const initial=structuredClone(catalog),requests=[],candidate=structuredClone(proposedDocument);delete candidate.target.ref;let generations=0;
   const saved=await runReport({kind:'report',force:true},{
    signal:new AbortController().signal,automaticEnrollment:true,operationId:randomUUID,
-   capture:async()=>({native:'native',cwd:'/repo',evidence:{messages:[{role:'user',content:'Use docs/card-preferences-and-control.md to explain card settings',timestamp:0}],leafId:null},catalog:structuredClone(catalog),valid:()=>true,attached:async()=>true}),
-   generate:async request=>{
-    generations++;const payload=buildInferencePayload(request),input=JSON.parse(payload.messages.at(-1).content);
+   capture:async()=>({native:'native',cwd:'/repo',evidence:{messages:[{role:'user',content:'Use the design document',timestamp:0}],leafId:null},catalog:structuredClone(catalog),valid:()=>true,attached:async()=>true}),
+   generate:async request=>{generations++;const payload=buildInferencePayload(request),input=JSON.parse(payload.messages.at(-1).content);
     assert.equal(input.catalog.session.checkout,null);assert.deepEqual(input.catalog.checkouts,initial.checkouts);
-    assert.deepEqual(payload.tools[0].parameters.properties.document_additions.items.required,['repository','path','description']);
-    assert.match(payload.systemPrompt,/Do not omit a relevant document solely because its ref is unknown/);
-    return parseInferenceResponse(request,{content:[{type:'toolCall',name:'record_card',arguments:{changes:{state:'Explaining card settings'},document_additions:[candidate]}}]},payload);
+    assert.ok(payload.tools[0].parameters.properties.reference_proposals);assert.match(payload.systemPrompt,/without requiring a Stream alias or known branch/);
+    return parseInferenceResponse(request,{content:[{type:'toolCall',name:'record_card',arguments:{changes:{state:'Explaining card settings'},reference_proposals:[candidate]}}]},payload);
    },
    apply:async request=>{requests.push(request);const projected=await cli.preview({catalog,action:'apply',request});catalog=projected.catalog;return projected.receipt;},
-   enroll:assert.fail,receipt:()=>{},notice:assert.fail,
+   enroll:assert.fail,receipt:()=>{},notice:()=>{},
   });
-  assert.equal(saved,true);assert.equal(generations,1);assert.equal(requests.length,2);
-  assert.equal(catalog.session.checkout,null);assert.equal(catalog.session.state,'Explaining card settings');
-  assert.deepEqual(catalog.stream.documents,[{...candidate,source_session_id:initial.session.id}]);
+  assert.equal(saved,true);assert.equal(generations,1);assert.equal(requests.length,2);assert.equal(catalog.session.state,'Explaining card settings');
+  assert.deepEqual(catalog.stream.references,[{...candidate,target:{...candidate.target,source_session_id:initial.session.id},revision:requests[1].operation_id}]);
   assert.deepEqual(catalog.checkouts,initial.checkouts);
  } finally {await cli.stop();rmSync(cwd,{recursive:true,force:true});}
 });
-const proposedDocument={repository:'repo',ref:'main',path:'docs/design.md',description:'Design rationale'};
-test('only Session reporting can propose separate add-only documents, not provenance or replacement fields',()=>{
+test('Session envelopes defer malformed reference proposals while enforcing progress and root shape',()=>{
  const request={type:'session',catalog:context(),messages:[]}, response=args=>({content:[{type:'toolCall',name:'record_card',arguments:args}]});
- const answer={changes:{},document_additions:[proposedDocument]};
- assert.deepEqual(parseInferenceResponse(request,response(answer)),answer);
- assert.equal(Object.hasOwn(buildInferencePayload(request).tools[0].parameters.properties.changes.properties,'documents'),false);
- assert.equal(Object.hasOwn(buildInferencePayload({...request,type:'stream'}).tools[0].parameters.properties,'document_additions'),false);
+ const answer={changes:{state:'Saved'},reference_proposals:[proposedDocument]};assert.deepEqual(parseInferenceResponse(request,response(answer)),answer);
+ assert.equal(Object.hasOwn(buildInferencePayload(request).tools[0].parameters.properties.changes.properties,'references'),false);
+ assert.equal(Object.hasOwn(buildInferencePayload({...request,type:'stream'}).tools[0].parameters.properties,'reference_proposals'),false);
  assert.throws(()=>parseInferenceResponse({...request,type:'stream'},response(answer)),/invalid structured/);
- for(const document of [
-  {...proposedDocument,repository:'unknown'}, {...proposedDocument,path:'/tmp/report.md'},
-  {...proposedDocument,path:'../escape.md'}, {...proposedDocument,source_session_id:'forged'}, {...proposedDocument,commit:'guessed'},
- ]) assert.throws(()=>parseInferenceResponse(request,response({...answer,document_additions:[document]})));
- const sent=documentAdditionsRequest(request.catalog,[proposedDocument],'op');request.catalog.session.state='Later';
+ for(const proposals of [null,{},[null],[{...proposedDocument,target:{...proposedDocument.target,commit:null}}], [{...proposedDocument,extra:true}]]) {
+  const value={changes:{state:'Saved'},reference_proposals:proposals};assert.deepEqual(parseInferenceResponse(request,response(value)),value);
+  assert.throws(()=>automaticReferenceRequest(request.catalog,proposals,'op'));
+ }
+ assert.throws(()=>parseInferenceResponse(request,response({...answer,extra:true})),/invalid structured/);
+ assert.throws(()=>parseInferenceResponse(request,response({changes:{status:'invalid'},reference_proposals:null})),/invalid structured/);
+ const sent=automaticReferenceRequest(request.catalog,[proposedDocument],'op');request.catalog.session.state='Later';
  assert.equal(sent.kind,'stream');assert.equal(sent.actor,'automatic');assert.equal(sent.inputs[0].record.state,'');
- assert.deepEqual(sent.changes,{document_additions:[proposedDocument]});
- assert.throws(()=>editRequest(context(),'stream',{documents:[proposedDocument]},'automatic'),/not allowed/);
+ assert.deepEqual(sent.changes.reference_changes,[{key:{kind:'document',repository_url:'https://example.com/repo',path:'docs/design.md'},desired:proposedDocument,next_revision:'op'}]);
+ assert.throws(()=>editRequest(context(),'stream',{references:[proposedDocument]},'automatic'),/not allowed/);
 });
 test('trimmed evidence retains completed file paths, including nested codemode metadata, but no bodies or results',()=>{
  const calls=[{type:'toolCall',id:'read',name:'read',arguments:{path:'docs/read.md',content:'Secret argument'}},{type:'toolCall',id:'write',name:'functions.write',arguments:{path:'docs/write.md',content:'Secret body'}}];
@@ -198,34 +179,100 @@ test('trimmed evidence retains completed file paths, including nested codemode m
  assert.doesNotMatch(text,/Secret|pending.md|orphan.md|bad|toolCall|toolResult/);
  assert.match(text,/not proof of success/);
 });
-test('Session reporting saves progress and document proposals separately from the same captured base with one inference',async()=>{
+test('Session reporting saves progress and reference proposals separately from the same captured base with one inference',async()=>{
  for(const progress of [false,true]) {
   const catalog=context();catalog.stream.goal_mode='manual';const initial=structuredClone(catalog),requests=[],generated=[],receipts=[];
   const saved=await runReport({kind:'report',force:true},{
    signal:new AbortController().signal,automaticEnrollment:true,operationId:randomUUID,
    capture:async()=>({native:'native',cwd:'/repo',evidence:{messages:[],leafId:null},catalog:structuredClone(catalog),valid:()=>true,attached:async()=>true}),
-   generate:async request=>{generated.push(request);return {changes:progress?{state:'Working'}:{},document_additions:[proposedDocument]};},
+   generate:async request=>{generated.push(request);return {changes:progress?{state:'Working'}:{},reference_proposals:[proposedDocument]};},
    apply:async request=>{requests.push(request);if(request.kind==='session')catalog.session.state=request.changes.state;return {operation_id:request.operation_id,save:{local:'persisted',domain:{outcome:'changes'}}};},
    enroll:assert.fail,receipt:value=>receipts.push(value),notice:assert.fail,
   });
   assert.equal(saved,true);assert.equal(generated.length,1);assert.equal(requests.length,progress?2:1);assert.equal(receipts.length,requests.length);
   const docs=requests.at(-1);assert.deepEqual(docs.before,initial.stream);assert.deepEqual(docs.inputs,[{kind:'session',record:initial.session}]);
-  assert.deepEqual(docs.changes,{document_additions:[proposedDocument]});
+  assert.deepEqual(docs.changes.reference_changes,[{key:{kind:'document',repository_url:'https://example.com/repo',path:'docs/design.md'},desired:proposedDocument,next_revision:docs.operation_id}]);
  }
 });
-test('a refused document save keeps the progress receipt and does not retry or run Stream inference',async()=>{
+test('a refused reference save keeps the progress receipt and does not retry or run Stream inference',async()=>{
  const requests=[],receipts=[],catalog=context();let generated=0;
  assert.equal(await runReport({kind:'report',force:true},{
   signal:new AbortController().signal,automaticEnrollment:true,operationId:randomUUID,
   capture:async()=>({native:'native',cwd:'/repo',evidence:{messages:[],leafId:null},catalog,valid:()=>true,attached:async()=>true}),
-  generate:async()=>{generated++;return {changes:{state:'Working'},document_additions:[proposedDocument]};},
+  generate:async()=>{generated++;return {changes:{state:'Working'},reference_proposals:[proposedDocument]};},
   apply:async request=>{requests.push(request);return {operation_id:request.operation_id,save:{local:'persisted',domain:{outcome:requests.length===1?'changes':'superseded'}}};},
   enroll:assert.fail,receipt:value=>receipts.push(value),notice:assert.fail,
- }),false);
+ }),true);
  assert.equal(generated,1);assert.equal(requests.length,2);assert.equal(receipts.length,2);
  assert.equal(receipts[0].save.domain.outcome,'changes');assert.equal(receipts[1].save.domain.outcome,'superseded');
 });
 
+test('malformed deferred references leave saved progress and its receipt intact',async()=>{
+ for(const proposals of [null,{},[null],[{...proposedDocument,target:{...proposedDocument.target,commit:null}}]])for(const progress of [false,true]) {
+  const catalog=context(),receipts=[],notices=[],requests=[],tasks=[];let captures=0;
+  const saved=await runReport({kind:'report',force:true},{signal:new AbortController().signal,automaticEnrollment:true,operationId:randomUUID,
+   capture:async()=>{captures++;return {native:'native',cwd:'/repo',evidence:{messages:[],leafId:null},catalog:structuredClone(catalog),valid:()=>true,attached:async()=>true};},
+   generate:async request=>{tasks.push(request.type);return {changes:progress?{state:'Saved'}:{},reference_proposals:proposals};},
+   apply:async request=>{requests.push(request);return {operation_id:request.operation_id,save:{local:'persisted',domain:{outcome:'changes'}}};},enroll:assert.fail,
+   receipt:value=>receipts.push(value),notice:(text,level)=>notices.push({text,level}),
+  });
+  assert.equal(saved,progress);assert.deepEqual(tasks,['session']);assert.equal(captures,1);assert.equal(requests.length,progress?1:0);assert.equal(receipts.length,progress?1:0);
+  assert.equal(notices.length,1);assert.equal(notices[0].level,'warning');assert.match(notices[0].text,/Reference update failed/);
+ }
+});
+test('partial reference receipt warns and stops after accepted independent rows',async()=>{
+ for(const local of ['persisted','unchanged']) {
+  const catalog=context(),notices=[],receipts=[],tasks=[];let calls=0,captures=0;
+  const addition={name:'New\u001bname',purpose:'New resource',role:'deliverable',state:'active',target:{kind:'pr',url:'https://example.com/new'}};
+  const dropped={...proposedDocument,state:'active'};
+  catalog.stream.references=[{...proposedDocument,state:'dropped',revision:'old'}];
+  const saved=await runReport({kind:'report',force:true},{signal:new AbortController().signal,automaticEnrollment:true,operationId:randomUUID,
+   capture:async()=>{captures++;return {native:'native',cwd:'/repo',evidence:{messages:[],leafId:null},catalog:structuredClone(catalog),valid:()=>true,attached:async()=>true};},
+   generate:async request=>{tasks.push(request.type);return {changes:{},reference_proposals:[dropped,addition]};},
+   apply:async request=>{calls++;const rows=request.changes.reference_changes;return {operation_id:request.operation_id,save:{local,domain:{outcome:'changes',reference_results:[{key:rows[0].key,action:'restore',outcome:'superseded',reason:'reference is Dropped; explicit restoration is required'},{key:rows[1].key,action:'add',outcome:'changes',reason:''}]}}};},
+   enroll:assert.fail,receipt:value=>receipts.push(value),notice:(text,level)=>notices.push({text,level}),
+  });
+  assert.equal(saved,true);assert.equal(calls,1);assert.equal(captures,1);assert.deepEqual(tasks,['session']);assert.equal(receipts.length,1);
+  assert.deepEqual(notices,local==='persisted'?[{text:'Reference added: "New\\u001bname"',level:'info'}]:[]);
+ }
+});
+test('reference construction preserves exact captured values and actor boundaries',async()=>{
+ const catalog=context(),value={name:'Status',purpose:'Guide rollout',role:'background',state:'active',target:{kind:'link',url:'https://EXAMPLE.com/x'}};
+ const key={kind:'url',url:value.target.url};
+ assert.equal(automaticReferenceRequest(catalog,undefined,'unused'),undefined);assert.equal(automaticReferenceRequest(catalog,[],'unused'),undefined);
+ const auto=automaticReferenceRequest(catalog,[value],'replay:capture:0');assert.deepEqual(auto.inputs,[{kind:'session',record:catalog.session}]);
+ catalog.session.state='Changed';catalog.stream.title='Changed';assert.equal(auto.inputs[0].record.state,'');assert.equal(auto.before.title,'Work');
+ for(const id of ['', '\u0085', 'bad\0id', '\ud800'])assert.throws(()=>referenceRequest(context(),'user',[{key,desired:value}],id),/operation_id/);
+ assert.throws(()=>referenceRequest(context(),'automatic',[{key:{kind:'url',url:'https://example.com/other'},desired:value}],'id'),/selector/);
+ assert.throws(()=>referenceRequest(context(),'user',[{key,desired:null}],'id'),/captured/);
+ const foreign=context();foreign.stream.owner.host_id=foreign.session.host_id='foreign';assert.throws(()=>referenceRequest(foreign,'user',[{key,desired:value}],'id'),/local/);
+ const noSession=context();noSession.session=null;noSession.sessions=[];assert.throws(()=>referenceRequest(noSession,'automatic',[{key,desired:value}],'id'),/Session/);
+ assert.deepEqual(referenceRequest(noSession,'user',[{key,desired:value}],'id').inputs,[]);
+ const edit=new ReferenceEdit(context(),key,'user',value),receipts=[];let calls=0;
+ const refused={operation_id:'id',save:{local:'unchanged',domain:{outcome:'conflict',reference_results:[{key,action:'add',outcome:'conflict',reason:'reference already exists'}]}}};
+ await assert.rejects(edit.save({apply:async()=>{calls++;return refused;}},value=>receipts.push(value)),/not applied/);
+ assert.equal(calls,1);assert.equal(edit.dirty,true);assert.deepEqual(edit.desired,value);assert.deepEqual(receipts,[refused]);
+});
+test('reference document hint materialisation uses established matching checkout only',()=>{
+ const catalog=context();catalog.session.checkout={repository:'repo',repository_url:'https://example.com/repo',ref:'topic',directory_within_checkout:'.'};
+ const proposal=structuredClone(proposedDocument);delete proposal.target.ref;
+ const first=materialiseReference(proposal,undefined,catalog.session);
+ assert.equal(first.target.ref,'topic');assert.equal(first.target.source_session_id,'session');assert.equal(first.target.commit,undefined);
+ catalog.session.checkout.repository_url='https://example.com/other';assert.equal(materialiseReference(proposal,undefined,catalog.session).target.ref,undefined);
+ const saved={...proposal,revision:'old',target:{...proposal.target,ref:'saved',commit:'commit',source_session_id:'origin'}};
+ assert.deepEqual(materialiseReference(proposal,saved,catalog.session).target,saved.target);
+ proposal.target.ref='replacement';assert.equal(materialiseReference(proposal,saved,catalog.session).target.ref,'replacement');
+});
+test('reference application exceptions warn once without losing progress',async()=>{
+ const catalog=context(),receipts=[],notices=[],tasks=[];let calls=0,captures=0;
+ const saved=await runReport({kind:'report',force:true},{signal:new AbortController().signal,automaticEnrollment:true,operationId:randomUUID,
+  capture:async()=>{captures++;return {native:'native',cwd:'/repo',evidence:{messages:[],leafId:null},catalog:structuredClone(catalog),valid:()=>true,attached:async()=>true};},
+  generate:async request=>{tasks.push(request.type);return {changes:{state:'Saved'},reference_proposals:[proposedDocument]};},
+  apply:async request=>{if(++calls===2)throw Error('reference save failed');return {operation_id:request.operation_id,save:{local:'persisted',domain:{outcome:'changes'}}};},
+  enroll:assert.fail,receipt:value=>receipts.push(value),notice:(text,level)=>notices.push({text,level}),
+ });
+ assert.equal(saved,true);assert.equal(calls,2);assert.equal(captures,1);assert.equal(receipts.length,1);assert.deepEqual(tasks,['session']);assert.deepEqual(notices,[{text:'Reference update failed: reference save failed',level:'warning'}]);
+});
 test('automatic fields omit protected names and all lifecycle and identity fields',()=>{
  assert.deepEqual(automaticFields('stream',stream,'automatic'),['goal','goal_short']);
  assert.deepEqual(automaticFields('session',session,'automatic'),['title','status','recap','recap_short','state','state_short','remaining','remaining_short']);
@@ -255,6 +302,18 @@ function reporterFixture(settings={}) {
  const reporter=new Reporter({cli:()=>cli,settings:()=>({...defaults,...settings}),infer:async(_ctx,req,signal)=>{inferences.push({req,signal});if(inferences.length===1)await new Promise(resolve=>{release=resolve;});return {changes:req.type==='session'?{state:'Reported'}:{goal:'Refined'}};},notice:text=>notices.push(text),receipt:()=>{}});
  return {reporter,ctx,cli,saves,inferences,notices,catalog,append(){leaf='two';branch.push(leaf);},rewind(){leaf='other';branch.splice(0,branch.length,'other');},release:()=>release?.()};
 }
+test('Reporter forwards reference notice levels only through a live fence',async()=>{
+ for(const invalidate of [false,true]) {
+  const f=reporterFixture(),catalog=context(),notices=[],receipts=[];catalog.stream.goal_mode='manual';let release,started=false;
+  const proposal={name:'New',purpose:'Guide work',role:'background',state:'active',target:{kind:'link',url:'https://example.com/new'}};
+  const reporter=new Reporter({cli:()=>({context:async()=>structuredClone(catalog),apply:async request=>{
+   started=true;await new Promise(resolve=>release=resolve);const row=request.changes.reference_changes[0];
+   return {operation_id:request.operation_id,save:{local:'persisted',domain:{outcome:'changes',reference_results:[{key:row.key,action:'add',outcome:'changes',reason:''}]}}};
+  }}),settings:()=>defaults,infer:async()=>({changes:{},reference_proposals:[proposal]}),notice:(text,level)=>notices.push({text,level}),receipt:value=>receipts.push(value)});
+  reporter.request(f.ctx);await until(()=>started);if(invalidate)reporter.scope.reset(f.ctx,true);release();await reporter.idle();
+  assert.deepEqual(notices,invalidate?[]:[{text:'Reference added: New',level:'info'}]);assert.equal(receipts.length,invalidate?0:1);
+ }
+});
 test('response cadence coalesces and accepts old prefixes then follows up; captures metadata after session save',async()=>{
  const f=reporterFixture({frequency:2});f.reporter.response(f.ctx);assert.equal(f.inferences.length,0);
  f.reporter.response(f.ctx);await until(()=>f.inferences.length===1);f.append();
@@ -670,20 +729,17 @@ test('model inference uses actual supported registry API, typed calls, no tools 
  ctx.modelRegistry.complete=async()=>({stopReason:'toolUse',content:[{type:'toolCall',name:'record_card',arguments:{changes:{title_mode:'manual'}}}]});
  await assert.rejects(infer(ctx,{type:'session',catalog:context(),messages:[]},new AbortController().signal),/invalid structured/);
 });
-test('discussion document edits preserve optional provenance without broadening permissions',async()=>{
+test('discussion reference edits preserve optional provenance and validate actor authority',async()=>{
  for(const provenance of [{},{commit:'abcdef012345',source_session_id:'session'},{commit:null,source_session_id:null}]) {
-  const catalog=context();
-  catalog.stream.documents=[{repository:'repo',ref:'main',path:'docs/plan.md',description:'Before',...provenance}];
-  const before=structuredClone(catalog),documents=catalog.stream.documents.map(row=>({...row,description:'Updated'}));
-  const answer={reply:'Updated the description.',edit:{kind:'stream',actor:'user',changes:{documents}}};
+  const catalog=context(),saved={...structuredClone(proposedDocument),revision:'before'};Object.assign(saved.target,provenance);catalog.stream.references=[saved];
+  const before=structuredClone(catalog),{revision,...desired}=saved;desired.purpose='Updated';
+  const key={kind:'document',repository_url:saved.target.repository_url,path:saved.target.path};
+  const answer={reply:'Updated the purpose.',edit:{kind:'references',actor:'user',changes:[{key,desired}]}};
   const ctx={model:{contextWindow:100000},modelRegistry:{complete:async()=>({stopReason:'toolUse',content:[{type:'toolCall',name:'record_card',arguments:answer}]})}};
-  const request={type:'discussion',catalog,messages:[],instructions:'Update the document description, retaining provenance.'};
-  assert.deepEqual(await infer(ctx,request,new AbortController().signal),answer);
-  assert.deepEqual(catalog,before);
-  answer.edit.actor='automatic';
-  await assert.rejects(infer(ctx,request,new AbortController().signal),/invalid structured/);
-  answer.edit.actor='user';answer.edit.changes.documents[0].unknown='unsupported';
-  await assert.rejects(infer(ctx,request,new AbortController().signal),/invalid structured/);
+  const request={type:'discussion',catalog,messages:[],instructions:'Update the document purpose.'};
+  assert.deepEqual(await infer(ctx,request,new AbortController().signal),answer);assert.deepEqual(catalog,before);
+  answer.edit.actor='automatic';if(Object.keys(provenance).length) await assert.rejects(infer(ctx,request,new AbortController().signal),/invalid structured/);
+  answer.edit.actor='user';answer.edit.changes[0].desired.unknown='unsupported';await assert.rejects(infer(ctx,request,new AbortController().signal),/invalid structured/);
  }
 });
 for(const failure of ['throw','response'])test(`inference retries transient gateway ${failure} and succeeds`,async()=>{
@@ -737,7 +793,7 @@ test('report prompts separate contribution state from whole-effort purpose witho
  assert.match(prompts.enroll,/session contains only title/);assert.match(prompts.enroll,/stream contains only title, goal and goal_short/);
  assert.match(prompts.enroll,/Greetings alone are not meaningful work/);assert.match(prompts.enroll,/short, recognizable handles/);
  assert.notEqual(prompts.enroll,prompts.discussion);assert.notEqual(prompts.stream,prompts.enroll);
- for(const type of ['session','stream'])assert.match(prompts[type],/allowed field names directly inside changes/);
+ for(const type of ['session','stream'])assert.match(prompts[type],/Use unprefixed field names directly inside changes/);
 });
 test('inference prompt requires short handles rather than work descriptions',async()=>{
  let prompt;
@@ -791,17 +847,23 @@ test('actual local Pi runtime registry and projected compaction work without liv
   assert.equal(SessionManager.open(logs[0].session_file).getEntries().find(entry=>entry.type==='message'&&entry.message.role==='assistant').message.model,model.id);
  } finally {rmSync(root,{recursive:true,force:true});}
 });
-test('reference validation rejects unknown repos, absolute/traversal paths, malformed URLs, duplicate or arbitrary fields',()=>{
- for(const path of ['/absolute','../escape','safe/../escape','C:/absolute','back\\\\slash'])assert.throws(()=>validateReferences('documents',[{repository:'repo',ref:'main',path,description:''}],stream),/relative/);
- assert.throws(()=>validateReferences('documents',[{repository:'unknown',ref:'main',path:'doc.md',description:''}],stream),/repository/);
- for(const url of ['not URL','file:///private','javascript:alert(1)'])assert.throws(()=>validateReferences('issues',[{url,description:''}],stream),/URL|HTTP/);
- assert.throws(()=>validateReferences('prs',[{url:'https://example.com/pr',description:'',extra:'no'}],stream),/labelled/);
- assert.throws(()=>validateReferences('issues',[{url:'https://example.com/1',description:''},{url:'https://example.com/1',description:'duplicate'}],stream),/Duplicate/);
- validateReferences('documents',[{repository:'repo',ref:'main',path:'docs/plan.md',description:'Plan',commit:'commit:known'}],stream);
- for(const commit of ['', ' ', 42, false])assert.throws(()=>validateReferences('documents',[{repository:'repo',ref:'main',path:'docs/plan.md',description:'Plan',commit}],stream),/commit/);
- for(const ref of [undefined,null,'topic'])validateReferences('documents',[{repository:'repo',ref,path:'docs/plan.md',description:'Plan'}],stream);
- for(const ref of ['', ' ', 42, false])assert.throws(()=>validateReferences('documents',[{repository:'repo',ref,path:'docs/plan.md',description:'Plan'}],stream),/ref/);
- assert.throws(()=>validateReferences('documents',[{repository:'repo',ref:'main',path:'docs/plan.md',description:'Plan'},{repository:'repo',ref:'other',path:'docs/plan.md',description:'Other',commit:'commit:other'}],stream),/Duplicate/);
+test('reference requests reject unsafe and overlapping intent and preserve recovery metadata',()=>{
+ const catalog=context(),key={kind:'document',repository_url:'https://example.com/repo',path:'docs/design.md'};
+ for(const path of ['/absolute','../escape','safe/../escape','C:/absolute','back\\\\slash'])assert.throws(()=>automaticReferenceRequest(catalog,[{...proposedDocument,target:{...proposedDocument.target,path}}],'op'));
+ for(const url of ['not URL','file:///private','javascript:alert(1)','https://user@example.com'])assert.throws(()=>automaticReferenceRequest(catalog,[{...proposedDocument,target:{kind:'link',url}}],'op'));
+ for(const ref of [null,undefined,'', ' ', 42, false])assert.throws(()=>automaticReferenceRequest(catalog,[{...proposedDocument,target:{...proposedDocument.target,ref}}],'op'));
+ for(const field of ['commit','source_session_id'])assert.throws(()=>automaticReferenceRequest(catalog,[{...proposedDocument,target:{...proposedDocument.target,[field]:null}}],'op'));
+ assert.throws(()=>automaticReferenceRequest(catalog,[proposedDocument,proposedDocument],'op'),/overlap/);
+ assert.throws(()=>referenceRequest(catalog,'automatic',[{key,desired:null}],'op'),/deleted/);
+ const saved={...structuredClone(proposedDocument),revision:'before'};Object.assign(saved.target,{commit:'known',source_session_id:'origin'});catalog.stream.references=[saved];
+ const auto=structuredClone(proposedDocument);delete auto.target.ref;
+ assert.equal(automaticReferenceRequest(catalog,[auto],'op'),undefined);
+ auto.purpose='Changed';assert.deepEqual(materialiseReference(auto,saved,catalog.session).target,{...saved.target});
+ const req=automaticReferenceRequest(catalog,[auto],'op');assert.equal(req.inputs[0].record.id,catalog.session.id);assert.equal(req.changes.reference_changes[0].desired.target.commit,undefined);
+ assert.throws(()=>referenceRequest(catalog,'user',[{key,desired:{...auto,target:{...auto.target,path:'other'}}},{key:{...key,path:'other'},desired:{...auto,target:{...auto.target,path:'other'}}}],'op'),/overlap/);
+ assert.throws(()=>referenceRequest(catalog,'user',[{key,desired:auto}],'before'),/revision/);
+ const user=referenceRequest({...catalog,session:null,sessions:[]},'user',[{key,desired:null}],'delete');assert.deepEqual(user.inputs,[]);assert.deepEqual(user.changes.reference_changes,[{key,desired:null}]);
+ const edit=new ReferenceEdit(catalog,key,'user',{...saved,purpose:'retained'});delete edit.desired.revision;assert.equal(edit.dirty,true);assert.equal(referenceSelector(key),JSON.stringify(['document',key.repository_url,key.path]));
 });
 test('discussion composer preserves unsent text across close/reopen without model requests',async()=>{
  const state={input:'',messages:[{role:'assistant',text:'Previous discussion'}]};const renders=[];let first=true;
@@ -857,6 +919,55 @@ for(const intent of ['reply','automatic','user'])test(`card discussion ${intent}
  await handlers.get('session_start')({},ctx);await openPanel(ctx);
  assert.equal(writes.length,intent==='reply'?0:1);assert.match(history.at(-1),/Discussed without assuming extra intent/);
  if(intent!=='reply'){assert.equal(writes[0].actor,intent);assert.equal(writes[0].catalog_source,'source-a');assert.equal(Object.hasOwn(writes[0],'ownership_token'),false);assert.equal(receipts.length,1);assert.equal(writes[0].before.status,'active');assert.deepEqual(writes[0].inputs.map(input=>input.record.id),intent==='automatic'?['session']:[]);}
+});
+test('discussion partial receipt retains every refused source and blocks another reference write',async()=>{
+ const handlers=new Map(),receipts=[],writes=[],notices=[],history=[];let openPanel,main=0,composer=0,models=0,managerScreen='';
+ const live=context(),a={name:'Alpha',purpose:'Original',role:'brief',state:'active',target:{kind:'link',url:'https://example.org/a'},revision:'a'},b={name:'Beta',purpose:'Original',role:'dependency',state:'active',target:{kind:'issue',url:'https://example.org/b'},revision:'b'},c={name:'Gamma',purpose:'New',role:'deliverable',state:'active',target:{kind:'pr',url:'https://example.org/c'}};
+ live.stream.references=[a,b];const keys=[a,b,c].map(ref=>({kind:'url',url:ref.target.url}));
+ const changes=[{key:keys[0],desired:{...a,purpose:'Updated'}},{key:keys[1],desired:null},{key:keys[2],desired:c}];delete changes[0].desired.revision;
+ const cli={sync:localSync,context:async()=>structuredClone(live),apply:async req=>{writes.push(req);live.stream.references=[{...c,revision:'accepted'}];return {operation_id:req.operation_id,save:{local:'persisted',domain:{outcome:'changes',reference_results:[{key:keys[0],outcome:'conflict',reason:'conflict'},{key:keys[1],outcome:'superseded',reason:'superseded'},{key:keys[2],outcome:'changes',reason:'saved'}]}}};}};
+ registerWorkCard({on:(name,fn)=>handlers.set(name,fn),registerCommand:(_name,options)=>{openPanel=ctx=>options.handler('card',ctx);},registerTool:()=>{},appendEntry:(type,value)=>receipts.push({type,value})},{settings:{...defaults,reporting:'manual'},cli,infer:async()=>{models++;if(models===1)live.stream.references=[];return {reply:models===1?'Partial update saved':'Must not appear',edit:{kind:'references',actor:'user',changes:models===1?changes:[{key:keys[0],desired:{...changes[0].desired,purpose:'Second edit A'}},{key:keys[2],desired:{...c,purpose:'Second edit C'}}]}};}});
+ const ctx={mode:'tui',hasUI:true,cwd:'/repo',sessionManager:{getSessionId:()=> 'native',getLeafId:()=> 'leaf',getBranch:()=>[{id:'leaf'}],buildSessionProjection:()=>({messages:[]})},ui:{select:assert.fail,notify:(text,level)=>notices.push({text,level}),setStatus:()=>{},custom:async factory=>new Promise(resolve=>{
+  const component=factory({terminal:{rows:36},requestRender(){}},{fg:(_c,t)=>t,bold:t=>t},{},resolve),screen=component.render(200).join('\n');
+  if(screen.includes('1: Actions')) {const n=main++;if(n===0||n===2)selectCardRow(component,'1','Discuss…');else if(n===1)selectCardRow(component,'2','References…');else component.handleInput('\x1b');}
+  else if(screen.includes('References · Esc back')) {managerScreen=screen;component.handleInput('\x1b');}
+  else {history.push(screen);const n=composer++;if(n===0||n===2){component.handleInput(n===0?'first question':'second question');component.handleInput('\r');}else component.handleInput('\x1b');}
+ })}};
+ await handlers.get('session_start')({},ctx);await openPanel(ctx);
+ assert.equal(models,2);assert.equal(writes.length,1);assert.equal(receipts.length,1);assert.ok(notices.some(row=>row.level==='warning'&&/conflict|superseded/i.test(row.text)));
+ assert.match(managerScreen,/Alpha.*Retained edit · Source absent/);assert.match(managerScreen,/Beta.*Retained deletion · Source absent/);assert.match(managerScreen,/Gamma/);
+ assert.match(history[1],/Partial update saved/);assert.match(history.at(-1),/second question/);assert.match(history.at(-1),/Finish or discard retained reference edits/);assert.doesNotMatch(history.at(-1),/Must not appear/);
+});
+test('retained reference input does not block ordinary discussion edits',async()=>{
+ const handlers=new Map(),writes=[],history=[];let openPanel,main=0,manager=0,composer=0,retained='';const live=context();
+ const cli={sync:localSync,context:async()=>structuredClone(live),apply:async request=>{writes.push(request);return {operation_id:request.operation_id,save:{local:'persisted',domain:{outcome:'changes'}}};}};
+ registerWorkCard({on:(name,fn)=>handlers.set(name,fn),registerCommand:(_name,options)=>{openPanel=ctx=>options.handler('card',ctx);},registerTool:()=>{},appendEntry:()=>{}},{settings:{...defaults,reporting:'manual'},cli,infer:async()=>({reply:'Session updated',edit:{kind:'session',actor:'user',changes:{state:'Progress'}}})});
+ const actions=['Name…','Keep input and close'];
+ const ctx={mode:'tui',hasUI:true,cwd:'/repo',sessionManager:{getSessionId:()=> 'native',getLeafId:()=> 'leaf',getBranch:()=>[{id:'leaf'}],buildSessionProjection:()=>({messages:[]})},ui:{select:async()=>actions.shift(),editor:async()=> 'Draft',notify:()=>{},setStatus:()=>{},custom:async factory=>new Promise(resolve=>{
+  const component=factory({terminal:{rows:36},requestRender(){}},{fg:(_c,t)=>t,bold:t=>t},{},resolve),screen=component.render(180).join('\n');
+  if(screen.includes('1: Actions')) {const n=main++;if(n===0||n===2)selectCardRow(component,'2','References…');else if(n===1)selectCardRow(component,'1','Discuss…');else component.handleInput('\x1b');}
+  else if(screen.includes('References · Esc back')) {const n=manager++;if(n===0)component.handleInput('\r');else {if(n===2)retained=screen;component.handleInput('\x1b');}}
+  else {history.push(screen);if(composer++===0){component.handleInput('Update session');component.handleInput('\r');}else component.handleInput('\x1b');}
+ })}};
+ await handlers.get('session_start')({},ctx);await openPanel(ctx);
+ assert.equal(writes.length,1);assert.equal(writes[0].kind,'session');assert.deepEqual(writes[0].changes,{state:'Progress'});assert.match(history.at(-1),/Session updated/);assert.match(retained,/Add reference….*Retained input/);assert.deepEqual(actions,[]);
+});
+test('wholly refused discussion retains additions and deletion before preserving composer',async()=>{
+ const handlers=new Map(),receipts=[],history=[],notices=[];let openPanel,main=0,composer=0,managerScreen='',writes=0;
+ const live=context(),old={name:'Forget',purpose:'Old',role:'brief',state:'active',target:{kind:'link',url:'https://example.org/old'},revision:'old'};live.stream.references=[old];
+ const one={name:'First',purpose:'One',role:'dependency',state:'active',target:{kind:'link',url:'https://example.org/one'}},two={name:'Second',purpose:'Two',role:'deliverable',state:'active',target:{kind:'pr',url:'https://example.org/two'}};
+ const changes=[{key:{kind:'url',url:old.target.url},desired:null},...([one,two].map(desired=>({key:{kind:'url',url:desired.target.url},desired})))];
+ const cli={sync:localSync,context:async()=>structuredClone(live),apply:async request=>{writes++;return {operation_id:request.operation_id,save:{local:'persisted',domain:{outcome:'conflict',reference_results:changes.map(({key})=>({key,outcome:'conflict',reason:'concurrent change'}))}}};}};
+ registerWorkCard({on:(name,fn)=>handlers.set(name,fn),registerCommand:(_name,options)=>{openPanel=ctx=>options.handler('card',ctx);},registerTool:()=>{},appendEntry:(type,value)=>receipts.push({type,value})},{settings:{...defaults,reporting:'manual'},cli,infer:async()=>{live.stream.references=[];return {reply:'Must not appear',edit:{kind:'references',actor:'user',changes}};}});
+ const ctx={mode:'tui',hasUI:true,cwd:'/repo',sessionManager:{getSessionId:()=> 'native',getLeafId:()=> 'leaf',getBranch:()=>[{id:'leaf'}],buildSessionProjection:()=>({messages:[]})},ui:{select:assert.fail,notify:(text,level)=>notices.push({text,level}),setStatus:()=>{},custom:async factory=>new Promise(resolve=>{
+  const component=factory({terminal:{rows:36},requestRender(){}},{fg:(_c,t)=>t,bold:t=>t},{},resolve),screen=component.render(200).join('\n');
+  if(screen.includes('1: Actions')) {const n=main++;if(n===0)selectCardRow(component,'1','Discuss…');else if(n===1)selectCardRow(component,'2','References…');else component.handleInput('\x1b');}
+  else if(screen.includes('References · Esc back')) {managerScreen=screen;component.handleInput('\x1b');}
+  else {history.push(screen);if(composer++===0){component.handleInput('Question');component.handleInput('\r');}else component.handleInput('\x1b');}
+ })}};
+ await handlers.get('session_start')({},ctx);await openPanel(ctx);
+ assert.equal(writes,1);assert.equal(receipts.length,1);assert.match(history.at(-1),/Question/);assert.match(history.at(-1),/input and save receipt retained/);assert.doesNotMatch(history.at(-1),/Must not appear|user: Question/);
+ assert.match(managerScreen,/Forget.*Retained deletion · Source absent/);assert.match(managerScreen,/First.*Retained addition · Source absent/);assert.match(managerScreen,/Second.*Retained addition · Source absent/);assert.ok(notices.some(row=>row.level==='warning'));
 });
 for(const failure of ['throw','abort','invalid','branch','cwd','source','attachment','shutdown','conflict','superseded','repair','completion'])test(`discussion ${failure} retains composer/history and isolates replacement source`,async()=>{
  const handlers=new Map(),renders=[],notices=[],receipts=[];let openPanel,submitted=false,menuCount=0,leaf='leaf';const catalog=context();
@@ -924,6 +1035,14 @@ test('bare debug gives gated informational help without model, CLI or dialog cal
 test('Streams notifications use Error messages without stacked error branding',async()=>{
  const f=commandFixture();await f.run('pane');
  assert.deepEqual(f.notices,[{text:'Streams — Native work cards require session startup in an interactive Herdr pane.',level:'warning'}]);
+});
+test('extension forwards accepted automatic reference notices as info',async()=>{
+ const handlers=new Map(),commands=new Map(),notices=[],live=context(),proposal={name:'New',purpose:'Context',role:'brief',state:'active',target:{kind:'link',url:'https://example.org/new'}};
+ const cli={sync:localSync,context:async()=>structuredClone(live),apply:async request=>{live.stream.references.push({...proposal,revision:request.operation_id});return {operation_id:request.operation_id,save:{local:'persisted',domain:{outcome:'changes',reference_results:[{key:{kind:'url',url:proposal.target.url},outcome:'changes',reason:'added',action:'add'}]}}};}};
+ registerWorkCard({on:(name,fn)=>handlers.set(name,fn),registerCommand:(name,options)=>commands.set(name,options),registerTool:()=>{},appendEntry:()=>{}},{settings:{...defaults,reporting:'manual'},cli,infer:async(_ctx,req)=>req.type==='session'?{changes:{},reference_proposals:[proposal]}:{changes:{}}});
+ const ctx={mode:'tui',hasUI:true,cwd:'/repo',sessionManager:{getSessionId:()=> 'native',getLeafId:()=> 'leaf',getBranch:()=>[{id:'leaf'}],buildSessionProjection:()=>({messages:[{role:'user',content:'Current work',timestamp:0}]})},ui:{notify:(text,level)=>notices.push({text,level}),setStatus:()=>{}}};
+ await handlers.get('session_start')({},ctx);await commands.get('streams').handler('report',ctx);await until(()=>notices.some(row=>row.text.includes('Reference added: New')));
+ assert.ok(notices.some(row=>row.text==='Streams — Reference added: New'&&row.level==='info'));
 });
 test('report helper failures use Error messages without stacked branding',async()=>{
  const f=commandFixture({infer:async()=>{throw Error('Synthetic helper failure');}});
@@ -1224,18 +1343,162 @@ test('retained invalid short goal is blocked before CLI and archive has one conf
  await openCard({sessionManager:{getSessionId:()=> 'native'},ui:{select:async(title,rows)=>{assert.ok(rows.every(row=>!row.startsWith('Stream · goal_short')));return actions.shift();},confirm:async()=>{confirmations++;return true;},notify:()=>{}}},{context:async()=>catalog,apply:async req=>{writes++;assert.deepEqual(req.changes,{archived:true});return {save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}};}},state,{receipt:()=>{},discuss:()=>{},settings:()=>{},report:()=>{}});
  assert.equal(confirmations,1);assert.equal(writes,1);
 });
-test('invalid reference rows survive validation and failed Save without forcing the editor again',async()=>{
- const state={discussion:{input:'',messages:[]},edits:new Map()};const choices=['Add row','Done','Save field','Keep input and close'];const text=['bad URL','Reference note'];const headers=[];
- const ctx={ui:{select:async(title)=>{headers.push(title);return choices.shift();},editor:async()=>{assert.ok(text.length,'must not force editor after failed Save');return text.shift();},notify:()=>{}}};
- await editField(ctx,{apply:()=>assert.fail('invalid references must never reach CLI')},context(),'stream','issues',state,()=>{});
- const retained=state.edits.get('stream:issues');assert.deepEqual(retained.value,[{url:'bad URL',description:'Reference note'}]);assert.match(retained.error,/URL/);assert.match(headers[1],/URL/);
- await editField({ui:{select:async(title,rows)=>{assert.match(title,/URL/);assert.ok(rows.includes('Discard input'));return 'Keep input and close';}}},{apply:()=>assert.fail()},context(),'stream','issues',state,()=>{});
- assert.deepEqual(retained.value,[{url:'bad URL',description:'Reference note'}]);
+test('fallback reference manager selects identical metadata by exact keys for edit and drop',async()=>{
+ const live=context(),state={discussion:{input:'',messages:[]},edits:new Map()},writes=[],receipts=[];
+ const value={name:'Same',purpose:'Same purpose',role:'brief',state:'active'};
+ live.stream.references=[{...value,target:{kind:'link',url:'https://example.org/a'},revision:'a'},{...value,target:{kind:'link',url:'https://example.org/b'},revision:'b'}];
+ const choose=[(title,rows)=>{assert.equal(title,'Work card');return 'Stream · References…';},
+  (title,rows)=>{assert.equal(title,'References');assert.match(rows[0],/^1\. Same · Link · Brief · Active/);assert.match(rows[1],/^2\. Same · Link · Brief · Active/);assert.notEqual(rows[0],rows[1]);return rows[0];},
+  (title)=>{assert.match(title,/example.org\/a/);return 'Edit';},()=> 'Name…',()=> 'Save reference',
+  (_title,rows)=>rows.find(row=>row.startsWith('2. ')),(title)=>{assert.match(title,/example.org\/b/);return 'Drop';},
+  ()=> 'Close',()=> 'Close'];
+ const ctx={sessionManager:{getSessionId:()=> 'native'},ui:{select:async(title,rows)=>{assert.ok(choose.length,title);return choose.shift()(title,rows);},editor:async()=> 'Renamed',notify:assert.fail}};
+ const cli={context:async()=>structuredClone(live),apply:async request=>{writes.push(request);const row=request.changes.reference_changes[0],index=live.stream.references.findIndex(ref=>ref.target.url===row.key.url);live.stream.references[index]={...row.desired,revision:request.operation_id};return {operation_id:request.operation_id,save:{local:'persisted',domain:{outcome:'changes'}}};}};
+ await openCard(ctx,cli,state,{receipt:value=>receipts.push(value),discuss:assert.fail,settings:assert.fail,report:assert.fail});
+ assert.deepEqual(writes.map(request=>request.changes.reference_changes[0].key.url),['https://example.org/a','https://example.org/b']);
+ assert.equal(live.stream.references[0].name,'Renamed');assert.equal(live.stream.references[1].state,'dropped');assert.equal(receipts.length,2);assert.equal(choose.length,0);
 });
-test('document editing without repositories reports guidance instead of an empty alias selector',async()=>{
- const catalog=context();catalog.stream.repositories={};const state={discussion:{input:'',messages:[]},edits:new Map()};const choices=['Add row','Done','Keep input and close'];const notices=[];
- await editField({ui:{select:async(title,rows)=>{assert.ok(rows.length>0);return choices.shift();},notify:text=>notices.push(text)}},{apply:()=>assert.fail()},catalog,'stream','documents',state,()=>{});
- assert.match(notices[0],/repository.*CLI/i);assert.equal(state.edits.size,0);
+test('new document form retains invalid input and resumes without repository aliases',async()=>{
+ const live=context();live.stream.repositories={};const state={discussion:{input:'',messages:[]},edits:new Map()},writes=[],notices=[];
+ const actions=['Stream · References…','Add reference…','Kind…','Document','Role…','Brief','Name…','Purpose…','Repository URL…','Path…','Ref…','Save reference','Keep input and close','Add reference…','Ref…','Save reference','Close','Close'];
+ const text=['Plan','Guide rollout','git@example.org:repo','docs/plan.md','  ','main'];
+ const ctx={sessionManager:{getSessionId:()=> 'native'},ui:{select:async(title,rows)=>{const next=actions.shift();if(next==='Add reference…')return rows.find(row=>row.startsWith(next));assert.ok(rows.includes(next),`${title}: ${next}`);return next;},editor:async()=>text.shift(),notify:text=>notices.push(text)}};
+ const cli={context:async()=>structuredClone(live),apply:async request=>{writes.push(request);return {operation_id:request.operation_id,save:{local:'persisted',domain:{outcome:'changes'}}};}};
+ await openCard(ctx,cli,state,{receipt:()=>{},discuss:assert.fail,settings:assert.fail,report:assert.fail});
+ assert.equal(writes.length,1);assert.equal(writes[0].changes.reference_changes[0].desired.target.ref,'main');assert.equal(writes[0].changes.reference_changes[0].desired.target.repository_url,'git@example.org:repo');
+ assert.equal(writes[0].changes.reference_changes[0].desired.state,'active');assert.ok(notices.length);assert.equal(state.referenceEdits.size,0);assert.deepEqual(actions,[]);
+});
+test('invalid URL input survives local validation and can be corrected without restarting',async()=>{
+ const live=context(),state={discussion:{input:'',messages:[]},edits:new Map()},writes=[],notices=[];
+ const actions=['Stream · References…','Add reference…','Kind…','Issue','Role…','Background','Name…','Purpose…','URL…','Save reference','Keep input and close','Add reference…','URL…','Save reference','Close','Close'],text=['Issue','Reference note','bad URL','https://example.org/issue'];
+ const ctx={sessionManager:{getSessionId:()=> 'native'},ui:{select:async(title,rows)=>{const action=actions.shift();if(action==='Add reference…')return rows.find(row=>row.startsWith(action));assert.ok(rows.includes(action),`${title}: ${action}`);return action;},editor:async(title,initial)=>{if(title==='URL'&&initial)assert.equal(initial,'bad URL');return text.shift();},notify:text=>notices.push(text)}};
+ await openCard(ctx,{context:async()=>structuredClone(live),apply:async request=>{writes.push(request);return {operation_id:request.operation_id,save:{local:'persisted',domain:{outcome:'changes'}}};}},state,{receipt:()=>{},discuss:assert.fail,settings:assert.fail,report:assert.fail});
+ assert.equal(writes.length,1);assert.equal(writes[0].changes.reference_changes[0].desired.target.url,'https://example.org/issue');assert.ok(notices.length);assert.equal(state.referenceEdits.size,0);
+});
+test('refused manual addition remains reachable through its retained form',async()=>{
+ const live=context(),state={discussion:{input:'',messages:[]},edits:new Map()},receipts=[],notices=[],key={kind:'url',url:'https://example.org/new'};
+ const actions=['Stream · References…','Add reference…','Kind…','Link','Role…','Brief','Name…','Purpose…','URL…','Save reference','Keep input and close','Close','Close'],text=['New','Useful','https://example.org/new'];
+ const ctx={sessionManager:{getSessionId:()=> 'native'},ui:{select:async(title,rows)=>{const action=actions.shift();if(action==='Add reference…')return rows.find(row=>row.startsWith(action));if(title==='References'&&action==='Close')assert.ok(rows.some(row=>row.startsWith('Add reference…')&&row.includes('Retained input')));return action;},editor:async()=>text.shift(),notify:text=>notices.push(text)}};
+ const cli={context:async()=>structuredClone(live),apply:async request=>({operation_id:request.operation_id,save:{local:'persisted',domain:{outcome:'conflict',reference_results:[{key,outcome:'conflict',reason:'Changed concurrently'}]}}})};
+ await openCard(ctx,cli,state,{receipt:value=>receipts.push(value),discuss:assert.fail,settings:assert.fail,report:assert.fail});
+ assert.equal(receipts.length,1);assert.ok(notices.length);assert.equal(state.referenceEdits.get('new').desired.name,'New');assert.deepEqual(actions,[]);
+});
+test('custom reference list uses exact selector for equal-metadata rows',async()=>{
+ const live=context(),state={discussion:{input:'',messages:[]},edits:new Map()},writes=[],renders=[];let main=0,manager=0;
+ const base={name:'Same',purpose:'Same',role:'brief',state:'active'};
+ live.stream.references=['a','b'].map(url=>({...base,target:{kind:'link',url:`https://example.org/${url}`},revision:url}));
+ const actions=['Edit','Name…','Save reference','Drop'];
+ const ctx={sessionManager:{getSessionId:()=> 'native'},ui:{notify:assert.fail,editor:async()=> 'Renamed',select:async(title,choices)=>{const action=actions.shift();assert.ok(choices.includes(action),`${title}: ${action}`);return action;},custom:async factory=>new Promise(done=>{
+  const component=factory({terminal:{rows:40},requestRender(){}},{fg:(_c,t)=>t,bold:t=>t},{},done),screen=component.render(150).join('\n');renders.push(screen);
+  if(screen.includes('1: Actions')) {if(main++===0)selectCardRow(component,'2','References…');else component.handleInput('\x1b');}
+  else {const n=manager++;if(n===0) {assert.match(screen,/1\. Same · Link · Brief · Active/);assert.match(screen,/2\. Same · Link · Brief · Activ/);component.handleInput('\r');}
+   else if(n===1) {component.handleInput('\x1b[B');assert.match(component.render(150).join('\n'),/2\. Same · Link · Brief · Active · \{"kind":"url","url":"https:\/\/example.org\/b"\}/);component.handleInput('\r');}
+   else component.handleInput('\x1b');}
+ })}};
+ const cli={context:async()=>structuredClone(live),apply:async request=>{writes.push(request);const row=request.changes.reference_changes[0],index=live.stream.references.findIndex(ref=>ref.target.url===row.key.url);live.stream.references[index]={...row.desired,revision:request.operation_id};return {operation_id:request.operation_id,save:{local:'persisted',domain:{outcome:'changes'}}};}};
+ await openCard(ctx,cli,state,{receipt:()=>{},discuss:assert.fail,settings:assert.fail,report:assert.fail});
+ assert.deepEqual(writes.map(request=>request.changes.reference_changes[0].key.url),['https://example.org/a','https://example.org/b']);assert.equal(live.stream.references[0].name,'Renamed');assert.equal(live.stream.references[1].state,'dropped');
+});
+test('refused target correction retains its original selector and desired destination',async()=>{
+ const live=context(),old={name:'Link',purpose:'Purpose',role:'background',state:'active',target:{kind:'link',url:'https://example.org/old'},revision:'old'};live.stream.references=[old];
+ const state={discussion:{input:'',messages:[]},edits:new Map()},receipts=[],writes=[],notices=[],actions=['Stream · References…','row','Edit','URL…','Save reference','Keep input and close','row','Inspect retained input','Back','Close','Close'];
+ const ctx={sessionManager:{getSessionId:()=> 'native'},ui:{select:async(title,rows)=>{const action=actions.shift();if(action==='row'){assert.match(rows[0],/https:\/\/example.org\/old/);return rows[0];}if(action==='Back')assert.match(title,/https:\/\/example.org\/new/);assert.ok(rows.includes(action),`${title}: ${action}`);return action;},editor:async()=> 'https://example.org/new',notify:text=>notices.push(text)}};
+ await openCard(ctx,{context:async()=>structuredClone(live),apply:async request=>{writes.push(request);return {operation_id:request.operation_id,save:{local:'persisted',domain:{outcome:'conflict',reference_results:[{key:{kind:'url',url:old.target.url},outcome:'conflict',reason:'Destination occupied'}]}}};}},state,{receipt:value=>receipts.push(value),discuss:assert.fail,settings:assert.fail,report:assert.fail});
+ const row=writes[0].changes.reference_changes[0];assert.equal(row.key.url,'https://example.org/old');assert.equal(row.desired.target.url,'https://example.org/new');assert.equal(receipts.length,1);assert.ok(notices.length);assert.ok(state.referenceEdits.has(referenceSelector(row.key)));
+});
+test('retained-only reference rows expose missing sources, deletions, additions and manual form',async()=>{
+ const original=context(),a={...structuredClone(proposedDocument),revision:'a'},b={name:'Delete',purpose:'Old',role:'dependency',state:'active',target:{kind:'link',url:'https://example.org/delete'},revision:'b'};
+ original.stream.references=[a,b];const live=structuredClone(original);live.stream.references=[];
+ const keyA={kind:'document',repository_url:a.target.repository_url,path:a.target.path},keyB={kind:'url',url:b.target.url},keyC={kind:'url',url:'https://example.org/new'};
+ const automatic={...structuredClone(proposedDocument),purpose:'Changed'},addition={name:'New',purpose:'New reason',role:'background',state:'active',target:{kind:'link',url:keyC.url}};
+ const editA=new ReferenceEdit(original,keyA,'automatic',automatic),editB=new ReferenceEdit(original,keyB,'user',null),editC=new ReferenceEdit(original,keyC,'user',addition);
+ const base=structuredClone(editA.base),state={discussion:{input:'',messages:[]},edits:new Map(),referenceEdits:new Map([[referenceSelector(keyA),editA],[referenceSelector(keyB),editB],[referenceSelector(keyC),editC]])};
+ const steps=[
+  ()=> 'Stream · References…',(_t,rows)=>{assert.match(rows[0],/Retained edit · Source absent/);assert.match(rows[1],/Retained deletion · Source absent/);assert.match(rows[2],/Retained addition · Source absent/);return rows[1];},
+  ()=> 'Inspect current row',(title)=>{assert.match(title,/Source absent/);return 'Back';},(_t,rows)=>rows[1],()=> 'Inspect retained input',(title)=>{assert.match(title,/Retained input: null/);return 'Back';},(_t,rows)=>rows[1],()=> 'Discard',
+  (_t,rows)=>rows[0],()=> 'Edit retained input',()=> 'Name…',()=> 'Keep input and close',
+  (_t,rows)=>rows.find(row=>row.startsWith('2. ')),()=> 'Inspect retained input',()=> 'Back',
+  (_t,rows)=>rows.find(row=>row.startsWith('2. ')),()=> 'Edit retained input',()=> 'Purpose…',()=> 'Keep input and close',
+  (_t,rows)=>{assert.match(rows[1],/Retained addition · Source absent/);return rows.find(row=>row.startsWith('Add reference…'));},()=> 'Name…',()=> 'Keep input and close',
+  (_t,rows)=>{assert.ok(rows.find(row=>row.startsWith('Add reference…')&&row.includes('Retained input')));return 'Close';},()=> 'Close'];
+ const texts=['Edited retained','','Unfinished'];
+ const ctx={sessionManager:{getSessionId:()=> 'native'},ui:{select:async(title,rows)=>{assert.ok(steps.length,title);const selected=steps.shift()(title,rows);assert.ok(rows.includes(selected),`${title}: ${selected}`);return selected;},editor:async()=>texts.shift(),notify:assert.fail}};
+ await openCard(ctx,{context:async()=>structuredClone(live),apply:assert.fail},state,{receipt:assert.fail,discuss:assert.fail,settings:assert.fail,report:assert.fail});
+ assert.deepEqual(editA.base,base);assert.equal(editA.actor,'user');assert.equal(editA.desired.name,'Edited retained');assert.equal(state.referenceEdits.has(referenceSelector(keyB)),false);assert.equal(state.referenceEdits.has(referenceSelector(keyC)),true);assert.equal(state.referenceEdits.has('new'),true);assert.deepEqual(steps,[]);
+});
+test('every missing captured source and pending addition can be inspected, edited and discarded independently',async()=>{
+ const original=context(),live=structuredClone(original),state={discussion:{input:'',messages:[]},edits:new Map(),referenceEdits:new Map()},instances=[];
+ const value=(name,url)=>({name,purpose:'Purpose',role:'brief',state:'active',target:{kind:'link',url}});
+ const captured=[value('Alpha','https://example.org/a'),value('Beta','https://example.org/b'),value('Delete','https://example.org/c')].map((row,i)=>({...row,revision:`r${i}`}));
+ original.stream.references=captured;live.stream.references=[];
+ const drafts=[...captured.map((row,i)=>({key:{kind:'url',url:row.target.url},desired:i===2?null:{...value(row.name,row.target.url),purpose:'Updated'}})),...['d','e'].map(letter=>({key:{kind:'url',url:`https://example.org/${letter}`},desired:value(`New ${letter}`,`https://example.org/${letter}`)}))];
+ for(const draft of drafts) {const edit=new ReferenceEdit(original,draft.key,'user',draft.desired);instances.push({edit,base:structuredClone(edit.base)});state.referenceEdits.set(referenceSelector(draft.key),edit);}
+ const steps=[()=> 'Stream · References…'],texts=[];
+ for(const [i,draft] of drafts.entries()) {
+  const row=(_title,rows)=>{assert.match(rows[0],/Source absent/);return rows[0];};
+  steps.push(row,()=> 'Inspect retained input',(title)=>{assert.match(title,/Retained input:/);return 'Back';},row,()=> 'Inspect current row',(title)=>{assert.match(title,/Source absent/);return 'Back';});
+  if(draft.desired) {steps.push(row,()=> 'Edit retained input',()=> 'Name…',()=> 'Keep input and close');texts.push(`Edited ${i}`);}
+  steps.push(row,()=> 'Discard');
+ }
+ steps.push(()=> 'Close',()=> 'Close');
+ const ctx={sessionManager:{getSessionId:()=> 'native'},ui:{select:async(title,rows)=>{const action=steps.shift()(title,rows);assert.ok(rows.includes(action),`${title}: ${action}`);return action;},editor:async()=>texts.shift(),notify:assert.fail}};
+ await openCard(ctx,{context:async()=>structuredClone(live),apply:assert.fail},state,{receipt:assert.fail,discuss:assert.fail,settings:assert.fail,report:assert.fail});
+ assert.equal(state.referenceEdits.size,0);assert.deepEqual(steps,[]);for(const {edit,base} of instances)assert.deepEqual(edit.base,base);
+ assert.equal(instances[0].edit.desired.name,'Edited 0');assert.equal(instances[1].edit.desired.name,'Edited 1');assert.equal(instances[2].edit.desired,null);assert.equal(instances[3].edit.desired.name,'Edited 3');assert.equal(instances[4].edit.desired.name,'Edited 4');
+});
+test('explicit fresh reapply preserves Dropped by default and current recovery context',async()=>{
+ for(const selection of ['Keep Dropped','Restore Active','Restore Fulfilled','Cancel']) {
+  const original=context(),old={...structuredClone(proposedDocument),revision:'old'};Object.assign(old.target,{commit:'old-commit',source_session_id:'old-session'});original.stream.references=[old];
+  const live=structuredClone(original);live.stream.references[0]={...old,state:'dropped',revision:'fresh',target:{...old.target,commit:'new-commit',source_session_id:'new-session'}};
+  const key={kind:'document',repository_url:old.target.repository_url,path:old.target.path},desired=structuredClone(proposedDocument);delete desired.target.ref;desired.purpose='Retained purpose';
+  const edit=new ReferenceEdit(original,key,'automatic',desired),state={discussion:{input:'',messages:[]},edits:new Map(),referenceEdits:new Map([[referenceSelector(key),edit]])},writes=[];
+  const actions=['Stream · References…','row','Reapply against current row','Reapply',selection,'Close','Close'];
+  const ctx={sessionManager:{getSessionId:()=> 'native'},ui:{select:async(title,rows)=>{const action=actions.shift();if(action==='row')return rows[0];if(action==='Reapply')assert.match(title,/new-commit/);if(action==='Keep Dropped')assert.deepEqual(rows,['Keep Dropped','Restore Active','Restore Fulfilled','Cancel']);assert.ok(rows.includes(action),`${title}: ${action}`);return action;},notify:assert.fail}};
+  await openCard(ctx,{context:async()=>structuredClone(live),apply:async request=>{writes.push(request);return {operation_id:request.operation_id,save:{local:'persisted',domain:{outcome:'changes'}}};}},state,{receipt:()=>{},discuss:assert.fail,settings:assert.fail,report:assert.fail});
+  if(selection==='Cancel') {assert.equal(writes.length,0);assert.deepEqual(edit.base,original);assert.equal(edit.actor,'automatic');}
+  else {const row=writes[0].changes.reference_changes[0];assert.equal(writes[0].before.references[0].revision,'fresh');assert.equal(row.desired.state,selection==='Keep Dropped'?'dropped':selection==='Restore Active'?'active':'fulfilled');assert.equal(row.desired.target.commit,'new-commit');assert.equal(row.desired.target.source_session_id,'new-session');assert.equal(state.referenceEdits.size,0);}
+ }
+});
+test('Dropped references stay Dropped during edits and restore only through explicit state choice',async()=>{
+ const live=context(),state={discussion:{input:'',messages:[]},edits:new Map()},writes=[];
+ live.stream.references=[{name:'Plan',purpose:'Old',role:'brief',state:'dropped',target:{kind:'link',url:'https://example.org/plan'},revision:'old'}];
+ const actions=['Stream · References…','row','Edit','Purpose…','Save reference','row','Restore','Fulfilled','Close','Close'];
+ const ctx={sessionManager:{getSessionId:()=> 'native'},ui:{select:async(title,rows)=>{const action=actions.shift();if(action==='row')return rows[0];if(action==='Purpose…')assert.ok(!rows.includes('State…'));if(action==='Restore')assert.ok(!rows.includes('Drop'));assert.ok(rows.includes(action),`${title}: ${action}`);return action;},editor:async()=> 'Updated purpose',notify:assert.fail}};
+ const cli={context:async()=>structuredClone(live),apply:async request=>{writes.push(request);live.stream.references[0]={...request.changes.reference_changes[0].desired,revision:request.operation_id};return {operation_id:request.operation_id,save:{local:'persisted',domain:{outcome:'changes'}}};}};
+ await openCard(ctx,cli,state,{receipt:()=>{},discuss:assert.fail,settings:assert.fail,report:assert.fail});
+ assert.deepEqual(writes.map(request=>request.changes.reference_changes[0].desired.state),['dropped','fulfilled']);assert.equal(live.stream.references[0].purpose,'Updated purpose');assert.deepEqual(actions,[]);
+});
+test('editing a retained automatic restoration requires an explicit Dropped choice',async()=>{
+ for(const choice of ['Keep Dropped','Restore Active','Restore Fulfilled','Cancel']) {
+  const live=context(),old={name:'Plan',purpose:'Old',role:'brief',state:'dropped',target:{kind:'link',url:'https://example.org/plan'},revision:'old'};live.stream.references=[old];
+  const key={kind:'url',url:old.target.url},desired={...old,state:'active',purpose:'New'};delete desired.revision;
+  const edit=new ReferenceEdit(live,key,'automatic',desired),state={discussion:{input:'',messages:[]},edits:new Map(),referenceEdits:new Map([[referenceSelector(key),edit]])},writes=[];
+  const actions=['Stream · References…','row','Edit retained input','Save reference',choice,...(choice==='Cancel'?['Keep input and close']:[]),'Close','Close'];
+  const ctx={sessionManager:{getSessionId:()=> 'native'},ui:{select:async(title,rows)=>{const action=actions.shift();if(action==='row')return rows[0];if(action==='Save reference')assert.ok(!rows.includes('State…'));if(action===choice)assert.deepEqual(rows,['Keep Dropped','Restore Active','Restore Fulfilled','Cancel']);assert.ok(rows.includes(action),`${title}: ${action}`);return action;},notify:assert.fail}};
+  await openCard(ctx,{context:async()=>structuredClone(live),apply:async request=>{writes.push(request);return {operation_id:request.operation_id,save:{local:'persisted',domain:{outcome:'changes'}}};}},state,{receipt:()=>{},discuss:assert.fail,settings:assert.fail,report:assert.fail});
+  assert.equal(writes.length,choice==='Cancel'?0:1);
+  if(choice==='Cancel')assert.equal(edit.desired.state,'active');else assert.equal(writes[0].changes.reference_changes[0].desired.state,choice==='Keep Dropped'?'dropped':choice==='Restore Active'?'active':'fulfilled');
+ }
+});
+test('document recovery editor clears only exactly empty values and preserves nonempty text',async()=>{
+ const live=context(),state={discussion:{input:'',messages:[]},edits:new Map()},writes=[];const old={...structuredClone(proposedDocument),revision:'old'};
+ Object.assign(old.target,{ref:'old',commit:'old-commit',source_session_id:'old-session'});live.stream.references=[old];
+ const actions=['Stream · References…','row','Edit','Ref…','Commit…','Source session…','Save reference','Close','Close'],text=[' main ','',' new-session '];
+ const ctx={sessionManager:{getSessionId:()=> 'native'},ui:{select:async(_title,rows)=>{const action=actions.shift();return action==='row'?rows[0]:action;},editor:async()=>text.shift(),notify:assert.fail}};
+ await openCard(ctx,{context:async()=>structuredClone(live),apply:async request=>{writes.push(request);return {operation_id:request.operation_id,save:{local:'persisted',domain:{outcome:'changes'}}};}},state,{receipt:()=>{},discuss:assert.fail,settings:assert.fail,report:assert.fail});
+ const row=writes[0].changes.reference_changes[0];assert.equal(row.desired.target.ref,' main ');assert.equal(Object.hasOwn(row.desired.target,'commit'),false);assert.equal(row.desired.target.source_session_id,' new-session ');assert.equal(writes[0].before.references[0].target.commit,'old-commit');
+});
+test('retained deletion asks again against the fresh row and cancellation preserves capture',async()=>{
+ for(const accepted of [false,true]) {
+  const original=context(),old={name:'Plan\u001b[31m',purpose:'Old',role:'brief',state:'active',target:{kind:'link',url:'https://example.org/delete'},revision:'old'};original.stream.references=[old];
+  const live=structuredClone(original);live.stream.references[0].revision='fresh';const key={kind:'url',url:old.target.url},edit=new ReferenceEdit(original,key,'user',null),state={discussion:{input:'',messages:[]},edits:new Map(),referenceEdits:new Map([[referenceSelector(key),edit]])},writes=[],prompts=[];
+  const actions=['Stream · References…','row','Reapply against current row','Reapply','Close','Close'];
+  const ctx={sessionManager:{getSessionId:()=> 'native'},ui:{select:async(title,rows)=>{const action=actions.shift();if(action==='row'){assert.doesNotMatch(rows[0],/\u001b/);assert.match(rows[0],/\\u001b/);return rows[0];}return action;},confirm:async(title,body)=>{prompts.push({title,body});return accepted;},notify:assert.fail}};
+  await openCard(ctx,{context:async()=>structuredClone(live),apply:async request=>{writes.push(request);return {operation_id:request.operation_id,save:{local:'persisted',domain:{outcome:'changes'}}};}},state,{receipt:()=>{},discuss:assert.fail,settings:assert.fail,report:assert.fail});
+  assert.equal(prompts.length,1);assert.match(prompts[0].body,/already underway/);assert.doesNotMatch(prompts[0].title,/\u001b/);assert.equal(writes.length,accepted?1:0);
+  if(accepted) {assert.equal(writes[0].before.references[0].revision,'fresh');assert.equal(writes[0].changes.reference_changes[0].desired,null);assert.equal(state.referenceEdits.size,0);}
+  else {assert.deepEqual(edit.base,original);assert.equal(state.referenceEdits.size,1);}
+ }
 });
 test('settings validate object roots/model types and preserve unknown on-disk keys across saves',()=>{
  const root=mkdtempSync(join(tmpdir(),'card-settings-invalid-'));const path=join(root,'stream-reporting.json');

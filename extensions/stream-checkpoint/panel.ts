@@ -1,10 +1,11 @@
 import { Editor, SelectList, type SelectItem, matchesKey, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { DynamicBorder, getSelectListTheme } from "@earendil-works/pi-coding-agent";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { LocalContext, Receipt, StreamCli } from "./streams.ts";
-import { FieldEdit, fields, statuses, titleModes, validateReferences } from "./core.ts";
+import { referenceText, safeReferenceJson, type LocalContext, type Receipt, type Reference, type ReferenceValue, type ResourceKey, type StreamCli } from "./streams.ts";
+import { FieldEdit, ReferenceEdit, fields, isAutomaticReferenceValue, materialiseReference, referenceSelector, statuses, titleModes } from "./core.ts";
+import { isReferenceValue, resourceKey } from "../../integrations/herdr-work-cards/src/streams-context.ts";
 export type DiscussionState = {input: string; messages: {role: "user" | "assistant"; text: string}[]; error?: string};
-export type CardState = {discussion: DiscussionState; edits: Map<string, FieldEdit>};
+export type CardState = {discussion: DiscussionState; edits: Map<string, FieldEdit>; referenceEdits?: Map<string, ReferenceEdit>};
 /** A small composer built around Pi's editor; unsent input survives close/reopen. */
 export async function compose(ctx: ExtensionContext, state: DiscussionState): Promise<string | undefined> {
  return ctx.ui.custom<string | undefined>((tui, theme, _keys, done) => {
@@ -23,28 +24,148 @@ export async function compose(ctx: ExtensionContext, state: DiscussionState): Pr
   };
  });
 }
-async function referenceRows(ctx: ExtensionContext, field: string, edit: FieldEdit): Promise<void> {
- const stream = edit.base.stream!;
- const rows = structuredClone(edit.value as any[]);
+const referenceLabels: Record<string, string> = {document:"Document", pr:"PR", issue:"Issue", link:"Link", deliverable:"Deliverable", dependency:"Dependency", brief:"Brief", background:"Background", active:"Active", fulfilled:"Fulfilled", dropped:"Dropped"};
+const referenceByKey = (catalog: LocalContext, key: ResourceKey) => catalog.stream?.references.find(row => referenceSelector(resourceKey(row.target)) === referenceSelector(key));
+const referenceKeyJson = (key: ResourceKey) => safeReferenceJson(key.kind === "url" ? {kind:key.kind, url:key.url} : {kind:key.kind, repository_url:key.repository_url, path:key.path});
+const referenceValue = (reference: Reference): ReferenceValue => {const {revision: _revision, ...value} = structuredClone(reference);return value;};
+
+async function selectReference(ctx: ExtensionContext, items: SelectItem[]): Promise<string | undefined> {
+ if (!ctx.ui.custom) {
+  const choices = items.map(item => item.description ? `${item.label} · ${item.description}` : item.label);
+  const selected = await ctx.ui.select("References", choices);
+  return items[choices.indexOf(selected ?? "")]?.value;
+ }
+ return ctx.ui.custom<string | undefined>((tui, theme, _keys, done) => {
+  const list = new SelectList(items, Math.max(4, Math.min(12, tui.terminal.rows - 6)), getSelectListTheme());
+  list.onSelect = item => done(item.value);list.onCancel = () => done(undefined);
+  return {invalidate:() => list.invalidate(), handleInput:(data: string) => {list.handleInput(data);tui.requestRender();}, render:(width: number) => {
+   const selected = list.getSelectedItem();
+   return [truncateToWidth("References · Esc back", width), ...list.render(width), ...(selected?.description ? wrapTextWithAnsi(`${selected.label} · ${selected.description}`, width) : [])];
+  }};
+ });
+}
+function referenceRows(catalog: LocalContext, edits: Map<string, ReferenceEdit>): SelectItem[] {
+ const rows: {key: ResourceKey; value: Reference | ReferenceValue; edit?: ReferenceEdit; absent: boolean}[] = [];
+ for (const reference of catalog.stream!.references) {
+  const key = resourceKey(reference.target), edit = edits.get(referenceSelector(key));
+  rows.push({key, value:reference, edit, absent:false});
+ }
+ for (const [selector, edit] of edits) {
+  if (selector === "new" || !edit.key || rows.some(row => referenceSelector(row.key) === selector)) continue;
+  const source = referenceByKey(edit.base, edit.key);
+  const value = source ?? (edit.desired && typeof edit.desired === "object" ? edit.desired as ReferenceValue : undefined);
+  if (value) rows.push({key:edit.key, value, edit, absent:true});
+ }
+ return rows.map(({key, value, edit, absent}, i) => {
+  const retained = edit ? edit.desired === null ? "Retained deletion" : referenceByKey(edit.base, key) ? "Retained edit" : "Retained addition" : undefined;
+  return {value:referenceSelector(key), label:`${i + 1}. ${referenceText(value.name)} · ${referenceLabels[value.target.kind]} · ${referenceLabels[value.role]} · ${referenceLabels[value.state]}`, description:[referenceKeyJson(key), retained, absent ? "Source absent" : undefined].filter(Boolean).join(" · ")};
+ });
+}
+async function saveReference(ctx: ExtensionContext, cli: StreamCli, edits: Map<string, ReferenceEdit>, selector: string, edit: ReferenceEdit, receipt: (value: Receipt) => void): Promise<boolean> {
+ try {await edit.save(cli, receipt);edits.delete(selector);return true;}
+ catch (error) {ctx.ui.notify(referenceText(error instanceof Error ? error.message : String(error)), "error");return false;}
+}
+async function editReferenceForm(ctx: ExtensionContext, cli: StreamCli, edits: Map<string, ReferenceEdit>, selector: string, edit: ReferenceEdit, receipt: (value: Receipt) => void): Promise<void> {
+ if (edit.actor === "automatic" && isAutomaticReferenceValue(edit.desired)) {
+  edit.desired = materialiseReference(edit.desired, edit.key ? referenceByKey(edit.base, edit.key) : undefined, edit.base.session);edit.actor = "user";
+ }
  for (;;) {
-  const action = await ctx.ui.select(`${field}: choose a row${edit.error ? `\n${edit.error}` : ""}`,  [...rows.map((row, i) => `${i + 1}. ${row.url ?? `${row.repository}:${row.path}`} — ${row.description}`), "Add row", "Done"]);
-  if (!action || action === "Done") {edit.value = rows;return;}
-  if (action === "Add row" && field === "documents" && !Object.keys(stream.repositories).length) {ctx.ui.notify("No repository aliases are configured. Add a repository through the Streams CLI before adding a document.", "warning");continue;}
-  const index = action === "Add row" ? rows.length : Number(action.split(".")[0]) - 1;
-  const existing = rows[index];
-  if (existing) {const choice = await ctx.ui.select("Reference row", ["Edit", "Remove", "Back"]);if (choice === "Remove") {rows.splice(index, 1);edit.value = structuredClone(rows);try {validateReferences(field, rows, stream);edit.error = undefined;} catch(error) {edit.error = String(error);}continue;}if (choice !== "Edit") continue;}
-  const row: Record<string, string> = {...existing};
-  if (field === "documents") {
-   const alias = await ctx.ui.select("Existing repository alias", Object.keys(stream.repositories));if (!alias) continue;row.repository = alias;
-   const ref = await ctx.ui.editor("Recovery branch/bookmark (optional; does not pin opening)", row.ref ?? "");if (ref === undefined) continue;if (ref.trim()) row.ref = ref;else delete row.ref;
-   const path = await ctx.ui.editor("Portable relative document path", row.path ?? "");if (path === undefined) continue;row.path = path;
-   const commitVal = await ctx.ui.editor("Commit SHA (optional recovery context)", row.commit ?? "");if (commitVal === undefined) continue;
-   if (commitVal.trim()) row.commit = commitVal;else delete row.commit;
-   if (!row.source_session_id && edit.base.session?.id) row.source_session_id = edit.base.session.id;
-  } else {const url = await ctx.ui.editor("HTTP(S) URL", row.url ?? "");if (url === undefined) continue;row.url = url;}
-  const description = await ctx.ui.editor("Description", row.description ?? "");if (description === undefined) continue;row.description = description;
-  rows[index] = row;edit.value = structuredClone(rows);
-  try {validateReferences(field, rows, stream);edit.error = undefined;} catch(error) {edit.error = String(error);ctx.ui.notify(edit.error, "error");}
+  const value = edit.desired as any;
+  const target = value?.target ?? {}, captured = edit.key ? referenceByKey(edit.base, edit.key) : undefined;
+  const fields = ["Name…", "Purpose…", "Role…", ...(value?.state === "dropped" || captured?.state === "dropped" ? [] : ["State…"]), "Kind…", ...(target.kind === "document" ? ["Repository URL…", "Path…", "Ref…", "Commit…", "Source session…"] : target.kind ? ["URL…"] : [])];
+  const action = await ctx.ui.select(`Reference input${edit.error ? ` · ${referenceText(edit.error)}` : ""}\n${safeReferenceJson(edit.desired)}`, [...fields, "Save reference", "Keep input and close", "Discard input"]);
+  if (action === "Discard input") {edits.delete(selector);return;}
+  if (!action || action === "Keep input and close") {if (!edit.dirty && !edit.error) edits.delete(selector);return;}
+  if (action === "Save reference") {
+   if (captured?.state === "dropped" && isReferenceValue(value) && value.state !== "dropped") {
+    const choice = await ctx.ui.select("This reference is Dropped. Choose how to save.", ["Keep Dropped", "Restore Active", "Restore Fulfilled", "Cancel"]);
+    if (!choice || choice === "Cancel") continue;
+    value.state = choice === "Restore Active" ? "active" : choice === "Restore Fulfilled" ? "fulfilled" : "dropped";
+   }
+   if (await saveReference(ctx, cli, edits, selector, edit, receipt)) return;continue;
+  }
+  if (action === "Role…") {
+   const choice = await ctx.ui.select("Role", ["Deliverable", "Dependency", "Brief", "Background"]);
+   if (choice) value.role = choice.toLowerCase();
+  } else if (action === "State…") {
+   const choice = await ctx.ui.select("State", ["Active", "Fulfilled"]);if (choice) value.state = choice.toLowerCase();
+  } else if (action === "Kind…") {
+   const choice = await ctx.ui.select("Kind", ["Document", "PR", "Issue", "Link"]);
+   if (choice) {
+    const kind = choice === "PR" ? "pr" : choice.toLowerCase();
+    if (kind === "document") value.target = target.kind === "document" ? target : {kind, repository_url:"", path:""};
+    else value.target = {kind, url:target.kind && target.kind !== "document" ? target.url : ""};
+   }
+  } else {
+   const property = ({"Name…":"name", "Purpose…":"purpose", "Repository URL…":"repository_url", "Path…":"path", "URL…":"url", "Ref…":"ref", "Commit…":"commit", "Source session…":"source_session_id"} as Record<string,string>)[action];
+   if (!property) continue;
+   const owner = property === "name" || property === "purpose" ? value : target;
+   const result = await ctx.ui.editor(action.slice(0,-1), owner[property] ?? "");
+   if (result !== undefined) {if (["ref", "commit", "source_session_id"].includes(property) && result === "") delete owner[property];else owner[property] = result;}
+  }
+  edit.error = undefined;
+ }
+}
+async function confirmDeletion(ctx: ExtensionContext, name: string): Promise<boolean> {
+ return ctx.ui.confirm(`Forget ${referenceText(name)}?`, `Forget ${referenceText(name)}? Reporting may add it again, including from a report already underway.`);
+}
+async function manageReferences(ctx: ExtensionContext, cli: StreamCli, state: CardState, receipt: (value: Receipt) => void): Promise<void> {
+ const edits = state.referenceEdits ??= new Map();
+ for (;;) {
+  const catalog = await cli.context(ctx.sessionManager.getSessionId());if (!catalog.stream) return;
+  const rows = referenceRows(catalog, edits);
+  const items = [...rows, {value:"add", label:"Add reference…", description:edits.has("new") ? "Retained input" : ""}, {value:"close", label:"Close"}];
+  const selector = await selectReference(ctx, items);
+  if (!selector || selector === "close") return;
+  if (selector === "add") {
+   let edit = edits.get("new");
+   if (!edit) {edit = new ReferenceEdit(catalog, null, "user", {name:"", purpose:"", role:"", state:"active", target:{}});edits.set("new", edit);}
+   await editReferenceForm(ctx, cli, edits, "new", edit, receipt);continue;
+  }
+  const saved = catalog.stream.references.find(row => referenceSelector(resourceKey(row.target)) === selector);
+  let edit = edits.get(selector);
+  const key = edit?.key ?? (saved ? resourceKey(saved.target) : undefined);if (!key) continue;
+  const heading = `Reference ${referenceKeyJson(key)}`;
+  if (edit) {
+   const actions = ["Inspect retained input", "Inspect current row", ...(edit.desired === null ? [] : ["Edit retained input"]), ...(saved ? ["Reapply against current row"] : []), "Keep input and close", "Discard"];
+   const action = await ctx.ui.select(heading, actions);
+   if (action === "Discard") {edits.delete(selector);continue;}
+   if (!action || action === "Keep input and close") return;
+   if (action === "Inspect retained input") {await ctx.ui.select(`${heading}\nRetained input: ${safeReferenceJson(edit.desired)}`, ["Back"]);continue;}
+   if (action === "Inspect current row") {await ctx.ui.select(`${heading}\nCurrent: ${saved ? safeReferenceJson(saved) : "Source absent"}`, ["Back"]);continue;}
+   if (action === "Edit retained input") {await editReferenceForm(ctx, cli, edits, selector, edit, receipt);continue;}
+   if (action === "Reapply against current row" && saved) {
+    const fresh = await cli.context(ctx.sessionManager.getSessionId()), current = referenceByKey(fresh, key);
+    if (!current) {await ctx.ui.select(`${heading}\nCurrent: Source absent`, ["Back"]);continue;}
+    const confirm = await ctx.ui.select(`${heading}\nCurrent: ${safeReferenceJson(current)}\nRetained input: ${safeReferenceJson(edit.desired)}`, ["Reapply", "Cancel"]);
+    if (confirm !== "Reapply") continue;
+    let desired = edit.desired;
+    if (desired === null) {if (!await confirmDeletion(ctx, current.name)) continue;}
+    else {
+     if (edit.actor === "automatic" && isAutomaticReferenceValue(desired)) desired = materialiseReference(desired, current, fresh.session);
+     if (!isReferenceValue(desired)) {edit.error = "Retained input is invalid; edit it before reapplying.";continue;}
+     desired = structuredClone(desired);
+     if (current.state === "dropped" && desired.state !== "dropped") {
+      const choice = await ctx.ui.select("This reference is Dropped. Choose how to reapply.", ["Keep Dropped", "Restore Active", "Restore Fulfilled", "Cancel"]);
+      if (!choice || choice === "Cancel") continue;
+      desired.state = choice === "Restore Active" ? "active" : choice === "Restore Fulfilled" ? "fulfilled" : "dropped";
+     }
+    }
+    edit.rebase(fresh);edit.actor = "user";edit.desired = desired;
+    await saveReference(ctx, cli, edits, selector, edit, receipt);
+   }
+   continue;
+  }
+  if (!saved) continue;
+  const action = await ctx.ui.select(heading, ["Edit", ...(saved.state === "dropped" ? ["Restore"] : ["Drop"]), "Delete", "Back"]);
+  if (!action || action === "Back") continue;
+  const desired = referenceValue(saved);
+  if (action === "Drop") desired.state = "dropped";
+  else if (action === "Restore") {const choice = await ctx.ui.select("Restore reference", ["Active", "Fulfilled"]);if (!choice) continue;desired.state = choice.toLowerCase() as "active" | "fulfilled";}
+  else if (action === "Delete" && !await confirmDeletion(ctx, saved.name)) continue;
+  edit = new ReferenceEdit(catalog, key, "user", action === "Delete" ? null : desired);edits.set(selector, edit);
+  if (action === "Edit") await editReferenceForm(ctx, cli, edits, selector, edit, receipt);
+  else await saveReference(ctx, cli, edits, selector, edit, receipt);
  }
 }
 export async function editField(ctx: ExtensionContext, cli: StreamCli, catalog: LocalContext, kind: "stream" | "session", field: string, state: CardState, receipt: (value: Receipt) => void): Promise<void> {
@@ -55,8 +176,7 @@ export async function editField(ctx: ExtensionContext, cli: StreamCli, catalog: 
  try {
   for (;;) {
    if (editValue) {
-    if (["documents", "issues", "prs"].includes(field)) await referenceRows(ctx, field, edit);
-    else if (field === "status" || field.endsWith("_mode")) {
+    if (field === "status" || field.endsWith("_mode")) {
      const value = await ctx.ui.select(`${kind} ${field} · current: ${edit.value}${edit.error ? `\n${edit.error}` : ""}`, field === "status" ? statuses : field === "title_mode" ? [...titleModes] : ["automatic", "manual"]);if (value === undefined) return;edit.value = value;
     } else if (field === "archived") edit.value = !edit.base.stream!.archived;
     else {
@@ -101,6 +221,7 @@ export async function openCard(ctx: ExtensionContext, cli: StreamCli, state: Car
    description: `${formatFieldPreview((stream as any)[field])}${state.edits.has(`stream:${field}`) ? " · retained unsaved edit" : ""}`,
   }));
   streamItems.push(
+   {value: "references", label: "References…", description: "Manage saved references, including Dropped entries"},
    {value: "reset:stream", label: "Reset…", description: "Regenerate only the Stream's automatic fields"},
    {value: "finish:stream", label: "Finish…", description: "Mark the Stream as done; Sessions remain unchanged"},
    {value: "archive", label: `${stream.archived ? "Restore…" : "Archive…"}${state.edits.has("stream:archived") ? " *" : ""}`, description: state.edits.has("stream:archived") ? "Retained unsaved archive edit" : stream.archived ? "Unarchive this Stream" : "Hide this Stream from default active lists"},
@@ -186,6 +307,7 @@ export async function openCard(ctx: ExtensionContext, cli: StreamCli, state: Car
   }
   if (!action || action === "close") return;
   if (action === "noop") continue;
+  if (action === "references") {await manageReferences(ctx, cli, state, actions.receipt);continue;}
   if (action.startsWith("field:")) {
    const [, kind, field] = action.split(":") as [string, "stream" | "session", string];
    await editField(ctx, cli, catalog, kind, field, state, actions.receipt);

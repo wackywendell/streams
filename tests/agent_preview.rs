@@ -64,13 +64,13 @@ fn simulated(result: &Value) {
 }
 
 #[test]
-fn document_preview_uses_the_same_membership_guard_after_its_own_session_report() {
+fn reference_preview_uses_the_same_membership_guard_after_its_own_session_report() {
     let mut captured = context();
     captured["stream"]["repositories"] = json!({"repo":{"url":"https://example.test/repo"}});
     let request = update(
         &captured,
         "stream",
-        json!({"document_additions":[{"repository":"repo","ref":"main","path":"docs/design.md","description":"Design"}]}),
+        json!({"reference_changes":[{"key":{"kind":"document","repository_url":"https://example.test/repo","path":"docs/design.md"},"desired":{"name":"Design","purpose":"Guide work","role":"brief","state":"active","target":{"kind":"document","repository_url":"https://example.test/repo","ref":"main","path":"docs/design.md"}},"next_revision":"update"}]}),
         Actor::Automatic,
     );
     let progress = update(
@@ -82,12 +82,105 @@ fn document_preview_uses_the_same_membership_guard_after_its_own_session_report(
     let after_progress = project(&captured, "apply", &progress)["catalog"].clone();
     let after = project(&after_progress, "apply", &request);
     assert_eq!(after["catalog"]["session"]["state"], "Working");
-    let document = &after["catalog"]["stream"]["documents"][0];
+    let document = &after["catalog"]["stream"]["references"][0]["target"];
     assert_eq!(document["path"], "docs/design.md");
     assert_eq!(document["source_session_id"], captured["session"]["id"]);
     assert!(document.get("commit").is_none());
-    assert_eq!(captured["stream"]["documents"], json!([]));
+    assert_eq!(captured["stream"]["references"], json!([]));
     assert_eq!(after["receipt"]["save"]["domain"]["outcome"], "changes");
+}
+
+fn preview_reference(url: &str) -> Value {
+    json!({"name":"Reference","purpose":"Guide work","role":"brief","state":"active",
+        "target":{"kind":"link","url":url},"revision":url})
+}
+
+#[test]
+fn reference_preview_partial_correction_and_whole_refusal_keep_domain_rows() {
+    let mut captured = context();
+    captured["stream"]["references"] = json!([
+        preview_reference("https://example.test/a"),
+        preview_reference("https://example.test/b"),
+        preview_reference("https://example.test/c")
+    ]);
+    let mut desired = preview_reference("https://example.test/b");
+    desired.as_object_mut().unwrap().remove("revision");
+    let request = update(
+        &captured,
+        "stream",
+        json!({"reference_changes":[
+            {"key":{"kind":"url","url":"https://example.test/a"},"desired":desired,"next_revision":"update"},
+            {"key":{"kind":"url","url":"https://example.test/c"},"desired":null}
+        ]}),
+        Actor::User,
+    );
+    let result = project(&captured, "apply", &request);
+    let domain = &result["receipt"]["save"]["domain"];
+    assert_eq!(domain["outcome"], "changes");
+    assert_eq!(domain["reference_results"][0]["outcome"], "conflict");
+    assert_eq!(domain["reference_results"][1]["outcome"], "changes");
+    assert_eq!(
+        result["catalog"]["stream"]["references"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    let mut whole = request.clone();
+    whole["changes"]["reference_changes"]
+        .as_array_mut()
+        .unwrap()
+        .pop();
+    let result = project(&captured, "apply", &whole);
+    assert_eq!(result["receipt"]["save"]["domain"]["outcome"], "conflict");
+    assert_eq!(
+        result["receipt"]["save"]["domain"]["reference_results"][0]["reason"],
+        "replacement target already exists"
+    );
+    assert_eq!(result["catalog"], captured);
+    let mut changed_context = captured.clone();
+    changed_context["stream"]["title"] = json!("Changed capture");
+    reject(&changed_context, "apply", &request);
+    // User references do not need a Session in either the request or the snapshot.
+    captured["session"] = Value::Null;
+    captured["sessions"] = json!([]);
+    assert_eq!(
+        project(&captured, "apply", &request)["receipt"]["save"]["domain"]["outcome"],
+        "changes"
+    );
+}
+
+#[test]
+fn reference_preview_session_revisit_and_automatic_restoration_are_receipted() {
+    let mut captured = context();
+    let mut saved = preview_reference("https://example.test/dropped");
+    saved["state"] = json!("dropped");
+    captured["stream"]["references"] = json!([saved]);
+    let mut desired = preview_reference("https://example.test/dropped");
+    desired.as_object_mut().unwrap().remove("revision");
+    let request = update(
+        &captured,
+        "stream",
+        json!({"reference_changes":[
+            {"key":{"kind":"url","url":"https://example.test/dropped"},"desired":desired,"next_revision":"update"}
+        ]}),
+        Actor::Automatic,
+    );
+    let result = project(&captured, "apply", &request);
+    assert_eq!(result["receipt"]["save"]["domain"]["outcome"], "superseded");
+    assert_eq!(
+        result["receipt"]["save"]["domain"]["reference_results"][0]["action"],
+        "restore"
+    );
+    assert_eq!(result["catalog"], captured);
+    let mut revisited = captured.clone();
+    revisited["session"]["previous_stream_ids"] = json!(["effort", "elsewhere"]);
+    revisited["sessions"] = json!([revisited["session"]]);
+    let result = project(&revisited, "apply", &request);
+    assert_eq!(
+        result["receipt"]["save"]["domain"]["conflicts"],
+        json!(["inputs"])
+    );
 }
 
 #[test]

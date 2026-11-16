@@ -580,7 +580,10 @@ fn saved_reference_resolution_checks_link_kind_and_retains_moved_artifact_proven
         application::{self, integration::Streams},
         artifacts::{ArtifactEntry, ArtifactKey},
         config::{Config, Strategy},
-        model::{Link, Record, Stream},
+        model::{
+            Record, Reference as ModelReference, ReferenceRole, ReferenceState, ReferenceTarget,
+            ReferenceValue, Stream,
+        },
         operations::membership::MoveIntent,
         runtime::{CheckoutRegistry, DirectoryBindings},
     };
@@ -594,14 +597,36 @@ fn saved_reference_resolution_checks_link_kind_and_retains_moved_artifact_proven
     let records = application::initialize_records(&config, Strategy::None, None, "main").unwrap();
     let host = records.host().as_str();
     let mut stream = Stream::new("work", "Work", None, host).unwrap();
-    stream.issues.push(Link {
-        url: "https://example.test/issue/1".into(),
-        description: "Issue".into(),
-    });
-    stream.prs.push(Link {
-        url: "https://example.test/pull/2".into(),
-        description: "Review".into(),
-    });
+    stream.references.push(
+        ModelReference::new(
+            ReferenceValue {
+                name: "Issue".into(),
+                purpose: "Issue".into(),
+                role: ReferenceRole::Dependency,
+                state: ReferenceState::Active,
+                target: ReferenceTarget::Issue {
+                    url: "https://example.test/issue/1".into(),
+                },
+            },
+            "rev-issue",
+        )
+        .unwrap(),
+    );
+    stream.references.push(
+        ModelReference::new(
+            ReferenceValue {
+                name: "Review".into(),
+                purpose: "Review".into(),
+                role: ReferenceRole::Deliverable,
+                state: ReferenceState::Active,
+                target: ReferenceTarget::Pr {
+                    url: "https://example.test/pull/2".into(),
+                },
+            },
+            "rev-pr",
+        )
+        .unwrap(),
+    );
     application::create_record(records.records(), "stream", &Record::Stream(stream)).unwrap();
     application::create_record(
         records.records(),

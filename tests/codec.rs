@@ -1,11 +1,11 @@
 use serde_json::{Value, json};
 use streams::{
     codec::{record_from_data, record_to_data},
-    model::{Document, RecordKind, Session, Stream},
+    model::{RecordKind, Session, Stream},
 };
 
 fn stream() -> Value {
-    json!({"id": "work", "title": "Café", "goal": null, "owner": {"host_id": "host"}})
+    json!({"id": "work", "title": "Café", "goal": null, "owner": {"host_id": "host"}, "references":[]})
 }
 
 fn session() -> Value {
@@ -128,12 +128,10 @@ fn positional_nested_arrays_are_not_wire_objects() {
             json!({"repo": ["url"]}),
         ),
         (
-            "documents",
-            json!([{"repository": "repo", "ref": "main", "path": "doc"}]),
-            json!([["repo", "main", "doc", "", null, null]]),
+            "references",
+            json!([reference()]),
+            json!([["Reference", "Purpose", "brief", "active", {}, "revision"]]),
         ),
-        ("issues", json!([{"url": "url"}]), json!([["url", ""]])),
-        ("prs", json!([{"url": "url"}]), json!([["url", ""]])),
     ] {
         let mut data = stream();
         data["repositories"] = json!({"repo": {"url": "url"}});
@@ -223,18 +221,14 @@ fn defaults_apply_only_to_missing_nonnullable_fields() {
     assert_eq!(encoded["archived"], false);
     assert_eq!(encoded["repositories"], json!({}));
     assert_eq!(encoded["goal_short"], Value::Null);
-    for field in ["documents", "issues", "prs"] {
-        assert_eq!(encoded[field], json!([]));
-    }
+    assert_eq!(encoded["references"], json!([]));
     for field in [
         "title_mode",
         "goal_mode",
         "status",
         "archived",
         "repositories",
-        "documents",
-        "issues",
-        "prs",
+        "references",
     ] {
         let mut data = stream();
         data[field] = Value::Null;
@@ -272,95 +266,322 @@ fn defaults_apply_only_to_missing_nonnullable_fields() {
 }
 
 #[test]
-fn nested_descriptions_default_and_document_provenance_is_omitted_only_when_none() {
-    let mut data = stream();
-    data["repositories"] = json!({"repo": {"url": "url"}});
-    data["documents"] = json!([{"repository": "repo", "ref": "main", "path": "doc"}]);
-    data["issues"] = json!([{"url": "issue"}]);
-    data["prs"] = json!([{"url": "pr"}]);
-    let encoded = roundtrip(RecordKind::Stream, &data);
+fn references_are_required_and_old_collections_are_rejected() {
+    let mut missing = stream();
+    missing.as_object_mut().unwrap().remove("references");
+    assert!(record_from_data(RecordKind::Stream, &missing).is_err());
+    assert!(record_from_data(RecordKind::Stream, &stream()).is_ok());
     for field in ["documents", "issues", "prs"] {
-        assert_eq!(encoded[field][0]["description"], "");
-        let mut invalid = data.clone();
-        invalid[field][0]["description"] = Value::Null;
+        let mut invalid = stream();
+        invalid[field] = json!([]);
         assert!(
             record_from_data(RecordKind::Stream, &invalid).is_err(),
             "{field}"
         );
     }
-    for field in ["commit", "source_session_id"] {
-        assert!(encoded["documents"][0].get(field).is_none());
-        data["documents"][0][field] = Value::Null;
+    let mut data = stream();
+    let mut document = reference();
+    document["target"] =
+        json!({"kind":"document","repository_url":"git@example.test:repo","path":"docs/design.md"});
+    data["references"] = json!([document]);
+    let encoded = roundtrip(RecordKind::Stream, &data);
+    for field in ["ref", "commit", "source_session_id"] {
+        assert!(encoded["references"][0]["target"].get(field).is_none());
+        data["references"][0]["target"][field] = Value::Null;
         assert!(
-            roundtrip(RecordKind::Stream, &data)["documents"][0]
+            roundtrip(RecordKind::Stream, &data)["references"][0]["target"]
                 .get(field)
                 .is_none()
         );
-        data["documents"][0][field] = json!("provenance");
+        data["references"][0]["target"][field] = json!("established");
         assert_eq!(
-            roundtrip(RecordKind::Stream, &data)["documents"][0][field],
-            "provenance"
+            roundtrip(RecordKind::Stream, &data)["references"][0]["target"][field],
+            "established"
         );
-        for invalid in [json!(""), json!(" \n"), json!("bad\u{0}text"), json!(42)] {
-            let mut invalid_data = data.clone();
-            invalid_data["documents"][0][field] = invalid;
+    }
+    assert!(serde_json::to_string(&encoded).unwrap().contains("Café"));
+}
+
+fn reference() -> Value {
+    json!({
+        "name": "Reference", "purpose": "Define acceptance", "role": "brief", "state": "active",
+        "target": {"kind": "link", "url": "https://EXAMPLE.test/brief"}, "revision": "replay:capture:0:1"
+    })
+}
+
+#[test]
+fn standalone_references_have_strict_shapes_and_exact_resource_keys() {
+    use streams::model::{Reference, ReferenceTarget, ReferenceValue, ResourceKey};
+    for kind in ["pr", "issue", "link", "document"] {
+        let mut wire = reference();
+        wire["target"] = if kind == "document" {
+            json!({"kind":kind,"repository_url":"git@example.test:tools","path":"docs/design.md"})
+        } else {
+            json!({"kind":kind,"url":"https://EXAMPLE.test/item"})
+        };
+        let saved: Reference = serde_json::from_value(wire.clone()).unwrap();
+        saved.validate().unwrap();
+        assert_eq!(serde_json::to_value(&saved).unwrap(), wire);
+        let key = saved.target.key();
+        key.validate().unwrap();
+        assert_eq!(
+            serde_json::from_value::<ResourceKey>(json!(key)).unwrap(),
+            key
+        );
+        assert_eq!(
+            Reference::new(saved.value(), saved.revision.clone()).unwrap(),
+            saved
+        );
+        if kind == "document" {
+            let mut changed = saved.clone();
+            if let ReferenceTarget::Document(document) = &mut changed.target {
+                document.r#ref = Some("topic".into());
+                document.commit = Some("new-commit".into());
+                document.source_session_id = Some("source".into());
+            }
+            assert_eq!(changed.target.key(), key);
+        } else {
+            for target in [
+                ReferenceTarget::Pr {
+                    url: "https://EXAMPLE.test/item".into(),
+                },
+                ReferenceTarget::Issue {
+                    url: "https://EXAMPLE.test/item".into(),
+                },
+                ReferenceTarget::Link {
+                    url: "https://EXAMPLE.test/item".into(),
+                },
+            ] {
+                assert_eq!(target.key(), key);
+            }
+            assert_ne!(
+                ReferenceTarget::Link {
+                    url: "https://example.test/item".into()
+                }
+                .key(),
+                key
+            );
+        }
+        for field in ["extra", "actor"] {
+            let mut invalid = wire.clone();
+            invalid[field] = json!(true);
+            assert!(serde_json::from_value::<Reference>(invalid).is_err());
+        }
+        let mut invalid = wire.clone();
+        invalid["target"]["extra"] = json!(true);
+        assert!(serde_json::from_value::<Reference>(invalid).is_err());
+        let mut invalid = json!(key);
+        invalid["extra"] = json!(true);
+        assert!(serde_json::from_value::<ResourceKey>(invalid).is_err());
+        for field in ["name", "purpose", "role", "state", "target", "revision"] {
+            let mut invalid = wire.clone();
+            invalid.as_object_mut().unwrap().remove(field);
             assert!(
-                record_from_data(RecordKind::Stream, &invalid_data).is_err(),
+                serde_json::from_value::<Reference>(invalid).is_err(),
                 "{field}"
             );
         }
-    }
-    for value in [Value::Null, json!("retired-commit")] {
-        let mut invalid = data.clone();
-        invalid["documents"][0]["added_at"] = value;
-        let error = record_from_data(RecordKind::Stream, &invalid).unwrap_err();
-        assert!(error.to_string().contains("unknown field `added_at`"));
-    }
-    let json = serde_json::to_string(&encoded).unwrap();
-    assert!(json.contains("Café"));
-    assert!(json.starts_with("{\"archived\":"));
-}
-
-#[test]
-fn document_ref_is_optional_recovery_context_not_part_of_its_identity() {
-    let mut data = stream();
-    data["repositories"] = json!({"repo":{"url":"https://example.test/repo"}});
-    data["documents"] =
-        json!([{"repository":"repo","path":"docs/design.md","description":"Design"}]);
-    for value in [None, Some(Value::Null), Some(json!("topic"))] {
-        let mut input = data.clone();
-        if let Some(value) = &value {
-            input["documents"][0]["ref"] = value.clone();
-        }
-        let encoded = roundtrip(RecordKind::Stream, &input);
-        if value == Some(json!("topic")) {
-            assert_eq!(encoded["documents"][0]["ref"], "topic");
-        } else {
-            assert!(encoded["documents"][0].get("ref").is_none());
-        }
-    }
-    for invalid in [json!(""), json!(" "), json!(42), json!(false)] {
-        let mut input = data.clone();
-        input["documents"][0]["ref"] = invalid;
-        assert!(record_from_data(RecordKind::Stream, &input).is_err());
+        let mut value = wire;
+        value.as_object_mut().unwrap().remove("revision");
+        let desired: ReferenceValue = serde_json::from_value(value.clone()).unwrap();
+        desired.validate().unwrap();
+        assert_eq!(serde_json::to_value(desired).unwrap(), value);
+        value["revision"] = json!("extra");
+        assert!(serde_json::from_value::<ReferenceValue>(value).is_err());
     }
 }
 
 #[test]
-fn document_constructor_sets_commit_and_provenance_does_not_change_identity() {
-    let document = Document::new("repo", "main", "doc", "", None).unwrap();
-    assert_eq!(document.commit, None);
-    assert_eq!(document.source_session_id, None);
-    let mut document = Document::new("repo", "main", "doc", "", Some("initial".into())).unwrap();
-    assert_eq!(document.commit.as_deref(), Some("initial"));
-    assert_eq!(document.source_session_id, None);
-    document.commit = Some("latest".into());
-    document.source_session_id = Some("session".into());
-    document.r#ref = Some("topic".into());
-    document.description = "updated".into();
-    document.validate().unwrap();
-    assert_eq!(document.identity(), ("repo", "doc"));
-    assert!(Document::new("repo", "main", "doc", "", Some("".into())).is_err());
+fn standalone_document_recovery_is_nullable_optional_and_nonempty() {
+    use streams::model::{Reference, RepositoryDocument};
+    let mut wire = reference();
+    wire["target"] = json!({"kind":"document","repository_url":"git@example.test:tools","path":"docs/design.md"});
+    for field in ["ref", "commit", "source_session_id"] {
+        for value in [Value::Null, json!("established")] {
+            let mut input = wire.clone();
+            input["target"][field] = value.clone();
+            let saved: Reference = serde_json::from_value(input).unwrap();
+            saved.validate().unwrap();
+            let encoded = serde_json::to_value(saved).unwrap();
+            if value.is_null() {
+                assert!(encoded["target"].get(field).is_none());
+            } else {
+                assert_eq!(encoded["target"][field], value);
+            }
+        }
+        for invalid in [
+            json!(""),
+            json!(" \n"),
+            json!("\u{85}"),
+            json!("bad\u{0}text"),
+        ] {
+            let mut input = wire.clone();
+            input["target"][field] = invalid;
+            let saved: Reference = serde_json::from_value(input).unwrap();
+            assert!(saved.validate().is_err(), "{field}");
+        }
+    }
+    for path in [
+        "/absolute",
+        "C:drive",
+        "docs\\file",
+        "../parent",
+        "docs/../file",
+        "",
+        "\u{85}",
+    ] {
+        let mut input = wire.clone();
+        input["target"]["path"] = json!(path);
+        let saved: Reference = serde_json::from_value(input).unwrap();
+        assert!(saved.validate().is_err(), "{path:?}");
+    }
+    let mut input = json!({"repository_url":"repo","path":"doc","description":"old relationship"});
+    assert!(serde_json::from_value::<RepositoryDocument>(input.clone()).is_err());
+    input.as_object_mut().unwrap().remove("description");
+    assert!(
+        serde_json::from_value::<RepositoryDocument>(input)
+            .unwrap()
+            .validate()
+            .is_ok()
+    );
+}
+
+#[test]
+fn reference_text_validation_preserves_rust_unicode_acceptance() {
+    use streams::model::Reference;
+    for field in ["name", "purpose", "revision"] {
+        for text in [
+            "\u{feff}",
+            "😀",
+            "leading\nnewline",
+            "--value='exact'",
+            "\u{1b}",
+        ] {
+            let mut wire = reference();
+            wire[field] = json!(text);
+            let saved: Reference = serde_json::from_value(wire.clone()).unwrap();
+            saved.validate().unwrap();
+            assert_eq!(serde_json::to_value(saved).unwrap(), wire);
+        }
+        for text in ["", " \n", "\u{85}", "\u{a0}\u{3000}", "bad\u{0}text"] {
+            let mut wire = reference();
+            wire[field] = json!(text);
+            let saved: Reference = serde_json::from_value(wire).unwrap();
+            assert!(saved.validate().is_err(), "{field}: {text:?}");
+        }
+    }
+    let raw = serde_json::to_string(&reference()).unwrap();
+    assert!(serde_json::from_str::<Reference>(&raw.replace("Reference", "\\ud800")).is_err());
+    assert!(serde_json::from_str::<Reference>(&raw.replace("Reference", "\\udfff")).is_err());
+}
+
+#[test]
+fn document_reference_text_fields_share_exact_unicode_validation() {
+    for field in [
+        "repository_url",
+        "path",
+        "ref",
+        "commit",
+        "source_session_id",
+    ] {
+        for text in ["\u{feff}", "😀", "line\nvalue", "\u{1b}"] {
+            let mut wire = reference();
+            wire["target"] = json!({"kind":"document","repository_url":"repo","path":"doc"});
+            wire["target"][field] = json!(text);
+            let mut data = stream();
+            data["references"] = json!([wire]);
+            assert_eq!(
+                roundtrip(RecordKind::Stream, &data)["references"][0]["target"][field],
+                text,
+                "{field}"
+            );
+        }
+        for text in ["", " \n", "\u{85}", "bad\u{0}text"] {
+            let mut wire = reference();
+            wire["target"] = json!({"kind":"document","repository_url":"repo","path":"doc"});
+            wire["target"][field] = json!(text);
+            let mut data = stream();
+            data["references"] = json!([wire]);
+            assert!(
+                record_from_data(RecordKind::Stream, &data).is_err(),
+                "{field}: {text:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn reference_url_policy_matches_painting_and_preserves_saved_spelling() {
+    use streams::model::{Reference, reference_url};
+    for url in [
+        "https://EXAMPLE.test/path",
+        "http://localhost:8080/a%20b",
+        "https://[::1]/",
+        "https://example.test/%F0%9F%98%80",
+    ] {
+        assert!(reference_url(url).is_some(), "{url}");
+        let mut wire = reference();
+        wire["target"]["url"] = json!(url);
+        let saved: Reference = serde_json::from_value(wire.clone()).unwrap();
+        saved.validate().unwrap();
+        assert_eq!(serde_json::to_value(saved).unwrap(), wire);
+    }
+    for url in [
+        "file:///tmp/doc",
+        "javascript:alert(1)",
+        "https://example.com/%0Aevil",
+        "https://example.com/%E2%80%AEevil",
+        "https://example.com/%ZZ",
+        "https://example.com/a\\b",
+        "https://example.com/a b",
+        "https://",
+        "https://user@example.test",
+        "https://user:secret@example.test",
+        "https://:secret@example.test",
+        "https://example.test/a b",
+        "https://example.test/\\path",
+        "https://example.test/\u{85}",
+        "https://example.test/\u{feff}",
+        "https://example.test/%",
+        "https://example.test/%0",
+        "https://example.test/%gg",
+        "https://example.test/%FF",
+        "https://example.test/%ED%A0%80",
+        "https://example.test/%00",
+        "https://example.test/%1b",
+        "https://example.test/%E2%80%AE",
+    ] {
+        assert!(reference_url(url).is_none(), "{url}");
+        let mut wire = reference();
+        wire["target"]["url"] = json!(url);
+        let saved: Reference = serde_json::from_value(wire).unwrap();
+        assert!(saved.validate().is_err(), "{url}");
+    }
+}
+
+#[test]
+fn reference_result_wire_has_strict_action_outcome_and_property_shapes() {
+    use streams::operations::references::ReferenceResult;
+    for action in ["add", "update", "drop", "restore", "delete"] {
+        for outcome in ["changes", "no-change", "superseded", "conflict"] {
+            let wire = json!({"key":{"kind":"url","url":"https://example.test/item"},"action":action,"outcome":outcome,"reason":""});
+            let result: ReferenceResult = serde_json::from_value(wire.clone()).unwrap();
+            assert_eq!(serde_json::to_value(result).unwrap(), wire);
+            for field in ["key", "action", "outcome", "reason"] {
+                let mut invalid = wire.clone();
+                invalid.as_object_mut().unwrap().remove(field);
+                assert!(serde_json::from_value::<ReferenceResult>(invalid).is_err());
+            }
+            for field in ["action", "outcome"] {
+                let mut invalid = wire.clone();
+                invalid[field] = json!({wire[field].as_str().unwrap():null});
+                assert!(serde_json::from_value::<ReferenceResult>(invalid).is_err());
+            }
+            let mut invalid = wire.clone();
+            invalid["extra"] = json!(true);
+            assert!(serde_json::from_value::<ReferenceResult>(invalid).is_err());
+        }
+    }
 }
 
 #[test]
@@ -397,22 +618,24 @@ fn host_timestamps_preserve_python_precision_offsets_and_instant_equality() {
 
 #[test]
 fn domain_validation_still_rejects_duplicate_collections() {
-    for (field, item) in [
-        (
-            "documents",
-            json!({"repository": "repo", "ref": "main", "path": "doc"}),
-        ),
-        ("issues", json!({"url": "issue"})),
-        ("prs", json!({"url": "pr"})),
-    ] {
+    for kind in ["pr", "issue", "link", "document"] {
+        let mut first = reference();
+        if kind == "document" {
+            first["target"] = json!({"kind":"document","repository_url":"repo","path":"docs/design.md","ref":"main"});
+        }
+        let mut second = first.clone();
+        if kind == "document" {
+            second["target"]["ref"] = json!("other");
+        } else {
+            second["target"]["kind"] = json!(kind);
+        }
         let mut data = stream();
-        data["repositories"] = json!({"repo": {"url": "url"}});
-        data[field] = json!([item.clone(), item]);
+        data["references"] = json!([first, second]);
         assert_eq!(
             record_from_data(RecordKind::Stream, &data)
                 .unwrap_err()
                 .to_string(),
-            format!("duplicate {field}")
+            "duplicate reference resource key"
         );
     }
     let mut data = stream();

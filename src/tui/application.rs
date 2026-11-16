@@ -644,11 +644,11 @@ mod tests {
                     workspace_id: "w".into(),
                 },
                 checkouts: vec![CheckoutBinding {
-                    repository: "lib".into(),
+                    repository_url: "https://example.com/lib".into(),
                     selection: selection.clone(),
                 }],
                 documents: vec![DocumentLocation {
-                    repository: "lib".into(),
+                    repository_url: "https://example.com/lib".into(),
                     path: "docs/design.md".into(),
                     location: ResolvedDocument::File {
                         selection,
@@ -859,11 +859,14 @@ mod tests {
     fn lowercase_r_is_a_document_key_and_links_use_hit_regions() {
         let mut s = snapshot();
         for index in 1..18 {
-            let mut document = s.records.stream.documents[0].clone();
+            let mut reference = s.records.stream.references[0].clone();
+            let crate::model::ReferenceTarget::Document(document) = &mut reference.target else {
+                panic!()
+            };
             document.path = format!("docs/{index}.md");
             let mut location = s.context.documents[0].clone();
             location.path = document.path.clone();
-            s.records.stream.documents.push(document);
+            s.records.stream.references.push(reference);
             s.context.documents.push(location);
         }
         let s = CardSnapshot::new(s.records.stream, s.records.session, s.context).unwrap();

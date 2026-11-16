@@ -287,18 +287,21 @@ fn activate(
     match target {
         ViewTarget::Document(document) => engine.open_document(document).map_err(|e| e.to_string()),
         ViewTarget::Artifact(artifact) => engine.open_artifact(artifact).map_err(|e| e.to_string()),
-        ViewTarget::Link(url) => {
+        ViewTarget::Link(reference) => {
             engine
                 .client()
                 .check_subscription()
                 .map_err(|error| error.to_string())?;
-            let url: streams::web_url::SafeHttpUrl = url
-                .as_str()
-                .parse()
-                .map_err(|_| "unsafe browser URL".to_owned())?;
-            if !snapshot.contains_link(url.as_url()) || !fresh.contains_link(url.as_url()) {
+            if !snapshot.contains_link(reference) || !fresh.contains_link(reference) {
                 return Err("unsafe browser URL".into());
             }
+            let raw = match &reference.target {
+                streams::model::ReferenceTarget::Pr { url }
+                | streams::model::ReferenceTarget::Issue { url }
+                | streams::model::ReferenceTarget::Link { url } => url,
+                _ => return Err("browser action requires a URL reference".into()),
+            };
+            let url = streams::model::reference_url(raw).ok_or("unsafe browser URL")?;
             let env = environment
                 .iter()
                 .filter(|(key, _)| {
@@ -322,7 +325,7 @@ fn activate(
                         "xdg-open"
                     }
                     .into(),
-                    args: vec![url.as_url().as_str().into()],
+                    args: vec![url.as_str().into()],
                     cwd: None,
                     input: None,
                     env,

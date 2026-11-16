@@ -1,8 +1,8 @@
 //! Domain-owned intent and pure reconciliation, independent of persistence.
 
-pub mod documents;
 pub mod edits;
 pub mod membership;
+pub mod references;
 
 use std::collections::BTreeSet;
 
@@ -317,7 +317,7 @@ macro_rules! record_fields {
 
 record_fields! {
     Stream {
-        immutable: [id],
+        immutable: [id, references],
         editable: [
             title: (true, Automatic),
             goal: (true, Automatic),
@@ -328,9 +328,6 @@ record_fields! {
             status: (false, User),
             archived: (false, User),
             repositories: (true, None),
-            documents: (true, User),
-            issues: (true, User),
-            prs: (true, User),
         ]
     },
     Session {
@@ -392,31 +389,6 @@ fn text_group_guards(
     fields
 }
 
-fn merge_additive<T: Clone + PartialEq>(
-    before: &[T],
-    desired: &[T],
-    current: &[T],
-    same_identity: impl Fn(&T, &T) -> bool,
-) -> Option<Vec<T>> {
-    if before
-        .iter()
-        .any(|item| !desired.contains(item) || !current.contains(item))
-    {
-        return None;
-    }
-    let mut merged = current.to_vec();
-    for item in desired {
-        if let Some(old) = merged.iter().find(|old| same_identity(old, item)) {
-            if old != item {
-                return None;
-            }
-        } else {
-            merged.push(item.clone());
-        }
-    }
-    Some(merged)
-}
-
 #[cfg(test)]
 mod field_policy_tests {
     use super::*;
@@ -435,13 +407,6 @@ mod field_policy_tests {
                 RecordKind::Stream,
                 "title_mode goal_mode status archived",
                 false,
-                true,
-                false,
-            ),
-            (
-                RecordKind::Stream,
-                "documents issues prs",
-                true,
                 true,
                 false,
             ),

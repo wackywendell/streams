@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { receiptCanContinue, type Document, type ApplyRequest, type LocalContext, type Receipt, type SessionWire, type StreamWire, type Mode } from "./streams.ts";
+import { isDeepStrictEqual } from "node:util";
+import { isReferenceText, receiptCanContinue, receiptHasUnappliedReferences, type ApplyRequest, type LocalContext, type Receipt, type Reference, type ReferenceValue, type ReferenceTarget, type ResourceKey, type SessionWire, type StreamWire, type Mode } from "./streams.ts";
+import { isReferenceValue, isResourceKey, parseLocalContext, resourceKey } from "../../integrations/herdr-work-cards/src/streams-context.ts";
 export const statuses = ["active", "waiting", "blocked", "parked", "done"];
 export const titleModes = ["automatic", "manual", "inherit"] as const;
 export const fields = {
- stream: ["title", "title_mode", "goal", "goal_short", "goal_mode", "status", "archived", "documents", "issues", "prs"],
+ stream: ["title", "title_mode", "goal", "goal_short", "goal_mode", "status", "archived"],
  session: ["title", "title_mode", "status", "recap", "recap_short", "state", "state_short", "remaining", "remaining_short"],
 };
 export function automaticFields(kind: "stream" | "session", before: StreamWire | SessionWire, defaultMode: Mode): string[] {
@@ -26,32 +28,6 @@ export function validateChanges(kind: "stream" | "session", before: StreamWire |
   else if (key === "archived" && typeof value !== "boolean") throw Error("archived must be boolean");
   else if (["goal", "goal_short", "recap_short", "state_short", "remaining_short"].includes(key) && value !== null) nonempty(value, key);
   else if (["recap", "state", "remaining"].includes(key) && (typeof value !== "string" || value.includes("\0"))) throw Error(`${key} must be text`);
-  else if (["documents", "issues", "prs"].includes(key)) validateReferences(key, value, before as StreamWire);
- }
-}
-export function validateReferences(field: string, rows: unknown, stream: StreamWire): void {
- if (!Array.isArray(rows)) throw Error(`${field} must contain rows`);
- const seen = new Set<string>();
- for (const row of rows) {
-  if (!row || typeof row !== "object" || Array.isArray(row)) throw Error("Invalid reference row");
-  const keys = field === "documents" ? ["repository", "path", "description"] : ["url", "description"];
-  const allowed = field === "documents" ? [...keys, "ref", "commit", "source_session_id"] : keys;
-  if (Object.keys(row).some((key) => !allowed.includes(key)) || keys.some((key) => typeof row[key] !== "string" || row[key].includes("\0"))) throw Error("Reference rows require labelled text fields");
-  if (field === "documents" && row.commit !== undefined && row.commit !== null) nonempty(row.commit, "commit");
-  if (field === "documents" && row.source_session_id !== undefined && row.source_session_id !== null) nonempty(row.source_session_id, "source_session_id");
-  let id: string;
-  if (field === "documents") {
-   if (!Object.hasOwn(stream.repositories, row.repository)) throw Error("Choose an existing repository alias");
-   if (row.ref !== undefined && row.ref !== null) nonempty(row.ref, "ref");
-   nonempty(row.path, "path");
-   if (/^(\/|[a-z]:)/i.test(row.path) || row.path.includes("\\") || row.path.split("/").includes("..")) throw Error("Document path must be a portable relative path");
-   id = `${row.repository}\0${row.path}`;
-  } else {
-   let url: URL;try {url = new URL(row.url);} catch {throw Error("Reference URL must be an absolute HTTP(S) URL");}
-   if (!["http:", "https:"].includes(url.protocol)) throw Error("Reference URL must use HTTP(S)");
-   id = row.url;
-  }
-  if (seen.has(id)) throw Error("Duplicate reference row");seen.add(id);
  }
 }
 export function editRequest(context: LocalContext, kind: "stream" | "session", changes: Record<string, unknown>, actor: "automatic" | "user", operationId: string = randomUUID()): ApplyRequest {
@@ -67,13 +43,98 @@ export function editRequest(context: LocalContext, kind: "stream" | "session", c
  }
  return structuredClone({version:2, catalog_source:context.catalog_source, operation_id:operationId, kind, actor, before, changes, title_default, inputs});
 }
-export type DocumentProposal = Pick<Document, "repository" | "ref" | "path" | "description">;
-export function documentAdditionsRequest(context: LocalContext, additions: DocumentProposal[], operationId: string): ApplyRequest {
- const {stream, session} = context;
- if (!stream || !session || session.stream_id !== stream.id || session.host_id !== context.host_id || stream.owner.host_id !== context.host_id) throw Error("Document additions require a local captured Stream and Session");
- validateReferences("documents", additions, stream);
- if (additions.some(row => Object.keys(row).some(key => !["repository", "ref", "path", "description"].includes(key)))) throw Error("Document provenance is assigned by the save, not the reporting model");
- return structuredClone({version:2, catalog_source:context.catalog_source, operation_id:operationId, kind:"stream", actor:"automatic", before:stream, changes:{document_additions:additions}, title_default:context.title_defaults.stream, inputs:[{kind:"session", record:session}]});
+export type AutomaticReferenceValue = Omit<ReferenceValue, "target"> & {target: Exclude<ReferenceTarget, {kind:"document"}> | {kind:"document"; repository_url:string; path:string; ref?:string}};
+export type ReferenceDraft = {key: ResourceKey; desired: ReferenceValue | AutomaticReferenceValue | null};
+export type ReferenceActor = "automatic" | "user";
+export function referenceSelector(key: ResourceKey): string {
+ return JSON.stringify(key.kind === "url" ? ["url", key.url] : ["document", key.repository_url, key.path]);
+}
+export function isAutomaticReferenceValue(value: unknown): value is AutomaticReferenceValue {
+ if (!isReferenceValue(value)) return false;
+ const target = value.target;
+ return target.kind !== "document" || !Object.hasOwn(target, "commit") && !Object.hasOwn(target, "source_session_id") && (!Object.hasOwn(target, "ref") || isReferenceText(target.ref));
+}
+function valueOf(reference: Reference): ReferenceValue {
+ const {revision: _revision, ...value} = reference;return value;
+}
+function cleanValue(value: ReferenceValue): ReferenceValue {
+ if (value.target.kind !== "document") return structuredClone(value);
+ const {ref, commit, source_session_id, ...target} = value.target;
+ return {...value, target:{...target, ...(ref == null ? {} : {ref}), ...(commit == null ? {} : {commit}), ...(source_session_id == null ? {} : {source_session_id})}};
+}
+/** Materialise automatic document hints without losing captured recovery context. */
+export function materialiseReference(value: AutomaticReferenceValue, current: Reference | undefined, session: SessionWire | null): ReferenceValue {
+ if (value.target.kind !== "document") return structuredClone(value);
+ const old = current?.target.kind === "document" ? current.target : undefined;
+ const ref = value.target.ref ?? old?.ref ?? (!current && session?.checkout?.repository_url === value.target.repository_url ? session.checkout.ref : undefined);
+ return cleanValue({...value, target:{...value.target, ...(ref == null ? {} : {ref}), ...(old?.commit == null ? {} : {commit:old.commit}), ...(old?.source_session_id == null ? !current && session ? {source_session_id:session.id} : {} : {source_session_id:old.source_session_id})}});
+}
+export function referenceRequest(context: LocalContext, actor: ReferenceActor, drafts: ReferenceDraft[], operationId: string = randomUUID()): ApplyRequest | undefined {
+ const captured = structuredClone(context);parseLocalContext(captured);
+ const {stream, session} = captured;
+ if (!stream || stream.owner.host_id !== captured.host_id) throw Error("Reference edits require a local captured Stream");
+ if (actor !== "user" && actor !== "automatic") throw Error("Invalid reference actor");
+ if (actor === "automatic" && (!session || session.stream_id !== stream.id || session.host_id !== stream.owner.host_id)) throw Error("Automatic reference edits require the captured Session");
+ if (!isReferenceText(operationId)) throw Error("operation_id must be nonempty reference text");
+ if (!Array.isArray(drafts) || !drafts.length) throw Error("Reference changes must contain at least one row");
+ const capturedByKey = new Map(stream.references.map(reference => [referenceSelector(resourceKey(reference.target)), reference]));
+ const occupied = new Set<string>();
+ const changes: Record<string, unknown>[] = [];
+ for (const draft of drafts) {
+  if (!draft || typeof draft !== "object" || Object.keys(draft).some(key => key !== "key" && key !== "desired") || !Object.hasOwn(draft, "desired") || !isResourceKey(draft.key)) throw Error("Invalid reference draft");
+  const oldKey = referenceSelector(draft.key), current = capturedByKey.get(oldKey);
+  if (draft.desired === null) {
+   if (actor !== "user" || !current) throw Error("Only a captured reference can be deleted by the user");
+  } else if (!(actor === "automatic" ? isAutomaticReferenceValue(draft.desired) : isReferenceValue(draft.desired))) throw Error("Invalid reference value");
+  const targetKey = draft.desired === null ? oldKey : referenceSelector(resourceKey(draft.desired.target));
+  if ((!current || actor === "automatic") && oldKey !== targetKey) throw Error("Reference target does not match its selector");
+  for (const key of new Set([oldKey, targetKey])) {if (occupied.has(key)) throw Error("Reference changes overlap");occupied.add(key);}
+  const effective = draft.desired === null ? null : actor === "automatic" ? materialiseReference(draft.desired as AutomaticReferenceValue, current, session) : cleanValue(draft.desired as ReferenceValue);
+  if (current && effective !== null && isDeepStrictEqual(cleanValue(valueOf(current)), effective)) continue;
+  if (current?.revision === operationId && effective !== null) throw Error("next_revision must differ from the captured revision");
+  changes.push(draft.desired === null ? {key:draft.key, desired:null} : {key:draft.key, desired:draft.desired, next_revision:operationId});
+ }
+ if (!changes.length) return undefined;
+ return structuredClone({version:2, catalog_source:captured.catalog_source, operation_id:operationId, kind:"stream", actor, before:stream, changes:{reference_changes:changes}, title_default:captured.title_defaults.stream, inputs:actor === "automatic" ? [{kind:"session", record:session!}] : []});
+}
+export function automaticReferenceRequest(context: LocalContext, rawProposals: unknown, operationId: string): ApplyRequest | undefined {
+ if (rawProposals === undefined) return undefined;
+ if (!Array.isArray(rawProposals)) throw Error("reference_proposals must be an array");
+ if (!rawProposals.length) return undefined;
+ const drafts = rawProposals.map(value => {
+  if (!isAutomaticReferenceValue(value)) throw Error("Invalid automatic reference proposal");
+  return {key:resourceKey(value.target), desired:value};
+ });
+ return referenceRequest(context, "automatic", drafts, operationId);
+}
+export class ReferenceEdit {
+ readonly base: LocalContext;
+ error?: string;
+ constructor(context: LocalContext, readonly key: ResourceKey | null, public actor: ReferenceActor, public desired: unknown) {
+  this.base = structuredClone(context);this.key = structuredClone(key);this.desired = structuredClone(desired);
+ }
+ get dirty(): boolean {
+  const current = this.key && this.base.stream?.references.find(row => referenceSelector(resourceKey(row.target)) === referenceSelector(this.key!));
+  if (!current) return this.desired !== null;
+  if (this.desired === null) return true;
+  if (this.actor === "automatic" && isAutomaticReferenceValue(this.desired)) return !isDeepStrictEqual(cleanValue(valueOf(current)), materialiseReference(this.desired, current, this.base.session));
+  return !isReferenceValue(this.desired) || !isDeepStrictEqual(cleanValue(valueOf(current)), cleanValue(this.desired));
+ }
+ rebase(context: LocalContext): void {Object.assign(this.base, structuredClone(context));this.error = undefined;}
+ request(operationId: string = randomUUID()): ApplyRequest | undefined {
+  const key = this.key ?? (isReferenceValue(this.desired) ? resourceKey(this.desired.target) : null);
+  if (!key) throw Error("Choose a valid reference target");
+  if (!this.key && this.base.stream?.references.some(row => referenceSelector(resourceKey(row.target)) === referenceSelector(key))) throw Error("Reference already exists; edit the saved row");
+  return referenceRequest(this.base, this.actor, [{key, desired:this.desired as ReferenceDraft["desired"]}], operationId);
+ }
+ async save(cli: {apply(request: ApplyRequest): Promise<Receipt>}, onReceipt?: (receipt: Receipt) => void): Promise<Receipt | undefined> {
+  try {
+   const request = this.request();if (!request) return;
+   const receipt = await cli.apply(request);onReceipt?.(receipt);
+   if (receiptHasUnappliedReferences(receipt) || !receiptCanContinue(receipt)) throw Error("Reference edit not applied; input and receipt retained. Inspect the current row before reapplying.");
+   this.error = undefined;return receipt;
+  } catch (error) {this.error = String(error);throw error;}
+ }
 }
 export class FieldEdit {
  readonly base: LocalContext;

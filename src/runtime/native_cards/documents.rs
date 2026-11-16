@@ -9,8 +9,11 @@ impl NativeCardEngine {
                 "document viewing scope changed; redraw before opening",
             ));
         }
+        let document = target
+            .document()
+            .ok_or_else(|| invalid("document reference required"))?;
         if card
-            .document_target(&target.document.repository, &target.document.path)
+            .document_target(&document.repository_url, &document.path)
             .as_ref()
             != Some(target)
         {
@@ -35,7 +38,7 @@ impl NativeCardEngine {
         {
             return Err(invalid("document or checkout changed during resolution"));
         }
-        self.open_resolved_document(&target.document.path, resolved)
+        self.open_resolved_document(&document.path, resolved)
     }
 
     /// Native effects for an owner-resolved target; no saved-reference lookup.

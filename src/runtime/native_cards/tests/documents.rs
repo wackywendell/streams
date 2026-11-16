@@ -1,7 +1,7 @@
 use super::*;
 use crate::tui::{CheckoutBinding, CheckoutSelection, DocumentLocation, ResolvedDocument};
 
-struct DocumentSource(PathBuf);
+struct DocumentSource(PathBuf, Option<&'static str>);
 impl DocumentSource {
     fn display(&self, owner: &HerdrInventoryPane) -> Result<CardSnapshot> {
         let original = card(owner);
@@ -10,9 +10,30 @@ impl DocumentSource {
             "repo".into(),
             crate::model::Repository::new("repository").unwrap(),
         );
-        stream.documents.push(
-            crate::model::Document::new("repo", "main", "design.md", "Design", None).unwrap(),
-        );
+        stream.references.push(serde_json::from_value(json!({
+            "name":"Design","purpose":"Guide the work","role":"brief","state":"active",
+            "target":{"kind":"document","repository_url":"repository","path":"design.md","ref":"main"},
+            "revision":"fixture"
+        })).unwrap());
+        if let Some(change) = self.1 {
+            let reference = &mut stream.references[0];
+            match change {
+                "revision" => reference.revision = "newer".into(),
+                "name" => reference.name = "New name".into(),
+                "purpose" => reference.purpose = "New purpose".into(),
+                "role" => reference.role = crate::model::ReferenceRole::Dependency,
+                "dropped" => reference.state = crate::model::ReferenceState::Dropped,
+                "target" => {
+                    let crate::model::ReferenceTarget::Document(document) = &mut reference.target
+                    else {
+                        unreachable!()
+                    };
+                    document.r#ref = Some("other".into());
+                }
+                _ => unreachable!(),
+            }
+        }
+        let visible = stream.references[0].state != crate::model::ReferenceState::Dropped;
         let selection = CheckoutSelection {
             checkout_id: "checkout".into(),
             root: self.0.clone(),
@@ -24,17 +45,21 @@ impl DocumentSource {
                 catalog_source: original.scope().catalog_source.clone(),
                 owner: owner::location(owner),
                 checkouts: vec![CheckoutBinding {
-                    repository: "repo".into(),
+                    repository_url: "repository".into(),
                     selection: selection.clone(),
                 }],
-                documents: vec![DocumentLocation {
-                    repository: "repo".into(),
-                    path: "design.md".into(),
-                    location: ResolvedDocument::File {
-                        selection,
-                        file: self.0.join("design.md"),
-                    },
-                }],
+                documents: if visible {
+                    vec![DocumentLocation {
+                        repository_url: "repository".into(),
+                        path: "design.md".into(),
+                        location: ResolvedDocument::File {
+                            selection,
+                            file: self.0.join("design.md"),
+                        },
+                    }]
+                } else {
+                    vec![]
+                },
             },
         )
         .map_err(|error| invalid(error.to_string()))
@@ -67,11 +92,11 @@ fn document_open_reuses_the_exact_editor_and_accepts_a_tab_info_focus_reply() {
     let root = f.directory.path().canonicalize().unwrap();
     std::fs::write(root.join("design.md"), "Design").unwrap();
     let mut engine = f.engine().unwrap();
-    let source = DocumentSource(root);
+    let source = DocumentSource(root, None);
     let target = source
         .display(&engine.owner_pane)
         .unwrap()
-        .document_target("repo", "design.md")
+        .document_target("repository", "design.md")
         .unwrap();
     let identity = target.editor_identity().unwrap();
     let key = json_digest(&(
@@ -93,4 +118,29 @@ fn document_open_reuses_the_exact_editor_and_accepts_a_tab_info_focus_reply() {
     f.server.clear();
     engine.open_document(&target).unwrap();
     assert_eq!(f.server.methods(), vec!["tab.focus"]);
+}
+
+#[test]
+fn document_open_refuses_fresh_target_relationship_revision_and_dropped_changes() {
+    for change in ["revision", "name", "purpose", "role", "dropped", "target"] {
+        let f = Fixture::new();
+        let root = f.directory.path().canonicalize().unwrap();
+        std::fs::write(root.join("design.md"), "Design").unwrap();
+        let mut engine = f.engine().unwrap();
+        let painted = DocumentSource(root.clone(), None)
+            .display(&engine.owner_pane)
+            .unwrap();
+        let target = painted.document_target("repository", "design.md").unwrap();
+        engine.source = Box::new(DocumentSource(root, Some(change)));
+        f.server.clear();
+        assert!(
+            engine
+                .open_document(&target)
+                .unwrap_err()
+                .to_string()
+                .contains("document viewing context changed"),
+            "{change}"
+        );
+        assert!(f.server.methods().is_empty(), "{change}");
+    }
 }
