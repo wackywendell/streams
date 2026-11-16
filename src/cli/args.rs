@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use clap::{ArgAction, ArgGroup, Args, Parser, Subcommand};
-use streams::config::{ConfigKey, ConfigPath, Strategy};
+use streams::config::{ConfigKey, ConfigPath, Strategy, ViewerMode};
 use streams::frontend::FrontendRequest;
 use streams::model::{NamingMode, ReferenceRole, ReferenceState, Status, TitleMode};
 use streams::runtime::conversations::Harness;
@@ -59,6 +59,8 @@ pub(super) enum IntegrationCommand {
         scope_json: String,
         #[arg(long)]
         reference_json: String,
+        #[arg(long, default_value = "less")]
+        mode: ViewerMode,
     },
     Describe {
         #[arg(long)]

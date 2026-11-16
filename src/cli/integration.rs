@@ -54,9 +54,18 @@ impl App {
         &self,
         scope_json: &str,
         reference_json: &str,
+        mode: streams::config::ViewerMode,
     ) -> Result<Output> {
         use std::io::IsTerminal;
-        use streams::integration::{Reference, ResolvedTarget, WorkScope};
+        use streams::{
+            config::ViewerMode,
+            integration::{Reference, ResolvedTarget, WorkScope},
+        };
+        if mode == ViewerMode::Native {
+            return Err(CliError::message(
+                "native viewer mode does not run in a terminal",
+            ));
+        }
         let scope_value = streams::codec::load_json(scope_json)?;
         if !scope_value.is_object() {
             return Err(CliError::message("scope must be a named object"));
@@ -79,14 +88,65 @@ impl App {
             &self.registry(&scope.host)?,
             &self.locations(opened.root(), &scope.host)?,
         )?;
-        let ResolvedTarget::Document { path, .. } = resolved else {
+        let ResolvedTarget::Document {
+            checkout_root,
+            path,
+            ..
+        } = resolved
+        else {
             unreachable!("document reference")
         };
         let identity = super::pager::observe_file(&path)?;
         let bytes = super::pager::read_document(&path, identity)?;
-        let program = runtime::launch::resolve_executable("less", &self.environment, &self.cwd)
-            .map_err(|error| CliError::message(error.to_string()))?;
-        super::pager::show(&program, &bytes, "document")?;
+        match mode {
+            ViewerMode::Less => {
+                let program =
+                    runtime::launch::resolve_executable("less", &self.environment, &self.cwd)
+                        .map_err(|error| CliError::message(error.to_string()))?;
+                super::pager::show(&program, &bytes, "document")?;
+            }
+            ViewerMode::Editor => match resolve_editor_command(&self.environment, &checkout_root)
+                .map_err(CliError::message)?
+            {
+                Some((program, flags)) => {
+                    let status = std::process::Command::new(program)
+                        .args(flags)
+                        .arg(&path)
+                        .current_dir(&checkout_root)
+                        .status()?;
+                    if !status.success() {
+                        return Err(CliError::message(format!(
+                            "editor viewer exited with {status}"
+                        )));
+                    }
+                }
+                None => {
+                    let program = runtime::launch::resolve_executable(
+                        "less",
+                        &self.environment,
+                        &checkout_root,
+                    )
+                    .map_err(|error| CliError::message(error.to_string()))?;
+                    super::pager::show(&program, &bytes, "document")?;
+                }
+            },
+            ViewerMode::Hunk => {
+                let program =
+                    runtime::launch::resolve_executable("hunk", &self.environment, &checkout_root)
+                        .map_err(|error| CliError::message(error.to_string()))?;
+                let status = std::process::Command::new(program)
+                    .arg("open")
+                    .arg(&path)
+                    .current_dir(&checkout_root)
+                    .status()?;
+                if !status.success() {
+                    return Err(CliError::message(format!(
+                        "hunk viewer exited with {status}"
+                    )));
+                }
+            }
+            ViewerMode::Native => unreachable!("handled above"),
+        }
         Ok(Output::plain(Value::Null, String::new()))
     }
     pub(super) fn integration_describe(&self, frontend: FrontendRequest) -> Result<Output> {
@@ -203,15 +263,23 @@ impl App {
                         facade.read_saved_views(selections.as_slice())
                     }
                     .map_err(|_| WireError::unavailable("saved views are unavailable"))?;
-                    let tab_naming = self
+                    let herdr_config = self
                         .config
                         .load()
-                        .map(|settings| settings.herdr.tab_naming)
-                        .unwrap_or(true);
+                        .map(|settings| streams::integration::HerdrConfig {
+                            tab_naming: settings.herdr.tab_naming,
+                            viewer_mode: settings.herdr.viewer_mode,
+                            viewer_placement: settings.herdr.viewer_placement,
+                        })
+                        .unwrap_or(streams::integration::HerdrConfig {
+                            tab_naming: true,
+                            viewer_mode: streams::config::ViewerMode::Editor,
+                            viewer_placement: streams::config::ViewerPlacement::PaneRight,
+                        });
                     Ok(ModResult::Read {
                         values,
                         notification_key: facade.scope().notification_key(),
-                        tab_naming,
+                        herdr_config,
                     })
                 }
                 ModBody::Act { action } => match action.as_ref() {
@@ -234,15 +302,9 @@ impl App {
                     } => Ok(ModResult::ReferenceOpened {
                         value: facade.open_link(stream, link, context),
                     }),
-                    streams::integration::ModAction::OpenReference { reference, at, .. } => {
-                        let value = self.integration_open_reference(
-                            &records,
-                            &facade,
-                            &request.endpoint,
-                            reference,
-                            at.as_ref(),
-                            &mut verified_endpoint,
-                        )?;
+                    streams::integration::ModAction::OpenReference { reference, .. } => {
+                        let value =
+                            self.integration_open_reference(&records, &facade, reference)?;
                         Ok(ModResult::ReferenceOpened { value })
                     }
                 },
@@ -267,17 +329,11 @@ impl App {
         &self,
         records: &application::OpenedRecords,
         facade: &application::integration::Streams<'_>,
-        endpoint: &frontend::EndpointId,
         reference: &streams::integration::Reference,
-        at: Option<&streams::integration::NativeRef>,
-        verified_endpoint: &mut Option<frontend::EndpointId>,
     ) -> std::result::Result<streams::integration::ReferenceOpenReport, WireError> {
         use streams::{
-            integration::{
-                Effect, NonEmpty, PresentationSnapshot, ReferenceOpenReport, ReferenceOpenResult,
-                ResolvedTarget, ViewerAction,
-            },
-            runtime::hc::{HcOperation, launch::PreparedTerminal},
+            config::{ViewerMode, ViewerPlacement},
+            integration::{Reference, ReferenceOpenReport, ReferenceOpenResult, ResolvedTarget},
         };
         let not_applied = |reason: &str| ReferenceOpenReport {
             known: vec![],
@@ -285,6 +341,12 @@ impl App {
                 reason: reason.into(),
             },
         };
+        let settings = self
+            .config
+            .load()
+            .map_err(|_| WireError::unavailable("configuration is unavailable"))?;
+        let mode = settings.herdr.viewer_mode;
+        let placement = settings.herdr.viewer_placement;
         let host = &facade.scope().host;
         let registry = self
             .registry(host)
@@ -296,124 +358,172 @@ impl App {
             Ok(value) => value,
             Err(_) => return Ok(not_applied("saved reference is unavailable")),
         };
-        let resolve_owner_exe = || -> std::result::Result<String, WireError> {
-            let candidate = self
-                .environment
-                .get("STREAMS_BIN_PATH")
-                .cloned()
-                .or_else(|| {
-                    std::env::current_exe()
-                        .ok()
-                        .and_then(|path| path.to_str().map(str::to_owned))
-                })
-                .ok_or_else(|| WireError::unavailable("owner executable is unavailable"))?;
-            let resolved = streams::runtime::launch::resolve_executable(
-                &candidate,
-                &self.environment,
-                &self.cwd,
-            )
-            .map_err(|_| WireError::unavailable("owner executable is unavailable"))?;
-            resolved
-                .to_str()
-                .map(str::to_owned)
-                .ok_or_else(|| WireError::unavailable("owner executable is unavailable"))
-        };
-        let (stream, cwd, argv) = match resolved {
+        if placement == ViewerPlacement::Floating && mode != ViewerMode::Native {
+            return Ok(not_applied(
+                "floating placement requires herdr.viewer.mode = native",
+            ));
+        }
+        if mode == ViewerMode::Native {
+            return Ok(match resolved {
+                ResolvedTarget::Document { path, .. } => {
+                    let Ok(identity) = super::pager::observe_file(&path) else {
+                        return Ok(not_applied("document viewer requires a regular file"));
+                    };
+                    let bytes = match super::pager::read_document(&path, identity) {
+                        Ok(bytes) => bytes,
+                        Err(err) => return Ok(not_applied(&err.to_string())),
+                    };
+                    let (content, truncated) = match prepare_native_content(&bytes) {
+                        Ok(value) => value,
+                        Err(reason) => return Ok(not_applied(reason)),
+                    };
+                    let Reference::Document { document, .. } = reference else {
+                        unreachable!("document reference")
+                    };
+                    let filename = document.path.clone();
+                    ReferenceOpenReport {
+                        known: vec![],
+                        result: ReferenceOpenResult::ShowContent {
+                            title: filename.clone(),
+                            filename,
+                            content,
+                            truncated,
+                            placement,
+                        },
+                    }
+                }
+                ResolvedTarget::Artifact { key } => {
+                    let Ok(output) =
+                        application::artifacts::read_artifact(records.artifacts(), &key)
+                    else {
+                        return Ok(not_applied("saved artifact is unavailable"));
+                    };
+                    let (content, truncated) =
+                        match prepare_native_content(output.content.as_bytes()) {
+                            Ok(value) => value,
+                            Err(reason) => return Ok(not_applied(reason)),
+                        };
+                    let filename = key.name.clone();
+                    ReferenceOpenReport {
+                        known: vec![],
+                        result: ReferenceOpenResult::ShowContent {
+                            title: filename.clone(),
+                            filename,
+                            content,
+                            truncated,
+                            placement,
+                        },
+                    }
+                }
+                ResolvedTarget::Link { .. } => unreachable!("link handled before native branch"),
+            });
+        }
+
+        match resolved {
             ResolvedTarget::Document {
-                stream,
                 checkout_root,
+                path,
                 ..
             } => {
-                let exe = match resolve_owner_exe() {
-                    Ok(exe) => exe,
-                    Err(_) => return Ok(not_applied("owner executable is unavailable")),
+                let Ok(identity) = super::pager::observe_file(&path) else {
+                    return Ok(not_applied("document viewer requires a regular file"));
+                };
+                if let Err(err) = super::pager::read_document(&path, identity) {
+                    return Ok(not_applied(&err.to_string()));
+                }
+                let effective_mode = match mode {
+                    ViewerMode::Editor => {
+                        match resolve_editor_command(&self.environment, &checkout_root) {
+                            Ok(Some(_)) => ViewerMode::Editor,
+                            Ok(None) => {
+                                if streams::runtime::launch::resolve_executable(
+                                    "less",
+                                    &self.environment,
+                                    &checkout_root,
+                                )
+                                .is_err()
+                                {
+                                    return Ok(not_applied("less executable is unavailable"));
+                                }
+                                ViewerMode::Less
+                            }
+                            Err(reason) => return Ok(not_applied(&reason)),
+                        }
+                    }
+                    ViewerMode::Hunk => {
+                        if streams::runtime::launch::resolve_executable(
+                            "hunk",
+                            &self.environment,
+                            &checkout_root,
+                        )
+                        .is_err()
+                        {
+                            return Ok(not_applied("hunk executable is unavailable"));
+                        }
+                        ViewerMode::Hunk
+                    }
+                    ViewerMode::Less => {
+                        if streams::runtime::launch::resolve_executable(
+                            "less",
+                            &self.environment,
+                            &checkout_root,
+                        )
+                        .is_err()
+                        {
+                            return Ok(not_applied("less executable is unavailable"));
+                        }
+                        ViewerMode::Less
+                    }
+                    ViewerMode::Native => unreachable!("handled above"),
                 };
                 let scope_json = serde_json::to_string(facade.scope())
                     .map_err(|_| WireError::unavailable("scope encoding is unavailable"))?;
                 let ref_json = serde_json::to_string(reference)
                     .map_err(|_| WireError::unavailable("reference encoding is unavailable"))?;
-                (
-                    stream,
-                    checkout_root,
-                    vec![
-                        exe,
-                        "integration".into(),
-                        "view-document".into(),
-                        "--scope-json".into(),
-                        scope_json,
-                        "--reference-json".into(),
-                        ref_json,
-                    ],
-                )
+                let Reference::Document { document, .. } = reference else {
+                    unreachable!("document reference")
+                };
+                Ok(ReferenceOpenReport {
+                    known: vec![],
+                    result: ReferenceOpenResult::LaunchCommand {
+                        title: document.path.clone(),
+                        args: vec![
+                            "integration".into(),
+                            "view-document".into(),
+                            "--mode".into(),
+                            effective_mode.as_ref().into(),
+                            "--scope-json".into(),
+                            scope_json,
+                            "--reference-json".into(),
+                            ref_json,
+                        ],
+                        placement,
+                    },
+                })
             }
             ResolvedTarget::Artifact { key } => {
-                let exe = match resolve_owner_exe() {
-                    Ok(exe) => exe,
-                    Err(_) => return Ok(not_applied("owner executable is unavailable")),
-                };
-                (
-                    key.stream.clone(),
-                    records.root().to_path_buf(),
-                    vec![exe, "artifact".into(), "view".into(), key.reference()],
-                )
-            }
-            ResolvedTarget::Link { .. } => unreachable!("link handled before native connection"),
-        };
-        let socket = frontend::hc::HcEndpoint::resolve(&self.environment, &self.cwd)
-            .map_err(|_| WireError::unavailable("hc connection is unavailable"))?;
-        let client = frontend::hc::HcClient::connect(socket.clone(), Some(endpoint), 30.0, None)
-            .map_err(|_| WireError::unavailable("hc connection is unavailable"))?;
-        *verified_endpoint = Some(client.endpoint().clone());
-        let mut operation = HcOperation::new(client);
-        let presentation = match operation.presentation(facade.scope(), None) {
-            Ok(value) => value,
-            Err(_) => return Ok(not_applied("hc presentation is unavailable")),
-        };
-        let space = match at {
-            Some(space) => {
-                if !presentation.contains_space(space) {
-                    return Ok(not_applied("target space is unavailable on this endpoint"));
+                if application::artifacts::read_artifact(records.artifacts(), &key).is_err() {
+                    return Ok(not_applied("saved artifact is unavailable"));
                 }
-                space.clone()
+                if streams::runtime::launch::resolve_executable(
+                    "less",
+                    &self.environment,
+                    &self.cwd,
+                )
+                .is_err()
+                {
+                    return Ok(not_applied("less executable is unavailable"));
+                }
+                Ok(ReferenceOpenReport {
+                    known: vec![],
+                    result: ReferenceOpenResult::LaunchCommand {
+                        title: key.name.clone(),
+                        args: vec!["artifact".into(), "view".into(), key.reference()],
+                        placement,
+                    },
+                })
             }
-            None => {
-                let spaces = presentation.associated_spaces(&stream);
-                let [space] = spaces.as_slice() else {
-                    return Ok(not_applied(
-                        "reference opening requires one associated space",
-                    ));
-                };
-                space.clone()
-            }
-        };
-        let mut env = runtime::workspace::native_environment(&stream, &self.environment)
-            .map_err(|_| WireError::unavailable("viewer environment is unavailable"))?;
-        env.insert(
-            "STREAMS_ARTIFACT_CATALOG_SOURCE".into(),
-            facade.scope().catalog.clone(),
-        );
-        let prepared = match PreparedTerminal::prepare_viewer(argv, &cwd, env, &space, &socket) {
-            Ok(value) => value,
-            Err(_) => return Ok(not_applied("viewer terminal could not be prepared")),
-        };
-        match operation.start_terminal(prepared) {
-            Effect::Applied { value } => Ok(ReferenceOpenReport {
-                known: vec![value.clone()],
-                result: ReferenceOpenResult::NeedsViewer {
-                    value: NonEmpty::new(
-                        ViewerAction::SelectSpace { space },
-                        [ViewerAction::FocusTerminal { terminal: value }],
-                    ),
-                },
-            }),
-            Effect::NotApplied { reason } => Ok(ReferenceOpenReport {
-                known: vec![],
-                result: ReferenceOpenResult::NotApplied { reason },
-            }),
-            Effect::Uncertain { reason } => Ok(ReferenceOpenReport {
-                known: vec![],
-                result: ReferenceOpenResult::Uncertain { reason },
-            }),
+            ResolvedTarget::Link { .. } => unreachable!("link handled before terminal branch"),
         }
     }
 
@@ -542,4 +652,52 @@ impl App {
         );
         Ok(complete_open(plan, effects, outcomes))
     }
+}
+
+const MAX_NATIVE_VIEW_BYTES: usize = 400_000;
+
+fn resolve_editor_command(
+    environment: &BTreeMap<String, String>,
+    cwd: &Path,
+) -> std::result::Result<Option<(PathBuf, Vec<String>)>, String> {
+    use unicode_general_category::{GeneralCategory, get_general_category};
+    let Some(raw) = environment.get("EDITOR") else {
+        return Ok(None);
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    if trimmed.chars().any(|c| {
+        matches!(
+            get_general_category(c),
+            GeneralCategory::Control | GeneralCategory::Format
+        )
+    }) {
+        return Err("configured EDITOR contains unsafe characters".into());
+    }
+    let mut parts = trimmed.split_ascii_whitespace();
+    let program = parts
+        .next()
+        .ok_or_else(|| "configured EDITOR is empty".to_owned())?;
+    let flags: Vec<String> = parts.map(str::to_owned).collect();
+    let resolved = streams::runtime::launch::resolve_executable(program, environment, cwd)
+        .map_err(|_| "configured EDITOR executable is unavailable".to_owned())?;
+    Ok(Some((resolved, flags)))
+}
+
+fn prepare_native_content(bytes: &[u8]) -> std::result::Result<(String, bool), &'static str> {
+    if bytes.contains(&0) {
+        return Err("binary file cannot be opened in native viewer");
+    }
+    let text = std::str::from_utf8(bytes)
+        .map_err(|_| "non-UTF-8 file cannot be opened in native viewer")?;
+    if text.len() <= MAX_NATIVE_VIEW_BYTES {
+        return Ok((text.to_owned(), false));
+    }
+    let mut end = MAX_NATIVE_VIEW_BYTES;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    Ok((format!("{}\n… (file truncated)", &text[..end]), true))
 }

@@ -1,8 +1,8 @@
-// Streams mod for herdr-app (roles: sidebar, frame, popup).
+// Streams mod for herdr-app (roles: sidebar, frame, popup, viewer).
 // Preserves the single 30 px pane header, explicit pane controls, and Files/Changes panels.
 
-import { View, div, svg, image } from "gpui-kit";
-import { h_flex, v_flex, ScrollHandle } from "gpui-base";
+import { View, div, svg, image, TextView } from "gpui-kit";
+import { h_flex, v_flex, ScrollHandle, Editor, EditorState } from "gpui-base";
 import {
   spaces,
   panes,
@@ -13,6 +13,7 @@ import {
   openOverlay,
   closeOverlay,
   theme,
+  settings,
   home,
   layout,
   exec,
@@ -169,20 +170,85 @@ function snapshotSignature(snap) {
   });
 }
 
+const VIEWER_LANG = {
+  ts: "js",
+  tsx: "js",
+  mts: "js",
+  cts: "js",
+  jsx: "js",
+  mjs: "js",
+  toml: "yaml",
+  jsonc: "json",
+  svelte: "html",
+  vue: "html",
+};
+
+function isMarkdownFilename(filename) {
+  return typeof filename === "string" && /\.md$/i.test(filename.trim());
+}
+
+function viewerLanguage(filename) {
+  if (typeof filename !== "string" || !filename.includes(".")) return "txt";
+  const ext = filename.split(".").pop().toLowerCase();
+  return VIEWER_LANG[ext] ?? ext;
+}
+
 export default class StreamsMod extends View {
-  init(_props, cx) {
+  init(initialProps, cx) {
     this.hovered = false;
     this.scroll = ScrollHandle.new();
     this._subscribed = false;
     this._lastSig = null;
     this._observeTask = null;
     this._timerTask = null;
-    this._focusTask = null;
+    this._editorState = null;
+    this._viewerKey = null;
+    const role = resolveRole(initialProps);
+    if (role === "viewer") {
+      this.syncViewerState(initialProps);
+      return;
+    }
     this.ensureSubscribed(cx);
     this.scheduleObserve(cx, collectSnapshot());
     this._timerTask = cx?.timer?.every?.(2000, (timerCx) => {
       this.scheduleObserve(timerCx, collectSnapshot());
     });
+  }
+
+  async close() {
+    this._editorState?.release?.();
+    this._editorState = null;
+    this._viewerKey = null;
+  }
+
+  syncViewerState(rawProps) {
+    const filename = rawProps?.filename ?? "";
+    const content = rawProps?.content ?? "";
+    const key = `${filename}\0${content}`;
+    if (this._viewerKey === key) return;
+    this._editorState?.release?.();
+    this._editorState = null;
+    this._viewerKey = key;
+    if (!isMarkdownFilename(filename) && typeof content === "string") {
+      const t = theme();
+      const s = settings?.() ?? {};
+      this._editorState = EditorState.new({
+        language: viewerLanguage(filename),
+        readonly: true,
+        value: content,
+        font_family: s.font_family,
+        font_size: 12,
+        syntax: {
+          keyword: t.ansi5,
+          string: t.ansi2,
+          comment: t.dim,
+          function: t.ansi4,
+          type: t.ansi3,
+          number: t.ansi1,
+          constant: t.ansi6,
+        },
+      });
+    }
   }
 
   ensureSubscribed(cx) {
@@ -239,34 +305,6 @@ export default class StreamsMod extends View {
         syncActiveTabName(collectSnapshot());
         cx?.notify?.();
       });
-    }
-  }
-
-  focusNewTerminal(cx, terminalKey, viewerLabel = null) {
-    const tryFocus = () => {
-      const found = panes().find((p) => p.terminal === terminalKey);
-      if (!found) return false;
-      run("pane.focus", { terminal: terminalKey });
-      if (viewerLabel && coordinator.tabNaming) {
-        const allTabs = spaces().flatMap((s) => s.tabs ?? []);
-        const tab = allTabs.find((t) => t.id === found.tab);
-        if (tab && !tab.named) {
-          run("tab.rename", { id: found.tab, name: viewerLabel });
-        }
-      }
-      return true;
-    };
-    if (tryFocus()) return;
-    if (cx?.spawn) {
-      this._focusTask = cx.spawn(async (asyncCx) => {
-        for (let attempt = 0; attempt < 40; attempt++) {
-          await asyncCx.sleep(50);
-          if (tryFocus()) return;
-        }
-        run("pane.focus", { terminal: terminalKey });
-      });
-    } else {
-      run("pane.focus", { terminal: terminalKey });
     }
   }
 
@@ -822,12 +860,24 @@ export default class StreamsMod extends View {
                             row
                               .hover((s) => s.bg(t.hover))
                               .on_click((_e, clickCx) => {
-                                coordinator.openReference(item.reference, {
-                                  activeSpaceId: activeSpace?.id ?? null,
-                                  run,
-                                  openUrl: (u) => clickCx.open_url(u),
-                                  focusTerminal: (termKey) =>
-                                    this.focusNewTerminal(clickCx, termKey, item.title),
+                                const clickedSpaceId = activeSpace?.id ?? null;
+                                const clickedTabId = snap.activeTabId;
+                                const focusNow = focused();
+                                const allPanesNow = panes();
+                                const targetPaneId =
+                                  focusNow?.pane ??
+                                  allPanesNow.find((p) => p.tab === clickedTabId && p.focused)
+                                    ?.pane ??
+                                  allPanesNow.find((p) => p.tab === clickedTabId)?.pane ??
+                                  null;
+                                clickCx.spawn(async () => {
+                                  await coordinator.openReference(item.reference, {
+                                    activeSpaceId: clickedSpaceId,
+                                    targetPaneId,
+                                    run,
+                                    openOverlay,
+                                    openUrl: (u) => clickCx.open_url(u),
+                                  });
                                 });
                               })
                           )
@@ -856,9 +906,84 @@ export default class StreamsMod extends View {
       );
   }
 
+  renderViewer() {
+    const t = theme();
+    const rawProps = props() ?? {};
+    this.syncViewerState(rawProps);
+    const title = rawProps.title || rawProps.filename || "Reference";
+    const overlayId = rawProps.overlay ?? null;
+    const isMd = isMarkdownFilename(rawProps.filename);
+
+    return v_flex()
+      .size_full()
+      .bg(t.background)
+      .text_size(12)
+      .text_color(t.foreground)
+      .child(
+        h_flex()
+          .h(30)
+          .flex_none()
+          .px(10)
+          .gap(8)
+          .items_center()
+          .bg(t.chrome)
+          .border_b(1)
+          .border_color(t.border)
+          .child(div().flex_1().min_w(0).truncate().font_medium().child(title))
+          .when(Boolean(rawProps.truncated), (el) =>
+            el.child(
+              div()
+                .flex_none()
+                .px(6)
+                .py(1)
+                .rounded(4)
+                .bg(t.raised)
+                .text_size(10.5)
+                .text_color(t.muted)
+                .child("truncated")
+            )
+          )
+          .when(Boolean(overlayId), (el) =>
+            el.child(
+              div()
+                .id("streams-viewer-close")
+                .flex_none()
+                .px(6)
+                .py(2)
+                .rounded(4)
+                .text_size(11.5)
+                .text_color(t.muted)
+                .hover((s) => s.bg(t.hover).text_color(t.foreground))
+                .on_mouse_down((_e, downCx) => downCx.stop_propagation())
+                .on_click((_e, clickCx) => {
+                  clickCx.stop_propagation();
+                  closeOverlay(overlayId);
+                })
+                .child("Close")
+            )
+          )
+      )
+      .child(
+        isMd
+          ? v_flex()
+              .flex_1()
+              .min_h(0)
+              .p(12)
+              .child(
+                TextView.markdown("streams-md-viewer", rawProps.content ?? "")
+                  .scrollable(true)
+                  .selectable(true)
+              )
+          : this._editorState
+            ? Editor.new(this._editorState).flex_1().min_h(0)
+            : div().p(12).text_color(t.dim).child("No content.")
+      );
+  }
+
   render(cx) {
-    this.ensureSubscribed(cx);
     const role = resolveRole(props());
+    if (role === "viewer") return this.renderViewer();
+    this.ensureSubscribed(cx);
     if (role === "popup") return this.renderPopup(cx);
     if (role === "frame") return this.renderFrame(cx);
     return this.renderSidebar(cx);

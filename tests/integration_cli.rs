@@ -903,12 +903,20 @@ fn saved_cli_owns_stdout_and_needs_no_native_endpoint_with_or_without_global_jso
         let WireResult::Ok(ModResult::Read {
             values,
             notification_key,
-            tab_naming,
+            herdr_config,
         }) = reply.result
         else {
             panic!("read reply");
         };
-        assert!(tab_naming);
+        assert!(herdr_config.tab_naming);
+        assert_eq!(
+            herdr_config.viewer_mode,
+            streams::config::ViewerMode::Editor
+        );
+        assert_eq!(
+            herdr_config.viewer_placement,
+            streams::config::ViewerPlacement::PaneRight
+        );
         assert_eq!(notification_key, reply.scope.notification_key());
         assert!(
             matches!(&values[0],WireResult::Ok(ModReadValue::Stream {value}) if value.sessions.len()==2)
@@ -2600,11 +2608,6 @@ fn frame_reads_and_reference_opening_resolve_enrolled_sessions_and_viewer_termin
     ));
     assert_eq!(corrupt_core.finish().len(), 2);
 
-    let association = streams::runtime::hc::SpaceAssociation {
-        scope: scope.clone(),
-        stream: "work".into(),
-        space: resource("space-work"),
-    };
     let artifact_request = {
         let mut req = fixture.envelope(json!({
             "kind":"act",
@@ -2626,44 +2629,21 @@ fn frame_reads_and_reference_opening_resolve_enrolled_sessions_and_viewer_termin
         req["endpoint"] = json!("core");
         req
     };
-    let socket_dir = tempfile::Builder::new()
-        .prefix("hc-ref-")
-        .tempdir_in("/tmp")
-        .unwrap();
-    let path = socket_dir.path().join("s");
-    let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
-    let server = std::thread::spawn(move || {
-        use std::io::{BufRead, BufReader, Read, Write};
-        let mut reader = BufReader::new(listener.accept().unwrap().0);
-        reader
-            .get_ref()
-            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
-            .unwrap();
-        let read = |reader: &mut BufReader<std::os::unix::net::UnixStream>| {
-            let mut line = String::new();
-            assert!(reader.read_line(&mut line).unwrap() > 0);
-            serde_json::from_str::<Value>(&line).unwrap()
-        };
-        let hello = read(&mut reader);
-        writeln!(reader.get_mut(),"{}",json!({"jsonrpc":"2.0","id":hello["id"],"result":{"generation":1,"framed":false,"core":{"id":"core"},"methods":["hello","doc.get","terminal.run"]}})).unwrap();
-        let streams_doc = read(&mut reader);
-        writeln!(reader.get_mut(),"{}",json!({"jsonrpc":"2.0","id":streams_doc["id"],"result":{"version":1,"value":{"version":1,"spaces":{"space-work":association}}}})).unwrap();
-        let app_doc = read(&mut reader);
-        writeln!(reader.get_mut(),"{}",json!({"jsonrpc":"2.0","id":app_doc["id"],"result":{"version":2,"value":{"spaces":[{"id":"space-work"}]}}})).unwrap();
-        let run = read(&mut reader);
-        assert_eq!(run["method"], "terminal.run");
-        let params = &run["params"];
-        assert_eq!(params["no_parent"], true);
-        assert_eq!(params["rm"], true);
-        assert_eq!(params["labels"]["herdr.space"], "space-work");
-        writeln!(reader.get_mut(),"{}",json!({"jsonrpc":"2.0","id":run["id"],"result":{"address":"t-viewer","state":"live","pid":777,"argv":params["argv"],"cwd":params["cwd"],"parent":null,"labels":params["labels"]}})).unwrap();
-        let mut rest = Vec::new();
-        reader.read_to_end(&mut rest).unwrap();
-        assert!(rest.is_empty());
-    });
+    streams::application::artifacts::write_artifact(
+        fixture.records.artifacts(),
+        &scope.host,
+        "write-result-md",
+        &streams::application::artifacts::WriteArtifact {
+            session_id: fixture.sessions[0].id.clone(),
+            stream_id: Some("work".into()),
+            name: "result.md".into(),
+            description: "Saved output".into(),
+            content: Some("Saved artifact body".into()),
+        },
+    )
+    .unwrap();
     let output = fixture
         .command()
-        .env("HC_SOCKET", &path)
         .args([
             "integration",
             "request",
@@ -2678,25 +2658,36 @@ fn frame_reads_and_reference_opening_resolve_enrolled_sessions_and_viewer_termin
         String::from_utf8_lossy(&output.stderr)
     );
     let reply = ModReply::decode(std::str::from_utf8(&output.stdout).unwrap()).unwrap();
-    assert_eq!(reply.verified_endpoint, Some(EndpointId("core".into())));
     let WireResult::Ok(ModResult::ReferenceOpened { value }) = reply.result else {
         panic!("reference opened")
     };
-    assert_eq!(value.known, vec![resource("t-viewer")]);
-    assert!(matches!(
-        value.result,
-        ReferenceOpenResult::NeedsViewer { .. }
-    ));
-    server.join().unwrap();
+    assert!(value.known.is_empty());
+    match &value.result {
+        ReferenceOpenResult::LaunchCommand {
+            title,
+            args,
+            placement,
+        } => {
+            assert_eq!(title, "result.md");
+            assert_eq!(args[0], "artifact");
+            assert_eq!(args[1], "view");
+            assert_eq!(*placement, streams::config::ViewerPlacement::PaneRight);
+        }
+        other => panic!("expected LaunchCommand, got {other:?}"),
+    }
 
-    // Missing executable in STREAMS_BIN_PATH fails before connecting or calling terminal.run.
-    let missing_exe_out = fixture
+    // Floating placement + terminal mode returns NotApplied.
+    assert!(
+        fixture
+            .command()
+            .args(["config", "set", "herdr.viewer.placement", "floating"])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    let floating_out = fixture
         .command()
-        .env(
-            "HC_SOCKET",
-            path.parent().unwrap().join("never-connected.sock"),
-        )
-        .env("STREAMS_BIN_PATH", "/nonexistent/streams-binary")
         .args([
             "integration",
             "request",
@@ -2705,16 +2696,267 @@ fn frame_reads_and_reference_opening_resolve_enrolled_sessions_and_viewer_termin
         ])
         .output()
         .unwrap();
-    assert!(missing_exe_out.status.success());
-    let missing_exe_reply =
-        ModReply::decode(std::str::from_utf8(&missing_exe_out.stdout).unwrap()).unwrap();
-    let WireResult::Ok(ModResult::ReferenceOpened { value: missing_val }) =
-        missing_exe_reply.result
+    let floating_reply =
+        ModReply::decode(std::str::from_utf8(&floating_out.stdout).unwrap()).unwrap();
+    let WireResult::Ok(ModResult::ReferenceOpened {
+        value: floating_val,
+    }) = floating_reply.result
     else {
-        panic!("missing exe reply")
+        panic!("floating reply")
     };
     assert!(matches!(
-        missing_val.result,
+        floating_val.result,
+        ReferenceOpenResult::NotApplied { .. }
+    ));
+
+    // Native mode + floating placement returns ShowContent with Markdown content and zero host paths.
+    assert!(
+        fixture
+            .command()
+            .args(["config", "set", "herdr.viewer.mode", "native"])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    let native_out = fixture
+        .command()
+        .args([
+            "integration",
+            "request",
+            "--request-json",
+            &artifact_request.to_string(),
+        ])
+        .output()
+        .unwrap();
+    let native_reply = ModReply::decode(std::str::from_utf8(&native_out.stdout).unwrap()).unwrap();
+    let WireResult::Ok(ModResult::ReferenceOpened { value: native_val }) = native_reply.result
+    else {
+        panic!("native reply")
+    };
+    match &native_val.result {
+        ReferenceOpenResult::ShowContent {
+            title,
+            filename,
+            content,
+            truncated,
+            placement,
+        } => {
+            assert_eq!(title, "result.md");
+            assert_eq!(filename, "result.md");
+            assert_eq!(content, "Saved artifact body");
+            assert!(!truncated);
+            assert_eq!(*placement, streams::config::ViewerPlacement::Floating);
+        }
+        other => panic!("expected ShowContent, got {other:?}"),
+    }
+
+    // Missing executable in EDITOR fails cleanly with NotApplied for Document references.
+    assert!(
+        fixture
+            .command()
+            .args(["config", "set", "herdr.viewer.mode", "editor"])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert!(
+        fixture
+            .command()
+            .args(["config", "set", "herdr.viewer.placement", "pane-right"])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    let root = fixture._directory.path().canonicalize().unwrap();
+    let repository = root.join("repo");
+    std::fs::create_dir(&repository).unwrap();
+    assert!(
+        std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .arg(&repository)
+            .status()
+            .unwrap()
+            .success()
+    );
+    std::fs::write(repository.join("z.md"), "Owner working document\n").unwrap();
+    let doc_url = "https://example.test/source.git";
+    let registry =
+        streams::runtime::CheckoutRegistry::new(fixture.config.checkout_state_dir(), &scope.host)
+            .unwrap();
+    let checkout = registry.register(&repository, Some(doc_url)).unwrap();
+    let state = streams::runtime::state::RuntimeState::new(
+        fixture
+            .config
+            .runtime_state_dir_for(fixture.records.root())
+            .unwrap(),
+        &scope.host,
+    )
+    .unwrap();
+    let locations = streams::runtime::DirectoryBindings::new(state.root(), registry);
+    locations
+        .remember(
+            "work",
+            &repository,
+            Some(&fixture.sessions[0].id),
+            false,
+            Some(doc_url),
+            Some(&checkout.id),
+        )
+        .unwrap();
+
+    let doc_request = {
+        let mut req = fixture.envelope(json!({
+            "kind":"act",
+            "action":{
+                "kind":"open_reference",
+                "reference":{
+                    "kind":"document",
+                    "stream":"work",
+                    "document":{
+                        "repository":"source",
+                        "path":"z.md"
+                    },
+                    "viewing_session":fixture.sessions[0].id
+                },
+                "context":{"kind":"explicit"},
+                "at":null
+            }
+        }));
+        req["endpoint"] = json!("core");
+        req
+    };
+    let bad_editor_out = fixture
+        .command()
+        .env("EDITOR", "/nonexistent/editor --wait")
+        .args([
+            "integration",
+            "request",
+            "--request-json",
+            &doc_request.to_string(),
+        ])
+        .output()
+        .unwrap();
+    let bad_editor_reply =
+        ModReply::decode(std::str::from_utf8(&bad_editor_out.stdout).unwrap()).unwrap();
+    let WireResult::Ok(ModResult::ReferenceOpened { value: bad_val }) = bad_editor_reply.result
+    else {
+        panic!("bad editor reply")
+    };
+    assert!(matches!(
+        bad_val.result,
+        ReferenceOpenResult::NotApplied { .. }
+    ));
+
+    // Unset EDITOR falls back to less; valid EDITOR with flags selects editor mode.
+    let unset_editor_out = fixture
+        .command()
+        .env_remove("EDITOR")
+        .args([
+            "integration",
+            "request",
+            "--request-json",
+            &doc_request.to_string(),
+        ])
+        .output()
+        .unwrap();
+    let unset_editor_reply =
+        ModReply::decode(std::str::from_utf8(&unset_editor_out.stdout).unwrap()).unwrap();
+    let WireResult::Ok(ModResult::ReferenceOpened { value: unset_val }) = unset_editor_reply.result
+    else {
+        panic!("unset editor reply")
+    };
+    match &unset_val.result {
+        ReferenceOpenResult::LaunchCommand { args, .. } => {
+            assert_eq!(args[0], "integration");
+            assert_eq!(args[1], "view-document");
+            assert_eq!(args[2], "--mode");
+            assert_eq!(args[3], "less");
+        }
+        other => panic!("expected less fallback LaunchCommand, got {other:?}"),
+    }
+    let sh_editor_out = fixture
+        .command()
+        .env("EDITOR", "sh -e")
+        .args([
+            "integration",
+            "request",
+            "--request-json",
+            &doc_request.to_string(),
+        ])
+        .output()
+        .unwrap();
+    let sh_editor_reply =
+        ModReply::decode(std::str::from_utf8(&sh_editor_out.stdout).unwrap()).unwrap();
+    let WireResult::Ok(ModResult::ReferenceOpened { value: sh_val }) = sh_editor_reply.result
+    else {
+        panic!("editor reply")
+    };
+    match &sh_val.result {
+        ReferenceOpenResult::LaunchCommand { args, .. } => {
+            assert_eq!(args[3], "editor");
+        }
+        other => panic!("expected editor LaunchCommand, got {other:?}"),
+    }
+
+    // Native mode caps both Markdown and text at 400 KiB and rejects NUL bytes.
+    assert!(
+        fixture
+            .command()
+            .args(["config", "set", "herdr.viewer.mode", "native"])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    std::fs::write(repository.join("z.md"), "a".repeat(450_000)).unwrap();
+    let big_out = fixture
+        .command()
+        .args([
+            "integration",
+            "request",
+            "--request-json",
+            &doc_request.to_string(),
+        ])
+        .output()
+        .unwrap();
+    let big_reply = ModReply::decode(std::str::from_utf8(&big_out.stdout).unwrap()).unwrap();
+    let WireResult::Ok(ModResult::ReferenceOpened { value: big_val }) = big_reply.result else {
+        panic!("big reply")
+    };
+    match &big_val.result {
+        ReferenceOpenResult::ShowContent {
+            filename,
+            content,
+            truncated,
+            ..
+        } => {
+            assert_eq!(filename, "z.md");
+            assert!(*truncated);
+            assert!(content.ends_with("… (file truncated)"));
+            assert!(content.len() <= 400_100);
+        }
+        other => panic!("expected ShowContent, got {other:?}"),
+    }
+    std::fs::write(repository.join("z.md"), b"abc\0def").unwrap();
+    let bin_out = fixture
+        .command()
+        .args([
+            "integration",
+            "request",
+            "--request-json",
+            &doc_request.to_string(),
+        ])
+        .output()
+        .unwrap();
+    let bin_reply = ModReply::decode(std::str::from_utf8(&bin_out.stdout).unwrap()).unwrap();
+    let WireResult::Ok(ModResult::ReferenceOpened { value: bin_val }) = bin_reply.result else {
+        panic!("bin reply")
+    };
+    assert!(matches!(
+        bin_val.result,
         ReferenceOpenResult::NotApplied { .. }
     ));
 }

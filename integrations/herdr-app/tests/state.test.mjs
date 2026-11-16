@@ -8,13 +8,16 @@ import {
   resolveTabRenameTarget,
   buildReferenceItems,
   dispatchViewerActions,
+  dispatchReferencePresentation,
   StreamsCoordinator,
 } from "../state.js";
 
-test("resolveRole selects popup, frame, and sidebar roles deterministically", () => {
+test("resolveRole selects popup, frame, viewer, and sidebar roles deterministically", () => {
   assert.equal(resolveRole({ role: "popup" }), "popup");
   assert.equal(resolveRole({ role: "frame" }), "frame");
+  assert.equal(resolveRole({ role: "viewer" }), "viewer");
   assert.equal(resolveRole({ role: "sidebar", pane: "p1" }), "sidebar");
+  assert.equal(resolveRole({ kind: "reference-viewer", filename: "a.md" }), "viewer");
   assert.equal(resolveRole({ kind: "session-popup" }), "popup");
   assert.equal(resolveRole({ kind: "stream-menu" }), "popup");
   assert.equal(resolveRole({ pane: "p1", terminal: "t1" }), "frame");
@@ -200,7 +203,11 @@ test("StreamsCoordinator resolves tab-local enrolled session and stream without 
             ok: {
               kind: "read",
               notification_key: "streams.saved.key1",
-              tab_naming: true,
+              herdr_config: {
+                tab_naming: true,
+                viewer_mode: "editor",
+                viewer_placement: "pane-right",
+              },
               values: req.body.selections.map((sel) =>
                 sel.kind === "saved_stream"
                   ? {
@@ -316,7 +323,11 @@ test("StreamsCoordinator resolves tab-local enrolled session and stream without 
         ok: {
           kind: "read",
           notification_key: "streams.saved.key1",
-          tab_naming: false,
+          herdr_config: {
+            tab_naming: false,
+            viewer_mode: "less",
+            viewer_placement: "tab",
+          },
           values: [
             {
               ok: {
@@ -559,4 +570,95 @@ test("StreamsCoordinator.act surfaces WireError and reference_opened not_applied
 
   await coordinator.openWork({ stream: "stream-1" });
   assert.equal(coordinator.lastError, "configured catalog is unavailable");
+});
+
+test("dispatchReferencePresentation handles launch_command and show_content across placements", () => {
+  const ran = [];
+  const overlays = [];
+  const run = (cmd, args) => ran.push({ cmd, args });
+  const openOverlay = (spec) => overlays.push(spec);
+
+  assert.deepEqual(
+    dispatchReferencePresentation(
+      {
+        kind: "launch_command",
+        title: "docs/spec.md",
+        args: ["integration", "view-document", "--mode", "editor"],
+        placement: "pane-right",
+      },
+      { activeSpaceId: "sp1", targetPaneId: "p1", streamsBin: "/bin/streams", run }
+    ),
+    { ok: true }
+  );
+  assert.deepEqual(ran.at(-1), {
+    cmd: "pane.split",
+    args: {
+      direction: "right",
+      pane: "p1",
+      argv: ["/bin/streams", "integration", "view-document", "--mode", "editor"],
+    },
+  });
+
+  assert.deepEqual(
+    dispatchReferencePresentation(
+      {
+        kind: "launch_command",
+        title: "docs/spec.md",
+        args: ["integration", "view-document", "--mode", "hunk"],
+        placement: "tab",
+      },
+      { activeSpaceId: "sp1", targetPaneId: "p1", tabNaming: true, streamsBin: "/bin/streams", run }
+    ),
+    { ok: true }
+  );
+  assert.deepEqual(ran.at(-1), {
+    cmd: "tab.new",
+    args: {
+      space: "sp1",
+      name: "docs/spec.md",
+      argv: ["/bin/streams", "integration", "view-document", "--mode", "hunk"],
+    },
+  });
+
+  assert.deepEqual(
+    dispatchReferencePresentation(
+      {
+        kind: "show_content",
+        title: "Spec",
+        filename: "spec.md",
+        content: "# Hi",
+        truncated: true,
+        placement: "floating",
+      },
+      { run, openOverlay }
+    ),
+    { ok: true }
+  );
+  assert.deepEqual(overlays[0], {
+    kind: "window",
+    key: "streams-viewer",
+    width: 0.65,
+    height: 0.75,
+    mod: "streams",
+    props: {
+      kind: "reference-viewer",
+      title: "Spec",
+      filename: "spec.md",
+      content: "# Hi",
+      truncated: true,
+    },
+  });
+
+  assert.deepEqual(
+    dispatchReferencePresentation(
+      {
+        kind: "launch_command",
+        title: "docs/spec.md",
+        args: ["integration", "view-document"],
+        placement: "pane-down",
+      },
+      { activeSpaceId: "sp1", targetPaneId: null, run }
+    ),
+    { ok: false, error: "No active pane to split for reference viewer." }
+  );
 });

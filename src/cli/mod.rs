@@ -725,8 +725,9 @@ impl App {
                     args::IntegrationCommand::ViewDocument {
                         scope_json,
                         reference_json,
+                        mode,
                     },
-            } => self.integration_view_document(&scope_json, &reference_json),
+            } => self.integration_view_document(&scope_json, &reference_json, mode),
             Command::Integration {
                 command: args::IntegrationCommand::Describe { frontend },
             } => self.integration_describe(frontend),

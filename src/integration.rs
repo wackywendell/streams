@@ -726,12 +726,37 @@ pub enum SidebarContext {
     },
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HerdrConfig {
+    pub tab_naming: bool,
+    pub viewer_mode: crate::config::ViewerMode,
+    pub viewer_placement: crate::config::ViewerPlacement,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ReferenceOpenResult {
     Applied,
-    NeedsViewer { value: NonEmpty<ViewerAction> },
-    NotApplied { reason: String },
-    Uncertain { reason: String },
+    NeedsViewer {
+        value: NonEmpty<ViewerAction>,
+    },
+    LaunchCommand {
+        title: String,
+        args: Vec<String>,
+        placement: crate::config::ViewerPlacement,
+    },
+    ShowContent {
+        title: String,
+        filename: String,
+        content: String,
+        truncated: bool,
+        placement: crate::config::ViewerPlacement,
+    },
+    NotApplied {
+        reason: String,
+    },
+    Uncertain {
+        reason: String,
+    },
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -835,7 +860,7 @@ pub enum ModResult {
     Read {
         values: Vec<WireResult<ModReadValue>>,
         notification_key: String,
-        tab_naming: bool,
+        herdr_config: HerdrConfig,
     },
     ReferenceOpened {
         value: ReferenceOpenReport,

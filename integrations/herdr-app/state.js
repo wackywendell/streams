@@ -13,9 +13,13 @@ export function resolveRole(rawProps) {
   if (
     rawProps?.role === "popup" ||
     rawProps?.role === "frame" ||
-    rawProps?.role === "sidebar"
+    rawProps?.role === "sidebar" ||
+    rawProps?.role === "viewer"
   ) {
     return rawProps.role;
+  }
+  if (rawProps?.kind === "reference-viewer") {
+    return "viewer";
   }
   if (rawProps?.kind === "session-popup" || rawProps?.kind === "stream-menu") {
     return "popup";
@@ -292,6 +296,72 @@ export function dispatchViewerActions(actions, { run, openUrl, focusTerminal } =
   return dispatched;
 }
 
+export function dispatchReferencePresentation(
+  result,
+  { activeSpaceId = null, targetPaneId = null, tabNaming = true, streamsBin = "streams", run, openOverlay } = {}
+) {
+  if (!result || typeof result !== "object") return { ok: true };
+  if (result.kind === "launch_command") {
+    const argv = [streamsBin, ...(result.args ?? [])];
+    if (result.placement === "tab") {
+      run?.("tab.new", {
+        ...(activeSpaceId ? { space: activeSpaceId } : {}),
+        ...(tabNaming && result.title ? { name: result.title } : {}),
+        argv,
+      });
+      return { ok: true };
+    }
+    if (result.placement === "pane-right" || result.placement === "pane-down") {
+      if (!targetPaneId) {
+        return { ok: false, error: "No active pane to split for reference viewer." };
+      }
+      const direction = result.placement === "pane-down" ? "down" : "right";
+      run?.("pane.split", { direction, pane: targetPaneId, argv });
+      return { ok: true };
+    }
+    return { ok: false, error: `Unsupported terminal placement: ${result.placement}` };
+  }
+  if (result.kind === "show_content") {
+    const props = {
+      kind: "reference-viewer",
+      title: result.title ?? result.filename ?? "",
+      filename: result.filename ?? "",
+      content: result.content ?? "",
+      truncated: Boolean(result.truncated),
+    };
+    if (result.placement === "tab") {
+      run?.("tab.new", {
+        ...(activeSpaceId ? { space: activeSpaceId } : {}),
+        ...(tabNaming && result.title ? { name: result.title } : {}),
+        mod: "streams",
+        props,
+      });
+      return { ok: true };
+    }
+    if (result.placement === "pane-right" || result.placement === "pane-down") {
+      if (!targetPaneId) {
+        return { ok: false, error: "No active pane to split for reference viewer." };
+      }
+      const direction = result.placement === "pane-down" ? "down" : "right";
+      run?.("pane.split", { direction, pane: targetPaneId, mod: "streams", props });
+      return { ok: true };
+    }
+    if (result.placement === "floating") {
+      openOverlay?.({
+        kind: "window",
+        key: "streams-viewer",
+        width: 0.65,
+        height: 0.75,
+        mod: "streams",
+        props,
+      });
+      return { ok: true };
+    }
+    return { ok: false, error: `Unsupported native placement: ${result.placement}` };
+  }
+  return { ok: true };
+}
+
 /**
  * Stateful coordinator that deduplicates `describe` and batched `read` calls,
  * discards stale async responses, and runs one-shot `open_work` / `open_reference` actions.
@@ -306,6 +376,11 @@ export class StreamsCoordinator {
     this.describePromise = null;
     this.describeError = null;
     this.tabNaming = true;
+    this.herdrConfig = {
+      tab_naming: true,
+      viewer_mode: "editor",
+      viewer_placement: "pane-right",
+    };
 
     this.readGeneration = 0;
     this.inFlightKey = null;
@@ -490,8 +565,11 @@ export class StreamsCoordinator {
           if (typeof readRes.notification_key === "string") {
             binding.notification_key = readRes.notification_key;
           }
-          if (typeof readRes.tab_naming === "boolean") {
-            this.tabNaming = readRes.tab_naming;
+          if (readRes.herdr_config && typeof readRes.herdr_config === "object") {
+            this.herdrConfig = readRes.herdr_config;
+            if (typeof readRes.herdr_config.tab_naming === "boolean") {
+              this.tabNaming = readRes.herdr_config.tab_naming;
+            }
           }
           const fetchedStreams = new Set();
           selections.forEach((sel, idx) => {
@@ -586,7 +664,7 @@ export class StreamsCoordinator {
    * Execute a one-shot `open_work` or `open_reference` action and dispatch any returned
    * `ViewerAction` items once on the fresh reply.
    */
-  async act(action, { run, openUrl, focusTerminal } = {}) {
+  async act(action, { activeSpaceId = null, targetPaneId = null, run, openUrl, openOverlay, focusTerminal } = {}) {
     const binding = await this.ensureDescribed();
     if (!binding) return null;
     const envelope = buildRequestEnvelope(binding.scope, binding.endpoint, {
@@ -620,6 +698,20 @@ export class StreamsCoordinator {
       if (res?.kind === "needs_viewer") {
         viewerActions = res.value ?? [];
         this.lastError = null;
+      } else if (res?.kind === "launch_command" || res?.kind === "show_content") {
+        try {
+          const outcome = dispatchReferencePresentation(res, {
+            activeSpaceId,
+            targetPaneId,
+            tabNaming: this.tabNaming,
+            streamsBin: this.streamsBin,
+            run,
+            openOverlay,
+          });
+          this.lastError = outcome.ok ? null : outcome.error;
+        } catch (err) {
+          this.lastError = err instanceof Error ? err.message : String(err);
+        }
       } else if (res?.kind === "not_applied" || res?.kind === "uncertain") {
         this.lastError = res.reason || `reference ${res.kind}`;
       } else {
@@ -635,7 +727,10 @@ export class StreamsCoordinator {
     return reply;
   }
 
-  openReference(reference, { activeSpaceId = null, run, openUrl, focusTerminal } = {}) {
+  openReference(
+    reference,
+    { activeSpaceId = null, targetPaneId = null, run, openUrl, openOverlay, focusTerminal } = {}
+  ) {
     const endpoint = this.binding?.endpoint;
     const isLink = reference?.kind === "link";
     const at =
@@ -649,7 +744,7 @@ export class StreamsCoordinator {
         context: { kind: "explicit" },
         at,
       },
-      { run, openUrl, focusTerminal }
+      { activeSpaceId, targetPaneId, run, openUrl, openOverlay, focusTerminal }
     );
   }
 

@@ -177,8 +177,10 @@ function real(t,{enrolled=true}={}) {
  const stream=cli('create','Effort').stream;
  const session=enrolled?cli('session','attach',stream.id,'--harness','pi','--session-id',id,'--title','Real Rust lane').session:null;
  cli('config','set','frontend.mode','herdr');
- cli('config','set','cards.auto_open','manual');
- const config=join(directory,'cards.json');writeFileSync(config,JSON.stringify({session_naming:true,workspace_naming:false,tab_naming:false}));process.env.WORK_CARDS_CONFIG_PATH=config;
+ cli('config','set','herdr.cards.auto_open','manual');
+ cli('config','set','pi.naming.session','true');
+ cli('config','set','herdr.naming.workspace','false');
+ cli('config','set','herdr.naming.tab','false');
  const catalog=cli('config','get','catalog.root'),hash=value=>createHash('sha256').update(value).digest('hex'),key=(...parts)=>hash('['+parts.map(JSON.stringify).join(', ')+']');
  const host=session?.host_id??JSON.parse(readFileSync(join(directory,'config/streams/host.json'),'utf8')).id;
  const state=join(directory,'state/streams/catalogs',hash(realpathSync(catalog)),key(host));
