@@ -269,7 +269,7 @@ export function buildReferenceItems(stream, { viewingSessionId = null } = {}) {
 /**
  * Execute `ViewerAction` items once from a fresh action reply.
  */
-export function dispatchViewerActions(actions, { run, openUrl }) {
+export function dispatchViewerActions(actions, { run, openUrl, focusTerminal } = {}) {
   if (!Array.isArray(actions)) return [];
   const dispatched = [];
   for (const action of actions) {
@@ -278,7 +278,11 @@ export function dispatchViewerActions(actions, { run, openUrl }) {
       run?.("space.select", { id: action.space.key });
       dispatched.push({ kind: "select_space", id: action.space.key });
     } else if (action.kind === "focus_terminal" && action.terminal?.key) {
-      run?.("pane.focus", { terminal: action.terminal.key });
+      if (focusTerminal) {
+        focusTerminal(action.terminal.key);
+      } else {
+        run?.("pane.focus", { terminal: action.terminal.key });
+      }
       dispatched.push({ kind: "focus_terminal", terminal: action.terminal.key });
     } else if (action.kind === "open_url" && typeof action.url === "string") {
       openUrl?.(action.url);
@@ -582,7 +586,7 @@ export class StreamsCoordinator {
    * Execute a one-shot `open_work` or `open_reference` action and dispatch any returned
    * `ViewerAction` items once on the fresh reply.
    */
-  async act(action, { run, openUrl } = {}) {
+  async act(action, { run, openUrl, focusTerminal } = {}) {
     const binding = await this.ensureDescribed();
     if (!binding) return null;
     const envelope = buildRequestEnvelope(binding.scope, binding.endpoint, {
@@ -625,13 +629,13 @@ export class StreamsCoordinator {
     if (Array.isArray(reply?.viewer_projection) && reply.viewer_projection.length > 0) {
       viewerActions = [...viewerActions, ...reply.viewer_projection];
     }
-    dispatchViewerActions(viewerActions, { run, openUrl });
+    dispatchViewerActions(viewerActions, { run, openUrl, focusTerminal });
     this.lastCompletedKey = null; // Force next observation to refresh views
     this.notifyViews();
     return reply;
   }
 
-  openReference(reference, { activeSpaceId = null, run, openUrl } = {}) {
+  openReference(reference, { activeSpaceId = null, run, openUrl, focusTerminal } = {}) {
     const endpoint = this.binding?.endpoint;
     const isLink = reference?.kind === "link";
     const at =
@@ -645,13 +649,13 @@ export class StreamsCoordinator {
         context: { kind: "explicit" },
         at,
       },
-      { run, openUrl }
+      { run, openUrl, focusTerminal }
     );
   }
 
   openWork(
     { stream, sessions = { kind: "all_eligible" }, cwd = null },
-    { run, openUrl } = {}
+    { run, openUrl, focusTerminal } = {}
   ) {
     return this.act(
       {
@@ -662,7 +666,7 @@ export class StreamsCoordinator {
           cwd,
         },
       },
-      { run, openUrl }
+      { run, openUrl, focusTerminal }
     );
   }
 }

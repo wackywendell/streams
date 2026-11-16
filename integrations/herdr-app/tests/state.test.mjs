@@ -430,10 +430,24 @@ test("StreamsCoordinator dispatches ViewerAction items once on fresh action repl
   assert.deepEqual(ran, [{ cmd: "pane.focus", args: { terminal: "t9" } }]);
 
   const extra = dispatchViewerActions(
-    [{ kind: "select_space", space: { adapter: "hc", endpoint: "core-1", key: "sp2" } }],
-    { run: (cmd, args) => ran.push({ cmd, args }), openUrl: (url) => opened.push(url) }
+    [
+      { kind: "select_space", space: { adapter: "hc", endpoint: "core-1", key: "sp2" } },
+      { kind: "focus_terminal", terminal: { adapter: "hc", endpoint: "core-1", key: "t10" } },
+    ],
+    {
+      run: (cmd, args) => ran.push({ cmd, args }),
+      openUrl: (url) => opened.push(url),
+      focusTerminal: (termKey) => ran.push({ cmd: "custom.focus", args: { terminal: termKey } }),
+    }
   );
-  assert.deepEqual(extra, [{ kind: "select_space", id: "sp2" }]);
+  assert.deepEqual(extra, [
+    { kind: "select_space", id: "sp2" },
+    { kind: "focus_terminal", terminal: "t10" },
+  ]);
+  assert.deepEqual(ran.slice(-2), [
+    { cmd: "space.select", args: { id: "sp2" } },
+    { cmd: "custom.focus", args: { terminal: "t10" } },
+  ]);
 });
 
 test("StreamsCoordinator.act surfaces WireError and reference_opened not_applied/uncertain outcomes", async () => {

@@ -177,6 +177,7 @@ export default class StreamsMod extends View {
     this._lastSig = null;
     this._observeTask = null;
     this._timerTask = null;
+    this._focusTask = null;
     this.ensureSubscribed(cx);
     this.scheduleObserve(cx, collectSnapshot());
     this._timerTask = cx?.timer?.every?.(2000, (timerCx) => {
@@ -238,6 +239,34 @@ export default class StreamsMod extends View {
         syncActiveTabName(collectSnapshot());
         cx?.notify?.();
       });
+    }
+  }
+
+  focusNewTerminal(cx, terminalKey, viewerLabel = null) {
+    const tryFocus = () => {
+      const found = panes().find((p) => p.terminal === terminalKey);
+      if (!found) return false;
+      run("pane.focus", { terminal: terminalKey });
+      if (viewerLabel && coordinator.tabNaming) {
+        const allTabs = spaces().flatMap((s) => s.tabs ?? []);
+        const tab = allTabs.find((t) => t.id === found.tab);
+        if (tab && !tab.named) {
+          run("tab.rename", { id: found.tab, name: viewerLabel });
+        }
+      }
+      return true;
+    };
+    if (tryFocus()) return;
+    if (cx?.spawn) {
+      this._focusTask = cx.spawn(async (asyncCx) => {
+        for (let attempt = 0; attempt < 40; attempt++) {
+          await asyncCx.sleep(50);
+          if (tryFocus()) return;
+        }
+        run("pane.focus", { terminal: terminalKey });
+      });
+    } else {
+      run("pane.focus", { terminal: terminalKey });
     }
   }
 
@@ -797,6 +826,8 @@ export default class StreamsMod extends View {
                                   activeSpaceId: activeSpace?.id ?? null,
                                   run,
                                   openUrl: (u) => clickCx.open_url(u),
+                                  focusTerminal: (termKey) =>
+                                    this.focusNewTerminal(clickCx, termKey, item.title),
                                 });
                               })
                           )
