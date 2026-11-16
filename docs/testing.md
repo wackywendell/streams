@@ -9,28 +9,28 @@ fix the cause or report it; a pass on rerun does not close it.
 
 | Changed boundary | Iteration check | Additional evidence |
 | --- | --- | --- |
-| Rust lib/bin logic or CLI grammar | `mise run test:rust:unit` | Relevant `contracts` modules; `test:rust:fast` for the development gate |
+| Rust lib/bin logic or CLI grammar | `just test-rust-unit` | Relevant `contracts` modules; `just test-rust-fast` for the development gate |
 | Record saves and captured edits | Filter `operations` or `yaml_store::records` | `record_local`, `record_updates` and `application_records` contracts |
 | File transport | Filter `sync::records` | Real-Git CLI and Pi sync acceptance |
-| Native effects and cards | `mise run test:rust:fast` | `test:native:rust`, scripted outside changes and PTY contracts |
-| Pi helpers and replay | `mise run test:pi` or `mise run test:replay` | Real Rust preview in isolated homes |
-| Herdr package support | `mise run test:herdr` | Real Rust native routing where relevant |
+| Native effects and cards | `just test-rust-fast` | `just test-native-rust`, scripted outside changes and PTY contracts |
+| Pi helpers and replay | `just test-pi` or `just test-replay` | Real Rust preview in isolated homes |
+| Herdr package support | `just test-herdr` | Real Rust native routing where relevant |
 
 Rust task commands set absolute `RUSTC` and `RUSTDOC`; use the same setup for
 focused Cargo commands:
 
 ```sh
-mise exec -- sh -c 'RUSTC=$(rustup which rustc) RUSTDOC=$(rustup which rustdoc) cargo test --locked --test contracts record_updates'
+RUSTC=$(rustup which rustc) RUSTDOC=$(rustup which rustdoc) cargo test --locked --test contracts record_updates
 ```
 
-Keep fixture Git configuration isolated, as the tasks in `mise.toml` do. Use a
+Keep fixture Git configuration isolated, as the tasks in `Justfile` do. Use a
 workspace-local `CARGO_TARGET_DIR` consistently for builds and CLI tests.
 [Contributing](../CONTRIBUTING.md) lists setup and full gates:
 
 ```sh
-MISE_AUTO_INSTALL=false mise run -j 1 test
-cargo clippy --all-targets -- -D warnings
-cargo fmt --check
+just test
+just check-clippy
+just check-fmt
 ```
 
 There is no Python differential suite or separate Temper verification target.

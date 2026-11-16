@@ -11,7 +11,10 @@ import {
 test("resolveRole selects popup, frame, and sidebar roles deterministically", () => {
   assert.equal(resolveRole({ role: "popup" }), "popup");
   assert.equal(resolveRole({ role: "frame" }), "frame");
+  assert.equal(resolveRole({ role: "sidebar", pane: "p1" }), "sidebar");
+  assert.equal(resolveRole({ kind: "session-popup" }), "popup");
   assert.equal(resolveRole({ pane: "p1", terminal: "t1" }), "frame");
+  assert.equal(resolveRole({ terminal: "t1" }), "frame");
   assert.equal(resolveRole({}), "sidebar");
   assert.equal(resolveRole(undefined), "sidebar");
 });
@@ -101,9 +104,17 @@ test("StreamsCoordinator deduplicates describe and read calls, reacts to save no
                             id: "stream-1",
                             title: "Stream One",
                             status: "active",
-                            state: "ready",
                             goal: "Goal",
-                            sessions: [{ id: "sess-1", title: "Session One", status: "active" }],
+                            goal_short: null,
+                            sessions: [
+                              {
+                                id: "sess-1",
+                                title: "Session One",
+                                status: "active",
+                                harness: "pi",
+                                state_short: "Working",
+                              },
+                            ],
                             documents: [],
                             artifacts: [],
                             links: [],
@@ -150,6 +161,7 @@ test("StreamsCoordinator deduplicates describe and read calls, reacts to save no
   assert.equal(calls.length, 2, "one describe call + one batched read call");
   assert.equal(coordinator.sidebar?.kind, "associated");
   assert.equal(coordinator.frames.get("t1")?.kind, "enrolled");
+  assert.equal(coordinator.streamTitle("stream-1"), "Stream One");
 
   // Re-observing identical state makes zero subprocess calls
   await coordinator.observe(snap);
@@ -210,6 +222,7 @@ test("StreamsCoordinator deduplicates describe and read calls, reacts to save no
 test("StreamsCoordinator dispatches ViewerAction items once on fresh action replies", async () => {
   const ran = [];
   const openedUrls = [];
+  const actionsSent = [];
   const coordinator = new StreamsCoordinator({
     exec: async (_cmd, args) => {
       if (args[1] === "describe") {
@@ -226,6 +239,7 @@ test("StreamsCoordinator dispatches ViewerAction items once on fresh action repl
       }
       const req = JSON.parse(args[3]);
       assert.equal(req.body.kind, "act");
+      actionsSent.push(req.body.action);
       return {
         code: 0,
         stdout: JSON.stringify({
@@ -278,11 +292,65 @@ test("StreamsCoordinator dispatches ViewerAction items once on fresh action repl
     }
   );
 
-  assert.deepEqual(ran, [
+  await coordinator.openReference(
+    {
+      kind: "document",
+      stream: "stream-1",
+      viewing_session: "sess-1",
+      document: { repository: "repo-1", path: "README.md" },
+    },
+    {
+      activeSpaceId: "s1",
+      run: (cmd, args) => ran.push({ cmd, args }),
+      openUrl: (u) => openedUrls.push(u),
+    }
+  );
+
+  await coordinator.openReference(
+    {
+      kind: "link",
+      stream: "stream-1",
+      link: { kind: "pr", url: "https://example.com/pr/1" },
+    },
+    {
+      activeSpaceId: "s1",
+      run: (cmd, args) => ran.push({ cmd, args }),
+      openUrl: (u) => openedUrls.push(u),
+    }
+  );
+
+  assert.deepEqual(actionsSent[0].reference, {
+    kind: "artifact",
+    key: { host: "host-1", stream: "stream-1", session: "sess-1", name: "out.md" },
+  });
+  assert.deepEqual(actionsSent[1], {
+    kind: "open_reference",
+    reference: {
+      kind: "document",
+      stream: "stream-1",
+      viewing_session: "sess-1",
+      document: { repository: "repo-1", path: "README.md" },
+    },
+    context: { kind: "explicit" },
+    at: { adapter: "hc", endpoint: "core-1", key: "s1" },
+  });
+  assert.deepEqual(actionsSent[2], {
+    kind: "open_reference",
+    reference: {
+      kind: "link",
+      stream: "stream-1",
+      link: { kind: "pr", url: "https://example.com/pr/1" },
+    },
+    context: { kind: "explicit" },
+    at: null,
+  });
+
+  assert.deepEqual(ran.slice(0, 2), [
     { cmd: "space.select", args: { id: "s1" } },
     { cmd: "pane.focus", args: { terminal: "t-view" } },
   ]);
-  assert.deepEqual(openedUrls, ["https://example.com/pr/1"]);
+  assert.equal(openedUrls.length, 3);
+  assert.equal(openedUrls[0], "https://example.com/pr/1");
 
   // Direct dispatch helper check
   const direct = dispatchViewerActions([], {
@@ -290,4 +358,85 @@ test("StreamsCoordinator dispatches ViewerAction items once on fresh action repl
     openUrl: (u) => openedUrls.push(u),
   });
   assert.deepEqual(direct, []);
+});
+
+test("StreamsCoordinator.act surfaces WireError and reference_opened not_applied/uncertain outcomes", async () => {
+  let nextResult;
+  let notifications = 0;
+  const coordinator = new StreamsCoordinator({
+    notify: () => {
+      notifications += 1;
+    },
+    exec: async (_cmd, args) => {
+      if (args[1] === "describe") {
+        return {
+          code: 0,
+          stdout: JSON.stringify({
+            version: 1,
+            scope: { catalog: "cat-1", host: "host-1" },
+            endpoint: "core-1",
+            notification_key: "streams.saved.key1",
+          }),
+          stderr: "",
+        };
+      }
+      const req = JSON.parse(args[3]);
+      return {
+        code: 0,
+        stdout: JSON.stringify({
+          version: 1,
+          scope: req.scope,
+          endpoint: req.endpoint,
+          verified_endpoint: req.endpoint,
+          result: nextResult,
+          viewer_projection: [],
+          warnings: [],
+        }),
+        stderr: "",
+      };
+    },
+  });
+
+  nextResult = {
+    error: { kind: "unavailable", message: "catalog locked" },
+  };
+  await coordinator.openWork({ stream: "stream-1" });
+  assert.equal(coordinator.lastError, "catalog locked");
+  const countAfterWireError = notifications;
+  assert.ok(countAfterWireError >= 1);
+
+  nextResult = {
+    ok: {
+      kind: "reference_opened",
+      value: {
+        known: [],
+        result: { kind: "not_applied", reason: "checkout not registered" },
+      },
+    },
+  };
+  await coordinator.openReference({
+    kind: "document",
+    stream: "stream-1",
+    viewing_session: "sess-1",
+    document: { repository: "repo-1", path: "README.md" },
+  });
+  assert.equal(coordinator.lastError, "checkout not registered");
+  assert.equal(notifications, countAfterWireError + 1);
+
+  nextResult = {
+    ok: {
+      kind: "reference_opened",
+      value: {
+        known: [],
+        result: { kind: "uncertain", reason: "terminal timed out" },
+      },
+    },
+  };
+  await coordinator.openReference({
+    kind: "link",
+    stream: "stream-1",
+    link: { kind: "pr", url: "https://example.com/pr/1" },
+  });
+  assert.equal(coordinator.lastError, "terminal timed out");
+  assert.equal(notifications, countAfterWireError + 2);
 });

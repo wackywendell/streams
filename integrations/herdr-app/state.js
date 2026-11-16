@@ -10,8 +10,15 @@ export const MAX_SELECTIONS = 64;
  * Determine which role a View instance should render from its props.
  */
 export function resolveRole(rawProps) {
-  if (rawProps?.role === "popup") return "popup";
-  if (rawProps?.role === "frame" || rawProps?.pane) return "frame";
+  if (
+    rawProps?.role === "popup" ||
+    rawProps?.role === "frame" ||
+    rawProps?.role === "sidebar"
+  ) {
+    return rawProps.role;
+  }
+  if (rawProps?.kind === "session-popup") return "popup";
+  if (rawProps?.pane || rawProps?.terminal) return "frame";
   return "sidebar";
 }
 
@@ -135,10 +142,21 @@ export class StreamsCoordinator {
     this.lastCompletedKey = null;
 
     this.sidebar = null; // SidebarContext or null
+    this.streams = new Map(); // streamId -> StreamView
     this.frames = new Map(); // terminalKey -> FrameContext
     this.lastError = null;
     this.viewingBySpace = new Map(); // spaceId -> ViewingChoice
     this.lastAgentBySpace = new Map(); // spaceId -> terminalKey
+  }
+
+  streamTitle(streamId) {
+    if (!streamId) return "";
+    const cached = this.streams.get(streamId);
+    if (cached?.title) return cached.title;
+    if (this.sidebar?.kind === "associated" && this.sidebar.stream?.id === streamId) {
+      return this.sidebar.stream.title || streamId;
+    }
+    return streamId;
   }
 
   notifyViews() {
@@ -325,6 +343,9 @@ export class StreamsCoordinator {
             if (sel.kind === "sidebar") {
               if (item?.ok?.kind === "sidebar") {
                 this.sidebar = item.ok.value;
+                if (item.ok.value?.kind === "associated" && item.ok.value.stream?.id) {
+                  this.streams.set(item.ok.value.stream.id, item.ok.value.stream);
+                }
               } else if (item?.error) {
                 this.sidebar = { kind: "unavailable", reason: item.error.message };
               }
@@ -384,14 +405,25 @@ export class StreamsCoordinator {
       return null;
     }
     const reply = JSON.parse(out.stdout);
+    if (reply?.result?.error) {
+      this.lastError = reply.result.error.message || "streams integration action failed";
+      this.notifyViews();
+      return reply;
+    }
     const ok = reply?.result?.ok;
     let viewerActions = [];
     if (ok?.kind === "work_opened") {
       viewerActions = ok.value?.viewer_actions ?? [];
+      this.lastError = null;
     } else if (ok?.kind === "reference_opened") {
       const res = ok.value?.result;
       if (res?.kind === "needs_viewer") {
         viewerActions = res.value ?? [];
+        this.lastError = null;
+      } else if (res?.kind === "not_applied" || res?.kind === "uncertain") {
+        this.lastError = res.reason || `reference ${res.kind}`;
+      } else {
+        this.lastError = null;
       }
     }
     if (Array.isArray(reply?.viewer_projection) && reply.viewer_projection.length > 0) {

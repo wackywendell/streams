@@ -25,14 +25,14 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libz3-dev libclang-dev pkg-config
       - if: runner.os == 'macOS'
         run: brew install z3 pkg-config
-      - run: mise run test
+      - run: just test
 
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: jdx/mise-action@v5
-      - run: mise run build
+      - run: just build
       - run: npm ci
       - run: npm --prefix integrations/herdr-work-cards ci --ignore-scripts
       - run: npm pack --dry-run

@@ -5,3 +5,8 @@ node_modules/
 .venv/
 /target/
 /AGENTS.local.md
+/mise.toml
+/.mise.toml
+!.envrc
+/integrations/herdr-app/*.d.ts
+/integrations/herdr-app/jsconfig.json

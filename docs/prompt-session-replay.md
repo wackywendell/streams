@@ -26,4 +26,4 @@ This costs disk space and does not reproduce backend failure recovery, native la
 
 ## Running without activation
 
-`STREAMS_BIN_PATH` can point one test process at the built Rust binary. This executable override does not replace installed tools. `mise run test:replay` exercises the production Pi helper workflow through the real Rust preview and capture commands, using deterministic model responses and an isolated home. No native workspace or model service is contacted.
+`STREAMS_BIN_PATH` can point one test process at the built Rust binary. This executable override does not replace installed tools. `just test-replay` exercises the production Pi helper workflow through the real Rust preview and capture commands, using deterministic model responses and an isolated home. No native workspace or model service is contacted.

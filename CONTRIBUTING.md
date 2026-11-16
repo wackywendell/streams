@@ -5,38 +5,39 @@
 Install [mise](https://mise.jdx.dev/), then:
 
 ```sh
-mise install   # Node 26 and pinned Rust
+mise install   # Node 26, pinned Rust, just, and direnv from .tool-versions
 npm ci
 npm --prefix integrations/herdr-work-cards ci --ignore-scripts
-mise run build
+just build
 ```
 
 Rust owns the CLI, catalog, native effects and terminal card. TypeScript owns the
 in-process Pi boundary and its supporting configuration, wire parsing and naming.
-The compiler is pinned in `rust-toolchain.toml` and `mise.toml`. No Python, Z3
+The compiler and tool versions are pinned in `rust-toolchain.toml` and `.tool-versions`, with tasks in `Justfile` and environment activation in `.envrc`. No Python, Z3
 or libclang dependency is required.
 
 ## Test
 
 ```sh
-mise run test:fast         # Rust contracts and Pi boundary
-mise run test              # full acceptance, including real Git
-mise run test:rust         # all Rust targets and doctests
-mise run test:rust:fast    # Rust library, binary and consolidated contracts
-mise run test:rust:unit    # focused library/binary loop; not full acceptance
-mise run test:pi           # Pi reporting, capture and helper-request tests
-mise run test:herdr        # configuration, naming and launcher boundaries
-mise run test:replay       # production helper replay with real Rust preview
-mise run test:native:rust  # Pi-to-Rust lifecycle with fake Herdr endpoints
+just test-fast         # Rust contracts and Pi boundary
+just test              # full acceptance, including real Git
+just test-rust         # all Rust targets and doctests
+just test-rust-fast    # Rust library, binary and consolidated contracts
+just test-rust-unit    # focused library/binary loop; not full acceptance
+just test-pi           # Pi reporting, capture and helper-request tests
+just test-herdr        # configuration, naming and launcher boundaries
+just test-herdr-app    # herdr-app mod state, batching and viewer dispatch tests
+just test-replay       # production helper replay with real Rust preview
+just test-native-rust  # Pi-to-Rust lifecycle with fake Herdr endpoints
 ```
 
 Use the smallest relevant task while iterating, then run the complete landing
 gates:
 
 ```sh
-MISE_AUTO_INSTALL=false mise run -j 1 test
-cargo clippy --all-targets -- -D warnings
-cargo fmt --check
+just test
+just check-clippy
+just check-fmt
 ```
 
 Target one Rust area with:

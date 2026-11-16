@@ -65,13 +65,13 @@ Inference settings belong to the root extension's `stream-reporting.json`. Remov
 
 ## Rust lifecycle routing
 
-Rust is the only native implementation on this branch. The Pi extension defaults to this checkout's `target/debug/streams`, respecting `CARGO_TARGET_DIR`. Build it with `mise run build`. Set `STREAMS_BIN_PATH` to an absolute matching executable when using a packaged extension or a different build. Missing or invalid executables fail; there is no Python, TypeScript-coordinator or `PATH` fallback. This source cutover does not activate or replace installed tools.
+Rust is the only native implementation on this branch. The Pi extension defaults to this checkout's `target/debug/streams`, respecting `CARGO_TARGET_DIR`. Build it with `just build`. Set `STREAMS_BIN_PATH` to an absolute matching executable when using a packaged extension or a different build. Missing or invalid executables fail; there is no Python, TypeScript-coordinator or `PATH` fallback. This source cutover does not activate or replace installed tools.
 
 The Pi extension keeps commands, tools, event serialization, branch admission and the Pi session-name setter. Rust handles card open/close, metadata and Herdr names. Each pass reads concerned records and observes at most one native snapshot; the executor checks subscription liveness before effects. There is no saved native launch evidence or arrangement capture. Reporting and native effects share `STREAMS_BIN_PATH`. Load only one checkout's extension.
 
 The Rust card uses `streams-rust-herdr-plugin.toml` and `bin/open-rust-streams-pane.sh`. The launcher requires the protected launch envelope and executes that explicit Rust binary, not a CLI found on `PATH`.
 
-Run `mise run test:native:rust` for isolated Pi/Rust CLI acceptance with fake Herdr endpoints. PTY and live-platform acceptance remain required before a trial.
+Run `just test-native-rust` for isolated Pi/Rust CLI acceptance with fake Herdr endpoints. PTY and live-platform acceptance remain required before a trial.
 
 ## Development
 
@@ -83,7 +83,7 @@ npm --prefix integrations/herdr-work-cards run check
 npm --prefix integrations/herdr-work-cards test
 ```
 
-`npm test` builds the surviving TypeScript support code and runs `tests/*.test.mjs`. `mise run build` builds the Rust native runtime. Restart participating Pi sessions and reopen native pane processes after changing loaded code. Do not mix loaded CLI and extension revisions during an update. Use the root Streams extension, not a standalone Pi entrypoint from this package.
+`npm test` builds the surviving TypeScript support code and runs `tests/*.test.mjs`. `just build` builds the Rust native runtime. Restart participating Pi sessions and reopen native pane processes after changing loaded code. Do not mix loaded CLI and extension revisions during an update. Use the root Streams extension, not a standalone Pi entrypoint from this package.
 
 The `streams-rust-herdr-plugin.toml` manifest requires a compatible Herdr native plugin API. Explicit pane opening can register the exact missing plugin; it refuses conflicting or disabled registrations. It does not update or restart Herdr.
 

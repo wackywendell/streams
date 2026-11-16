@@ -9,7 +9,7 @@ This checkout includes the catalog CLI, Pi work-card extension and bundled agent
 This branch uses Rust for the CLI, catalog, native lifecycle and terminal card. Build it without replacing your installed CLI:
 
 ```sh
-mise run build
+just build
 ./target/debug/streams --help
 ```
 
@@ -254,6 +254,23 @@ An explicit `--cwd` updates the selected session's local directory mapping, incl
 
 The `herdr-app` integration lives under [`integrations/herdr-app`](integrations/herdr-app) and renders the Streams sidebar panel, the single 30 px pane header strip for enrolled Pi terminals, and the Session detail popup. It calls the owner CLI (`streams integration describe --frontend hc` and `streams integration request --request-json <json>`), batches active sidebar and visible frame selections into one request per context or save-notice change, and opens saved Document and Artifact references in ephemeral `hc` viewer terminals (`no_parent: true`, `rm: true`). See the [hc and herdr-app implementation plan](docs/hc-herdr-app-plan.md) and [baseline design](docs/hc-herdr-app-design.md) for setup and rollback steps.
 
+Install the release `streams` CLI into `~/.local/bin/streams` and the `herdr-app` mod into `${HERDR_APP_HOME:-~/.config/herdr-app}/mods/streams/` without touching your existing layouts:
+
+```sh
+just install
+```
+
+Or install only the mod (`just install-herdr-app-mod`), only the CLI (`just install-cli`), or both the mod and the standalone reference layout ([`integrations/herdr-app/layouts/streams.json`](integrations/herdr-app/layouts/streams.json)):
+
+```sh
+just install-herdr-app
+```
+
+To compose `mods/streams` into your own `herdr-app` layout JSON:
+
+- Set `pane.header.content` to `{ "mod": "streams" }`. Role `"frame"` is inferred from the `pane` / `terminal` props injected by `herdr-app`, keeping `pane` header parity while showing a clickable `≋ <Stream> · <Session>` pill on enrolled terminals.
+- Prepend `{ "id": "streams", "type": "block", "content": { "mod": "streams", "props": { "label": "Streams", "icon": "≋" } } }` to `panel-body.children`. Role `"sidebar"` is inferred when `pane` / `terminal` are absent, and `label` / `icon` let layout-driven tab bars render the toggle button without custom tab-bar forks.
+
 Local directories and native bindings live under `$XDG_STATE_HOME/streams/catalogs/<catalog-path-hash>`, not in the shared catalog. The default state root is `~/.local/state`. Opening requires the Stream's immutable host to match this host. Ownership handover and cross-host Session reattachment are unsupported.
 
 ## Understand saving and sharing
@@ -279,8 +296,8 @@ A lost reply may leave an uncertain save or push. Preserve accepted receipts and
 ```sh
 npm ci
 npm --prefix integrations/herdr-work-cards ci --ignore-scripts
-mise run test:fast
-mise run test
+just test-fast
+just test
 ```
 
 Rust tests cover record-local saves, captured reports, file transport, CLI, native effects and the terminal card. Frozen wire and renderer fixtures remain after retiring the Python and duplicate TypeScript implementations. Node tests cover the Pi boundary, frozen helper requests, session names, configuration and subprocess shutdown. Real Rust CLI acceptance exercises checkout integration, two-host Git publication, offline saves and fresh-process recovery.

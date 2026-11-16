@@ -33,6 +33,15 @@ const coordinator = new StreamsCoordinator({
   },
 });
 
+function findNode(node, id) {
+  if (node?.id === id) return node;
+  for (const child of node?.children ?? []) {
+    const found = findNode(child, id);
+    if (found) return found;
+  }
+  return null;
+}
+
 function paneFrame(node) {
   if (!node || node.hidden) return null;
   if (node.content?.tab && node.content.pane) return node.content.pane;
@@ -131,7 +140,16 @@ export default class StreamsMod extends View {
       coordinator.streamsBin = configuredBin;
     }
     const sig = snapshotSignature(snap);
-    if (!force && sig === this._lastSig && (coordinator.sidebar || coordinator.describeError || coordinator.lastError)) {
+    if (
+      !force &&
+      sig === this._lastSig &&
+      (coordinator.sidebar ||
+        coordinator.describeError ||
+        coordinator.lastError ||
+        coordinator.lastCompletedKey !== null ||
+        coordinator.inFlightKey !== null ||
+        coordinator.describePromise !== null)
+    ) {
       return;
     }
     this._lastSig = sig;
@@ -168,7 +186,11 @@ export default class StreamsMod extends View {
   renderFrame(cx) {
     const t = theme();
     const rawProps = props() ?? {};
-    const p = panes().find((item) => item.pane === rawProps.pane);
+    const p = panes().find(
+      (item) =>
+        item.pane === rawProps.pane ||
+        (rawProps.terminal && item.terminal === rawProps.terminal)
+    );
     if (!p) return div();
 
     const snap = collectSnapshot();
@@ -176,20 +198,13 @@ export default class StreamsMod extends View {
 
     const frameCtx = p.terminal ? coordinator.frames.get(p.terminal) : null;
     const enrolled = frameCtx?.kind === "enrolled" ? frameCtx.session : null;
-    const unavailable = frameCtx?.kind === "unavailable" ? frameCtx.reason : null;
+    const streamTitle = enrolled ? coordinator.streamTitle(enrolled.stream) : null;
 
     const nativeName =
       ((p.program?.agent || p.program?.shell) && p.program.name) ||
       p.title ||
       p.program?.name ||
       "shell";
-    const title = enrolled ? enrolled.title : nativeName;
-    const subtitle = enrolled
-      ? `${enrolled.status}${enrolled.state ? ` · ${enrolled.state}` : ""}`
-      : unavailable
-        ? `Unavailable: ${unavailable}`
-        : folder(p.cwd);
-
     const pic = icon(p.program, 14, t.dim);
     const st = p.status;
     const pane = p.pane;
@@ -219,34 +234,58 @@ export default class StreamsMod extends View {
           .max_w(260)
           .font_medium()
           .text_color(t.foreground)
-          .child(title)
+          .child(nativeName)
       )
-      .child(div().flex_1().truncate().text_color(t.dim).child(subtitle))
+      .child(div().flex_1().truncate().text_color(t.dim).child(folder(p.cwd)))
       .when(Boolean(enrolled), (el) =>
         el.child(
           div()
-            .id(`ph-expand-${pane}`)
-            .px(6)
-            .py(2)
-            .rounded(4)
+            .id(`ph-stream-${pane}`)
+            .flex_none()
+            .max_w(280)
+            .truncate()
+            .px(7)
+            .h(20)
+            .flex()
+            .items_center()
+            .rounded(5)
+            .bg(t.selected)
             .text_size(11)
-            .text_color(t.muted)
-            .hover((s) => s.bg(t.hover).text_color(t.foreground))
+            .font_medium()
+            .text_color(t.foreground)
+            .hover((s) => s.bg(t.hover))
             .on_click((_e, clickCx) => {
               clickCx.stop_propagation();
-              openOverlay({
-                mod: "streams",
-                kind: "popup",
-                width: 420,
-                height: 360,
-                props: {
-                  role: "popup",
-                  session: enrolled,
-                  space_id: snap.activeSpace?.id ?? null,
-                },
-              });
+              const root = layout();
+              const panel = findNode(root, "panel");
+              const panelBody = findNode(root, "panel-body");
+              const panelId = props()?.panel_id ?? "streams";
+              const hasPanelChild = Boolean(
+                panel && panelBody && findNode(panelBody, panelId)
+              );
+              if (
+                hasPanelChild &&
+                (panel.hidden || panelBody.active !== panelId)
+              ) {
+                run("layout.select", { stack: "panel-body", child: panelId });
+                run("layout.show", { id: "panel" });
+              } else {
+                openOverlay({
+                  mod: "streams",
+                  kind: "popup",
+                  at: "pointer",
+                  width: 420,
+                  height: 360,
+                  props: {
+                    kind: "session-popup",
+                    session: enrolled,
+                    stream_title: streamTitle,
+                    space_id: snap.activeSpace?.id ?? null,
+                  },
+                });
+              }
             })
-            .child("Expand")
+            .child(`≋ ${streamTitle} · ${enrolled.title}`)
         )
       )
       .when(st === "working", (el) =>
@@ -308,6 +347,7 @@ export default class StreamsMod extends View {
     const t = theme();
     const rawProps = props() ?? {};
     const session = rawProps.session;
+    const streamTitle = rawProps.stream_title ?? null;
     const spaceId = rawProps.space_id ?? null;
     if (!session) return div().p(12).text_color(t.dim).child("No Session selected.");
 
@@ -337,24 +377,23 @@ export default class StreamsMod extends View {
               .child("Close")
           )
       )
+      .when(Boolean(streamTitle), (el) =>
+        el.child(div().text_color(t.dim).child(`≋ ${streamTitle}`))
+      )
       .child(
         div()
           .text_color(t.muted)
           .child(`Status: ${session.status}${session.state ? ` · ${session.state}` : ""}`)
       )
-      .when(Boolean(session.summary), (el) =>
-        el.child(div().text_color(t.foreground).child(session.summary))
+      .when(Boolean(session.recap), (el) =>
+        el.child(div().text_color(t.foreground).child(session.recap))
       )
-      .when(Boolean(session.open_items?.length), (el) =>
+      .when(Boolean(session.remaining), (el) =>
         el.child(
           v_flex()
             .gap(4)
-            .child(div().font_medium().text_color(t.muted).child("Open items"))
-            .children(
-              session.open_items.map((item, idx) =>
-                div().id(`open-item-${idx}`).text_color(t.foreground).child(`• ${item}`)
-              )
-            )
+            .child(div().font_medium().text_color(t.muted).child("Remaining"))
+            .child(div().text_color(t.foreground).child(session.remaining))
         )
       )
       .child(
@@ -442,6 +481,20 @@ export default class StreamsMod extends View {
         );
     }
 
+    if (!activeSpace) {
+      return v_flex()
+        .size_full()
+        .bg(t.chrome)
+        .child(header)
+        .child(
+          div()
+            .p(12)
+            .text_size(12)
+            .text_color(t.dim)
+            .child("No active space.")
+        );
+    }
+
     if (!sb) {
       return v_flex()
         .size_full()
@@ -516,11 +569,7 @@ export default class StreamsMod extends View {
             v_flex()
               .gap(4)
               .child(div().font_semibold().text_size(13).child(stream.title))
-              .child(
-                div()
-                  .text_color(t.muted)
-                  .child(`${stream.status}${stream.state ? ` · ${stream.state}` : ""}`)
-              )
+              .child(div().text_color(t.muted).child(stream.status))
               .when(Boolean(stream.goal), (el) =>
                 el.child(div().text_color(t.foreground).child(stream.goal))
               )
@@ -594,8 +643,8 @@ export default class StreamsMod extends View {
                 .rounded(6)
                 .bg(t.raised)
                 .child(div().font_medium().child(selectedSession.title))
-                .when(Boolean(selectedSession.summary), (s) =>
-                  s.child(div().text_color(t.muted).child(selectedSession.summary))
+                .when(Boolean(selectedSession.state_short), (s) =>
+                  s.child(div().text_color(t.muted).child(selectedSession.state_short))
                 )
             )
           )
@@ -620,7 +669,7 @@ export default class StreamsMod extends View {
                             kind: "document",
                             stream: stream.id,
                             viewing_session: selectedSessionId,
-                            key: doc.key,
+                            document: doc.key,
                           },
                           {
                             activeSpaceId: activeSpace?.id ?? null,
@@ -687,7 +736,7 @@ export default class StreamsMod extends View {
                           {
                             kind: "link",
                             stream: stream.id,
-                            key: link.key,
+                            link: link.key,
                           },
                           {
                             activeSpaceId: activeSpace?.id ?? null,
