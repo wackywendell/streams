@@ -203,13 +203,11 @@ impl App {
                         facade.read_saved_views(selections.as_slice())
                     }
                     .map_err(|_| WireError::unavailable("saved views are unavailable"))?;
-                    let tab_naming = runtime::native_cards::NativeCardsConfig::load(
-                        &self.environment,
-                        &self.cwd,
-                        &self.cwd,
-                    )
-                    .map(|config| config.tab_naming())
-                    .unwrap_or(true);
+                    let tab_naming = self
+                        .config
+                        .load()
+                        .map(|settings| settings.herdr.tab_naming)
+                        .unwrap_or(true);
                     Ok(ModResult::Read {
                         values,
                         notification_key: facade.scope().notification_key(),

@@ -270,15 +270,14 @@ impl NativeFixture {
             stream["id"].as_str().unwrap()
         ));
         fixture.ok(&["config", "set", "frontend.mode", "herdr"], None);
-        fixture.ok(&["config", "set", "cards.auto_open", "manual"], None);
-        fs::write(
-            home.join("work-cards.json"),
-            json!({
-                "workspace_naming":false,"tab_naming":false,"session_naming":true,"pane_height_fraction":0.5
-            })
-            .to_string(),
-        )
-        .unwrap();
+        fixture.ok(&["config", "set", "herdr.cards.auto_open", "manual"], None);
+        fixture.ok(&["config", "set", "herdr.naming.workspace", "false"], None);
+        fixture.ok(&["config", "set", "herdr.naming.tab", "false"], None);
+        fixture.ok(&["config", "set", "pi.naming.session", "true"], None);
+        fixture.ok(
+            &["config", "set", "herdr.pane_height_fraction", "0.5"],
+            None,
+        );
         Self {
             server,
             fixture,
@@ -296,10 +295,6 @@ impl NativeFixture {
         let mut command = self.fixture.command();
         command
             .env("HERDR_ENV", "1")
-            .env(
-                "WORK_CARDS_CONFIG_PATH",
-                self.fixture.directory.path().join("work-cards.json"),
-            )
             .env("HERDR_SOCKET_PATH", &self.server.socket)
             .env("HERDR_PANE_ID", "pane")
             .env("HERDR_TAB_ID", "tab")
@@ -636,15 +631,20 @@ fn external_attach_into_an_unmarked_workspace_does_not_create_or_move_work() {
 fn automatic_cards_open_on_startup_or_outside_attach_and_not_again_on_refresh() {
     for initially_bound in [false, true] {
         let f = NativeFixture::new();
+        f.fixture.ok(
+            &["config", "set", "herdr.cards.auto_open", "automatic"],
+            None,
+        );
         f.fixture
-            .ok(&["config", "set", "cards.auto_open", "automatic"], None);
-        fs::write(
-            f.fixture.directory.path().join("work-cards.json"),
-            json!({"workspace_naming":false,
-                "tab_naming":false,"session_naming":true,"pane_height_fraction":0.5})
-            .to_string(),
-        )
-        .unwrap();
+            .ok(&["config", "set", "herdr.naming.workspace", "false"], None);
+        f.fixture
+            .ok(&["config", "set", "herdr.naming.tab", "false"], None);
+        f.fixture
+            .ok(&["config", "set", "pi.naming.session", "true"], None);
+        f.fixture.ok(
+            &["config", "set", "herdr.pane_height_fraction", "0.5"],
+            None,
+        );
         let id = if initially_bound {
             f.id.clone()
         } else {
@@ -776,8 +776,10 @@ fn automatic_cards_open_on_startup_or_outside_attach_and_not_again_on_refresh() 
 fn outside_attach_opens_after_delayed_pi_transcript_detection() {
     for (detected_at_startup, initially_bound) in [(true, false), (false, false), (false, true)] {
         let f = NativeFixture::new();
-        f.fixture
-            .ok(&["config", "set", "cards.auto_open", "automatic"], None);
+        f.fixture.ok(
+            &["config", "set", "herdr.cards.auto_open", "automatic"],
+            None,
+        );
         let id = if initially_bound {
             f.id.clone()
         } else {

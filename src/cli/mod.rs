@@ -36,7 +36,7 @@ use std::{
 use streams::{
     agent::{self, ContextRequest},
     application,
-    config::{Config, ConfigKey},
+    config::{Config, ConfigKey, ConfigPath, encode_toml, toml_table_to_json, toml_value_to_json},
     frontend::{self, FrontendMode, FrontendRequest, FrontendSelection},
     model::{Record, Session, Stream, TitleMode, ValidationError},
     operations::{self, Actor},
@@ -366,7 +366,6 @@ impl App {
             "PATH",
             "HERDR_TAB_ID",
             "HERDR_WORKSPACE_ID",
-            "WORK_CARDS_CONFIG_PATH",
             "EDITOR",
             "STREAMS_CARDS_CONTEXT",
             "STREAMS_ARTIFACT_CATALOG_SOURCE",
@@ -753,7 +752,7 @@ impl App {
                     json!({"catalog":opened.root(),"host_id":opened.host().as_str(),"sync":sync}),
                 ))
             }
-            Command::Config { action } => self.configure(action),
+            Command::Config { overrides, action } => self.configure(overrides, action),
             Command::Native {
                 session_id,
                 plugin_root,
@@ -881,55 +880,76 @@ impl App {
             &Uuid::new_v4().to_string(),
         )
     }
-    fn configure(&self, action: Option<ConfigCommand>) -> Result<Output> {
-        if let Some(action) = action {
-            let key = match action {
-                ConfigCommand::Get { key } => key,
-                ConfigCommand::Set { key, value } => {
-                    match key {
-                        ConfigKey::StreamNaming | ConfigKey::SessionNaming => {
-                            let target = if key == ConfigKey::StreamNaming {
-                                streams::child_protocol::TitleTarget::Stream
-                            } else {
-                                streams::child_protocol::TitleTarget::Session
-                            };
-                            let mode = value.parse().map_err(|_| {
-                                CliError::message(format!("{key} must be automatic or manual"))
-                            })?;
-                            self.set_title_default(target, mode)?;
-                        }
-                        _ => self.config.set(key, &value)?,
+    fn configure(&self, overrides_flag: bool, action: Option<ConfigCommand>) -> Result<Output> {
+        let format_plain = |toml_val: &toml::Value, json_val: &Value| -> Result<String> {
+            Ok(match toml_val.as_table() {
+                Some(table) => encode_toml(table)?.trim_end_matches('\n').to_owned(),
+                None => json_val
+                    .as_str()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| json_val.to_string()),
+            })
+        };
+        let has_catalog = || application::open_records(&self.config).is_ok();
+        match action {
+            None | Some(ConfigCommand::List { .. }) => {
+                let only_overrides = overrides_flag
+                    || matches!(action, Some(ConfigCommand::List { overrides: true }));
+                let table = if only_overrides {
+                    self.config.read_overrides_toml()?
+                } else {
+                    self.config.values_toml()?
+                };
+                let json_val = toml_table_to_json(&table)?;
+                let text = encode_toml(&table)?;
+                Ok(Output::plain(
+                    json_val,
+                    text.trim_end_matches('\n').to_owned(),
+                ))
+            }
+            Some(ConfigCommand::Get { key }) => {
+                let toml_val = self.config.get_path_toml(key)?;
+                let json_val = toml_value_to_json(&toml_val)?;
+                let plain = format_plain(&toml_val, &json_val)?;
+                Ok(Output::plain(json_val, plain))
+            }
+            Some(ConfigCommand::Set { key, value }) => {
+                match key {
+                    ConfigKey::StreamNaming | ConfigKey::SessionNaming => {
+                        let target = if key == ConfigKey::StreamNaming {
+                            streams::child_protocol::TitleTarget::Stream
+                        } else {
+                            streams::child_protocol::TitleTarget::Session
+                        };
+                        let mode = value.parse().map_err(|_| {
+                            CliError::message(format!("{key} must be automatic or manual"))
+                        })?;
+                        self.set_title_default(target, mode)?;
                     }
-                    key
+                    _ => self.config.set(key, &value)?,
                 }
-            };
-            let value = self.config.get(key)?;
-            let plain = value
-                .as_str()
-                .map(str::to_owned)
-                .unwrap_or_else(|| value.to_string());
-            return Ok(Output::plain(value, plain));
+                let toml_val = self.config.get_path_toml(ConfigPath::Key(key))?;
+                let json_val = toml_value_to_json(&toml_val)?;
+                let plain = if key == ConfigKey::PiReportingModel {
+                    value
+                } else {
+                    format_plain(&toml_val, &json_val)?
+                };
+                let mut output = Output::plain(json_val, plain);
+                output.accepted_save = has_catalog();
+                Ok(output)
+            }
+            Some(ConfigCommand::Unset { key }) => {
+                self.config.unset(key)?;
+                let mut output = Output::plain(Value::Null, format!("unset {key}"));
+                output.accepted_save = has_catalog();
+                Ok(output)
+            }
+            Some(ConfigCommand::Path) => {
+                let path = self.config.config_path().to_string_lossy().into_owned();
+                Ok(Output::plain(Value::String(path.clone()), path))
+            }
         }
-        let values = self.config.values()?;
-        let overrides = self.config.read_overrides()?;
-        let mut plain = format!("Config: {}", self.config.config_path().display());
-        for key in [
-            ConfigKey::CatalogRoot,
-            ConfigKey::FrontendMode,
-            ConfigKey::StreamNaming,
-            ConfigKey::SessionNaming,
-            ConfigKey::CardAutoOpen,
-        ] {
-            let text = key.to_string();
-            let (section, name) = text.split_once('.').expect("closed configuration key");
-            let source = if overrides.get(section).and_then(|o| o.get(name)).is_some() {
-                "configured"
-            } else {
-                "default"
-            };
-            plain.push_str(&format!("\n{text}: {} ({source})", values[section][name]));
-        }
-        Ok(Output::plain(values, plain))
     }
     fn capture_inputs(&self, stream: Option<&str>, workspace: Option<&str>) -> Result<Output> {
         use agent::CaptureTarget;

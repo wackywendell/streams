@@ -206,7 +206,7 @@ pub(super) struct SessionResolution {
 pub(super) fn resolve_session(
     app: &App,
     session_id: &str,
-    plugin_root: &std::path::Path,
+    _plugin_root: &std::path::Path,
     remember_directory: bool,
 ) -> Result<SessionResolution> {
     let opened = super::super::application::open_records(&app.config)?;
@@ -257,13 +257,11 @@ pub(super) fn resolve_session(
                 .bind_inferred_repositories(&checkout.id, &streams::process::NativeProcessRunner);
         }
     }
-    let session_naming = streams::runtime::native_cards::NativeCardsConfig::load(
-        &app.environment,
-        &app.cwd,
-        plugin_root,
-    )
-    .map(|config| config.session_naming())
-    .unwrap_or(true);
+    let session_naming = app
+        .config
+        .load()
+        .map(|settings| settings.pi.session_naming)
+        .unwrap_or(true);
     let desired_pi_name = session_naming.then(|| session.title.clone());
     Ok(SessionResolution {
         scope,

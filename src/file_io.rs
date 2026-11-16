@@ -235,6 +235,16 @@ pub(crate) fn write_json(path: &Path, value: &impl Serialize) -> Result<(), Stor
     atomic_write(path, &bytes, path.parent().expect("file parent"))
 }
 
+pub(crate) fn write_text(path: &Path, text: &str) -> Result<(), StorageError> {
+    if path.is_symlink() {
+        return Err(StorageError::new(format!(
+            "refusing symlinked state file: {}",
+            path.display()
+        )));
+    }
+    atomic_write(path, text.as_bytes(), path.parent().expect("file parent"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

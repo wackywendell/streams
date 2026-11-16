@@ -22,7 +22,7 @@ impl App {
                 },
             )?
             .mode()?;
-        let global = self.config.load()?.card_auto_open;
+        let global = self.config.load()?.herdr.cards_auto_open;
         Ok(Output::value(
             json!({"global":global,"session":session,"effective":session.resolve(global)}),
         ))
@@ -43,7 +43,7 @@ impl App {
                         return Err(CliError::message("global card mode cannot inherit"));
                     }
                 };
-                self.config.set(ConfigKey::CardAutoOpen, value)?;
+                self.config.set(ConfigKey::HerdrCardsAutoOpen, value)?;
             }
             CardTarget::Session => {
                 let records = application::open_records(&self.config)?;

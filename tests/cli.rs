@@ -1465,3 +1465,95 @@ fn catalog_files(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
     files.sort_by(|left, right| left.0.cmp(&right.0));
     files
 }
+
+#[test]
+fn config_cli_supports_toml_list_get_set_unset_path_and_model() {
+    let f = Fixture::new();
+    let expected_path = f.home.join("config/streams/config.toml");
+    assert_eq!(f.ok(&["config", "path"]), expected_path.to_str().unwrap());
+
+    let plain_path = f.command().args(["config", "path"]).output().unwrap();
+    assert_eq!(plain_path.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&plain_path.stdout).trim(),
+        expected_path.to_str().unwrap()
+    );
+
+    // Defaults and overrides before any file exists.
+    assert_eq!(f.ok(&["config", "--overrides"]), json!({}));
+    assert_eq!(f.ok(&["config", "list", "--overrides"]), json!({}));
+    let initial = f.ok(&["config"]);
+    assert_eq!(initial["herdr"]["viewer"]["mode"], "editor");
+    assert_eq!(initial["herdr"]["viewer"]["placement"], "pane-right");
+    assert_eq!(initial["pi"]["reporting"]["frequency"], 1);
+    assert_eq!(
+        f.ok(&["config", "get", "herdr.viewer"]),
+        json!({"mode":"editor","placement":"pane-right"})
+    );
+
+    // Plain table get outputs TOML.
+    let plain_table = f
+        .command()
+        .args(["config", "get", "herdr.viewer"])
+        .output()
+        .unwrap();
+    assert_eq!(plain_table.status.code(), Some(0));
+    let parsed_table: toml::Table =
+        toml::from_str(&String::from_utf8_lossy(&plain_table.stdout)).unwrap();
+    assert_eq!(parsed_table["mode"].as_str(), Some("editor"));
+    assert_eq!(parsed_table["placement"].as_str(), Some("pane-right"));
+
+    // Atomic model set and rejection of partial model writes.
+    let (code, _) = f.run(
+        &["config", "set", "pi.reporting.model.provider", "openai"],
+        None,
+    );
+    assert_ne!(code, 0);
+    assert_eq!(
+        f.ok(&["config", "set", "pi.reporting.model", "openai/gpt-5"]),
+        json!({"provider": "openai", "id": "gpt-5"})
+    );
+    assert_eq!(
+        f.ok(&["config", "set", "pi.reporting.model.id", "gpt-5-mini"]),
+        "gpt-5-mini"
+    );
+    assert_eq!(
+        f.ok(&["config", "get", "pi.reporting.model"]),
+        json!({"provider": "openai", "id": "gpt-5-mini"})
+    );
+    let (code, _) = f.run(&["config", "unset", "pi.reporting.model.provider"], None);
+    assert_ne!(code, 0);
+    assert_eq!(
+        f.ok(&["config", "unset", "pi.reporting.model"]),
+        Value::Null
+    );
+    let (code, _) = f.run(&["config", "get", "pi.reporting.model"], None);
+    assert_ne!(code, 0);
+
+    // Typed set/unset + --overrides.
+    assert_eq!(
+        f.ok(&["config", "set", "herdr.viewer.mode", "native"]),
+        "native"
+    );
+    assert_eq!(
+        f.ok(&["config", "set", "herdr.viewer.placement", "floating"]),
+        "floating"
+    );
+    assert_eq!(
+        f.ok(&["config", "set", "pi.reporting.frequency", "4"]),
+        json!(4)
+    );
+    assert_eq!(
+        f.ok(&["config", "set", "pi.naming.session", "false"]),
+        json!(false)
+    );
+    assert_eq!(
+        f.ok(&["config", "list", "--overrides"]),
+        json!({
+            "herdr": {"viewer": {"mode": "native", "placement": "floating"}},
+            "pi": {"naming": {"session": false}, "reporting": {"frequency": 4}}
+        })
+    );
+    assert_eq!(f.ok(&["config", "unset", "herdr.viewer.mode"]), Value::Null);
+    assert_eq!(f.ok(&["config", "get", "herdr.viewer.mode"]), "editor");
+}

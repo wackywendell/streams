@@ -231,7 +231,7 @@ impl Controller {
                     },
                 )?
                 .mode()?
-                .resolve(settings.card_auto_open),
+                .resolve(settings.herdr.cards_auto_open),
         );
         let mut context = self.app.context_from_records(
             &records,

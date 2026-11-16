@@ -91,10 +91,6 @@ impl CardFixture {
             .env("HERDR_ENV", "1")
             .env("HERDR_PANE_ID", "card")
             .env(
-                "WORK_CARDS_CONFIG_PATH",
-                self.native.fixture.directory.path().join("work-cards.json"),
-            )
-            .env(
                 "STREAMS_CARDS_CONTEXT",
                 serde_json::to_string(&self.launch).unwrap(),
             );

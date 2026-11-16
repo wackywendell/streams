@@ -57,10 +57,10 @@ impl Fixture {
 fn invalid_settings_preserve_reader_writer_diagnostics_and_contents() {
     let f = Fixture::new();
     for document in [
-        "{",
-        r#"{"frontend":{"mode":"none","mode":"auto"}}"#,
-        r#"{"catalog":{"unknown":"x"}}"#,
-        r#"{"sync":{"stream_seconds":"12"}}"#,
+        "[",
+        "[frontend]\nmode = \"none\"\nmode = \"auto\"\n",
+        "[catalog]\nunknown = \"x\"\n",
+        "[sync]\nstream_seconds = \"12\"\n",
     ] {
         f.write(document);
         let error = f.config.read_overrides().unwrap_err().to_string();
@@ -85,7 +85,7 @@ fn defaults_and_reads_create_nothing() {
     let f = Fixture::new();
     assert_eq!(
         f.config.config_path(),
-        f.home.join("config/streams/config.json")
+        f.home.join("config/streams/config.toml")
     );
     assert_eq!(f.config.read_overrides().unwrap(), json!({}));
     let settings = f.config.load().unwrap();
@@ -139,7 +139,7 @@ fn home_fallbacks_and_explicit_environment() {
     let config = Config::new(&env, &f.home).unwrap();
     assert_eq!(
         config.config_path(),
-        f.home.join(".config/streams/config.json")
+        f.home.join(".config/streams/config.toml")
     );
     assert_eq!(
         config.load().unwrap().catalog_root,
@@ -155,7 +155,7 @@ fn home_fallbacks_and_explicit_environment() {
     relative.insert("XDG_CONFIG_HOME".into(), "relative".into());
     assert_eq!(
         Config::new(&relative, &f.home).unwrap().config_path(),
-        f.home.join("relative/streams/config.json")
+        f.home.join("relative/streams/config.toml")
     );
     relative.insert("XDG_DATA_HOME".into(), "relative".into());
     let config = Config::new(&relative, &f.home).unwrap();
@@ -261,7 +261,7 @@ fn invalid_setting_text_is_rejected_before_locking_or_writing() {
     let f = Fixture::new();
     assert!(f.config.set(ConfigKey::FrontendMode, "").is_err());
     assert_eq!(fs::read_dir(&f.home).unwrap().count(), 0);
-    let document = r#"{"frontend":{"mode":"none"}}"#;
+    let document = "[frontend]\nmode = \"none\"\n";
     f.write(document);
     assert!(f.config.set(ConfigKey::CatalogRoot, "relative").is_err());
     assert!(
@@ -278,21 +278,21 @@ fn invalid_setting_text_is_rejected_before_locking_or_writing() {
 #[test]
 fn settings_symlink_updates_preserve_link_and_reject_broken_or_cyclic_links() {
     let f = Fixture::new();
-    f.write("{}");
-    let target = f.home.join("target.json");
-    fs::write(&target, "{}").unwrap();
+    f.write("");
+    let target = f.home.join("target.toml");
+    fs::write(&target, "").unwrap();
     fs::remove_file(f.config.config_path()).unwrap();
-    symlink("../../target.json", f.config.config_path()).unwrap();
+    symlink("../../target.toml", f.config.config_path()).unwrap();
     assert_eq!(f.config.read_overrides().unwrap(), json!({}));
     f.config.set(ConfigKey::FrontendMode, "none").unwrap();
     assert_eq!(f.config.load().unwrap().frontend, FrontendMode::None);
     assert_eq!(
         fs::read_link(f.config.config_path()).unwrap(),
-        Path::new("../../target.json")
+        Path::new("../../target.toml")
     );
     assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&fs::read_to_string(&target).unwrap()).unwrap(),
-        json!({"frontend":{"mode":"none"}})
+        toml::from_str::<toml::Table>(&fs::read_to_string(&target).unwrap()).unwrap(),
+        toml::from_str::<toml::Table>("[frontend]\nmode = \"none\"\n").unwrap()
     );
     fs::remove_file(&target).unwrap();
     assert!(f.config.read_overrides().is_err());

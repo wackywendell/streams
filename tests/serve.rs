@@ -282,7 +282,7 @@ fn preview_and_ready_never_load_poisoned_configuration() {
     let f = Fixture::new();
     let (catalog, request) = f.capture();
     fs::write(
-        f.directory.path().join("config/streams/config.json"),
+        f.directory.path().join("config/streams/config.toml"),
         "invalid config",
     )
     .unwrap();

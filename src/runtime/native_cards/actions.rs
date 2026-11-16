@@ -84,10 +84,6 @@ impl NativeCardEngine {
             "HERDR_SOCKET_PATH".into(),
             path_text(&self.client.endpoint().socket)?.into(),
         );
-        env.insert(
-            "WORK_CARDS_CONFIG_PATH".into(),
-            path_text(&self.config.source_path)?.into(),
-        );
         self.ensure_plugin()?;
         let opened = self.call(
             "plugin.pane.open",

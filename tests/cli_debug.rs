@@ -9,7 +9,7 @@ impl Fixture {
         let root = tempfile::tempdir().unwrap();
         let config = root.path().join("config/streams");
         fs::create_dir_all(&config).unwrap();
-        fs::write(config.join("config.json"), "not valid JSON").unwrap();
+        fs::write(config.join("config.toml"), "not valid TOML").unwrap();
         Self { root }
     }
     fn command(&self) -> Command {
@@ -32,8 +32,8 @@ impl Fixture {
         assert!(!self.root.path().join("data").exists());
         assert!(!self.root.path().join("state").exists());
         assert_eq!(
-            fs::read_to_string(self.root.path().join("config/streams/config.json")).unwrap(),
-            "not valid JSON"
+            fs::read_to_string(self.root.path().join("config/streams/config.toml")).unwrap(),
+            "not valid TOML"
         );
     }
 }

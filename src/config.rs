@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use strum::{AsRefStr, Display, EnumIter, EnumString, VariantNames};
+use unicode_general_category::{GeneralCategory, get_general_category};
 use uuid::Uuid;
 
 use crate::file_io;
@@ -23,7 +24,7 @@ use crate::storage::StorageError;
 #[cfg(test)]
 mod tests;
 
-/// The supported persistent keys; backend selection lives in the catalog marker.
+/// Settable and unsettable dotted paths in `config.toml`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString, Display, AsRefStr, EnumIter)]
 pub enum ConfigKey {
     #[strum(serialize = "catalog.root")]
@@ -34,8 +35,96 @@ pub enum ConfigKey {
     StreamNaming,
     #[strum(serialize = "naming.session")]
     SessionNaming,
-    #[strum(serialize = "cards.auto_open")]
-    CardAutoOpen,
+    #[strum(serialize = "herdr.viewer.mode")]
+    HerdrViewerMode,
+    #[strum(serialize = "herdr.viewer.placement")]
+    HerdrViewerPlacement,
+    #[strum(serialize = "herdr.naming.tab")]
+    HerdrNamingTab,
+    #[strum(serialize = "herdr.naming.workspace")]
+    HerdrNamingWorkspace,
+    #[strum(serialize = "herdr.cards.auto_open")]
+    HerdrCardsAutoOpen,
+    #[strum(serialize = "herdr.timeout_ms")]
+    HerdrTimeoutMs,
+    #[strum(serialize = "herdr.pane_height_fraction")]
+    HerdrPaneHeightFraction,
+    #[strum(serialize = "pi.naming.session")]
+    PiNamingSession,
+    #[strum(serialize = "pi.naming.import_edits")]
+    PiNamingImportEdits,
+    #[strum(serialize = "pi.reporting.mode")]
+    PiReportingMode,
+    #[strum(serialize = "pi.reporting.enrollment")]
+    PiReportingEnrollment,
+    #[strum(serialize = "pi.reporting.frequency")]
+    PiReportingFrequency,
+    #[strum(serialize = "pi.reporting.context")]
+    PiReportingContext,
+    #[strum(serialize = "pi.reporting.model")]
+    PiReportingModel,
+    #[strum(serialize = "pi.reporting.model.provider")]
+    PiReportingModelProvider,
+    #[strum(serialize = "pi.reporting.model.id")]
+    PiReportingModelId,
+    #[strum(serialize = "pi.reporting.session_logging")]
+    PiReportingSessionLogging,
+    #[strum(serialize = "pi.reporting.debug_commands")]
+    PiReportingDebugCommands,
+}
+
+/// Readable config paths (tables or leaves) accepted by `streams config get`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString, Display, AsRefStr, EnumIter)]
+pub enum ConfigSection {
+    #[strum(serialize = "catalog")]
+    Catalog,
+    #[strum(serialize = "frontend")]
+    Frontend,
+    #[strum(serialize = "naming")]
+    Naming,
+    #[strum(serialize = "herdr")]
+    Herdr,
+    #[strum(serialize = "herdr.viewer")]
+    HerdrViewer,
+    #[strum(serialize = "herdr.naming")]
+    HerdrNaming,
+    #[strum(serialize = "herdr.cards")]
+    HerdrCards,
+    #[strum(serialize = "pi")]
+    Pi,
+    #[strum(serialize = "pi.naming")]
+    PiNaming,
+    #[strum(serialize = "pi.reporting")]
+    PiReporting,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigPath {
+    Section(ConfigSection),
+    Key(ConfigKey),
+}
+
+impl std::str::FromStr for ConfigPath {
+    type Err = ConfigError;
+
+    fn from_str(s: &str) -> Result<Self> {
+        if let Ok(key) = s.parse::<ConfigKey>() {
+            return Ok(Self::Key(key));
+        }
+        if let Ok(section) = s.parse::<ConfigSection>() {
+            return Ok(Self::Section(section));
+        }
+        Err(invalid(format!("unknown streams config key: {s}")))
+    }
+}
+
+impl std::fmt::Display for ConfigPath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Section(section) => write!(f, "{section}"),
+            Self::Key(key) => write!(f, "{key}"),
+        }
+    }
 }
 
 /// Validation and filesystem failures retain uncertain-write evidence from storage.
@@ -54,13 +143,145 @@ fn invalid(message: impl Into<String>) -> ConfigError {
     ConfigError::Invalid(message.into())
 }
 
+#[derive(
+    Debug,
+    Default,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Serialize,
+    EnumString,
+    VariantNames,
+    Display,
+    AsRefStr,
+)]
+#[serde(rename_all = "lowercase")]
+#[strum(serialize_all = "lowercase")]
+pub enum ViewerMode {
+    #[default]
+    Editor,
+    Less,
+    Hunk,
+    Native,
+}
+crate::codec::deserialize_string_enum!(ViewerMode);
+
+#[derive(
+    Debug,
+    Default,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Serialize,
+    EnumString,
+    VariantNames,
+    Display,
+    AsRefStr,
+)]
+#[serde(rename_all = "kebab-case")]
+#[strum(serialize_all = "kebab-case")]
+pub enum ViewerPlacement {
+    #[default]
+    PaneRight,
+    PaneDown,
+    Tab,
+    Floating,
+}
+crate::codec::deserialize_string_enum!(ViewerPlacement);
+
+#[derive(
+    Debug,
+    Default,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Serialize,
+    EnumString,
+    VariantNames,
+    Display,
+    AsRefStr,
+)]
+#[serde(rename_all = "lowercase")]
+#[strum(serialize_all = "lowercase")]
+pub enum ReportingContext {
+    #[default]
+    Trimmed,
+    Full,
+}
+crate::codec::deserialize_string_enum!(ReportingContext);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReportingModel {
+    pub provider: String,
+    pub id: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HerdrSettings {
+    pub viewer_mode: ViewerMode,
+    pub viewer_placement: ViewerPlacement,
+    pub tab_naming: bool,
+    pub workspace_naming: bool,
+    pub cards_auto_open: CardMode,
+    pub timeout_ms: u32,
+    pub pane_height_fraction: f64,
+}
+
+impl Default for HerdrSettings {
+    fn default() -> Self {
+        Self {
+            viewer_mode: ViewerMode::Editor,
+            viewer_placement: ViewerPlacement::PaneRight,
+            tab_naming: true,
+            workspace_naming: true,
+            cards_auto_open: CardMode::Automatic,
+            timeout_ms: 3000,
+            pane_height_fraction: 0.2,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PiSettings {
+    pub session_naming: bool,
+    pub import_edits: bool,
+    pub reporting_mode: NamingMode,
+    pub enrollment: NamingMode,
+    pub frequency: u32,
+    pub context: ReportingContext,
+    pub model: Option<ReportingModel>,
+    pub session_logging: bool,
+    pub debug_commands: bool,
+}
+
+impl Default for PiSettings {
+    fn default() -> Self {
+        Self {
+            session_naming: true,
+            import_edits: true,
+            reporting_mode: NamingMode::Automatic,
+            enrollment: NamingMode::Automatic,
+            frequency: 1,
+            context: ReportingContext::Trimmed,
+            model: None,
+            session_logging: false,
+            debug_commands: false,
+        }
+    }
+}
+
 /// Effective host-local settings.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Settings {
     pub catalog_root: PathBuf,
     pub frontend: FrontendMode,
     pub naming: TitleDefaults,
-    pub card_auto_open: CardMode,
+    pub herdr: HerdrSettings,
+    pub pi: PiSettings,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, EnumString, VariantNames)]
@@ -130,7 +351,7 @@ impl Config {
             .unwrap_or_else(|| home.join(".local/share"));
         Ok(Self {
             state_home: xdg("XDG_STATE_HOME", home.join(".local/state"))?,
-            config_path: config_home.join("streams/config.json"),
+            config_path: config_home.join("streams/config.toml"),
             data_home,
             home,
         })
@@ -155,98 +376,482 @@ impl Config {
         )))
     }
 
-    /// Return only configured values after validating the entire nested schema.
-    pub fn read_overrides(&self) -> Result<Value> {
+    /// Return only configured values from `config.toml` after validating the entire nested schema.
+    pub fn read_overrides_toml(&self) -> Result<toml::Table> {
         let path = resolve_path(&self.config_path)?;
-        let data = read_json(&path)?;
-        if data.is_none() && self.config_path.is_symlink() {
-            return Err(invalid("broken config symlink"));
-        }
-        self.validate_overrides(data.unwrap_or_else(|| json!({})))
+        let bytes = file_io::read_bytes(&path)?;
+        let Some(bytes) = bytes else {
+            if self.config_path.is_symlink() {
+                return Err(invalid("broken config symlink"));
+            }
+            return Ok(toml::Table::new());
+        };
+        let text =
+            std::str::from_utf8(&bytes).map_err(|_| invalid("config.toml must be valid UTF-8"))?;
+        let table: toml::Table = toml::from_str(text).map_err(|e| {
+            invalid(format!(
+                "invalid TOML in {}: {e}",
+                self.config_path.display()
+            ))
+        })?;
+        self.validate_overrides_toml(table)
     }
 
-    fn validate_overrides(&self, mut data: Value) -> Result<Value> {
-        let object = data
-            .as_object_mut()
-            .ok_or_else(|| invalid("config must contain a JSON object"))?;
-        for (section, values) in object {
-            if !matches!(
-                section.as_str(),
-                "catalog" | "frontend" | "naming" | "cards"
-            ) {
-                return Err(invalid(format!("invalid config section: {section}")));
-            }
-            for (name, value) in values
-                .as_object_mut()
-                .ok_or_else(|| invalid("config sections must be objects"))?
-            {
-                let wire_key = format!("{section}.{name}");
-                let key = wire_key
-                    .parse::<ConfigKey>()
-                    .map_err(|_| invalid(format!("unknown streams config key: {wire_key}")))?;
-                *value = self.validate_value(key, value.clone())?;
+    /// Return only configured values as JSON for callers and existing tests.
+    pub fn read_overrides(&self) -> Result<Value> {
+        toml_table_to_json(&self.read_overrides_toml()?)
+    }
+
+    fn validate_overrides_toml(&self, mut table: toml::Table) -> Result<toml::Table> {
+        let sections: Vec<String> = table.keys().cloned().collect();
+        for section in sections {
+            let value = table.get_mut(&section).expect("key exists");
+            let subtable = value
+                .as_table_mut()
+                .ok_or_else(|| invalid(format!("config section {section} must be a table")))?;
+            match section.as_str() {
+                "catalog" => {
+                    for (name, v) in subtable.iter_mut() {
+                        let key = format!("catalog.{name}")
+                            .parse::<ConfigKey>()
+                            .map_err(|_| {
+                                invalid(format!("unknown streams config key: catalog.{name}"))
+                            })?;
+                        *v = self.validate_toml_value(key, v.clone())?;
+                    }
+                }
+                "frontend" => {
+                    for (name, v) in subtable.iter_mut() {
+                        let key =
+                            format!("frontend.{name}")
+                                .parse::<ConfigKey>()
+                                .map_err(|_| {
+                                    invalid(format!("unknown streams config key: frontend.{name}"))
+                                })?;
+                        *v = self.validate_toml_value(key, v.clone())?;
+                    }
+                }
+                "naming" => {
+                    for (name, v) in subtable.iter_mut() {
+                        let key = format!("naming.{name}").parse::<ConfigKey>().map_err(|_| {
+                            invalid(format!("unknown streams config key: naming.{name}"))
+                        })?;
+                        *v = self.validate_toml_value(key, v.clone())?;
+                    }
+                }
+                "herdr" => self.validate_herdr_table(subtable)?,
+                "pi" => self.validate_pi_table(subtable)?,
+                _ => return Err(invalid(format!("invalid config section: {section}"))),
             }
         }
-        Ok(data)
+        Ok(table)
+    }
+
+    fn validate_herdr_table(&self, table: &mut toml::Table) -> Result<()> {
+        let keys: Vec<String> = table.keys().cloned().collect();
+        for key_name in keys {
+            let entry = table.get_mut(&key_name).expect("key exists");
+            match key_name.as_str() {
+                "viewer" | "naming" | "cards" => {
+                    let sub = entry.as_table_mut().ok_or_else(|| {
+                        invalid(format!("config section herdr.{key_name} must be a table"))
+                    })?;
+                    for (leaf, v) in sub.iter_mut() {
+                        let wire = format!("herdr.{key_name}.{leaf}");
+                        let key = wire
+                            .parse::<ConfigKey>()
+                            .map_err(|_| invalid(format!("unknown streams config key: {wire}")))?;
+                        *v = self.validate_toml_value(key, v.clone())?;
+                    }
+                }
+                "timeout_ms" => {
+                    *entry = self.validate_toml_value(ConfigKey::HerdrTimeoutMs, entry.clone())?;
+                }
+                "pane_height_fraction" => {
+                    *entry = self
+                        .validate_toml_value(ConfigKey::HerdrPaneHeightFraction, entry.clone())?;
+                }
+                _ => {
+                    return Err(invalid(format!(
+                        "unknown streams config key: herdr.{key_name}"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_pi_table(&self, table: &mut toml::Table) -> Result<()> {
+        let keys: Vec<String> = table.keys().cloned().collect();
+        for key_name in keys {
+            let entry = table.get_mut(&key_name).expect("key exists");
+            match key_name.as_str() {
+                "naming" => {
+                    let sub = entry
+                        .as_table_mut()
+                        .ok_or_else(|| invalid("config section pi.naming must be a table"))?;
+                    for (leaf, v) in sub.iter_mut() {
+                        let wire = format!("pi.naming.{leaf}");
+                        let key = wire
+                            .parse::<ConfigKey>()
+                            .map_err(|_| invalid(format!("unknown streams config key: {wire}")))?;
+                        *v = self.validate_toml_value(key, v.clone())?;
+                    }
+                }
+                "reporting" => {
+                    let sub = entry
+                        .as_table_mut()
+                        .ok_or_else(|| invalid("config section pi.reporting must be a table"))?;
+                    for (leaf, v) in sub.iter_mut() {
+                        let wire = format!("pi.reporting.{leaf}");
+                        let key = wire
+                            .parse::<ConfigKey>()
+                            .map_err(|_| invalid(format!("unknown streams config key: {wire}")))?;
+                        *v = self.validate_toml_value(key, v.clone())?;
+                    }
+                }
+                _ => {
+                    return Err(invalid(format!(
+                        "unknown streams config key: pi.{key_name}"
+                    )));
+                }
+            }
+        }
+        Ok(())
     }
 
     pub fn load(&self) -> Result<Settings> {
-        let data = self.read_overrides()?;
-        let root = data
-            .pointer("/catalog/root")
-            .cloned()
-            .unwrap_or_else(|| json!(self.data_home.join("streams/catalog")));
-        let root = self.validate_value(ConfigKey::CatalogRoot, root)?;
-        let mode = data
-            .pointer("/frontend/mode")
-            .and_then(Value::as_str)
+        let data = self.read_overrides_toml()?;
+        let root_val = match lookup_toml(&data, "catalog.root") {
+            Some(v) => v.clone(),
+            None => toml::Value::String(path_text(&self.data_home.join("streams/catalog"))?.into()),
+        };
+        let root_val = self.validate_toml_value(ConfigKey::CatalogRoot, root_val)?;
+        let mode = lookup_toml(&data, "frontend.mode")
+            .and_then(toml::Value::as_str)
             .unwrap_or("auto");
+
+        let stream_naming = lookup_toml(&data, "naming.stream")
+            .and_then(toml::Value::as_str)
+            .map(str::parse)
+            .transpose()
+            .map_err(|_| invalid("invalid naming.stream"))?
+            .unwrap_or(NamingMode::Automatic);
+        let session_naming = lookup_toml(&data, "naming.session")
+            .and_then(toml::Value::as_str)
+            .map(str::parse)
+            .transpose()
+            .map_err(|_| invalid("invalid naming.session"))?
+            .unwrap_or(NamingMode::Automatic);
+
+        let herdr_defaults = HerdrSettings::default();
+        let herdr = HerdrSettings {
+            viewer_mode: lookup_toml(&data, "herdr.viewer.mode")
+                .and_then(toml::Value::as_str)
+                .map(str::parse)
+                .transpose()
+                .map_err(|_| invalid("invalid herdr.viewer.mode"))?
+                .unwrap_or(herdr_defaults.viewer_mode),
+            viewer_placement: lookup_toml(&data, "herdr.viewer.placement")
+                .and_then(toml::Value::as_str)
+                .map(str::parse)
+                .transpose()
+                .map_err(|_| invalid("invalid herdr.viewer.placement"))?
+                .unwrap_or(herdr_defaults.viewer_placement),
+            tab_naming: lookup_toml(&data, "herdr.naming.tab")
+                .and_then(toml::Value::as_bool)
+                .unwrap_or(herdr_defaults.tab_naming),
+            workspace_naming: lookup_toml(&data, "herdr.naming.workspace")
+                .and_then(toml::Value::as_bool)
+                .unwrap_or(herdr_defaults.workspace_naming),
+            cards_auto_open: lookup_toml(&data, "herdr.cards.auto_open")
+                .and_then(toml::Value::as_str)
+                .map(str::parse)
+                .transpose()
+                .map_err(|_| invalid("invalid herdr.cards.auto_open"))?
+                .unwrap_or(herdr_defaults.cards_auto_open),
+            timeout_ms: lookup_toml(&data, "herdr.timeout_ms")
+                .and_then(toml::Value::as_integer)
+                .map(|v| v as u32)
+                .unwrap_or(herdr_defaults.timeout_ms),
+            pane_height_fraction: lookup_toml(&data, "herdr.pane_height_fraction")
+                .and_then(toml::Value::as_float)
+                .unwrap_or(herdr_defaults.pane_height_fraction),
+        };
+
+        let pi_defaults = PiSettings::default();
+        let model = match lookup_toml(&data, "pi.reporting.model") {
+            Some(value) => {
+                let table = value.as_table().expect("validated model table");
+                Some(ReportingModel {
+                    provider: table["provider"].as_str().expect("validated").into(),
+                    id: table["id"].as_str().expect("validated").into(),
+                })
+            }
+            None => None,
+        };
+        let pi = PiSettings {
+            session_naming: lookup_toml(&data, "pi.naming.session")
+                .and_then(toml::Value::as_bool)
+                .unwrap_or(pi_defaults.session_naming),
+            import_edits: lookup_toml(&data, "pi.naming.import_edits")
+                .and_then(toml::Value::as_bool)
+                .unwrap_or(pi_defaults.import_edits),
+            reporting_mode: lookup_toml(&data, "pi.reporting.mode")
+                .and_then(toml::Value::as_str)
+                .map(str::parse)
+                .transpose()
+                .map_err(|_| invalid("invalid pi.reporting.mode"))?
+                .unwrap_or(pi_defaults.reporting_mode),
+            enrollment: lookup_toml(&data, "pi.reporting.enrollment")
+                .and_then(toml::Value::as_str)
+                .map(str::parse)
+                .transpose()
+                .map_err(|_| invalid("invalid pi.reporting.enrollment"))?
+                .unwrap_or(pi_defaults.enrollment),
+            frequency: lookup_toml(&data, "pi.reporting.frequency")
+                .and_then(toml::Value::as_integer)
+                .map(|v| v as u32)
+                .unwrap_or(pi_defaults.frequency),
+            context: lookup_toml(&data, "pi.reporting.context")
+                .and_then(toml::Value::as_str)
+                .map(str::parse)
+                .transpose()
+                .map_err(|_| invalid("invalid pi.reporting.context"))?
+                .unwrap_or(pi_defaults.context),
+            model,
+            session_logging: lookup_toml(&data, "pi.reporting.session_logging")
+                .and_then(toml::Value::as_bool)
+                .unwrap_or(pi_defaults.session_logging),
+            debug_commands: lookup_toml(&data, "pi.reporting.debug_commands")
+                .and_then(toml::Value::as_bool)
+                .unwrap_or(pi_defaults.debug_commands),
+        };
+
         Ok(Settings {
-            catalog_root: PathBuf::from(root.as_str().expect("validated string")),
+            catalog_root: PathBuf::from(root_val.as_str().expect("validated string")),
             frontend: match mode {
                 "auto" => FrontendMode::Auto,
                 "none" => FrontendMode::None,
                 name => FrontendMode::Explicit(FrontendId(name.into())),
             },
-            naming: serde_json::from_value(
-                data.get("naming").cloned().unwrap_or_else(|| json!({})),
-            )
-            .expect("validated naming defaults"),
-            card_auto_open: serde_json::from_value(
-                data.pointer("/cards/auto_open")
-                    .cloned()
-                    .unwrap_or_else(|| json!("automatic")),
-            )
-            .expect("validated card default"),
+            naming: TitleDefaults {
+                stream: stream_naming,
+                session: session_naming,
+            },
+            herdr,
+            pi,
         })
     }
 
-    /// Effective settings, including defaults for unspecified keys.
-    pub fn values(&self) -> Result<Value> {
+    /// Effective settings as a TOML table, including defaults for unspecified keys.
+    pub fn values_toml(&self) -> Result<toml::Table> {
         let settings = self.load()?;
         let mode = match settings.frontend {
             FrontendMode::Auto => "auto".into(),
             FrontendMode::None => "none".into(),
             FrontendMode::Explicit(id) => id.0,
         };
-        Ok(
-            json!({"catalog":{"root":settings.catalog_root}, "frontend":{"mode":mode},
-            "naming":settings.naming,"cards":{"auto_open":settings.card_auto_open}}),
-        )
+        let mut root = toml::Table::new();
+
+        let mut catalog = toml::Table::new();
+        catalog.insert(
+            "root".into(),
+            toml::Value::String(path_text(&settings.catalog_root)?.into()),
+        );
+        root.insert("catalog".into(), toml::Value::Table(catalog));
+
+        let mut frontend = toml::Table::new();
+        frontend.insert("mode".into(), toml::Value::String(mode));
+        root.insert("frontend".into(), toml::Value::Table(frontend));
+
+        let mut naming = toml::Table::new();
+        naming.insert(
+            "stream".into(),
+            toml::Value::String(settings.naming.stream.as_ref().into()),
+        );
+        naming.insert(
+            "session".into(),
+            toml::Value::String(settings.naming.session.as_ref().into()),
+        );
+        root.insert("naming".into(), toml::Value::Table(naming));
+
+        let mut herdr = toml::Table::new();
+        let mut viewer = toml::Table::new();
+        viewer.insert(
+            "mode".into(),
+            toml::Value::String(settings.herdr.viewer_mode.as_ref().into()),
+        );
+        viewer.insert(
+            "placement".into(),
+            toml::Value::String(settings.herdr.viewer_placement.as_ref().into()),
+        );
+        herdr.insert("viewer".into(), toml::Value::Table(viewer));
+
+        let mut herdr_naming = toml::Table::new();
+        herdr_naming.insert(
+            "tab".into(),
+            toml::Value::Boolean(settings.herdr.tab_naming),
+        );
+        herdr_naming.insert(
+            "workspace".into(),
+            toml::Value::Boolean(settings.herdr.workspace_naming),
+        );
+        herdr.insert("naming".into(), toml::Value::Table(herdr_naming));
+
+        let mut cards = toml::Table::new();
+        cards.insert(
+            "auto_open".into(),
+            toml::Value::String(match settings.herdr.cards_auto_open {
+                CardMode::Automatic | CardMode::Inherit => "automatic".into(),
+                CardMode::Manual => "manual".into(),
+            }),
+        );
+        herdr.insert("cards".into(), toml::Value::Table(cards));
+        herdr.insert(
+            "timeout_ms".into(),
+            toml::Value::Integer(i64::from(settings.herdr.timeout_ms)),
+        );
+        herdr.insert(
+            "pane_height_fraction".into(),
+            toml::Value::Float(settings.herdr.pane_height_fraction),
+        );
+        root.insert("herdr".into(), toml::Value::Table(herdr));
+
+        let mut pi = toml::Table::new();
+        let mut pi_naming = toml::Table::new();
+        pi_naming.insert(
+            "session".into(),
+            toml::Value::Boolean(settings.pi.session_naming),
+        );
+        pi_naming.insert(
+            "import_edits".into(),
+            toml::Value::Boolean(settings.pi.import_edits),
+        );
+        pi.insert("naming".into(), toml::Value::Table(pi_naming));
+
+        let mut reporting = toml::Table::new();
+        reporting.insert(
+            "mode".into(),
+            toml::Value::String(settings.pi.reporting_mode.as_ref().into()),
+        );
+        reporting.insert(
+            "enrollment".into(),
+            toml::Value::String(settings.pi.enrollment.as_ref().into()),
+        );
+        reporting.insert(
+            "frequency".into(),
+            toml::Value::Integer(i64::from(settings.pi.frequency)),
+        );
+        reporting.insert(
+            "context".into(),
+            toml::Value::String(settings.pi.context.as_ref().into()),
+        );
+        if let Some(model) = &settings.pi.model {
+            let mut m = toml::Table::new();
+            m.insert(
+                "provider".into(),
+                toml::Value::String(model.provider.clone()),
+            );
+            m.insert("id".into(), toml::Value::String(model.id.clone()));
+            reporting.insert("model".into(), toml::Value::Table(m));
+        }
+        reporting.insert(
+            "session_logging".into(),
+            toml::Value::Boolean(settings.pi.session_logging),
+        );
+        reporting.insert(
+            "debug_commands".into(),
+            toml::Value::Boolean(settings.pi.debug_commands),
+        );
+        pi.insert("reporting".into(), toml::Value::Table(reporting));
+        root.insert("pi".into(), toml::Value::Table(pi));
+
+        Ok(root)
+    }
+
+    /// Effective settings as JSON, including defaults for unspecified keys.
+    pub fn values(&self) -> Result<Value> {
+        toml_table_to_json(&self.values_toml()?)
+    }
+
+    /// Snapshot exposed to `extensions/stream-checkpoint` via `GetConfig`/`SetConfig`/`UnsetConfig`.
+    pub fn extension_snapshot(&self) -> Result<Value> {
+        let settings = self.load()?;
+        Ok(json!({
+            "naming": {
+                "stream": settings.naming.stream,
+                "session": settings.naming.session,
+            },
+            "herdr": {
+                "viewer": {
+                    "mode": settings.herdr.viewer_mode,
+                    "placement": settings.herdr.viewer_placement,
+                },
+                "naming": {
+                    "tab": settings.herdr.tab_naming,
+                    "workspace": settings.herdr.workspace_naming,
+                },
+                "cards": {
+                    "auto_open": match settings.herdr.cards_auto_open {
+                        CardMode::Automatic | CardMode::Inherit => "automatic",
+                        CardMode::Manual => "manual",
+                    },
+                },
+                "timeout_ms": settings.herdr.timeout_ms,
+                "pane_height_fraction": settings.herdr.pane_height_fraction,
+            },
+            "pi": {
+                "naming": {
+                    "session": settings.pi.session_naming,
+                    "import_edits": settings.pi.import_edits,
+                },
+                "reporting": {
+                    "mode": settings.pi.reporting_mode,
+                    "enrollment": settings.pi.enrollment,
+                    "frequency": settings.pi.frequency,
+                    "context": settings.pi.context,
+                    "model": settings.pi.model,
+                    "session_logging": settings.pi.session_logging,
+                    "debug_commands": settings.pi.debug_commands,
+                },
+            },
+        }))
     }
 
     pub fn get(&self, key: ConfigKey) -> Result<Value> {
-        Ok(self
-            .values()?
-            .pointer(&format!("/{}", key.as_ref().replace('.', "/")))
-            .expect("known key")
-            .clone())
+        self.get_path(ConfigPath::Key(key))
+    }
+
+    pub fn get_path_toml(&self, path: ConfigPath) -> Result<toml::Value> {
+        let table = self.values_toml()?;
+        let dotted = path.to_string();
+        lookup_toml(&table, &dotted)
+            .cloned()
+            .ok_or_else(|| invalid(format!("{dotted} is not set")))
+    }
+
+    pub fn get_path(&self, path: ConfigPath) -> Result<Value> {
+        toml_value_to_json(&self.get_path_toml(path)?)
     }
 
     /// Validate before locking, then atomically preserve every other configured key.
     pub fn set(&self, key: ConfigKey, text: &str) -> Result<()> {
-        let value = self.parse_value(key, text)?;
-        self.with_lock(|lock| lock.set_value(key, value))
+        let value = self.parse_toml_value(key, text)?;
+        self.with_lock(|lock| lock.set_toml_value(key, value))
+    }
+
+    /// Remove a key or optional table from `config.toml` under lock so it reverts to default.
+    pub fn unset(&self, key: ConfigKey) -> Result<()> {
+        if matches!(
+            key,
+            ConfigKey::PiReportingModelProvider | ConfigKey::PiReportingModelId
+        ) {
+            return Err(invalid(
+                "cannot unset only one field of pi.reporting.model; unset pi.reporting.model instead",
+            ));
+        }
+        self.with_lock(|lock| lock.unset_key(key))
     }
 
     /// Acquire the non-reentrant writer lock. Do not call locking Config methods
@@ -286,48 +891,200 @@ impl Config {
             .transpose()
     }
 
-    fn parse_value(&self, key: ConfigKey, text: &str) -> Result<Value> {
-        let value = json!(text);
-        self.validate_value(key, value)
+    fn parse_toml_value(&self, key: ConfigKey, text: &str) -> Result<toml::Value> {
+        let value = match key {
+            ConfigKey::HerdrNamingTab
+            | ConfigKey::HerdrNamingWorkspace
+            | ConfigKey::PiNamingSession
+            | ConfigKey::PiNamingImportEdits
+            | ConfigKey::PiReportingSessionLogging
+            | ConfigKey::PiReportingDebugCommands => match text {
+                "true" => toml::Value::Boolean(true),
+                "false" => toml::Value::Boolean(false),
+                _ => return Err(invalid(format!("{key} must be true or false"))),
+            },
+            ConfigKey::HerdrTimeoutMs => {
+                let parsed: i64 = text
+                    .parse()
+                    .map_err(|_| invalid("herdr.timeout_ms must be a positive integer"))?;
+                toml::Value::Integer(parsed)
+            }
+            ConfigKey::PiReportingFrequency => {
+                let parsed: i64 = text
+                    .parse()
+                    .map_err(|_| invalid("pi.reporting.frequency must be an integer >= 1"))?;
+                toml::Value::Integer(parsed)
+            }
+            ConfigKey::HerdrPaneHeightFraction => {
+                let parsed: f64 = text.parse().map_err(|_| {
+                    invalid("herdr.pane_height_fraction must be a number between 0 and 1")
+                })?;
+                toml::Value::Float(parsed)
+            }
+            ConfigKey::PiReportingModel => {
+                let Some((provider, id)) = text.split_once('/') else {
+                    return Err(invalid(
+                        "pi.reporting.model must be formatted as <provider>/<id>",
+                    ));
+                };
+                let mut table = toml::Table::new();
+                table.insert("provider".into(), toml::Value::String(provider.into()));
+                table.insert("id".into(), toml::Value::String(id.into()));
+                toml::Value::Table(table)
+            }
+            _ => toml::Value::String(text.into()),
+        };
+        self.validate_toml_value(key, value)
     }
 
-    fn validate_value(&self, key: ConfigKey, value: Value) -> Result<Value> {
-        let text = || {
-            value
-                .as_str()
-                .filter(|v| !v.trim().is_empty() && !v.contains('\0'))
+    fn validate_toml_value(&self, key: ConfigKey, value: toml::Value) -> Result<toml::Value> {
+        fn text(key: ConfigKey, v: &toml::Value) -> Result<&str> {
+            v.as_str()
+                .filter(|s| !s.trim().is_empty() && !s.contains('\0'))
                 .ok_or_else(|| {
                     invalid(format!(
                         "{key} must be a nonempty string without NUL characters"
                     ))
                 })
-        };
+        }
         match key {
             ConfigKey::FrontendMode => {
-                text()?;
+                text(key, &value)?;
                 Ok(value)
             }
-            ConfigKey::StreamNaming | ConfigKey::SessionNaming => {
-                text()?
+            ConfigKey::StreamNaming
+            | ConfigKey::SessionNaming
+            | ConfigKey::PiReportingMode
+            | ConfigKey::PiReportingEnrollment => {
+                text(key, &value)?
                     .parse::<NamingMode>()
                     .map_err(|_| invalid(format!("{key} must be automatic or manual")))?;
                 Ok(value)
             }
-            ConfigKey::CardAutoOpen => match text()?.parse::<CardMode>() {
+            ConfigKey::HerdrCardsAutoOpen => match text(key, &value)?.parse::<CardMode>() {
                 Ok(CardMode::Automatic | CardMode::Manual) => Ok(value),
-                _ => Err(invalid("cards.auto_open must be automatic or manual")),
+                _ => Err(invalid("herdr.cards.auto_open must be automatic or manual")),
             },
             ConfigKey::CatalogRoot => {
-                let path = expanduser(text()?, &self.home)?;
+                let path = expanduser(text(key, &value)?, &self.home)?;
                 if !path.is_absolute() {
                     return Err(invalid(
                         "catalog.root must be an absolute path (or start with ~/)",
                     ));
                 }
-                Ok(json!(path_text(&path)?))
+                Ok(toml::Value::String(path_text(&path)?.into()))
+            }
+            ConfigKey::HerdrViewerMode => {
+                text(key, &value)?.parse::<ViewerMode>().map_err(|_| {
+                    invalid("herdr.viewer.mode must be editor, less, hunk, or native")
+                })?;
+                Ok(value)
+            }
+            ConfigKey::HerdrViewerPlacement => {
+                text(key, &value)?.parse::<ViewerPlacement>().map_err(|_| {
+                    invalid(
+                        "herdr.viewer.placement must be pane-right, pane-down, tab, or floating",
+                    )
+                })?;
+                Ok(value)
+            }
+            ConfigKey::HerdrNamingTab
+            | ConfigKey::HerdrNamingWorkspace
+            | ConfigKey::PiNamingSession
+            | ConfigKey::PiNamingImportEdits
+            | ConfigKey::PiReportingSessionLogging
+            | ConfigKey::PiReportingDebugCommands => {
+                if !value.is_bool() {
+                    return Err(invalid(format!("{key} must be a boolean")));
+                }
+                Ok(value)
+            }
+            ConfigKey::HerdrTimeoutMs => {
+                let Some(n) = value.as_integer() else {
+                    return Err(invalid("herdr.timeout_ms must be an integer"));
+                };
+                if !(1..=2_147_483_647).contains(&n) {
+                    return Err(invalid(
+                        "herdr.timeout_ms must be an integer between 1 and 2147483647",
+                    ));
+                }
+                Ok(value)
+            }
+            ConfigKey::HerdrPaneHeightFraction => {
+                let Some(f) = value.as_float() else {
+                    return Err(invalid("herdr.pane_height_fraction must be a float"));
+                };
+                if !(f.is_finite() && 0.0 < f && f < 1.0) {
+                    return Err(invalid(
+                        "herdr.pane_height_fraction must be strictly between 0 and 1",
+                    ));
+                }
+                Ok(value)
+            }
+            ConfigKey::PiReportingFrequency => {
+                let Some(n) = value.as_integer() else {
+                    return Err(invalid("pi.reporting.frequency must be an integer"));
+                };
+                if n < 1 || u32::try_from(n).is_err() {
+                    return Err(invalid("pi.reporting.frequency must be an integer >= 1"));
+                }
+                Ok(value)
+            }
+            ConfigKey::PiReportingContext => {
+                text(key, &value)?
+                    .parse::<ReportingContext>()
+                    .map_err(|_| invalid("pi.reporting.context must be trimmed or full"))?;
+                Ok(value)
+            }
+            ConfigKey::PiReportingModel => {
+                let table = value.as_table().ok_or_else(|| {
+                    invalid("pi.reporting.model must be a table with provider and id")
+                })?;
+                for k in table.keys() {
+                    if k != "provider" && k != "id" {
+                        return Err(invalid(format!(
+                            "unknown streams config key: pi.reporting.model.{k}"
+                        )));
+                    }
+                }
+                let provider = table
+                    .get("provider")
+                    .and_then(toml::Value::as_str)
+                    .ok_or_else(|| invalid("pi.reporting.model requires both provider and id"))?;
+                let id = table
+                    .get("id")
+                    .and_then(toml::Value::as_str)
+                    .ok_or_else(|| invalid("pi.reporting.model requires both provider and id"))?;
+                validate_model_part("pi.reporting.model.provider", provider)?;
+                validate_model_part("pi.reporting.model.id", id)?;
+                Ok(value)
+            }
+            ConfigKey::PiReportingModelProvider | ConfigKey::PiReportingModelId => {
+                let s = value
+                    .as_str()
+                    .ok_or_else(|| invalid(format!("{key} must be a non-empty string")))?;
+                validate_model_part(key.as_ref(), s)?;
+                Ok(value)
             }
         }
     }
+}
+
+fn validate_model_part(field: &str, value: &str) -> Result<()> {
+    if value.trim().is_empty()
+        || value.trim() != value
+        || value.chars().any(|c| {
+            matches!(
+                get_general_category(c),
+                GeneralCategory::Control | GeneralCategory::Format
+            )
+        })
+    {
+        return Err(invalid(format!(
+            "{field} must be a non-empty string without leading/trailing whitespace or control characters"
+        )));
+    }
+    Ok(())
 }
 
 /// A held exclusive config lock. Do not reacquire it through Config inside this scope.
@@ -340,20 +1097,36 @@ impl ConfigLock<'_> {
         self.config.load()
     }
     pub fn set(&mut self, key: ConfigKey, text: &str) -> Result<()> {
-        let value = self.config.parse_value(key, text)?;
-        self.set_value(key, value)
+        let value = self.config.parse_toml_value(key, text)?;
+        self.set_toml_value(key, value)
     }
-    fn set_value(&mut self, key: ConfigKey, value: Value) -> Result<()> {
-        let mut data = self.config.read_overrides()?;
-        let (section, name) = key.as_ref().split_once('.').expect("validated key");
-        let object = data.as_object_mut().expect("validated object");
-        object
-            .entry(section)
-            .or_insert_with(|| json!({}))
-            .as_object_mut()
-            .expect("validated section")
-            .insert(name.into(), value);
-        write_json(&resolve_path(&self.config.config_path)?, &data)
+    fn set_toml_value(&mut self, key: ConfigKey, value: toml::Value) -> Result<()> {
+        let mut data = self.config.read_overrides_toml()?;
+        if matches!(
+            key,
+            ConfigKey::PiReportingModelProvider | ConfigKey::PiReportingModelId
+        ) && lookup_toml(&data, "pi.reporting.model").is_none()
+        {
+            return Err(invalid(
+                "pi.reporting.model is unset; set pi.reporting.model <provider>/<id> first",
+            ));
+        }
+        insert_toml(&mut data, key.as_ref(), value);
+        let validated = self.config.validate_overrides_toml(data)?;
+        let encoded = encode_toml(&validated)?;
+        file_io::write_text(&resolve_path(&self.config.config_path)?, &encoded)?;
+        Ok(())
+    }
+    fn unset_key(&mut self, key: ConfigKey) -> Result<()> {
+        let mut data = self.config.read_overrides_toml()?;
+        let removed = remove_toml(&mut data, key.as_ref());
+        if !removed {
+            return Ok(());
+        }
+        let validated = self.config.validate_overrides_toml(data)?;
+        let encoded = encode_toml(&validated)?;
+        file_io::write_text(&resolve_path(&self.config.config_path)?, &encoded)?;
+        Ok(())
     }
 
     /// Create only for an unmarked catalog, keeping this guard held through later
@@ -377,6 +1150,85 @@ impl ConfigLock<'_> {
             &json!({"version":1,"id":identity.as_str()}),
         )?;
         Ok(identity)
+    }
+}
+
+pub fn encode_toml(table: &toml::Table) -> Result<String> {
+    if table.is_empty() {
+        return Ok(String::new());
+    }
+    let mut rendered =
+        toml::to_string_pretty(table).map_err(|e| invalid(format!("cannot encode TOML: {e}")))?;
+    if !rendered.ends_with('\n') {
+        rendered.push('\n');
+    }
+    Ok(rendered)
+}
+
+fn lookup_toml<'a>(table: &'a toml::Table, dotted: &str) -> Option<&'a toml::Value> {
+    let mut parts = dotted.split('.');
+    let first = parts.next()?;
+    let mut current = table.get(first)?;
+    for part in parts {
+        current = current.as_table()?.get(part)?;
+    }
+    Some(current)
+}
+
+fn insert_toml(table: &mut toml::Table, dotted: &str, value: toml::Value) {
+    let parts: Vec<&str> = dotted.split('.').collect();
+    let mut current = table;
+    for part in &parts[..parts.len() - 1] {
+        let entry = current
+            .entry((*part).to_owned())
+            .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+        current = entry.as_table_mut().expect("validated parent table");
+    }
+    current.insert((*parts.last().expect("non-empty key")).to_owned(), value);
+}
+
+fn remove_toml(table: &mut toml::Table, dotted: &str) -> bool {
+    let parts: Vec<&str> = dotted.split('.').collect();
+    remove_toml_parts(table, &parts)
+}
+
+fn remove_toml_parts(table: &mut toml::Table, parts: &[&str]) -> bool {
+    if parts.is_empty() {
+        return false;
+    }
+    if parts.len() == 1 {
+        return table.remove(parts[0]).is_some();
+    }
+    let Some(toml::Value::Table(child)) = table.get_mut(parts[0]) else {
+        return false;
+    };
+    let removed = remove_toml_parts(child, &parts[1..]);
+    if removed && child.is_empty() {
+        table.remove(parts[0]);
+    }
+    removed
+}
+
+pub fn toml_table_to_json(table: &toml::Table) -> Result<Value> {
+    let mut map = serde_json::Map::new();
+    for (k, v) in table {
+        map.insert(k.clone(), toml_value_to_json(v)?);
+    }
+    Ok(Value::Object(map))
+}
+
+pub fn toml_value_to_json(value: &toml::Value) -> Result<Value> {
+    match value {
+        toml::Value::String(s) => Ok(Value::String(s.clone())),
+        toml::Value::Integer(n) => Ok(json!(n)),
+        toml::Value::Float(f) => serde_json::Number::from_f64(*f)
+            .map(Value::Number)
+            .ok_or_else(|| invalid("non-finite float in TOML")),
+        toml::Value::Boolean(b) => Ok(Value::Bool(*b)),
+        toml::Value::Table(t) => toml_table_to_json(t),
+        toml::Value::Array(_) | toml::Value::Datetime(_) => {
+            Err(invalid("unsupported TOML value type"))
+        }
     }
 }
 

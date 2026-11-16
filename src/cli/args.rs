@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use clap::{ArgAction, ArgGroup, Args, Parser, Subcommand};
-use streams::config::{ConfigKey, Strategy};
+use streams::config::{ConfigKey, ConfigPath, Strategy};
 use streams::frontend::FrontendRequest;
 use streams::model::{NamingMode, ReferenceRole, ReferenceState, Status, TitleMode};
 use streams::runtime::conversations::Harness;
@@ -101,6 +101,8 @@ pub(super) enum Command {
         branch: String,
     },
     Config {
+        #[arg(long)]
+        overrides: bool,
         #[command(subcommand)]
         action: Option<ConfigCommand>,
     },
@@ -370,8 +372,21 @@ pub(super) struct Target {
 
 #[derive(Debug, Subcommand)]
 pub(super) enum ConfigCommand {
-    Get { key: ConfigKey },
-    Set { key: ConfigKey, value: String },
+    List {
+        #[arg(long)]
+        overrides: bool,
+    },
+    Get {
+        key: ConfigPath,
+    },
+    Set {
+        key: ConfigKey,
+        value: String,
+    },
+    Unset {
+        key: ConfigKey,
+    },
+    Path,
 }
 
 #[derive(Debug, Subcommand)]

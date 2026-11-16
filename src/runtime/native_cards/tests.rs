@@ -297,16 +297,12 @@ impl Fixture {
                 root.join("locks").to_str().unwrap().into(),
             ),
         ]);
+        std::fs::create_dir_all(root.join(".config/streams")).unwrap();
         std::fs::write(
-            root.join("work-cards.json"),
-            r#"{"pane_height_fraction":0.5}"#,
+            root.join(".config/streams/config.toml"),
+            "[herdr]\npane_height_fraction = 0.5\n",
         )
         .unwrap();
-        let mut environment = environment;
-        environment.insert(
-            "WORK_CARDS_CONFIG_PATH".into(),
-            root.join("work-cards.json").to_str().unwrap().into(),
-        );
         let config = NativeCardsConfig::load(&environment, &root, &root).unwrap();
         let client = HerdrClient::connect(environment.clone(), 1.0).unwrap();
         let owner =
