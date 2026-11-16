@@ -55,10 +55,16 @@ test("help is usable with missing SDK, invalid settings and no services", async 
 class FakeChild {run=()=>assert.fail("fixture must not run a real catalog request");async stop() {}}
 function fakeModules({enabled = true, result = {id: "artifact"}, calls = [], sdk} = {}) {
  return {
-  loadSettings(agentDir) {calls.push(["settings", agentDir]); return {debug_commands: enabled};},
   async core() {
    calls.push(["core"]);
-   return {StreamsChild:class extends FakeChild {constructor(options) {super();calls.push(["child",options]);} async stop() {calls.push(["child-stopped"]);}}, StreamCli: class {constructor(cwd,runner) {this.cwd = cwd;assert.equal(typeof runner,"function");}}, async executeLab(operation, environment, signal) {calls.push(["execute", operation, environment, signal]); return result;}};
+   return {
+    StreamsChild: class extends FakeChild {constructor(options) {super();calls.push(["child",options]);} async stop() {calls.push(["child-stopped"]);}},
+    StreamCli: class {
+     constructor(cwd,runner) {this.cwd = cwd;assert.equal(typeof runner,"function");}
+     async getConfig() {calls.push(["get_config", enabled]); return {pi:{reporting:{debug_commands: enabled}}};}
+    },
+    async executeLab(operation, environment, signal) {calls.push(["execute", operation, environment, signal]); return result;},
+   };
   },
   async sdk() {calls.push(["sdk"]); if (!sdk) throw Error("unexpected model bootstrap"); return sdk;},
  };
@@ -72,9 +78,12 @@ async function invoke(t, args, options = {}) {
  return {root, calls, code, output, error};
 }
 
-test("debug gate fails closed before core, prompt reads or services", async t => {
+test("debug gate fails closed before prompt reads, execution or services", async t => {
  const value = await invoke(t, ["prepare", "--request", "r", "--prompt", "/missing", "--json"], {enabled: false});
- assert.equal(value.code, 2); assert.match(value.output, /disabled/); assert.equal(value.calls.length, 1);
+ assert.equal(value.code, 2); assert.match(value.output, /disabled/);
+ assert.equal(value.calls.some(call => call[0] === "execute"), false);
+ assert.equal(value.calls.some(call => call[0] === "sdk"), false);
+ assert.equal(value.calls.at(-1)[0], "child-stopped");
  assert.deepEqual(readdirSync(value.root).sort(), ["sdk.mjs"]);
 });
 
@@ -139,7 +148,7 @@ test("cancellation awaits final artifact save and restores signal handlers", asy
  const {root, sdk} = fixture(t), before = process.listenerCount("SIGINT");
  let finished = false, output = "";
  const modules = fakeModules();
- modules.core = async () => ({StreamsChild:FakeChild, StreamCli: class {}, async executeLab(_operation, _environment, signal) {
+ modules.core = async () => ({StreamsChild:FakeChild, StreamCli: class {async getConfig() {return {pi:{reporting:{debug_commands:true}}};}}, async executeLab(_operation, _environment, signal) {
   try {
    process.emit("SIGINT");
    assert.equal(signal.aborted, true);
@@ -162,7 +171,7 @@ import {writeFileSync} from 'node:fs';
 import {setTimeout} from 'node:timers/promises';
 process.exitCode = await main(['list','run','--json'], {
  env: {PI_CODING_AGENT_DIR: ${JSON.stringify(root)}, STREAMS_PI_SDK_ENTRY: ${JSON.stringify(sdk)}},
- loadModules: async () => ({loadSettings: () => ({debug_commands:true}), core: async () => ({StreamsChild: class {run() {} async stop() {}}, StreamCli: class {}, executeLab: async (_op,_env,signal) => {
+ loadModules: async () => ({core: async () => ({StreamsChild: class {run() {} async stop() {}}, StreamCli: class {async getConfig() {return {pi:{reporting:{debug_commands:true}}};}}, executeLab: async (_op,_env,signal) => {
   const hold = globalThis.setInterval(() => {}, 1000);
   process.stdout.write('READY\\n');
   await new Promise(resolve => signal.addEventListener('abort',resolve,{once:true}));

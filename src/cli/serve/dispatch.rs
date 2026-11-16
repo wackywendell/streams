@@ -1,5 +1,6 @@
 use streams::{
     child_protocol::{CaptureTarget, DomainObject, PreviewAction, Request},
+    config::ConfigKey,
     runtime::conversations::Harness,
 };
 
@@ -39,6 +40,40 @@ pub(super) fn execute(app: &App, session_id: &str, request: Request) -> Result<O
             catalog::list_records(&opened, None, &[], false, false, None)
         }
         Request::SetTitleDefault { target, mode } => app.set_title_default(target, mode),
+        Request::GetConfig {} => Ok(Output::value(
+            json!({"config": app.config.extension_snapshot()?}),
+        )),
+        Request::SetConfig { key, value } => {
+            let key: ConfigKey = key
+                .parse()
+                .map_err(|_| CliError::message(format!("unknown streams config key: {key}")))?;
+            match key {
+                ConfigKey::StreamNaming | ConfigKey::SessionNaming => {
+                    let target = if key == ConfigKey::StreamNaming {
+                        streams::child_protocol::TitleTarget::Stream
+                    } else {
+                        streams::child_protocol::TitleTarget::Session
+                    };
+                    let mode = value.parse().map_err(|_| {
+                        CliError::message(format!("{key} must be automatic or manual"))
+                    })?;
+                    app.set_title_default(target, mode)?;
+                }
+                _ => app.config.set(key, &value)?,
+            }
+            let mut output = Output::value(json!({"config": app.config.extension_snapshot()?}));
+            output.accepted_save = application::open_records(&app.config).is_ok();
+            Ok(output)
+        }
+        Request::UnsetConfig { key } => {
+            let key: ConfigKey = key
+                .parse()
+                .map_err(|_| CliError::message(format!("unknown streams config key: {key}")))?;
+            app.config.unset(key)?;
+            let mut output = Output::value(json!({"config": app.config.extension_snapshot()?}));
+            output.accepted_save = application::open_records(&app.config).is_ok();
+            Ok(output)
+        }
         Request::CardSettings {} => app.card_settings(session_id),
         Request::SetCardMode { target, mode } => app.set_card_mode(session_id, target, mode),
         Request::Sync {} => app.sync_records(),

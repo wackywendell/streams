@@ -339,6 +339,46 @@ fn title_default_requests_are_narrow_and_context_reads_them_fresh() {
 }
 
 #[test]
+fn get_set_and_unset_config_requests_validate_and_persist() {
+    let f = Fixture::new();
+    let mut child = f.start();
+    child.request(1, json!({"kind":"get_config"}));
+    let initial = child.response(1);
+    assert_eq!(initial["outcome"]["status"], "success", "{initial}");
+    assert_eq!(
+        initial["outcome"]["result"]["config"]["pi"]["reporting"]["frequency"],
+        1
+    );
+    assert_eq!(
+        initial["outcome"]["result"]["config"]["herdr"]["viewer"]["mode"],
+        "editor"
+    );
+
+    child.request(
+        2,
+        json!({"kind":"set_config","key":"pi.reporting.model","value":"openai/gpt-5"}),
+    );
+    let set_model = child.response(2);
+    assert_eq!(set_model["outcome"]["status"], "success", "{set_model}");
+    assert_eq!(
+        set_model["outcome"]["result"]["config"]["pi"]["reporting"]["model"],
+        json!({"provider":"openai","id":"gpt-5"})
+    );
+
+    child.request(
+        3,
+        json!({"kind":"set_config","key":"unknown.key","value":"x"}),
+    );
+    assert_eq!(child.response(3)["outcome"]["status"], "error");
+
+    child.request(4, json!({"kind":"unset_config","key":"pi.reporting.model"}));
+    let unset_model = child.response(4);
+    assert_eq!(unset_model["outcome"]["status"], "success", "{unset_model}");
+    assert!(unset_model["outcome"]["result"]["config"]["pi"]["reporting"]["model"].is_null());
+    assert_eq!(child.finish(), (0, String::new()));
+}
+
+#[test]
 fn sync_and_diagnostic_capture_use_application_operations_without_saved_layouts() {
     let f = Fixture::new();
     let (context, _) = f.capture();

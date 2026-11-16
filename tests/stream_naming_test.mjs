@@ -7,7 +7,7 @@ import { join } from 'node:path';
 const jiti = createJiti(import.meta.url);
 const { parseNamingEdit, saveNamingEdit, savePiNameEdit, namingCompletions } = await jiti.import(new URL('../extensions/stream-checkpoint/naming.ts', import.meta.url).pathname);
 const { default: registerWorkCard } = await jiti.import(new URL('../extensions/stream-checkpoint/index.ts',import.meta.url).pathname);
-const { defaults, loadSettings, saveSettings } = await jiti.import(new URL('../extensions/stream-checkpoint/settings.ts',import.meta.url).pathname);
+const { defaults } = await jiti.import(new URL('../extensions/stream-checkpoint/settings.ts',import.meta.url).pathname);
 const { projectSessionName } = await jiti.import(new URL('../integrations/herdr-work-cards/src/pi/session-naming.ts',import.meta.url).pathname);
 const { validateChanges } = await jiti.import(new URL('../extensions/stream-checkpoint/core.ts', import.meta.url).pathname);
 const { editField } = await jiti.import(new URL('../extensions/stream-checkpoint/panel.ts', import.meta.url).pathname);
@@ -177,25 +177,13 @@ test('Pi name events import different names, ignore equal projection echoes, and
  assert.deepEqual(unbound.writes,[]);assert.deepEqual(unbound.notices,[]);assert.equal(unbound.shown(),'Independent chat');
 });
 test('Pi import is default-enabled and independent of outgoing Pi synchronization',async()=>{
- const root=mkdtempSync(join(tmpdir(),'streams-name-directions-'));
- try {
-  for(const session_naming of [false,true])for(const pi_name_edits of [false,true]) {
-   writeFileSync(join(root,'work-cards.json'),JSON.stringify({session_naming}));
-   const f=await bridgeFixture({agentDir:root,settings:{pi_name_edits}});
-   await f.rename('Changed in Pi');
-   assert.equal(f.writes.length,pi_name_edits?1:0);assert.equal(f.reads(),pi_name_edits?1:0);
-   assert.equal(JSON.parse(readFileSync(join(root,'work-cards.json'),'utf8')).session_naming,session_naming);
-   assert.deepEqual(f.setters,[]);
-  }
-  assert.equal(defaults.pi_name_edits,true);assert.equal(loadSettings(root).pi_name_edits,true);
-  writeFileSync(join(root,'stream-reporting.json'),JSON.stringify({future:'keep'}));
-  saveSettings(root,{...defaults,pi_name_edits:false});
-  assert.equal(loadSettings(root).pi_name_edits,false);assert.equal(loadSettings(root).future,'keep');
-  for(const pi_name_edits of [null,'true',0,{}]) {
-   writeFileSync(join(root,'stream-reporting.json'),JSON.stringify({pi_name_edits}));
-   assert.throws(()=>loadSettings(root),/Pi name edits must be a boolean/);
-  }
- }finally{rmSync(root,{recursive:true,force:true});}
+ for(const pi_name_edits of [false,true]) {
+  const f=await bridgeFixture({settings:{pi_name_edits}});
+  await f.rename('Changed in Pi');
+  assert.equal(f.writes.length,pi_name_edits?1:0);assert.equal(f.reads(),pi_name_edits?1:0);
+  assert.deepEqual(f.setters,[]);
+ }
+ assert.equal(defaults.pi_name_edits,true);
 });
 test('Pi import failures are visible after the native rename and do not project a replacement',async()=>{
  const f=await bridgeFixture({fail:true});

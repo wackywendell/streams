@@ -21,7 +21,7 @@ Options:
   --json           Print structured JSON instead of raw inspection text
   -h, --help       Show help without loading settings or model services
 
-Requires debug_commands=true in PI_CODING_AGENT_DIR/stream-reporting.json.
+Requires pi.reporting.debug_commands=true (streams config set pi.reporting.debug_commands true).
 Runtime overrides: STREAMS_PI_SDK_ENTRY (absolute SDK entry), PI_CODING_AGENT_DIR.
 `;
 
@@ -150,9 +150,7 @@ export async function loadModules(sdkEntry) {
   if (name === "typebox") alias[`${name}/value`] = fileURLToPath(selected.esmResolve(`${name}/value`));
  }
  const jiti = createJiti(import.meta.url, {alias, interopDefault: false, fsCache: false});
- const settings = await jiti.import("./settings.ts");
  return {
-  loadSettings: settings.loadSettings,
   async core() {
    const [lab, streams, child] = await Promise.all([jiti.import("./lab.ts"), jiti.import("./streams.ts"), jiti.import("./child.ts")]);
    return {executeLab: lab.executeLab, StreamCli: streams.StreamCli, StreamsChild:child.StreamsChild};
@@ -183,8 +181,6 @@ export async function main(argv = process.argv.slice(2), dependencies = {}) {
   const env = dependencies.env ?? process.env, cwd = dependencies.cwd ?? process.cwd();
   const agentDir = resolve(env.PI_CODING_AGENT_DIR?.replace(/^~(?=\/|$)/, homedir()) || join(homedir(), ".pi", "agent"));
   const modules = await (dependencies.loadModules ?? loadModules)(resolveSdkEntry(env, cwd));
-  if (!modules.loadSettings(agentDir).debug_commands) throw Error("Streams debug commands are disabled; enable debug_commands in stream-reporting.json");
-  if (parsed.promptFile !== undefined) parsed.operation.prompt = readFileSync(resolve(cwd, parsed.promptFile), "utf8");
   const {executeLab, StreamCli, StreamsChild} = await modules.core();
   const controller = new AbortController();
   const cancel = () => controller.abort(Error("Streams debug command cancelled"));
@@ -192,7 +188,12 @@ export async function main(argv = process.argv.slice(2), dependencies = {}) {
   // Debug has no Pi lifecycle: its lazy child serves explicit capture/preview only.
   const child = new StreamsChild({sessionId:randomUUID(), cwd, env, warning:message => stderr(`streams debug: ${message}\n`)});
   try {
-   const environment = {root: join(agentDir, "stream-debug"), client: new StreamCli(cwd, child.run)};
+   const client = new StreamCli(cwd, child.run);
+   if (!(await client.getConfig()).pi.reporting.debug_commands) {
+    throw Error("Streams debug commands are disabled; enable them with: streams config set pi.reporting.debug_commands true");
+   }
+   if (parsed.promptFile !== undefined) parsed.operation.prompt = readFileSync(resolve(cwd, parsed.promptFile), "utf8");
+   const environment = {root: join(agentDir, "stream-debug"), client};
    if (["run", "replay"].includes(parsed.operation.operation)) environment.runtime = await createRuntime(await modules.sdk(), parsed.operation.model, cwd, agentDir, controller.signal);
    const result = await executeLab(parsed.operation, environment, controller.signal);
    const inspection = parsed.operation.operation === "inspect" && parsed.operation.section && parsed.operation.section !== "summary" && typeof result?.text === "string";

@@ -9,6 +9,28 @@ export type ArtifactRequest =
  | {action: "list_session"; host?: string; session_id?: string; stream_id?: string}
  | {action: "list_stream"; host?: string; stream_id: string}
  | {action: "delete"; reference: string};
+export type ConfigSnapshot = {
+ naming: {stream: TitleDefault; session: TitleDefault};
+ herdr: {
+  viewer: {mode: "editor" | "less" | "hunk" | "native"; placement: "pane-right" | "pane-down" | "tab" | "floating"};
+  naming: {tab: boolean; workspace: boolean};
+  cards: {auto_open: TitleDefault};
+  timeout_ms: number;
+  pane_height_fraction: number;
+ };
+ pi: {
+  naming: {session: boolean; import_edits: boolean};
+  reporting: {
+   mode: TitleDefault;
+   enrollment: TitleDefault;
+   frequency: number;
+   context: "trimmed" | "full";
+   model: {provider: string; id: string} | null;
+   session_logging: boolean;
+   debug_commands: boolean;
+  };
+ };
+};
 export type ChildRequest =
  | {kind: "session_started" | "attach" | "open_card" | "close_card" | "list_streams"}
  | {kind: "context"; stream_id?: string}
@@ -18,6 +40,9 @@ export type ChildRequest =
  | {kind: "sync"}
  | {kind: "artifact"; request: ArtifactRequest}
  | {kind: "set_title_default"; target: "stream" | "session"; mode: TitleDefault}
+ | {kind: "get_config"}
+ | {kind: "set_config"; key: string; value: string}
+ | {kind: "unset_config"; key: string}
  | {kind: "card_settings"}
  | {kind: "set_card_mode"; target: "global" | "session"; mode: CardMode};
 export type ChildOutcome =

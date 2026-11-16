@@ -157,6 +157,14 @@ pub enum Request {
         target: TitleTarget,
         mode: NamingMode,
     },
+    GetConfig {},
+    SetConfig {
+        key: String,
+        value: String,
+    },
+    UnsetConfig {
+        key: String,
+    },
     Sync {},
 }
 

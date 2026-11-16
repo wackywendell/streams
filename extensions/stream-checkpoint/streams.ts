@@ -1,5 +1,5 @@
-import type { ArtifactRequest, ChildRequest, DomainObject, Runner, TitleDefault, CardMode, CardSettings } from "./child-protocol.ts";
-export type { CardMode, CardSettings } from "./child-protocol.ts";
+import type { ArtifactRequest, ChildRequest, ConfigSnapshot, DomainObject, Runner, TitleDefault, CardMode, CardSettings } from "./child-protocol.ts";
+export type { CardMode, CardSettings, ConfigSnapshot } from "./child-protocol.ts";
 export type { Runner } from "./child-protocol.ts";
 
 import { parseLocalContext, isResourceKey, isStream as stream, isSession as session, type ResourceKey, type StreamWire, type SessionWire, type LocalContext, type Mode } from "../../integrations/herdr-work-cards/src/streams-context.ts";
@@ -110,6 +110,21 @@ export class StreamCli {
   if (!object(value.title_defaults) || !["automatic", "manual"].includes(value.title_defaults.stream) || !["automatic", "manual"].includes(value.title_defaults.session)) throw new StreamsCliError("Invalid title defaults");
   return value.title_defaults;
  }
+ private configSnapshotValue(value: any): ConfigSnapshot {
+  const cfg = value?.config;
+  if (!object(cfg) || !object(cfg.naming) || !["automatic", "manual"].includes(cfg.naming.stream) || !["automatic", "manual"].includes(cfg.naming.session)) throw new StreamsCliError("Invalid configuration snapshot");
+  if (!object(cfg.herdr) || !object(cfg.herdr.viewer) || !["editor", "less", "hunk", "native"].includes(cfg.herdr.viewer.mode) || !["pane-right", "pane-down", "tab", "floating"].includes(cfg.herdr.viewer.placement)) throw new StreamsCliError("Invalid configuration snapshot");
+  if (!object(cfg.herdr.naming) || typeof cfg.herdr.naming.tab !== "boolean" || typeof cfg.herdr.naming.workspace !== "boolean" || !object(cfg.herdr.cards) || !["automatic", "manual"].includes(cfg.herdr.cards.auto_open) || !Number.isInteger(cfg.herdr.timeout_ms) || typeof cfg.herdr.pane_height_fraction !== "number") throw new StreamsCliError("Invalid configuration snapshot");
+  const pi = cfg.pi;
+  if (!object(pi) || !object(pi.naming) || typeof pi.naming.session !== "boolean" || typeof pi.naming.import_edits !== "boolean") throw new StreamsCliError("Invalid configuration snapshot");
+  const rep = pi.reporting;
+  if (!object(rep) || !["automatic", "manual"].includes(rep.mode) || !["automatic", "manual"].includes(rep.enrollment) || !Number.isInteger(rep.frequency) || rep.frequency < 1 || !["trimmed", "full"].includes(rep.context) || typeof rep.session_logging !== "boolean" || typeof rep.debug_commands !== "boolean") throw new StreamsCliError("Invalid configuration snapshot");
+  if (rep.model !== null && (!object(rep.model) || typeof rep.model.provider !== "string" || !rep.model.provider.trim() || typeof rep.model.id !== "string" || !rep.model.id.trim())) throw new StreamsCliError("Invalid configuration snapshot");
+  return cfg as ConfigSnapshot;
+ }
+ async getConfig(): Promise<ConfigSnapshot> {return this.configSnapshotValue(await this.run({kind:"get_config"}));}
+ async setConfig(key: string, value: string): Promise<ConfigSnapshot> {return this.configSnapshotValue(await this.run({kind:"set_config", key, value}));}
+ async unsetConfig(key: string): Promise<ConfigSnapshot> {return this.configSnapshotValue(await this.run({kind:"unset_config", key}));}
 }
 export function receiptText(value: Receipt): string {
  const saves = value.saves ?? (value.save ? [{operation_id: value.operation_id ?? "", save: value.save}] : []);

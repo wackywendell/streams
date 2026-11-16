@@ -357,6 +357,10 @@ impl Server {
                 }
                 request => {
                     let saved = matches!(request, Request::Apply { .. });
+                    let config_change = matches!(
+                        request,
+                        Request::SetConfig { .. } | Request::UnsetConfig { .. }
+                    );
                     let mut output = {
                         let current_app = controller
                             .as_ref()
@@ -376,6 +380,20 @@ impl Server {
                                 controllers
                                     .hc
                                     .after_save(self, &app, true, stopping, plugin_root)
+                        {
+                            self.warning(&error)?;
+                        }
+                    } else if config_change && output.accepted_save {
+                        if let Some(controller) = controller
+                            && let Err(error) = controller.saved(cancelled.clone())
+                        {
+                            output.notices.push(error.to_string());
+                        }
+                        if hc_selected
+                            && let Err(error) =
+                                controllers
+                                    .hc
+                                    .after_save(self, &app, false, stopping, plugin_root)
                         {
                             self.warning(&error)?;
                         }
@@ -428,6 +446,8 @@ fn native_queue(request: &Request) -> bool {
             | Request::Apply { .. }
             | Request::Enroll { .. }
             | Request::SetCardMode { .. }
+            | Request::SetConfig { .. }
+            | Request::UnsetConfig { .. }
     )
 }
 

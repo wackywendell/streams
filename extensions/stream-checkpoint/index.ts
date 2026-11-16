@@ -14,7 +14,7 @@ import { registerArtifactTool } from "./artifacts.ts";
 import { SessionScope, captureInputs, hasConversation } from "./session-scope.ts";
 import { editRequest, ReferenceEdit, referenceRequest, referenceSelector } from "./core.ts";
 import { namingCompletions, parseNamingEdit, saveNamingEdit, savePiNameEdit } from "./naming.ts";
-import { loadSettings, saveSettings, settingsDialog } from "./settings.ts";
+import { defaultConfigSnapshot, reportingSettingsFromSnapshot, settingsDialog } from "./settings.ts";
 import type { ReportingSettings } from "./settings.ts";
 import { openCard, compose } from "./panel.ts";
 import type { CardState } from "./panel.ts";
@@ -26,7 +26,7 @@ import type { NativeFactory } from "./native.ts";
 
 type PiContextState = {
  conversation: {harness: "pi"; native_id: string}; generation: number; session_file: string | null;
- helper?: StreamsChild; ready: Promise<void>; retired: boolean; retire(): Promise<void>;
+ helper?: StreamsChild; ready: Promise<void>; hydrated: boolean; hydrate: Promise<void>; retired: boolean; retire(): Promise<void>;
 };
 export type PiContextHolder = {generation: number; current?: PiContextState; retirement?: Promise<void>};
 const contextKey = Symbol.for("streams.pi.context");
@@ -45,8 +45,18 @@ function parseResetArgs(instructions: string): {auto: boolean; target: "all" | "
 }
 export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}): void {
  const agentDir = options.agentDir ?? process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
- let config = options.settings;
- const settings = () => config ??= loadSettings(agentDir);
+ let snapshot = defaultConfigSnapshot();
+ if (options.settings) {
+  snapshot.pi.reporting.mode = options.settings.reporting;
+  snapshot.pi.reporting.enrollment = options.settings.enrollment;
+  snapshot.pi.reporting.frequency = options.settings.frequency;
+  snapshot.pi.reporting.context = options.settings.context;
+  snapshot.pi.reporting.model = options.settings.model ?? null;
+  snapshot.pi.reporting.session_logging = options.settings.session_logging;
+  snapshot.pi.reporting.debug_commands = options.settings.debug_commands;
+  snapshot.pi.naming.import_edits = options.settings.pi_name_edits;
+ }
+ const settings = (): ReportingSettings => reportingSettingsFromSnapshot(snapshot);
  const logging = () => settings().session_logging ? {directory: join(agentDir, "stream-reporting-sessions"), onCreate: (value: {session_id: string; session_file: string}) => pi.appendEntry("stream-helper-session", value)} : undefined;
  const scope = new SessionScope();
  let panelOpen = false;
@@ -71,7 +81,7 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
   const previous = holder.current;
   if (owned && owned.conversation.native_id !== id) states.clear();
   let retirement: Promise<void> | undefined;
-  const state: PiContextState = {conversation:{harness:"pi",native_id:id}, generation:++holder.generation, session_file:file, ready:Promise.resolve(), retired:false,
+  const state: PiContextState = {conversation:{harness:"pi",native_id:id}, generation:++holder.generation, session_file:file, ready:Promise.resolve(), hydrated:Boolean(options.settings || options.cli), hydrate:Promise.resolve(), retired:false,
    retire: () => {
     if (retirement) return retirement;
     state.retired = true;
@@ -92,6 +102,17 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
    try {await native.start();} catch(error) {if (current(state, ctx)) warning(error);}
   });
   void state.ready.catch(() => {});
+  state.hydrate = state.hydrated
+   ? Promise.resolve()
+   : state.ready.then(async () => {
+      if (!current(state, ctx)) return;
+      try {
+       const fresh = await clientFor(ctx, state).getConfig();
+       if (current(state, ctx)) snapshot = fresh;
+      } catch {}
+      state.hydrated = true;
+     });
+  void state.hydrate.catch(() => {});
   return state;
  }
  const clientFor = (ctx: ExtensionContext, state: PiContextState) => {
@@ -149,10 +170,12 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
   }
  }
  const configure = async (ctx: ExtensionContext) => {
-  const client = cli(ctx), catalog = await client.context(ctx.sessionManager.getSessionId());
-  const cards = await client.cardSettings();
-  await settingsDialog(ctx, settings(), value => {saveSettings(agentDir, value);config = value;}, {defaults: catalog.title_defaults, save: (target, mode) => client.setTitleDefault(target, mode)}, agentDir,
-   {settings: cards, save: (target, mode) => client.setCardMode(target, mode)});
+  const client = cli(ctx);
+  snapshot = await client.getConfig();
+  await settingsDialog(ctx, snapshot, {
+   setConfig: async (key, value) => snapshot = await client.setConfig(key, value),
+   unsetConfig: async (key) => snapshot = await client.unsetConfig(key),
+  });
  };
  async function discussion(ctx: ExtensionContext, state: CardState): Promise<void> {
   for (;;) {
@@ -307,7 +330,8 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
    try {
     if (command === "" || command === "card") await show(ctx);
     else if (command === "debug") {
-     if (!settings().debug_commands) throw Error("Debug commands are disabled. Enable them in /streams settings → Debug → Debug commands.");
+     if (owned && !owned.hydrated) await owned.hydrate;
+     if (!settings().debug_commands) throw Error("Debug commands are disabled. Enable them in /streams settings → Debug → pi.reporting.debug_commands.");
      if (!instructions) {ctx.ui.notify("Streams — Debug commands\n/streams debug capture — freeze a stream or workspace\n/streams debug replay — choose a capture and model\nReplay options: --model PROVIDER/ID; --reset [session|stream|all]; --auto (with --reset).", "info");return;}
      await reporter.exclusive(signal => debugCommand(instructions, ctx, cli(ctx), agentDir, settings(), signal));
     }
@@ -370,15 +394,17 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
  pi.on("session_start", async (_event, ctx) => {
   clearStatusTimer();ctx.ui.setStatus?.("stream-debug", undefined);
   const state = useContext(ctx, true);
-  await state.ready;
+  if (!state.hydrated) await state.hydrate;
+  else await state.ready;
   if (current(state, ctx)) await sync(ctx, "start", state);
  });
  pi.on("session_info_changed", async (event, ctx) => {
   if (!event.name?.trim()) return;
-  useContext(ctx);
+  const state = useContext(ctx);
   const fence = scope.fence();
   try {
-   if (!settings().pi_name_edits) return;
+   if (!state.hydrated) await state.hydrate;
+   if (!fence.current() || !settings().pi_name_edits) return;
    const value = await savePiNameEdit(cli(ctx), ctx.sessionManager.getSessionId(), event.name, () => {
     if (!fence.current()) throw Error("Session changed before Pi name edit");
    });

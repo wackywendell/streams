@@ -23,11 +23,30 @@ initTheme('dark');
 const { createAssistantMessageEventStream } = await import('@earendil-works/pi-ai');
 const { default: registerWorkCard } = await load('index');
 const { Reporter } = await load('reporter');
-const { defaults, validateSettings, loadSettings, saveSettings, settingsDialog: showSettingsDialog } = await load('settings');
-const settingsDialog=(ctx,settings,save,agentDir,cards)=>{
- const state={global:'automatic',session:'inherit',effective:'automatic'};
- return showSettingsDialog(ctx,settings,save,{defaults:{stream:'automatic',session:'automatic'},save:assert.fail},agentDir,cards??{settings:state,save:async(target,mode)=>{state[target]=mode;state.effective=state.session==='inherit'?state.global:state.session;return {...state};}});
-};
+const { defaults, validateSettings, defaultConfigSnapshot, reportingSettingsFromSnapshot, settingsDialog } = await load('settings');
+function makeSnapshotActions(initial = defaultConfigSnapshot(), hook) {
+ const snap = structuredClone(initial);
+ const apply = (key, value) => {
+  if (key === 'naming.stream') snap.naming.stream = value;
+  else if (key === 'naming.session') snap.naming.session = value;
+  else if (key === 'pi.naming.session') snap.pi.naming.session = value === 'true';
+  else if (key === 'pi.naming.import_edits') snap.pi.naming.import_edits = value === 'true';
+  else if (key === 'pi.reporting.mode') snap.pi.reporting.mode = value;
+  else if (key === 'pi.reporting.enrollment') snap.pi.reporting.enrollment = value;
+  else if (key === 'pi.reporting.frequency') snap.pi.reporting.frequency = Number(value);
+  else if (key === 'pi.reporting.context') snap.pi.reporting.context = value;
+  else if (key === 'pi.reporting.model') {
+   const slash = value.indexOf('/');
+   snap.pi.reporting.model = {provider: value.slice(0, slash), id: value.slice(slash + 1)};
+  } else if (key === 'pi.reporting.session_logging') snap.pi.reporting.session_logging = value === 'true';
+  else if (key === 'pi.reporting.debug_commands') snap.pi.reporting.debug_commands = value === 'true';
+ };
+ return {
+  snap,
+  setConfig: async (key, value) => {if (hook) await hook('set', key, value); apply(key, value); return structuredClone(snap);},
+  unsetConfig: async key => {if (hook) await hook('unset', key); if (key === 'pi.reporting.model') snap.pi.reporting.model = null; return structuredClone(snap);},
+ };
+}
 const stream = { id:'effort', title:'Work', title_mode:'manual', goal:'Goal', goal_mode:'automatic', goal_short:null, status:'active', archived:false, owner:{host_id:'host'}, repositories:{repo:{url:'https://example.com/repo'}}, references:[] };
 const session = { id:'session', host_id:'host', stream_id:'effort', harness:'pi', harness_session_id:'native', title:'Session', title_mode:'automatic', status:'active', state:'', state_short:null, remaining:'', checkout:null };
 const context = () => structuredClone({catalog_source:'source-a',host_id:'host',stream,session,sessions:[session],title_defaults:{stream:'automatic',session:'automatic'}});
@@ -408,109 +427,64 @@ test('manual mode does not report automatically but explicit checkpoint does',as
  const f=reporterFixture({reporting:'manual'});f.reporter.response(f.ctx);await turn();assert.equal(f.inferences.length,0);
  f.reporter.request(f.ctx);await until(()=>f.inferences.length===1);f.release();await f.reporter.idle();assert.equal(f.saves.length,2);
 });
-test('settings change in place, pick searchable models, and preserve Herdr config keys',async()=>{
- const root=mkdtempSync(join(tmpdir(),'card-settings-ui-'));let factories=0;const saved=[];
- try {
-  writeFileSync(join(root,'work-cards.json'),JSON.stringify({document_command:'vim',tab_naming:false}));
-  const ctx={modelRegistry:{getAvailable:()=>[{provider:'z',id:'last'},{provider:'a',id:'first'}]},ui:{notify:text=>assert.fail(text),custom:async factory=>{
-   factories++;return new Promise(resolve=>{
-    const component=factory({terminal:{rows:30},requestRender(){}},{fg:(_color,text)=>text,bold:text=>text},{},resolve);
-    const press=data=>component.handleInput(data);
-    press('\r');press('\r');assert.equal(saved.at(-1).reporting,'automatic');
-    // Cursor stays on reporting after each toggle; move to the model submenu.
-    for(let i=0;i<4;i++)press('\x1b[B');press('\r');press('a/first');press('\r');
-    assert.deepEqual(saved.at(-1).model,{provider:'a',id:'first'});
-    press('\x1b[B');press('\r'); // Debug subsection
-    press('\x1b[B');press('\r');assert.equal(saved.at(-1).session_logging,true);
-    assert.equal(saved.at(-1).debug_commands,false);press('\x1b');
-    press('\x1b[B'); // Streams global card opening
-    press('\x1b[B'); // conversation card opening
-    press('\x1b[B');press('\r'); // Naming subsection
-    for(let i=0;i<3;i++)press('\x1b[B');press('\r'); // workspace naming: enabled -> disabled
-    const native=JSON.parse(readFileSync(join(root,'work-cards.json'),'utf8'));
-    assert.equal(Object.hasOwn(native,'workspace_startup'),false);assert.equal(native.workspace_naming,false);
-    assert.equal(native.tab_naming,false);assert.equal(native.document_command,'vim');
-    assert.match(component.render(100).join('\n'),/Pi session naming/);
-    assert.match(component.render(100).join('\n'),/Work card & Herdr settings/);press('\x1b');press('\x1b');
-   });
-  }}};
-  await settingsDialog(ctx,{...defaults},value=>saved.push(structuredClone(value)),root);
-  assert.equal(factories,1);
- }finally{rmSync(root,{recursive:true,force:true});}
-});
-test('card preference controls save through Streams without Pi files or session entries',async()=>{
- const root=mkdtempSync(join(tmpdir(),'card-preference-ui-')),calls=[];
- const state={global:'automatic',session:'inherit',effective:'automatic'};
- try {
-  await settingsDialog({ui:{notify:assert.fail,custom:async factory=>{
-   let close;const closed=new Promise(resolve=>{close=resolve;});
-   const component=factory({terminal:{rows:30},requestRender(){}},{fg:(_color,text)=>text,bold:text=>text},{},close);
-   for(let i=0;i<6;i++)component.handleInput('\x1b[B');
-   component.handleInput('\r');await turn();
-   component.handleInput('\x1b[B');component.handleInput('\r');await turn();
-   assert.deepEqual(calls,[['global','manual'],['session','automatic']]);
-   assert.deepEqual(readdirSync(root),[]);
-   component.handleInput('\x1b');return closed;
-  }}},{...defaults},assert.fail,root,{settings:state,save:async(target,mode)=>{
-   calls.push([target,mode]);state[target]=mode;state.effective=state.session==='inherit'?state.global:state.session;return {...state};
-  }});
- } finally {rmSync(root,{recursive:true,force:true});}
-});
-test('native settings use the integration config validator before viewing or saving invalid files',async()=>{
- const root=mkdtempSync(join(tmpdir(),'card-settings-validation-'));
- try {
-  for(const value of [{workspace_naming:null},{workspace_startup:'other'},{show_refresh_spinner:true}]) {
-   const path=join(root,'work-cards.json'),bytes=JSON.stringify(value);writeFileSync(path,bytes);
-   await assert.rejects(settingsDialog({ui:{custom:()=>assert.fail('invalid config must not open')}},{...defaults},()=>assert.fail('no save'),root));
-   assert.equal(readFileSync(path,'utf8'),bytes);
-  }
- }finally{rmSync(root,{recursive:true,force:true});}
-});
-test('settings revalidate concurrent native config changes before saving',async()=>{
- const root=mkdtempSync(join(tmpdir(),'card-settings-race-')),notices=[];
- try {
-  await settingsDialog({ui:{notify:text=>notices.push(text),custom:async factory=>new Promise(done=>{
-   const component=factory({terminal:{rows:30},requestRender(){}},{fg:(_color,text)=>text,bold:text=>text},{},done);
-   const path=join(root,'work-cards.json'),bytes=JSON.stringify({workspace_startup:'invalid'});
-   writeFileSync(path,bytes);
-   for(let i=0;i<8;i++)component.handleInput('\x1b[B');
-   component.handleInput('\r');for(let i=0;i<3;i++)component.handleInput('\x1b[B');component.handleInput('\r');
-   assert.equal(readFileSync(path,'utf8'),bytes);
-   assert.match(notices[0],/unknown field workspace_startup/);
-   component.handleInput('\x1b');component.handleInput('\x1b');
-  })}},{...defaults},()=>assert.fail('no reporting save'),root);
- }finally{rmSync(root,{recursive:true,force:true});}
+test('settings change in place, pick searchable models, and mutate via child config actions',async()=>{
+ let factories=0;const saved=[];
+ const actions=makeSnapshotActions(defaultConfigSnapshot(),(op,key,value)=>saved.push([op,key,value]));
+ const ctx={modelRegistry:{getAvailable:()=>[{provider:'z',id:'last'},{provider:'a',id:'first'}]},ui:{notify:text=>assert.fail(text),custom:async factory=>{
+  factories++;
+  let done;const closed=new Promise(resolve=>{done=resolve;});
+  const component=factory({terminal:{rows:30},requestRender(){}},{fg:(_color,text)=>text,bold:text=>text},{},done);
+  const press=data=>component.handleInput(data);
+  press('\r');await turn();press('\r');await turn();
+  // Move to pi.reporting.model submenu and select a/first
+  for(let i=0;i<4;i++)press('\x1b[B');press('\r');press('a/first');press('\r');await turn();
+  press('\x1b[B');press('\r'); // Debug subsection
+  press('\x1b[B');press('\r');await turn(); // pi.reporting.session_logging -> true
+  press('\x1b');
+  press('\x1b[B');press('\r'); // Naming subsection
+  press('\x1b[B');press('\x1b[B');press('\x1b[B');press('\r');await turn(); // pi.naming.session -> false
+  assert.match(component.render(100).join('\n'),/pi\.naming\.session/);
+  press('\x1b');press('\x1b');
+  await closed;
+ }}};
+ await settingsDialog(ctx,defaultConfigSnapshot(),actions);
+ await turn();
+ assert.equal(factories,1);
+ assert.deepEqual(saved,[
+  ['set','pi.reporting.mode','manual'],
+  ['set','pi.reporting.mode','automatic'],
+  ['set','pi.reporting.model','a/first'],
+  ['set','pi.reporting.session_logging','true'],
+  ['set','pi.naming.session','false'],
+ ]);
+ assert.deepEqual(actions.snap.pi.reporting.model,{provider:'a',id:'first'});
+ assert.equal(actions.snap.pi.reporting.session_logging,true);
+ assert.equal(actions.snap.pi.naming.session,false);
 });
 test('all settings explain their effects and leave description room on short terminals',async()=>{
- const root=mkdtempSync(join(tmpdir(),'card-settings-descriptions-'));
- try {
-  await settingsDialog({modelRegistry:{getAvailable:()=>[]},ui:{custom:async factory=>{
-   const component=factory({terminal:{rows:16},requestRender(){}},{fg:(_color,text)=>text,bold:text=>text},{},()=>{});
-   for(const description of [
-    'Automatically summarize your progress into the work card',
-    'Automatically attach new Pi chats to a work card',
-    'How many completed agent responses to wait',
-    'What conversation history the summary model reads',
-    'Model used to summarize progress and generate short titles.',
-    'Configure debug commands and optional helper session logging.',
-    'Open cards automatically at Pi startup or attachment',
-    'Inherit the Streams default or override it for this conversation.',
-    'Configure title generation, incoming Pi name edits',
-    'Default for Stream titles in inherit mode.',
-    'Default for Session titles in inherit mode.',
-    'Save changed Pi /name edits as manual Session titles.',
-    "Mirror the saved Stream title in Herdr.",
-    "Mirror saved Session titles in agent tabs",
-    "Mirror the saved Session title in Pi.",
-   ]) {
-    const lines=component.render(100);assert.ok(lines.length<=16,lines.join('\n'));
-    assert.doesNotMatch(lines.join(' '),/manual renames.*protected/);
-    assert.ok(lines.join(' ').includes(description),lines.join('\n'));
-    component.handleInput(description.startsWith('Configure title generation')?'\r':'\x1b[B');
-   }
-   component.handleInput('\x1b');component.handleInput('\x1b');
-  }}},{...defaults},()=>assert.fail('viewing settings must not save'),root);
- }finally{rmSync(root,{recursive:true,force:true});}
+ const actions=makeSnapshotActions();
+ await settingsDialog({modelRegistry:{getAvailable:()=>[]},ui:{custom:async factory=>{
+  const component=factory({terminal:{rows:16},requestRender(){}},{fg:(_color,text)=>text,bold:text=>text},{},()=>{});
+  for(const description of [
+   'Automatically summarize your progress into the work card',
+   'Automatically attach new Pi chats to a work card',
+   'How many completed agent responses to wait',
+   'What conversation history the summary model reads',
+   'Model used to summarize progress and generate short titles.',
+   'Configure debug commands and optional helper session logging.',
+   'Configure title generation, incoming Pi name edits and outgoing Pi synchronization.',
+   'Default for Stream titles in inherit mode.',
+   'Default for Session titles in inherit mode.',
+   'Save changed Pi /name edits as manual Session titles.',
+   'Mirror the saved Session title in Pi.',
+  ]) {
+   const lines=component.render(100);assert.ok(lines.length<=16,lines.join('\n'));
+   assert.doesNotMatch(lines.join(' '),/herdr\./);
+   assert.ok(lines.join(' ').includes(description),lines.join('\n'));
+   component.handleInput(description.startsWith('Configure title generation')?'\r':'\x1b[B');
+  }
+  component.handleInput('\x1b');component.handleInput('\x1b');
+ }}},defaultConfigSnapshot(),actions);
 });
 test('automatic reset unlocks manual names before fresh inference and keeps lifecycle',async()=>{
  const catalog=context();catalog.session.title_mode='manual';catalog.stream.goal_mode='manual';
@@ -527,8 +501,9 @@ test('automatic reset unlocks manual names before fresh inference and keeps life
  assert.equal(catalog.stream.status,'active');assert.equal(catalog.stream.archived,false);
 });
 test('reporting settings have explicit stable knobs and reject invalid cadence',()=>{
- const root=mkdtempSync(join(tmpdir(),'card-settings-'));
- try{assert.deepEqual(loadSettings(root),defaults);const custom={...defaults,reporting:'manual',enrollment:'manual',frequency:3,context:'full',model:{provider:'custom',id:'helper'},session_logging:true};saveSettings(root,custom);assert.deepEqual(loadSettings(root),custom);for(const frequency of [0,-1,1.5,NaN,'2'])assert.throws(()=>validateSettings({...defaults,frequency}),/positive integer/);}finally{rmSync(root,{recursive:true,force:true});}
+ const custom={...defaults,reporting:'manual',enrollment:'manual',frequency:3,context:'full',model:{provider:'custom',id:'helper'},session_logging:true};
+ validateSettings(custom);
+ for(const frequency of [0,-1,1.5,NaN,'2'])assert.throws(()=>validateSettings({...defaults,frequency}),/positive integer/);
 });
 test('helper transport hooks are absent unless inference observation is requested',async()=>{
  const ctx={model:{api:'anthropic-messages'},modelRegistry:{complete:async(_model,_payload,options)=>{
@@ -1009,7 +984,8 @@ test('extension startup and card commands do not enroll or run a model; report u
 function commandFixture(options={}) {
  const commands=new Map(),tools=new Map(),handlers=new Map(),notices=[],requests=[],writes=[],receipts=[],activity=[],dialogs=[];
  const catalog=options.catalog??context();let reads=0;
- const cli={context:async()=>{reads++;return structuredClone(catalog);},cardSettings:async()=>({global:'automatic',session:'inherit',effective:'automatic'}),list:async()=>[stream],apply:async req=>{writes.push(req);Object.assign(catalog[req.kind],req.changes);return {save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}};},enroll:async req=>{writes.push(req);catalog.stream=stream;catalog.session=session;return {stream,session,saves:[]};}};
+ const actions=makeSnapshotActions(defaultConfigSnapshot());
+ const cli={context:async()=>{reads++;return structuredClone(catalog);},getConfig:async()=>structuredClone(actions.snap),setConfig:actions.setConfig,unsetConfig:actions.unsetConfig,cardSettings:async()=>({global:'automatic',session:'inherit',effective:'automatic'}),list:async()=>[stream],apply:async req=>{writes.push(req);Object.assign(catalog[req.kind],req.changes);return {save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}};},enroll:async req=>{writes.push(req);catalog.stream=stream;catalog.session=session;return {stream,session,saves:[]};}};
  const ctx={mode:'tui',hasUI:true,cwd:'/repo',sessionManager:{getSessionId:()=> 'native',getLeafId:()=> 'leaf',getBranch:()=>[{id:'leaf'}],buildSessionProjection:()=>({messages:[{role:'user',content:'Build work cards',timestamp:0}]})},ui:{notify:(text,level)=>notices.push({text,level}),setStatus:(_key,text)=>activity.push(text),select:async(title,rows)=>{dialogs.push({title,rows});return options.select?.(title,rows)??'Close';},editor:async()=> 'Contribution',confirm:async()=>true}};
  registerWorkCard({on:(name,fn)=>handlers.set(name,fn),registerCommand:(name,value)=>commands.set(name,value),registerTool:value=>tools.set(value.name,value),registerShortcut:()=>assert.fail('no shortcuts'),appendEntry:(type,value)=>receipts.push({type,value})},{agentDir:options.agentDir,settings:{...defaults,reporting:'manual',enrollment:'manual',...options.settings},cli,infer:async(_ctx,req,_signal,_model,logging)=>{requests.push(req);return options.infer?await options.infer(req,logging):{changes:{}};}});
  return {commands,tools,handlers,ctx,notices,requests,writes,receipts,activity,dialogs,reads:()=>reads,run:args=>commands.get('streams').handler(args,ctx)};
@@ -1218,11 +1194,11 @@ test('invalid streams arguments show actionable usage without catalog, UI dialog
 test('streams settings dispatches to the existing reporting dialog without reporting',async t=>{
  const root=mkdtempSync(join(tmpdir(),'card-settings-command-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
  const f=commandFixture({agentDir:root});await f.run(' settings ');
- assert.equal(f.dialogs.length,1);assert.match(f.dialogs[0].title,/Work card & Herdr settings/);assert.ok(f.dialogs[0].rows.includes('Response frequency: 1'));
- assert.equal(f.reads(),1);assert.deepEqual(f.requests,[]);assert.deepEqual(f.writes,[]);
+ assert.equal(f.dialogs.length,1);assert.match(f.dialogs[0].title,/Streams Pi & naming settings/);assert.ok(f.dialogs[0].rows.includes('pi.reporting.frequency: 1'));
+ assert.equal(f.reads(),0);assert.deepEqual(f.requests,[]);assert.deepEqual(f.writes,[]);
 });
 test('helper logging setting toggles in place and passes log options to reports and resets without changing model settings',async()=>{
- const root=mkdtempSync(join(tmpdir(),'card-helper-setting-')),choices=['Debug','Helper session logging: disabled','Back','Close','Debug','Helper session logging: enabled','Back','Close'],seen=[];
+ const root=mkdtempSync(join(tmpdir(),'card-helper-setting-')),choices=['Debug','pi.reporting.session_logging: false','Back','Close','Debug','pi.reporting.session_logging: true','Back','Close'],seen=[];
  try {
   const f=commandFixture({agentDir:root,select:()=>choices.shift(),infer:async(req,logging)=>{
    seen.push({type:req.type,logging});
@@ -1230,10 +1206,10 @@ test('helper logging setting toggles in place and passes log options to reports 
    return {changes:{}};
   }});
   await f.run('report');await until(()=>f.activity.length===2);assert.ok(seen.every(value=>value.logging===undefined));
-  await f.run('settings');assert.equal(loadSettings(root).session_logging,true);
+  await f.run('settings');
   await f.run('reset session --auto');await until(()=>f.activity.length===4);assert.ok(seen.at(-1).logging);
   assert.deepEqual(f.receipts.filter(entry=>entry.type==='stream-helper-session'),[{type:'stream-helper-session',value:{session_id:'helper',session_file:'helper.jsonl'}}]);
-  await f.run('settings');assert.equal(loadSettings(root).session_logging,false);
+  await f.run('settings');
   await f.run('reset stream');await until(()=>f.activity.length===6);assert.equal(seen.at(-1).logging,undefined);
  } finally {rmSync(root,{recursive:true,force:true});}
 });
@@ -1500,17 +1476,9 @@ test('retained deletion asks again against the fresh row and cancellation preser
   else {assert.deepEqual(edit.base,original);assert.equal(state.referenceEdits.size,1);}
  }
 });
-test('settings validate object roots/model types and preserve unknown on-disk keys across saves',()=>{
- const root=mkdtempSync(join(tmpdir(),'card-settings-invalid-'));const path=join(root,'stream-reporting.json');
- try{
-  for(const value of [null,[],false,42,'text']){writeFileSync(path,JSON.stringify(value));assert.throws(()=>loadSettings(root),/object/i);}
-  for(const session_logging of [null,'enabled',0,{}]){writeFileSync(path,JSON.stringify({...defaults,session_logging}));assert.throws(()=>loadSettings(root),/logging.*boolean/i);}
-  writeFileSync(path,JSON.stringify({reporting:'manual'}));assert.equal(loadSettings(root).session_logging,false);
-  for(const model of [null,[],42,{provider:42,id:'model'},{provider:'provider',id:false}]){writeFileSync(path,JSON.stringify({...defaults,model}));assert.throws(()=>loadSettings(root),/model|provider/i);}
-  writeFileSync(path,JSON.stringify({...defaults,future:{keep:true}}));const loaded=loadSettings(root);
-  writeFileSync(path,JSON.stringify({...defaults,future:{keep:'newer'},concurrent:'preserved'}));
-  saveSettings(root,{...loaded,frequency:4});const saved=JSON.parse(readFileSync(path,'utf8'));assert.deepEqual(saved.future,{keep:'newer'});assert.equal(saved.concurrent,'preserved');assert.equal(saved.frequency,4);assert.equal(statSync(path).mode&0o777,0o600);
- }finally{rmSync(root,{recursive:true,force:true});}
+test('settings validate model types via validateSettings',()=>{
+ for(const session_logging of [null,'enabled',0,{}]){assert.throws(()=>validateSettings({...defaults,session_logging}),/logging.*boolean/i);}
+ for(const model of [null,[],42,{provider:42,id:'model'},{provider:'provider',id:false}]){assert.throws(()=>validateSettings({...defaults,model}),/model|provider/i);}
 });
 
 test('trimmed projection excludes tools/thinking; full retains only complete valid batches',()=>{
