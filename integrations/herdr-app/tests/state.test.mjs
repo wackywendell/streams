@@ -47,6 +47,19 @@ test("buildViewSelections batches optional known stream and deduplicates local v
       terminal: { adapter: "hc", endpoint: "core-1", key: "t2" },
     },
   ]);
+
+  const unenrolledSelections = buildViewSelections({
+    endpoint: "core-1",
+    knownStreamId: null,
+    visibleTerminals: ["t1"],
+  });
+  assert.deepEqual(unenrolledSelections, [
+    { kind: "host_streams" },
+    {
+      kind: "frame",
+      terminal: { adapter: "hc", endpoint: "core-1", key: "t1" },
+    },
+  ]);
 });
 
 test("observeNoticeToken combines only local terminal notice tokens", () => {
@@ -945,4 +958,155 @@ test("StreamsCoordinator binds pending viewer metadata to pane ids and deduplica
     now: 400_000,
   });
   assert.equal(readCalls, 3);
+});
+
+test("StreamsCoordinator captures hostStreams on unenrolled tabs, inspects streams, and passes optional mode/placement on openReference", async () => {
+  const actions = [];
+  const coordinator = new StreamsCoordinator({
+    exec: async (_cmd, args) => {
+      if (args[1] === "describe") {
+        return {
+          code: 0,
+          stdout: JSON.stringify({
+            version: 1,
+            scope: { catalog: "cat-1", host: "host-1" },
+            endpoint: "core-1",
+            notification_key: "streams.saved.k",
+          }),
+          stderr: "",
+        };
+      }
+      const req = JSON.parse(args[3]);
+      if (req.body.kind === "read") {
+        const selKinds = req.body.selections.map((s) => s.kind);
+        if (selKinds[0] === "saved_stream") {
+          return {
+            code: 0,
+            stdout: JSON.stringify({
+              version: 1,
+              scope: req.scope,
+              endpoint: "core-1",
+              verified_endpoint: "core-1",
+              result: {
+                ok: {
+                  kind: "read",
+                  notification_key: "streams.saved.k",
+                  herdr_config: { tab_naming: true, viewer_mode: "native", viewer_placement: "pane-right" },
+                  values: [
+                    {
+                      ok: {
+                        kind: "stream",
+                        value: {
+                          id: "st-paused",
+                          title: "Paused Effort",
+                          goal: "Goal",
+                          goal_short: null,
+                          status: "parked",
+                          sessions: [],
+                          documents: [],
+                          links: [],
+                          artifacts: [],
+                        },
+                      },
+                    },
+                  ],
+                },
+              },
+              viewer_projection: [],
+              warnings: [],
+            }),
+            stderr: "",
+          };
+        }
+        return {
+          code: 0,
+          stdout: JSON.stringify({
+            version: 1,
+            scope: req.scope,
+            endpoint: "core-1",
+            verified_endpoint: "core-1",
+            result: {
+              ok: {
+                kind: "read",
+                notification_key: "streams.saved.k",
+                herdr_config: { tab_naming: true, viewer_mode: "native", viewer_placement: "pane-right" },
+                values: [
+                  {
+                    ok: {
+                      kind: "host_streams",
+                      value: [
+                        {
+                          id: "st-active",
+                          title: "Active Effort",
+                          goal_short: "Keep going",
+                          status: "active",
+                          active_sessions: 1,
+                          total_sessions: 2,
+                        },
+                      ],
+                    },
+                  },
+                  { ok: { kind: "frame", context: { kind: "unenrolled" } } },
+                ],
+              },
+            },
+            viewer_projection: [],
+            warnings: [],
+          }),
+          stderr: "",
+        };
+      }
+      actions.push(req.body.action);
+      return {
+        code: 0,
+        stdout: JSON.stringify({
+          version: 1,
+          scope: req.scope,
+          endpoint: "core-1",
+          verified_endpoint: "core-1",
+          result: {
+            ok: {
+              kind: "reference_opened",
+              value: { known: [], result: { kind: "applied" } },
+            },
+          },
+          viewer_projection: [],
+          warnings: [],
+        }),
+        stderr: "",
+      };
+    },
+  });
+
+  await coordinator.observe({
+    activeSpace: { id: "sp-1", machine: null },
+    activeTabId: "tab-1",
+    visibleTerminals: ["t1"],
+    terminalList: [],
+    focusedTerminal: "t1",
+  });
+  assert.equal(coordinator.hostStreams.length, 1);
+  assert.equal(coordinator.hostStreams[0].id, "st-active");
+
+  await coordinator.inspectStream("st-paused");
+  assert.equal(coordinator.inspectedStreamId, "st-paused");
+  assert.equal(coordinator.streams.get("st-paused")?.title, "Paused Effort");
+
+  const docRef = {
+    kind: "document",
+    stream: "st-active",
+    document: { repository: "source", path: "README.md" },
+    viewing_session: "s1",
+  };
+  await coordinator.openReference(docRef, { activeSpaceId: "sp-1" });
+  assert.equal("mode" in actions[0], false);
+  assert.equal("placement" in actions[0], false);
+
+  await coordinator.openReference(docRef, {
+    activeSpaceId: "sp-1",
+    mode: "editor",
+    placement: "pane-right",
+  });
+  assert.equal(actions[1].mode, "editor");
+  assert.equal(actions[1].placement, "pane-right");
 });

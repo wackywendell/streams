@@ -2959,4 +2959,108 @@ fn frame_reads_and_reference_opening_resolve_enrolled_sessions_and_viewer_termin
         bin_val.result,
         ReferenceOpenResult::NotApplied { .. }
     ));
+
+    // Explicit mode/placement overrides on OpenReference override config defaults (for reopening truncated native files).
+    std::fs::write(repository.join("z.md"), "hello override\n").unwrap();
+    assert!(
+        fixture
+            .command()
+            .args(["config", "set", "herdr.viewer.placement", "floating"])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    let override_request = {
+        let mut req = fixture.envelope(json!({
+            "kind": "act",
+            "action": {
+                "kind": "open_reference",
+                "reference": {
+                    "kind": "document",
+                    "stream": "work",
+                    "document": { "repository": "source", "path": "z.md" },
+                    "viewing_session": fixture.sessions[0].id
+                },
+                "context": { "kind": "explicit" },
+                "at": null,
+                "mode": "editor",
+                "placement": "pane-right"
+            }
+        }));
+        req["endpoint"] = json!("core");
+        req
+    };
+    let override_out = fixture
+        .command()
+        .env("EDITOR", "sh -e")
+        .args([
+            "integration",
+            "request",
+            "--request-json",
+            &override_request.to_string(),
+        ])
+        .output()
+        .unwrap();
+    let override_reply =
+        ModReply::decode(std::str::from_utf8(&override_out.stdout).unwrap()).unwrap();
+    let WireResult::Ok(ModResult::ReferenceOpened {
+        value: override_val,
+    }) = override_reply.result
+    else {
+        panic!("override reply")
+    };
+    match &override_val.result {
+        ReferenceOpenResult::LaunchCommand {
+            args, placement, ..
+        } => {
+            assert_eq!(args[3], "editor");
+            assert_eq!(*placement, streams::config::ViewerPlacement::PaneRight);
+        }
+        other => panic!("expected override LaunchCommand, got {other:?}"),
+    }
+}
+
+#[test]
+fn host_streams_lists_non_archived_streams_with_active_session_counts() {
+    use serde_json::json;
+    use streams::{
+        application,
+        integration::{ModReadValue, ModReply, ModResult, WireResult},
+        model::{Record, Stream},
+    };
+
+    let fixture = SavedFixture::new();
+    let host = fixture.records.host().as_str();
+    let mut archived = Stream::new("archived", "Archived", None, host).unwrap();
+    archived.archived = true;
+    application::create_record(fixture.records.records(), "arch", &Record::Stream(archived))
+        .unwrap();
+
+    let mut req = fixture.envelope(json!({
+        "kind": "read",
+        "selections": [{ "kind": "host_streams" }]
+    }));
+    req["endpoint"] = json!("core");
+    let out = fixture
+        .command()
+        .args(["integration", "request", "--request-json", &req.to_string()])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let reply = ModReply::decode(std::str::from_utf8(&out.stdout).unwrap()).unwrap();
+    let WireResult::Ok(ModResult::Read { values, .. }) = reply.result else {
+        panic!("read reply")
+    };
+    assert_eq!(values.len(), 1);
+    let WireResult::Ok(ModReadValue::HostStreams { value }) = &values[0] else {
+        panic!("host streams value")
+    };
+    assert_eq!(
+        value
+            .iter()
+            .map(|s| (s.id.as_str(), s.active_sessions, s.total_sessions))
+            .collect::<Vec<_>>(),
+        vec![("next", 1, 1), ("work", 2, 2), ("empty", 0, 0)]
+    );
 }

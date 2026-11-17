@@ -161,10 +161,20 @@ impl<'a> Streams<'a> {
                 _ => None,
             })
             .collect();
-        let sessions = if streams.is_empty() {
+        let needs_host_streams = selections
+            .iter()
+            .any(|selection| matches!(selection, ViewSelection::HostStreams));
+        let sessions = if streams.is_empty() && !needs_host_streams {
             None
         } else {
             self.sessions_by_id().ok()
+        };
+        let host_streams_result = if needs_host_streams {
+            sessions
+                .as_ref()
+                .map(|sessions| self.host_stream_summaries(sessions))
+        } else {
+            None
         };
         let read = |reader: &dyn RecordReader,
                     artifacts: Option<&dyn ArtifactReader>|
@@ -208,6 +218,14 @@ impl<'a> Streams<'a> {
                             }
                         })
                         .clone(),
+                    ViewSelection::HostStreams => match &host_streams_result {
+                        Some(Ok(value)) => WireResult::Ok(ModReadValue::HostStreams {
+                            value: value.clone(),
+                        }),
+                        _ => WireResult::Error(WireError::unavailable(
+                            "host Streams are unavailable",
+                        )),
+                    },
                     _ => WireResult::Error(WireError::unavailable(
                         "native integration is not enabled",
                     )),
@@ -223,6 +241,51 @@ impl<'a> Streams<'a> {
                 .records()
                 .with_reader(|reader| read(reader, None))
         }
+    }
+
+    fn host_stream_summaries(
+        &self,
+        sessions: &std::collections::BTreeMap<String, Session>,
+    ) -> Result<Vec<crate::integration::StreamSummary>> {
+        use crate::integration::StreamSummary;
+        let mut counts: std::collections::BTreeMap<String, (usize, usize)> =
+            std::collections::BTreeMap::new();
+        for session in sessions.values() {
+            let entry = counts.entry(session.stream_id.clone()).or_insert((0, 0));
+            if session.status == crate::model::Status::Active {
+                entry.0 += 1;
+            }
+            entry.1 += 1;
+        }
+        let mut summaries = Vec::new();
+        for read in self.records.host_streams()? {
+            let Record::Stream(stream) = read.record else {
+                unreachable!("Stream partition")
+            };
+            if stream.archived {
+                continue;
+            }
+            let (active_sessions, total_sessions) =
+                counts.get(&stream.id).copied().unwrap_or((0, 0));
+            summaries.push(StreamSummary {
+                id: stream.id,
+                title: stream.title,
+                goal_short: stream.goal_short,
+                status: stream.status,
+                active_sessions,
+                total_sessions,
+            });
+        }
+        summaries.sort_by_cached_key(|summary| {
+            (
+                summary.active_sessions == 0,
+                icu_casemap::CaseMapper::new()
+                    .fold_string(&summary.title)
+                    .into_owned(),
+                summary.id.clone(),
+            )
+        });
+        Ok(summaries)
     }
 
     /// Resolve native selectors first so saved and contextual views share the same read batch.

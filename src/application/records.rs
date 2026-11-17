@@ -38,6 +38,10 @@ impl OpenedRecords {
     pub fn host_sessions(&self) -> Result<Vec<RecordRead>> {
         Ok(self.records.host_sessions(self.host.as_str())?)
     }
+    /// Inspect only this admitted host's direct Stream partition.
+    pub fn host_streams(&self) -> Result<Vec<RecordRead>> {
+        Ok(self.records.host_streams(self.host.as_str())?)
+    }
     /// Explicit human discovery/inspection only; ordinary commands use `records()`.
     pub fn inventory(&self) -> Result<Vec<RecordRead>> {
         Ok(self.records.inventory()?)

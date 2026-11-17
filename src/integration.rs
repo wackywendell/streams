@@ -183,6 +183,18 @@ pub struct StreamArtifacts {
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct StreamSummary {
+    pub id: String,
+    pub title: String,
+    #[serde(deserialize_with = "required_nullable")]
+    pub goal_short: Option<String>,
+    pub status: Status,
+    pub active_sessions: usize,
+    pub total_sessions: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StreamView {
     pub id: String,
     pub title: String,
@@ -777,6 +789,7 @@ pub enum ViewSelection {
     SavedSession {
         session: String,
     },
+    HostStreams,
     Frame {
         terminal: NativeRef,
     },
@@ -803,10 +816,14 @@ pub struct OpenRequest {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ModAction {
     OpenReference {
-        reference: Reference,
+        reference: Box<Reference>,
         context: ActivationContext,
         #[serde(deserialize_with = "required_nullable")]
         at: Option<NativeRef>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mode: Option<crate::config::ViewerMode>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        placement: Option<crate::config::ViewerPlacement>,
     },
     OpenWork {
         request: OpenRequest,
@@ -831,6 +848,7 @@ pub struct ModRequest {
 pub enum ModReadValue {
     Stream { value: StreamView },
     Session { value: SessionView },
+    HostStreams { value: Vec<StreamSummary> },
     Frame { context: FrameContext },
     Sidebar { value: SidebarContext },
 }

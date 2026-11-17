@@ -70,6 +70,8 @@ export function buildViewSelections({
       kind: "saved_stream",
       stream: knownStreamId,
     });
+  } else {
+    selections.push({ kind: "host_streams" });
   }
   const seen = new Set();
   for (const terminalKey of visibleTerminals) {
@@ -297,6 +299,7 @@ export function dispatchReferencePresentation(
     activeSpaceId = null,
     activeTabId = null,
     targetPaneId = null,
+    reference = null,
     tabNaming = true,
     streamsBin = "streams",
     run,
@@ -332,13 +335,19 @@ export function dispatchReferencePresentation(
       filename: result.filename ?? "",
       content: result.content ?? "",
       truncated: Boolean(result.truncated),
+      ...(reference ? { reference } : {}),
+      ...(activeSpaceId ? { spaceId: activeSpaceId } : {}),
+      ...(activeTabId ? { tabId: activeTabId } : {}),
+      ...(targetPaneId ? { targetPaneId } : {}),
     };
     if (result.placement === "tab") {
       onPendingViewer?.({
         tabId: null,
+        spaceId: activeSpaceId,
         title: props.title,
         filename: props.filename,
         truncated: props.truncated,
+        reference,
       });
       run?.("tab.new", {
         ...(activeSpaceId ? { space: activeSpaceId } : {}),
@@ -354,9 +363,11 @@ export function dispatchReferencePresentation(
       }
       onPendingViewer?.({
         tabId: activeTabId,
+        spaceId: activeSpaceId,
         title: props.title,
         filename: props.filename,
         truncated: props.truncated,
+        reference,
       });
       const direction = result.placement === "pane-down" ? "down" : "right";
       run?.("pane.split", { direction, pane: targetPaneId, mod: "streams", props });
@@ -407,12 +418,50 @@ export class StreamsCoordinator {
     this.lastCompletedAt = 0;
 
     this.streams = new Map(); // streamId -> StreamView
+    this.hostStreams = []; // StreamSummary[]
+    this.inspectedStreamId = null;
     this.frames = new Map(); // terminalKey -> FrameContext
     this.streamIdByTerminal = new Map(); // terminalKey -> streamId
     this.pendingViewers = [];
     this.viewerMetaByPane = new Map();
     this.lastError = null;
     this._retriedScope = false;
+  }
+
+  async inspectStream(streamId) {
+    if (!streamId) {
+      this.inspectedStreamId = null;
+      this.notifyViews();
+      return null;
+    }
+    this.inspectedStreamId = streamId;
+    const binding = await this.ensureDescribed();
+    if (!binding) return null;
+    const envelope = buildRequestEnvelope(binding.scope, binding.endpoint, {
+      kind: "read",
+      selections: [{ kind: "saved_stream", stream: streamId }],
+    });
+    const out = await this.exec(this.streamsBin, [
+      "integration",
+      "request",
+      "--request-json",
+      JSON.stringify(envelope),
+    ]);
+    if (out.code !== 0) {
+      this.lastError = out.stderr?.trim() || "streams integration request failed";
+      this.notifyViews();
+      return null;
+    }
+    const reply = JSON.parse(out.stdout);
+    const item = reply?.result?.ok?.values?.[0];
+    if (item?.ok?.kind === "stream") {
+      this.streams.set(item.ok.value.id, item.ok.value);
+      this.lastError = null;
+    } else if (item?.error) {
+      this.lastError = item.error.message || "saved Stream view is unavailable";
+    }
+    this.notifyViews();
+    return reply;
   }
 
   recordPendingViewer(entry) {
@@ -662,6 +711,10 @@ export class StreamsCoordinator {
                 this.streams.set(item.ok.value.id, item.ok.value);
                 fetchedStreams.add(item.ok.value.id);
               }
+            } else if (sel.kind === "host_streams") {
+              if (item?.ok?.kind === "host_streams") {
+                this.hostStreams = item.ok.value ?? [];
+              }
             } else if (sel.kind === "frame") {
               if (item?.ok?.kind === "frame") {
                 this.frames.set(sel.terminal.key, item.ok.context);
@@ -792,6 +845,7 @@ export class StreamsCoordinator {
             activeSpaceId,
             activeTabId,
             targetPaneId,
+            reference: action?.reference ?? null,
             tabNaming: this.tabNaming,
             streamsBin: this.streamsBin,
             run,
@@ -819,7 +873,17 @@ export class StreamsCoordinator {
 
   openReference(
     reference,
-    { activeSpaceId = null, activeTabId = null, targetPaneId = null, run, openUrl, openOverlay, focusTerminal } = {}
+    {
+      activeSpaceId = null,
+      activeTabId = null,
+      targetPaneId = null,
+      mode = null,
+      placement = null,
+      run,
+      openUrl,
+      openOverlay,
+      focusTerminal,
+    } = {}
   ) {
     const endpoint = this.binding?.endpoint;
     const isLink = reference?.kind === "link";
@@ -833,6 +897,8 @@ export class StreamsCoordinator {
         reference,
         context: { kind: "explicit" },
         at,
+        ...(mode ? { mode } : {}),
+        ...(placement ? { placement } : {}),
       },
       { activeSpaceId, activeTabId, targetPaneId, run, openUrl, openOverlay, focusTerminal }
     );

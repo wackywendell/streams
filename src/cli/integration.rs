@@ -296,16 +296,24 @@ impl App {
                         })
                     }
                     streams::integration::ModAction::OpenReference {
-                        reference: streams::integration::Reference::Link { stream, link },
+                        reference,
                         context,
+                        mode,
+                        placement,
                         ..
-                    } => Ok(ModResult::ReferenceOpened {
-                        value: facade.open_link(stream, link, context),
-                    }),
-                    streams::integration::ModAction::OpenReference { reference, .. } => {
-                        let value =
-                            self.integration_open_reference(&records, &facade, reference)?;
-                        Ok(ModResult::ReferenceOpened { value })
+                    } => {
+                        if let streams::integration::Reference::Link { stream, link } =
+                            reference.as_ref()
+                        {
+                            Ok(ModResult::ReferenceOpened {
+                                value: facade.open_link(stream, link, context),
+                            })
+                        } else {
+                            let value = self.integration_open_reference(
+                                &records, &facade, reference, *mode, *placement,
+                            )?;
+                            Ok(ModResult::ReferenceOpened { value })
+                        }
                     }
                 },
             }
@@ -330,6 +338,8 @@ impl App {
         records: &application::OpenedRecords,
         facade: &application::integration::Streams<'_>,
         reference: &streams::integration::Reference,
+        mode_override: Option<streams::config::ViewerMode>,
+        placement_override: Option<streams::config::ViewerPlacement>,
     ) -> std::result::Result<streams::integration::ReferenceOpenReport, WireError> {
         use streams::{
             config::{ViewerMode, ViewerPlacement},
@@ -345,8 +355,8 @@ impl App {
             .config
             .load()
             .map_err(|_| WireError::unavailable("configuration is unavailable"))?;
-        let mode = settings.herdr.viewer_mode;
-        let placement = settings.herdr.viewer_placement;
+        let mode = mode_override.unwrap_or(settings.herdr.viewer_mode);
+        let placement = placement_override.unwrap_or(settings.herdr.viewer_placement);
         let host = &facade.scope().host;
         let registry = self
             .registry(host)
