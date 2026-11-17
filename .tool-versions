@@ -2,3 +2,4 @@ nodejs 26.13.1
 rust 1.95.0
 just 1.59.0
 direnv 2.38.2
+jj 0.47.1
