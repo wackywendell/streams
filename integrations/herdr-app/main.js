@@ -358,6 +358,7 @@ export default class StreamsMod extends View {
     const frameCtx = p.terminal ? coordinator.frames.get(p.terminal) : null;
     const enrolled = frameCtx?.kind === "enrolled" ? frameCtx.session : null;
     const streamTitle = enrolled ? coordinator.streamTitle(enrolled.stream) : null;
+    const enrolledStyle = enrolled ? statusStyle(enrolled.status, t) : null;
 
     const nativeName =
       ((p.program?.agent || p.program?.shell) && p.program.name) ||
@@ -390,63 +391,73 @@ export default class StreamsMod extends View {
         div()
           .flex_none()
           .truncate()
-          .max_w(260)
+          .max_w(220)
           .font_medium()
           .text_color(t.foreground)
           .child(nativeName)
       )
-      .child(div().flex_1().truncate().text_color(t.dim).child(folder(p.cwd)))
+      .child(div().min_w(0).truncate().text_color(t.dim).child(folder(p.cwd)))
       .when(Boolean(enrolled), (el) =>
-        el.child(
-          div()
-            .id(`ph-stream-${pane}`)
-            .flex_none()
-            .max_w(280)
-            .truncate()
-            .px(7)
-            .h(20)
-            .flex()
-            .items_center()
-            .rounded(5)
-            .bg(t.selected)
-            .text_size(11)
-            .font_medium()
-            .text_color(t.foreground)
-            .hover((s) => s.bg(t.hover))
-            .on_click((_e, clickCx) => {
-              clickCx.stop_propagation();
-              const root = layout();
-              const panel = findNode(root, "panel");
-              const panelBody = findNode(root, "panel-body");
-              const panelId = props()?.panel_id ?? "streams";
-              const hasPanelChild = Boolean(
-                panel && panelBody && findNode(panelBody, panelId)
-              );
-              if (
-                hasPanelChild &&
-                (panel.hidden || panelBody.active !== panelId)
-              ) {
-                run("layout.select", { stack: "panel-body", child: panelId });
-                run("layout.show", { id: "panel" });
-              } else {
-                openOverlay({
-                  mod: "streams",
-                  kind: "popup",
-                  at: "pointer",
-                  width: 420,
-                  height: 360,
-                  props: {
-                    kind: "session-popup",
-                    session: enrolled,
-                    stream_title: streamTitle,
-                    space_id: snap.activeSpace?.id ?? null,
-                  },
-                });
-              }
-            })
-            .child(`≋ ${streamTitle} · ${enrolled.title}`)
-        )
+        el
+          .child(div().flex_none().text_color(t.dim).child("·"))
+          .child(
+            h_flex()
+              .id(`ph-stream-${pane}`)
+              .flex_initial()
+              .min_w(0)
+              .max_w(260)
+              .px(5)
+              .h(20)
+              .gap(5)
+              .items_center()
+              .rounded(4)
+              .text_size(11.5)
+              .font_medium()
+              .text_color(t.foreground)
+              .hover((s) => s.bg(t.hover))
+              .on_click((_e, clickCx) => {
+                clickCx.stop_propagation();
+                const root = layout();
+                const panel = findNode(root, "panel");
+                const panelBody = findNode(root, "panel-body");
+                const panelId = props()?.panel_id ?? "streams";
+                const hasPanelChild = Boolean(
+                  panel && panelBody && findNode(panelBody, panelId)
+                );
+                if (hasPanelChild) {
+                  if (panel.hidden || panelBody.active !== panelId) {
+                    run("layout.select", { stack: "panel-body", child: panelId });
+                    run("layout.show", { id: "panel" });
+                  } else {
+                    run("layout.hide", { id: "panel" });
+                  }
+                } else {
+                  openOverlay({
+                    mod: "streams",
+                    kind: "popup",
+                    at: "pointer",
+                    width: 420,
+                    height: 320,
+                    props: {
+                      kind: "session-popup",
+                      session: enrolled,
+                      stream_title: streamTitle,
+                      space_id: snap.activeSpace?.id ?? null,
+                    },
+                  });
+                }
+              })
+              .child(
+                div()
+                  .flex_none()
+                  .text_size(10)
+                  .text_color(enrolledStyle.color)
+                  .child(enrolledStyle.symbol)
+              )
+              .child(div().flex_1().min_w(0).truncate().child(enrolled.title))
+          )
       )
+      .child(div().flex_1())
       .when(st === "working", (el) =>
         el.child(
           svg("mods/workspace-chrome/spinner.svg")
@@ -472,7 +483,7 @@ export default class StreamsMod extends View {
             .child("Needs you")
         )
       )
-      .when(st === "done", (el) =>
+      .when(!enrolled && st === "done", (el) =>
         el.child(div().size(7).flex_none().rounded(4).bg(t.done))
       )
       .when(this.hovered, (el) =>
@@ -592,37 +603,6 @@ export default class StreamsMod extends View {
             .child(div().font_medium().text_color(t.muted).child("Remaining"))
             .child(div().text_color(t.foreground).child(session.remaining))
         )
-      )
-      .child(
-        h_flex()
-          .pt(4)
-          .gap(6)
-          .child(
-            div()
-              .id("popup-open-session")
-              .px(8)
-              .py(4)
-              .rounded(5)
-              .bg(t.selected)
-              .text_color(t.foreground)
-              .hover((s) => s.bg(t.hover))
-              .on_click((_e, clickCx) => {
-                clickCx.spawn(async (asyncCx) => {
-                  await coordinator.openWork(
-                    {
-                      stream: session.stream,
-                      sessions: { kind: "only", value: [session.id] },
-                      cwd: null,
-                    },
-                    {
-                      run,
-                      openUrl: (u) => asyncCx.open_url(u),
-                    }
-                  );
-                });
-              })
-              .child("Open Session")
-          )
       );
   }
 
