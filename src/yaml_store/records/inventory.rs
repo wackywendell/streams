@@ -224,7 +224,16 @@ impl YamlRecordStore {
         let mut records = Vec::new();
         for entry in entries {
             let entry = entry.map_err(invalid)?;
-            if !entry.file_type().map_err(invalid)?.is_file() {
+            let file_type = entry.file_type().map_err(invalid)?;
+            if kind == RecordKind::Stream && file_type.is_dir() {
+                let name = entry
+                    .file_name()
+                    .into_string()
+                    .map_err(|_| invalid("record path must be UTF-8"))?;
+                component(&name)?;
+                continue;
+            }
+            if !file_type.is_file() {
                 return Err(invalid(format!(
                     "{label} inventory entry must be a regular record"
                 )));

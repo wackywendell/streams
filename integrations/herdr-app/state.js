@@ -714,6 +714,9 @@ export class StreamsCoordinator {
             } else if (sel.kind === "host_streams") {
               if (item?.ok?.kind === "host_streams") {
                 this.hostStreams = item.ok.value ?? [];
+              } else if (item?.error) {
+                this.hostStreams = [];
+                this.lastError = item.error.message || "host Streams are unavailable";
               }
             } else if (sel.kind === "frame") {
               if (item?.ok?.kind === "frame") {

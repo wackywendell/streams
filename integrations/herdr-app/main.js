@@ -1137,45 +1137,45 @@ export default class StreamsMod extends View {
                     })
                     .child("← All Streams")
                 )
-            )
-              .child(
-                v_flex()
-                  .gap(5)
-                  .child(
-                    h_flex()
-                      .gap(6)
-                      .items_center()
-                      .child(div().flex_none().text_size(13).text_color(t.accent).child("≋"))
-                      .child(
-                        div()
-                          .flex_1()
-                          .min_w(0)
-                          .truncate()
-                          .font_semibold()
-                          .text_size(13.5)
-                          .child(inspectedStream.title)
+                .child(
+                  v_flex()
+                    .gap(5)
+                    .child(
+                      h_flex()
+                        .gap(6)
+                        .items_center()
+                        .child(div().flex_none().text_size(13).text_color(t.accent).child("≋"))
+                        .child(
+                          div()
+                            .flex_1()
+                            .min_w(0)
+                            .truncate()
+                            .font_semibold()
+                            .text_size(13.5)
+                            .child(inspectedStream.title)
+                        )
+                        .child(statusBadge(inspectedStream.status, t))
+                    )
+                    .when(Boolean(inspectedStream.goal), (el) =>
+                      el.child(
+                        div().text_size(11.5).text_color(t.muted).child(inspectedStream.goal)
                       )
-                      .child(statusBadge(inspectedStream.status, t))
-                  )
-                  .when(Boolean(inspectedStream.goal), (el) =>
-                    el.child(
-                      div().text_size(11.5).text_color(t.muted).child(inspectedStream.goal)
+                    )
+                )
+                .when(inspectedSessions.length > 0, (el) =>
+                  el.child(
+                    renderSessionListSection(
+                      inspectedStream.id,
+                      inspectedSessions,
+                      `Sessions · ${inspectedSessions.length}`,
+                      false
                     )
                   )
-              )
-              .when(inspectedSessions.length > 0, (el) =>
-                el.child(
-                  renderSessionListSection(
-                    inspectedStream.id,
-                    inspectedSessions,
-                    `Sessions · ${inspectedSessions.length}`,
-                    false
-                  )
                 )
-              )
-              .when(inspectedRefs.length > 0, (el) =>
-                el.child(renderReferencesSection(inspectedRefs, monoFont))
-              )
+                .when(inspectedRefs.length > 0, (el) =>
+                  el.child(renderReferencesSection(inspectedRefs, monoFont))
+                )
+            )
           );
       }
 

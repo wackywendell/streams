@@ -3032,6 +3032,16 @@ fn host_streams_lists_non_archived_streams_with_active_session_counts() {
 
     let fixture = SavedFixture::new();
     let host = fixture.records.host().as_str();
+    // Streams with saved artifacts also have a `<stream-id>/` directory in `hosts/<host>/streams/`.
+    let artifact_dir = fixture
+        .records
+        .root()
+        .join("hosts")
+        .join(streams::yaml_store::encode_component(host))
+        .join("streams")
+        .join("work")
+        .join("artifacts");
+    std::fs::create_dir_all(&artifact_dir).unwrap();
     let mut archived = Stream::new("archived", "Archived", None, host).unwrap();
     archived.archived = true;
     application::create_record(fixture.records.records(), "arch", &Record::Stream(archived))
