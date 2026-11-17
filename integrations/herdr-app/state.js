@@ -5,6 +5,20 @@
 
 export const PROTOCOL_VERSION = 1;
 export const MAX_SELECTIONS = 64;
+export const STALE_FALLBACK_MS = 5 * 60 * 1000;
+
+/**
+ * Determine whether an enrolled session is actually live in its terminal/pane,
+ * surfacing "offline" when an active/waiting record no longer has a live agent.
+ */
+export function effectiveSessionStatus(session, { pane = null, terminal = null, agent = null } = {}) {
+  if (!session) return "unknown";
+  const status = session.status;
+  if (status === "done" || status === "parked") return status;
+  if (terminal?.state && terminal.state !== "live") return "offline";
+  if (pane?.program && !pane.program.agent && !agent) return "offline";
+  return status;
+}
 
 /**
  * Determine which role a View instance should render from its props.
@@ -279,7 +293,16 @@ export function dispatchViewerActions(actions, { run, openUrl, focusTerminal } =
 
 export function dispatchReferencePresentation(
   result,
-  { activeSpaceId = null, targetPaneId = null, tabNaming = true, streamsBin = "streams", run, openOverlay } = {}
+  {
+    activeSpaceId = null,
+    activeTabId = null,
+    targetPaneId = null,
+    tabNaming = true,
+    streamsBin = "streams",
+    run,
+    openOverlay,
+    onPendingViewer,
+  } = {}
 ) {
   if (!result || typeof result !== "object") return { ok: true };
   if (result.kind === "launch_command") {
@@ -311,6 +334,12 @@ export function dispatchReferencePresentation(
       truncated: Boolean(result.truncated),
     };
     if (result.placement === "tab") {
+      onPendingViewer?.({
+        tabId: null,
+        title: props.title,
+        filename: props.filename,
+        truncated: props.truncated,
+      });
       run?.("tab.new", {
         ...(activeSpaceId ? { space: activeSpaceId } : {}),
         ...(tabNaming && result.title ? { name: result.title } : {}),
@@ -323,6 +352,12 @@ export function dispatchReferencePresentation(
       if (!targetPaneId) {
         return { ok: false, error: "No active pane to split for reference viewer." };
       }
+      onPendingViewer?.({
+        tabId: activeTabId,
+        title: props.title,
+        filename: props.filename,
+        truncated: props.truncated,
+      });
       const direction = result.placement === "pane-down" ? "down" : "right";
       run?.("pane.split", { direction, pane: targetPaneId, mod: "streams", props });
       return { ok: true };
@@ -348,10 +383,11 @@ export function dispatchReferencePresentation(
  * discards stale async responses, and runs one-shot `open_work` / `open_reference` actions.
  */
 export class StreamsCoordinator {
-  constructor({ exec, notify, streamsBin = "streams" } = {}) {
+  constructor({ exec, notify, streamsBin = "streams", staleFallbackMs = STALE_FALLBACK_MS } = {}) {
     this.exec = exec;
     this.notify = notify;
     this.streamsBin = streamsBin;
+    this.staleFallbackMs = staleFallbackMs;
 
     this.binding = null; // { scope, endpoint, notification_key }
     this.describePromise = null;
@@ -367,12 +403,44 @@ export class StreamsCoordinator {
     this.inFlightKey = null;
     this.inFlightPromise = null;
     this.lastCompletedKey = null;
+    this.lastFailedKey = null;
+    this.lastCompletedAt = 0;
 
     this.streams = new Map(); // streamId -> StreamView
     this.frames = new Map(); // terminalKey -> FrameContext
     this.streamIdByTerminal = new Map(); // terminalKey -> streamId
+    this.pendingViewers = [];
+    this.viewerMetaByPane = new Map();
     this.lastError = null;
     this._retriedScope = false;
+  }
+
+  recordPendingViewer(entry) {
+    if (!entry) return;
+    this.pendingViewers.push(entry);
+    if (this.pendingViewers.length > 16) {
+      this.pendingViewers.shift();
+    }
+  }
+
+  resolveViewerPaneMeta(paneId, tabId, allPanes) {
+    if (Array.isArray(allPanes)) {
+      const livePanes = new Set(allPanes.map((p) => p.pane));
+      for (const knownPane of this.viewerMetaByPane.keys()) {
+        if (!livePanes.has(knownPane)) this.viewerMetaByPane.delete(knownPane);
+      }
+    }
+    if (this.viewerMetaByPane.has(paneId)) {
+      return this.viewerMetaByPane.get(paneId);
+    }
+    let idx = this.pendingViewers.findIndex((entry) => entry.tabId === tabId);
+    if (idx < 0) {
+      idx = this.pendingViewers.findIndex((entry) => entry.tabId === null);
+    }
+    if (idx < 0) return null;
+    const [matched] = this.pendingViewers.splice(idx, 1);
+    this.viewerMetaByPane.set(paneId, matched);
+    return matched;
   }
 
   streamTitle(streamId) {
@@ -450,6 +518,7 @@ export class StreamsCoordinator {
     terminalList = [],
     focusedTerminal = null,
     force = false,
+    now = Date.now(),
   }) {
     if (activeSpace && activeSpace.machine !== null) {
       return null;
@@ -463,7 +532,8 @@ export class StreamsCoordinator {
             visibleTerminals,
             terminalList,
             focusedTerminal,
-            force: false,
+            force,
+            now,
           });
         }
         return null;
@@ -480,7 +550,18 @@ export class StreamsCoordinator {
       noticeToken,
     });
 
-    if (!force && (key === this.lastCompletedKey || (key === this.inFlightKey && this.inFlightPromise))) {
+    const stale =
+      this.staleFallbackMs > 0 &&
+      this.lastCompletedAt > 0 &&
+      now - this.lastCompletedAt >= this.staleFallbackMs;
+
+    if (
+      !force &&
+      !stale &&
+      (key === this.lastCompletedKey ||
+        key === this.lastFailedKey ||
+        (key === this.inFlightKey && this.inFlightPromise))
+    ) {
       return this.inFlightPromise ?? null;
     }
     return this.refresh({
@@ -490,6 +571,7 @@ export class StreamsCoordinator {
       focusedTerminal,
       knownStreamId,
       key,
+      now,
     });
   }
 
@@ -500,6 +582,7 @@ export class StreamsCoordinator {
     focusedTerminal = null,
     knownStreamId = null,
     key,
+    now = Date.now(),
   }) {
     const binding = await this.ensureDescribed();
     if (!binding) return null;
@@ -511,6 +594,8 @@ export class StreamsCoordinator {
     });
     if (selections.length === 0) {
       this.lastCompletedKey = key ?? null;
+      this.lastFailedKey = null;
+      this.lastCompletedAt = now;
       this.notifyViews();
       return null;
     }
@@ -533,7 +618,7 @@ export class StreamsCoordinator {
         if (gen !== this.readGeneration) return null; // Stale response discarded
         if (out.code !== 0) {
           this.lastError = out.stderr?.trim() || "streams integration request failed";
-          this.lastCompletedKey = key ?? null;
+          this.lastFailedKey = key ?? null;
           return null;
         }
         const reply = JSON.parse(out.stdout);
@@ -549,11 +634,12 @@ export class StreamsCoordinator {
             this.streams.clear();
             this.streamIdByTerminal.clear();
             this.lastCompletedKey = null;
+            this.lastFailedKey = null;
             this.lastError = msg;
             return reply;
           }
           this.lastError = msg;
-          this.lastCompletedKey = key ?? null;
+          this.lastFailedKey = key ?? null;
           return reply;
         }
         this._retriedScope = false;
@@ -630,6 +716,8 @@ export class StreamsCoordinator {
           }
 
           this.lastError = null;
+          this.lastFailedKey = null;
+          this.lastCompletedAt = now;
           this.lastCompletedKey =
             key !== undefined
               ? JSON.stringify({
@@ -642,7 +730,7 @@ export class StreamsCoordinator {
       } catch (err) {
         if (gen === this.readGeneration) {
           this.lastError = err instanceof Error ? err.message : String(err);
-          this.lastCompletedKey = key ?? null;
+          this.lastFailedKey = key ?? null;
         }
         return null;
       } finally {
@@ -661,7 +749,10 @@ export class StreamsCoordinator {
    * Execute a one-shot `open_work` or `open_reference` action and dispatch any returned
    * `ViewerAction` items once on the fresh reply.
    */
-  async act(action, { activeSpaceId = null, targetPaneId = null, run, openUrl, openOverlay, focusTerminal } = {}) {
+  async act(
+    action,
+    { activeSpaceId = null, activeTabId = null, targetPaneId = null, run, openUrl, openOverlay, focusTerminal } = {}
+  ) {
     const binding = await this.ensureDescribed();
     if (!binding) return null;
     const envelope = buildRequestEnvelope(binding.scope, binding.endpoint, {
@@ -699,11 +790,13 @@ export class StreamsCoordinator {
         try {
           const outcome = dispatchReferencePresentation(res, {
             activeSpaceId,
+            activeTabId,
             targetPaneId,
             tabNaming: this.tabNaming,
             streamsBin: this.streamsBin,
             run,
             openOverlay,
+            onPendingViewer: (entry) => this.recordPendingViewer(entry),
           });
           this.lastError = outcome.ok ? null : outcome.error;
         } catch (err) {
@@ -726,7 +819,7 @@ export class StreamsCoordinator {
 
   openReference(
     reference,
-    { activeSpaceId = null, targetPaneId = null, run, openUrl, openOverlay, focusTerminal } = {}
+    { activeSpaceId = null, activeTabId = null, targetPaneId = null, run, openUrl, openOverlay, focusTerminal } = {}
   ) {
     const endpoint = this.binding?.endpoint;
     const isLink = reference?.kind === "link";
@@ -741,7 +834,7 @@ export class StreamsCoordinator {
         context: { kind: "explicit" },
         at,
       },
-      { activeSpaceId, targetPaneId, run, openUrl, openOverlay, focusTerminal }
+      { activeSpaceId, activeTabId, targetPaneId, run, openUrl, openOverlay, focusTerminal }
     );
   }
 

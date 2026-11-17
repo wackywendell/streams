@@ -6,6 +6,7 @@ import {
   observeNoticeToken,
   activeTabSession,
   resolveTabRenameTarget,
+  effectiveSessionStatus,
   buildReferenceItems,
   dispatchViewerActions,
   dispatchReferencePresentation,
@@ -794,4 +795,154 @@ test("StreamsCoordinator clears stale binding once on scope mismatch and recover
   assert.equal(readCalls, 2);
   assert.equal(coordinator.binding?.scope?.catalog, "cat-2");
   assert.equal(coordinator.lastError, null);
+});
+
+test("effectiveSessionStatus marks exited terminals or non-agent panes offline", () => {
+  assert.equal(
+    effectiveSessionStatus(
+      { status: "active" },
+      { pane: { program: { agent: true } }, terminal: { state: "live" }, agent: { address: "t1" } }
+    ),
+    "active"
+  );
+  assert.equal(
+    effectiveSessionStatus(
+      { status: "active" },
+      { pane: { program: { agent: true } }, terminal: { state: "exited" }, agent: null }
+    ),
+    "offline"
+  );
+  assert.equal(
+    effectiveSessionStatus(
+      { status: "waiting" },
+      { pane: { program: { agent: false, shell: true } }, terminal: { state: "live" }, agent: null }
+    ),
+    "offline"
+  );
+  assert.equal(
+    effectiveSessionStatus(
+      { status: "done" },
+      { pane: { program: { agent: false } }, terminal: { state: "exited" }, agent: null }
+    ),
+    "done"
+  );
+});
+
+test("StreamsCoordinator binds pending viewer metadata to pane ids and deduplicates failed keys until stale or forced", async () => {
+  let readCalls = 0;
+  let failRead = true;
+  const coordinator = new StreamsCoordinator({
+    staleFallbackMs: 300_000,
+    exec: async (_cmd, args) => {
+      if (args[1] === "describe") {
+        return {
+          code: 0,
+          stdout: JSON.stringify({
+            version: 1,
+            scope: { catalog: "cat-1", host: "host-1" },
+            endpoint: "core-1",
+            notification_key: "streams.saved.k",
+          }),
+          stderr: "",
+        };
+      }
+      readCalls += 1;
+      if (failRead) {
+        return { code: 1, stdout: "", stderr: "temporary read failure" };
+      }
+      return {
+        code: 0,
+        stdout: JSON.stringify({
+          version: 1,
+          scope: { catalog: "cat-1", host: "host-1" },
+          endpoint: "core-1",
+          verified_endpoint: "core-1",
+          result: {
+            ok: {
+              kind: "read",
+              notification_key: "streams.saved.k",
+              herdr_config: { tab_naming: true, viewer_mode: "native", viewer_placement: "pane-right" },
+              values: [{ ok: { kind: "frame", context: { kind: "unenrolled" } } }],
+            },
+          },
+          viewer_projection: [],
+          warnings: [],
+        }),
+        stderr: "",
+      };
+    },
+  });
+
+  coordinator.recordPendingViewer({
+    tabId: "tab-1",
+    title: "Design Doc",
+    filename: "docs/design.md",
+    truncated: true,
+  });
+  const bound = coordinator.resolveViewerPaneMeta("pane-9", "tab-1", [{ pane: "pane-9" }]);
+  assert.deepEqual(bound, {
+    tabId: "tab-1",
+    title: "Design Doc",
+    filename: "docs/design.md",
+    truncated: true,
+  });
+  assert.equal(coordinator.resolveViewerPaneMeta("pane-9", "tab-1", [{ pane: "pane-9" }]), bound);
+  assert.equal(coordinator.resolveViewerPaneMeta("pane-9", "tab-1", []), null);
+
+  await coordinator.observe({
+    activeSpace: { id: "sp-1", machine: null },
+    activeTabId: "tab-1",
+    visibleTerminals: ["t1"],
+    terminalList: [],
+    focusedTerminal: "t1",
+    now: 1000,
+  });
+  assert.equal(readCalls, 1);
+  assert.equal(coordinator.lastError, "temporary read failure");
+
+  // Re-observing the same failed key without force must not spam exec().
+  await coordinator.observe({
+    activeSpace: { id: "sp-1", machine: null },
+    activeTabId: "tab-1",
+    visibleTerminals: ["t1"],
+    terminalList: [],
+    focusedTerminal: "t1",
+    now: 2000,
+  });
+  assert.equal(readCalls, 1);
+
+  // Explicit force recovers cleanly.
+  failRead = false;
+  await coordinator.observe({
+    activeSpace: { id: "sp-1", machine: null },
+    activeTabId: "tab-1",
+    visibleTerminals: ["t1"],
+    terminalList: [],
+    focusedTerminal: "t1",
+    force: true,
+    now: 3000,
+  });
+  assert.equal(readCalls, 2);
+  assert.equal(coordinator.lastError, null);
+
+  // Unchanged key within staleFallbackMs skips exec(); beyond staleFallbackMs refreshes.
+  await coordinator.observe({
+    activeSpace: { id: "sp-1", machine: null },
+    activeTabId: "tab-1",
+    visibleTerminals: ["t1"],
+    terminalList: [],
+    focusedTerminal: "t1",
+    now: 100_000,
+  });
+  assert.equal(readCalls, 2);
+
+  await coordinator.observe({
+    activeSpace: { id: "sp-1", machine: null },
+    activeTabId: "tab-1",
+    visibleTerminals: ["t1"],
+    terminalList: [],
+    focusedTerminal: "t1",
+    now: 400_000,
+  });
+  assert.equal(readCalls, 3);
 });

@@ -7,6 +7,8 @@ import {
   spaces,
   panes,
   terminals,
+  agents,
+  machines,
   focused,
   props,
   run,
@@ -16,18 +18,24 @@ import {
   settings,
   home,
   layout,
+  window as herdrWindow,
+  checking,
   exec,
 } from "herdr";
 import {
+  STALE_FALLBACK_MS,
   resolveRole,
   observeNoticeToken,
   activeTabSession,
+  effectiveSessionStatus,
   resolveTabRenameTarget,
   buildReferenceItems,
   StreamsCoordinator,
 } from "./state.js";
 
 const subscribers = new Set();
+let fallbackTimerOwner = null;
+let lastWindowActive = false;
 const coordinator = new StreamsCoordinator({
   exec: (cmd, args) => exec(cmd, args, { timeout: 30000 }),
   notify: () => {
@@ -94,6 +102,8 @@ function statusStyle(status, t) {
       return { color: t.done, symbol: "✓", label: "done" };
     case "parked":
       return { color: t.dim, symbol: "○", label: "parked" };
+    case "offline":
+      return { color: t.dim, symbol: "○", label: "offline" };
     default:
       return { color: t.dim, symbol: "○", label: status || "unknown" };
   }
@@ -217,25 +227,44 @@ export default class StreamsMod extends View {
   init(initialProps, cx) {
     this.hovered = false;
     this.scroll = ScrollHandle.new();
-    this._subscribed = false;
+    this._sub = null;
     this._lastSig = null;
     this._observeTask = null;
     this._timerTask = null;
     this._editorState = null;
     this._viewerKey = null;
     const role = resolveRole(initialProps);
+    this._role = role;
     if (role === "viewer") {
       this.syncViewerState(initialProps);
       return;
     }
+    if (role !== "sidebar" && role !== "frame") {
+      return;
+    }
+    if (checking()) {
+      return;
+    }
     this.ensureSubscribed(cx);
     this.scheduleObserve(cx, collectSnapshot());
-    this._timerTask = cx?.timer?.every?.(2000, (timerCx) => {
-      this.scheduleObserve(timerCx, collectSnapshot());
-    });
+    if (!fallbackTimerOwner && cx?.timer?.every) {
+      fallbackTimerOwner = this;
+      this._timerTask = cx.timer.every(STALE_FALLBACK_MS, (timerCx) => {
+        if (fallbackTimerOwner !== this || subscribers.size === 0) return;
+        this.scheduleObserve(timerCx, collectSnapshot(), true);
+      });
+    }
   }
 
   async close() {
+    if (this._sub) {
+      subscribers.delete(this._sub);
+      this._sub = null;
+    }
+    if (fallbackTimerOwner === this) {
+      fallbackTimerOwner = null;
+    }
+    this._timerTask = null;
     this._editorState?.release?.();
     this._editorState = null;
     this._viewerKey = null;
@@ -272,15 +301,15 @@ export default class StreamsMod extends View {
   }
 
   ensureSubscribed(cx) {
-    if (!this._subscribed && cx) {
-      this._subscribed = true;
-      subscribers.add(() => {
+    if (!this._sub && cx) {
+      this._sub = () => {
         try {
           cx.notify();
         } catch {
           // Detached
         }
-      });
+      };
+      subscribers.add(this._sub);
     }
     const configuredBin = props()?.streams_bin;
     if (configuredBin && coordinator.streamsBin !== configuredBin) {
@@ -289,19 +318,36 @@ export default class StreamsMod extends View {
   }
 
   scheduleObserve(cx, snap, force = false) {
+    if (checking()) return;
     const configuredBin = props()?.streams_bin;
     if (configuredBin && coordinator.streamsBin !== configuredBin) {
       coordinator.streamsBin = configuredBin;
     }
+    if (!fallbackTimerOwner && cx?.timer?.every) {
+      fallbackTimerOwner = this;
+      this._timerTask = cx.timer.every(STALE_FALLBACK_MS, (timerCx) => {
+        if (fallbackTimerOwner !== this || subscribers.size === 0) return;
+        this.scheduleObserve(timerCx, collectSnapshot(), true);
+      });
+    }
+    const isWinActive = Boolean(herdrWindow()?.active);
+    const windowActivated = isWinActive && !lastWindowActive;
+    lastWindowActive = isWinActive;
     syncActiveTabName(snap);
     const sig = snapshotSignature(snap);
+    const stale =
+      coordinator.staleFallbackMs > 0 &&
+      coordinator.lastCompletedAt > 0 &&
+      Date.now() - coordinator.lastCompletedAt >= coordinator.staleFallbackMs;
     if (
       !force &&
+      !(windowActivated && stale) &&
       sig === this._lastSig &&
       (coordinator.frames.size > 0 ||
         coordinator.describeError ||
         coordinator.lastError ||
         coordinator.lastCompletedKey !== null ||
+        coordinator.lastFailedKey !== null ||
         coordinator.inFlightKey !== null ||
         coordinator.describePromise !== null)
     ) {
@@ -345,7 +391,8 @@ export default class StreamsMod extends View {
   renderFrame(cx) {
     const t = theme();
     const rawProps = props() ?? {};
-    const p = panes().find(
+    const allPanes = panes();
+    const p = allPanes.find(
       (item) =>
         item.pane === rawProps.pane ||
         (rawProps.terminal && item.terminal === rawProps.terminal)
@@ -355,10 +402,97 @@ export default class StreamsMod extends View {
     const snap = collectSnapshot();
     this.scheduleObserve(cx, snap);
 
+    const pane = p.pane;
+    const bottom = paneFrame(layout())?.header?.position === "bottom";
+
+    if (p.mod === "streams") {
+      const meta = coordinator.resolveViewerPaneMeta(pane, p.tab, allPanes);
+      const monoFont = settings()?.font_family ?? "JetBrains Mono";
+      const viewerTitle = meta?.title || meta?.filename || "Reference";
+      const showFilename = Boolean(meta?.filename && meta.filename !== viewerTitle);
+      return h_flex()
+        .id(`pane-head-${pane}`)
+        .size_full()
+        .px(10)
+        .gap(8)
+        .items_center()
+        .bg(t.background)
+        .when(bottom, (el) => el.border_t(1))
+        .when(!bottom, (el) => el.border_b(1))
+        .border_color(t.border)
+        .text_size(12)
+        .on_hover((hovered, hoverCx) => {
+          this.hovered = hovered;
+          hoverCx.notify();
+        })
+        .on_click(() => run("pane.focus", { pane }))
+        .child(referenceIcon("document", t))
+        .child(
+          div()
+            .flex_none()
+            .truncate()
+            .max_w(280)
+            .font_medium()
+            .text_color(t.foreground)
+            .child(viewerTitle)
+        )
+        .when(showFilename, (el) =>
+          el.child(
+            div()
+              .min_w(0)
+              .truncate()
+              .font_family(monoFont)
+              .text_size(11)
+              .text_color(t.dim)
+              .child(meta.filename)
+          )
+        )
+        .child(div().flex_1())
+        .when(Boolean(meta?.truncated), (el) =>
+          el.child(
+            div()
+              .flex_none()
+              .px(6)
+              .py(1)
+              .rounded(4)
+              .bg(t.raised)
+              .text_size(10.5)
+              .text_color(t.muted)
+              .child("truncated")
+          )
+        )
+        .when(this.hovered, (el) =>
+          el
+            .child(
+              this.button(
+                t,
+                `ph-z-${pane}`,
+                p.zoomed ? "unzoom" : "zoom",
+                "pane.zoom",
+                { pane }
+              )
+            )
+            .child(this.button(t, `ph-x-${pane}`, "close", "pane.close", { pane }))
+        );
+    }
+
     const frameCtx = p.terminal ? coordinator.frames.get(p.terminal) : null;
     const enrolled = frameCtx?.kind === "enrolled" ? frameCtx.session : null;
     const streamTitle = enrolled ? coordinator.streamTitle(enrolled.stream) : null;
-    const enrolledStyle = enrolled ? statusStyle(enrolled.status, t) : null;
+    const termInfo = p.terminal
+      ? snap.terminalList.find((item) => (item.address ?? item.id) === p.terminal) ?? null
+      : null;
+    const liveAgent = p.terminal
+      ? agents().find((a) => a.address === p.terminal) ?? null
+      : null;
+    const effectiveStatus = enrolled
+      ? effectiveSessionStatus(enrolled, {
+          pane: p,
+          terminal: termInfo,
+          agent: liveAgent,
+        })
+      : null;
+    const enrolledStyle = enrolled ? statusStyle(effectiveStatus, t) : null;
 
     const nativeName =
       ((p.program?.agent || p.program?.shell) && p.program.name) ||
@@ -367,8 +501,6 @@ export default class StreamsMod extends View {
       "shell";
     const pic = icon(p.program, 14, t.dim);
     const st = p.status;
-    const pane = p.pane;
-    const bottom = paneFrame(layout())?.header?.position === "bottom";
 
     return h_flex()
       .id(`pane-head-${pane}`)
@@ -672,6 +804,8 @@ export default class StreamsMod extends View {
     }
 
     if (activeSpace.machine !== null) {
+      const machineInfo = machines().find((m) => m.name === activeSpace.machine) ?? null;
+      const offline = machineInfo?.layout === "unavailable";
       return v_flex()
         .size_full()
         .bg(t.chrome)
@@ -681,7 +815,11 @@ export default class StreamsMod extends View {
             .p(12)
             .text_size(12)
             .text_color(t.dim)
-            .child("Streams sidebar is available on local tabs.")
+            .child(
+              offline
+                ? `Streams sidebar is unavailable — ${activeSpace.machine} is offline.`
+                : "Streams sidebar is available on local tabs."
+            )
         );
     }
 
@@ -727,10 +865,18 @@ export default class StreamsMod extends View {
     }
 
     const tabPane = panes().find((p) => p.terminal === tabSession.terminal) ?? null;
+    const termInfo =
+      snap.terminalList.find((item) => (item.address ?? item.id) === tabSession.terminal) ?? null;
+    const liveAgent = agents().find((a) => a.address === tabSession.terminal) ?? null;
+    const effectiveStatus = effectiveSessionStatus(enrolled, {
+      pane: tabPane,
+      terminal: termInfo,
+      agent: liveAgent,
+    });
     const tabIcon = icon(tabPane?.program, 13, t.muted);
     const monoFont = settings()?.font_family ?? "JetBrains Mono";
     const sessionPrimary =
-      enrolled.status === "done"
+      effectiveStatus === "done"
         ? enrolled.recap || enrolled.state
         : enrolled.state || enrolled.recap;
     const references = buildReferenceItems(stream, {
@@ -753,13 +899,33 @@ export default class StreamsMod extends View {
           .track_scroll(this.scroll)
           .when(Boolean(coordinator.lastError), (el) =>
             el.child(
-              div()
+              h_flex()
                 .p(8)
+                .gap(8)
+                .items_start()
                 .rounded(5)
                 .bg(t.raised)
+                .border(1)
+                .border_color(t.border)
                 .text_size(11.5)
                 .text_color(t.blocked)
-                .child(coordinator.lastError)
+                .child(div().flex_1().min_w(0).child(coordinator.lastError))
+                .child(
+                  div()
+                    .id("streams-error-dismiss")
+                    .flex_none()
+                    .px(4)
+                    .py(1)
+                    .rounded(4)
+                    .text_color(t.muted)
+                    .hover((s) => s.bg(t.hover).text_color(t.foreground))
+                    .on_click((_e, clickCx) => {
+                      clickCx.stop_propagation();
+                      coordinator.lastError = null;
+                      coordinator.notifyViews();
+                    })
+                    .child("×")
+                )
             )
           )
           .child(
@@ -837,7 +1003,7 @@ export default class StreamsMod extends View {
                               .font_medium()
                               .child(enrolled.title)
                           )
-                          .child(statusBadge(enrolled.status, t))
+                          .child(statusBadge(effectiveStatus, t))
                       )
                       .when(Boolean(sessionPrimary), (el) =>
                         el.child(
@@ -905,6 +1071,7 @@ export default class StreamsMod extends View {
                                 clickCx.spawn(async (asyncCx) => {
                                   await coordinator.openReference(item.reference, {
                                     activeSpaceId: clickedSpaceId,
+                                    activeTabId: clickedTabId,
                                     targetPaneId,
                                     run,
                                     openOverlay,
@@ -974,55 +1141,73 @@ export default class StreamsMod extends View {
     const title = rawProps.title || rawProps.filename || "Reference";
     const overlayId = rawProps.overlay ?? null;
     const isMd = isMarkdownFilename(rawProps.filename);
+    const frameHeader = paneFrame(layout())?.header;
+    const hasOuterPaneHeader =
+      !overlayId && Boolean(frameHeader && frameHeader.reveal !== "none");
 
     return v_flex()
       .size_full()
       .bg(t.background)
       .text_size(12)
       .text_color(t.foreground)
-      .child(
-        h_flex()
-          .h(30)
-          .flex_none()
-          .px(10)
-          .gap(8)
-          .items_center()
-          .bg(t.chrome)
-          .border_b(1)
-          .border_color(t.border)
-          .child(div().flex_1().min_w(0).truncate().font_medium().child(title))
-          .when(Boolean(rawProps.truncated), (el) =>
-            el.child(
-              div()
-                .flex_none()
-                .px(6)
-                .py(1)
-                .rounded(4)
-                .bg(t.raised)
-                .text_size(10.5)
-                .text_color(t.muted)
-                .child("truncated")
+      .when(!hasOuterPaneHeader, (el) =>
+        el.child(
+          h_flex()
+            .h(30)
+            .flex_none()
+            .px(10)
+            .gap(8)
+            .items_center()
+            .bg(t.chrome)
+            .border_b(1)
+            .border_color(t.border)
+            .child(div().flex_1().min_w(0).truncate().font_medium().child(title))
+            .when(Boolean(rawProps.truncated), (bar) =>
+              bar.child(
+                div()
+                  .flex_none()
+                  .px(6)
+                  .py(1)
+                  .rounded(4)
+                  .bg(t.raised)
+                  .text_size(10.5)
+                  .text_color(t.muted)
+                  .child("truncated")
+              )
             )
-          )
-          .when(Boolean(overlayId), (el) =>
-            el.child(
-              div()
-                .id("streams-viewer-close")
-                .flex_none()
-                .px(6)
-                .py(2)
-                .rounded(4)
-                .text_size(11.5)
-                .text_color(t.muted)
-                .hover((s) => s.bg(t.hover).text_color(t.foreground))
-                .on_mouse_down((_e, downCx) => downCx.stop_propagation())
-                .on_click((_e, clickCx) => {
-                  clickCx.stop_propagation();
-                  closeOverlay(overlayId);
-                })
-                .child("Close")
+            .when(Boolean(overlayId), (bar) =>
+              bar.child(
+                div()
+                  .id("streams-viewer-close")
+                  .flex_none()
+                  .px(6)
+                  .py(2)
+                  .rounded(4)
+                  .text_size(11.5)
+                  .text_color(t.muted)
+                  .hover((s) => s.bg(t.hover).text_color(t.foreground))
+                  .on_mouse_down((_e, downCx) => downCx.stop_propagation())
+                  .on_click((_e, clickCx) => {
+                    clickCx.stop_propagation();
+                    closeOverlay(overlayId);
+                  })
+                  .child("Close")
+              )
             )
-          )
+        )
+      )
+      .when(hasOuterPaneHeader && Boolean(rawProps.truncated), (el) =>
+        el.child(
+          div()
+            .px(12)
+            .py(5)
+            .bg(t.chrome)
+            .border_b(1)
+            .border_color(t.border)
+            .text_size(11)
+            .text_color(t.muted)
+            .child("Showing first 400 KiB (truncated).")
+        )
       )
       .child(
         isMd
@@ -1044,8 +1229,8 @@ export default class StreamsMod extends View {
   render(cx) {
     const role = resolveRole(props());
     if (role === "viewer") return this.renderViewer();
-    this.ensureSubscribed(cx);
     if (role === "popup") return this.renderPopup(cx);
+    this.ensureSubscribed(cx);
     if (role === "frame") return this.renderFrame(cx);
     return this.renderSidebar(cx);
   }
