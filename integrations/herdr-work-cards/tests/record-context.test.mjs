@@ -7,11 +7,12 @@ import {
 
 const stream = {
   id:'effort', title:'Streams', title_mode:'inherit', goal:null, goal_short:null, goal_mode:'automatic',
-  status:'active', owner:{host_id:'host'}, repositories:{}, references:[],
+  status:'active', owner:{host_id:'host'}, repositories:{}, references:[], revision:1, updated_at_ms:0,
 };
 const session = {
   id:'ab441ac4-d600-5fd6-babf-fc43ab65623d', host_id:'host', stream_id:'effort', harness:'pi', harness_session_id:'native',
   membership_epoch:0, title:'Catalog', title_mode:'inherit', status:'active', state:'', state_short:null, remaining:'', checkout:null,
+  revision:1, updated_at_ms:0,
 };
 const context = () => structuredClone({
   catalog_source:'source', host_id:'host', title_defaults:{stream:'automatic', session:'manual'}, stream, session, sessions:[session],
@@ -165,6 +166,17 @@ test('Stream requires references and rejects old fields and duplicate exact keys
   assert.equal(isStream({...stream, references:[a, {...a, target:{kind:'pr', url:'https://example.test/brief'}}]}), true);
   const doc = {...a, target:{kind:'document', repository_url:'repo', path:'plan', ref:'one'}};
   assert.equal(isStream({...stream, references:[doc, {...doc, target:{...doc.target, ref:'two'}}]}), false);
+});
+
+test('records carry their revision and update time', () => {
+  for (const [valid, record] of [[isStream, stream], [isSession, session]]) {
+    assert.equal(valid(record), true);
+    for (const field of ['revision', 'updated_at_ms']) {
+      const {[field]:_, ...missing} = record;
+      assert.equal(valid(missing), false, field);
+      for (const bad of [null, -1, 1.5, '1']) assert.equal(valid({...record, [field]:bad}), false, `${field}=${bad}`);
+    }
+  }
 });
 
 test('checkout wire permits absent repository URL without guessing it', () => {

@@ -539,9 +539,7 @@ pub struct Stream {
     #[serde(deserialize_with = "objects")]
     pub references: Vec<Reference>,
     /// Set only by the store when a save changes the record; see `Stamps`.
-    #[serde(default)]
     pub revision: u64,
-    #[serde(default)]
     pub updated_at_ms: u64,
 }
 
@@ -654,9 +652,7 @@ pub struct Session {
     #[serde(default, deserialize_with = "optional_object")]
     pub checkout: Option<Checkout>,
     /// Set only by the store when a save changes the record; see `Stamps`.
-    #[serde(default)]
     pub revision: u64,
-    #[serde(default)]
     pub updated_at_ms: u64,
 }
 

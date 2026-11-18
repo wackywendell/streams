@@ -26,6 +26,8 @@ export type StreamWire = {
   id: string; title: string; title_mode: TitleMode; goal: string | null; goal_short: string | null;
   goal_mode: Mode; status: Status; owner: { host_id: string };
   repositories: Record<string, { url: string }>; references: Reference[];
+  /** The store's compare-and-swap token and last change time; user edits send them back unchanged. */
+  revision: number; updated_at_ms: number;
 };
 export type SessionWire = {
   id: string; host_id: string; stream_id: string; harness: string; harness_session_id: string;
@@ -35,6 +37,7 @@ export type SessionWire = {
   recap?: string; recap_short?: string | null;
   state: string; state_short: string | null; remaining: string; remaining_short?: string | null;
   checkout: { repository: string; repository_url?: string | null; ref: string; directory_within_checkout: string } | null;
+  revision: number; updated_at_ms: number;
 };
 export type LocalContext = {
   catalog_source: string; host_id: string; stream: StreamWire | null; session: SessionWire | null;
@@ -48,6 +51,8 @@ const identity = (value: unknown): value is string => text(value) && value.trim(
 const nullableText = (value: unknown) => value === null || text(value);
 const mode = (value: unknown): value is Mode => value === 'automatic' || value === 'manual';
 const titleMode = (value: unknown): value is TitleMode => mode(value) || value === 'inherit';
+const count = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
+const stamped = (value: Record<string, unknown>) => count(value.revision) && count(value.updated_at_ms);
 const status = (value: unknown): value is Status => typeof value === 'string' && ['active', 'waiting', 'blocked', 'parked', 'done', 'closed'].includes(value);
 
 export function isReferenceText(value: unknown): value is string {
@@ -115,7 +120,7 @@ export function isReferenceValue(value: unknown): value is ReferenceValue {
 export function isStream(value: unknown): value is StreamWire {
   if (!object(value) || !identity(value.id) || !text(value.title) || !titleMode(value.title_mode)
     || !nullableText(value.goal) || !nullableText(value.goal_short) || !mode(value.goal_mode)
-    || !status(value.status) || !object(value.owner) || !identity(value.owner.host_id)
+    || !status(value.status) || !stamped(value) || !object(value.owner) || !identity(value.owner.host_id)
     || !object(value.repositories) || !Object.entries(value.repositories).every(([alias, repo]) => identity(alias) && object(repo) && identity(repo.url))
     || ['documents', 'issues', 'prs'].some(key => Object.hasOwn(value, key))
     || !Array.isArray(value.references) || !value.references.every(isReferenceValue)) return false;
@@ -128,11 +133,12 @@ export function isStream(value: unknown): value is StreamWire {
 export function isSession(value: unknown): value is SessionWire {
   return object(value) && [value.id, value.host_id, value.stream_id, value.harness, value.harness_session_id].every(identity)
     && [value.title, value.state, value.remaining].every(text) && titleMode(value.title_mode) && status(value.status)
+    && stamped(value)
     && nullableText(value.state_short)
     && (value.recap === undefined || text(value.recap))
     && (value.recap_short === undefined || nullableText(value.recap_short))
     && (value.remaining_short === undefined || nullableText(value.remaining_short))
-    && (value.membership_epoch === undefined || Number.isSafeInteger(value.membership_epoch) && (value.membership_epoch as number) >= 0)
+    && (value.membership_epoch === undefined || count(value.membership_epoch))
     && (value.artifacts === undefined || object(value.artifacts) && Object.entries(value.artifacts).every(([stream, entries]) =>
       identity(stream) && Array.isArray(entries) && entries.every(entry => object(entry) && identity(entry.name) && identity(entry.description))
       && new Set(entries.map(entry => entry.name)).size === entries.length))

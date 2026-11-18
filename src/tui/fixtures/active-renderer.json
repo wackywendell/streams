@@ -62,7 +62,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -75,7 +77,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -216,7 +220,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -229,7 +235,9 @@
         "state_short": "Implement",
         "status": "waiting",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -370,7 +378,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -383,7 +393,9 @@
         "state_short": "Implement",
         "status": "blocked",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -524,7 +536,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -537,7 +551,9 @@
         "state_short": "Implement",
         "status": "parked",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -678,7 +694,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -691,7 +709,9 @@
         "state_short": "Implement",
         "status": "done",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -832,7 +852,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "other",
@@ -845,7 +867,9 @@
         "state_short": "Implement",
         "status": "blocked",
         "state": "Other stage",
-        "remaining": "Other todo"
+        "remaining": "Other todo",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -986,7 +1010,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -999,7 +1025,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -1123,7 +1151,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -1136,7 +1166,9 @@
         "state_short": "Implement",
         "status": "waiting",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -1260,7 +1292,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -1273,7 +1307,9 @@
         "state_short": "Implement",
         "status": "blocked",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -1397,7 +1433,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -1410,7 +1448,9 @@
         "state_short": "Implement",
         "status": "parked",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -1534,7 +1574,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -1547,7 +1589,9 @@
         "state_short": "Implement",
         "status": "done",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -1995,7 +2039,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -2008,7 +2054,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -2639,7 +2687,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -2652,7 +2702,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -3283,7 +3335,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -3296,7 +3350,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -3927,7 +3983,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -3940,7 +3998,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -4571,7 +4631,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -4584,7 +4646,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -5215,7 +5279,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -5228,7 +5294,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -5859,7 +5927,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -5872,7 +5942,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -6503,7 +6575,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -6516,7 +6590,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -7151,7 +7227,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -7164,7 +7242,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -7801,7 +7881,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -7814,7 +7896,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -8453,7 +8537,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -8466,7 +8552,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -9109,7 +9197,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -9122,7 +9212,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -9771,7 +9863,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -9784,7 +9878,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -10415,7 +10511,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -10428,7 +10526,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -11063,7 +11163,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -11076,7 +11178,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -11713,7 +11817,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -11726,7 +11832,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -12365,7 +12473,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -12378,7 +12488,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -13021,7 +13133,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -13034,7 +13148,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -13683,7 +13799,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -13696,7 +13814,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -14327,7 +14447,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -14340,7 +14462,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -14975,7 +15099,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -14988,7 +15114,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -15625,7 +15753,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -15638,7 +15768,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -16298,7 +16430,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -16311,7 +16445,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -16975,7 +17111,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -16988,7 +17126,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -17698,7 +17838,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -17711,7 +17853,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -18342,7 +18486,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -18355,7 +18501,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -18990,7 +19138,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -19003,7 +19153,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -19640,7 +19792,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -19653,7 +19807,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -20313,7 +20469,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -20326,7 +20484,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -20990,7 +21150,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -21003,7 +21165,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -21713,7 +21877,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -21726,7 +21892,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -22357,7 +22525,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -22370,7 +22540,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -23005,7 +23177,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -23018,7 +23192,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -23655,7 +23831,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -23668,7 +23846,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -24328,7 +24508,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -24341,7 +24523,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -25005,7 +25189,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -25018,7 +25204,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -25728,7 +25916,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -25741,7 +25931,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -26372,7 +26564,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -26385,7 +26579,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -27020,7 +27216,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -27033,7 +27231,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -27670,7 +27870,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -27683,7 +27885,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -28343,7 +28547,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -28356,7 +28562,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -29020,7 +29228,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -29033,7 +29243,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -29743,7 +29955,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -29756,7 +29970,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -30387,7 +30603,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -30400,7 +30618,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -31035,7 +31255,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -31048,7 +31270,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -31685,7 +31909,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -31698,7 +31924,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -32358,7 +32586,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -32371,7 +32601,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -33035,7 +33267,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -33048,7 +33282,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -33758,7 +33994,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -33771,7 +34009,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -34402,7 +34642,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -34415,7 +34657,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -35050,7 +35294,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -35063,7 +35309,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -35700,7 +35948,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -35713,7 +35963,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -36373,7 +36625,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -36386,7 +36640,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -37050,7 +37306,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -37063,7 +37321,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -37773,7 +38033,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -37786,7 +38048,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -38417,7 +38681,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -38430,7 +38696,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -39065,7 +39333,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -39078,7 +39348,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -39715,7 +39987,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -39728,7 +40002,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -40408,7 +40684,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -40421,7 +40699,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -41105,7 +41385,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -41118,7 +41400,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -41888,7 +42172,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -41901,7 +42187,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -42532,7 +42820,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -42545,7 +42835,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -43180,7 +43472,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -43193,7 +43487,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -43830,7 +44126,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -43843,7 +44141,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -44523,7 +44823,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -44536,7 +44838,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -45220,7 +45524,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -45233,7 +45539,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -46043,7 +46351,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -46056,7 +46366,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -46687,7 +46999,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -46700,7 +47014,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -47335,7 +47651,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -47348,7 +47666,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -47985,7 +48305,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -47998,7 +48320,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -48738,7 +49062,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -48751,7 +49077,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -49495,7 +49823,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -49508,7 +49838,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -50201,7 +50533,9 @@
             "url": "https://example.com/lib"
           }
         },
-        "references": []
+        "references": [],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -50214,7 +50548,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "",
-        "remaining": ""
+        "remaining": "",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -50325,7 +50661,9 @@
             "url": "https://example.com/lib"
           }
         },
-        "references": []
+        "references": [],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -50338,7 +50676,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "",
-        "remaining": ""
+        "remaining": "",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -50449,7 +50789,9 @@
             "url": "https://example.com/lib"
           }
         },
-        "references": []
+        "references": [],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -50462,7 +50804,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "",
-        "remaining": ""
+        "remaining": "",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -50573,7 +50917,9 @@
             "url": "https://example.com/lib"
           }
         },
-        "references": []
+        "references": [],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -50586,7 +50932,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "",
-        "remaining": ""
+        "remaining": "",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -50697,7 +51045,9 @@
             "url": "https://example.com/lib"
           }
         },
-        "references": []
+        "references": [],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -50710,7 +51060,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "",
-        "remaining": ""
+        "remaining": "",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -50821,7 +51173,9 @@
             "url": "https://example.com/lib"
           }
         },
-        "references": []
+        "references": [],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -50834,7 +51188,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "",
-        "remaining": ""
+        "remaining": "",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -50945,7 +51301,9 @@
             "url": "https://example.com/lib"
           }
         },
-        "references": []
+        "references": [],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -50958,7 +51316,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "",
-        "remaining": ""
+        "remaining": "",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -51069,7 +51429,9 @@
             "url": "https://example.com/lib"
           }
         },
-        "references": []
+        "references": [],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -51082,7 +51444,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "",
-        "remaining": ""
+        "remaining": "",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -51193,7 +51557,9 @@
             "url": "https://example.com/lib"
           }
         },
-        "references": []
+        "references": [],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -51206,7 +51572,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "",
-        "remaining": ""
+        "remaining": "",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -51317,7 +51685,9 @@
             "url": "https://example.com/lib"
           }
         },
-        "references": []
+        "references": [],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -51330,7 +51700,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "",
-        "remaining": ""
+        "remaining": "",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -51441,7 +51813,9 @@
             "url": "https://example.com/lib"
           }
         },
-        "references": []
+        "references": [],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -51454,7 +51828,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "",
-        "remaining": ""
+        "remaining": "",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -51565,7 +51941,9 @@
             "url": "https://example.com/lib"
           }
         },
-        "references": []
+        "references": [],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -51578,7 +51956,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "",
-        "remaining": ""
+        "remaining": "",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -51689,7 +52069,9 @@
             "url": "https://example.com/lib"
           }
         },
-        "references": []
+        "references": [],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -51702,7 +52084,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "",
-        "remaining": ""
+        "remaining": "",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -51813,7 +52197,9 @@
             "url": "https://example.com/lib"
           }
         },
-        "references": []
+        "references": [],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -51826,7 +52212,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "",
-        "remaining": ""
+        "remaining": "",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -51937,7 +52325,9 @@
             "url": "https://example.com/lib"
           }
         },
-        "references": []
+        "references": [],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -51950,7 +52340,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "",
-        "remaining": ""
+        "remaining": "",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -52061,7 +52453,9 @@
             "url": "https://example.com/lib"
           }
         },
-        "references": []
+        "references": [],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -52074,7 +52468,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "",
-        "remaining": ""
+        "remaining": "",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -52185,7 +52581,9 @@
             "url": "https://example.com/lib"
           }
         },
-        "references": []
+        "references": [],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -52198,7 +52596,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "",
-        "remaining": ""
+        "remaining": "",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -52309,7 +52709,9 @@
             "url": "https://example.com/lib"
           }
         },
-        "references": []
+        "references": [],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -52322,7 +52724,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "",
-        "remaining": ""
+        "remaining": "",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -52433,7 +52837,9 @@
             "url": "https://example.com/lib"
           }
         },
-        "references": []
+        "references": [],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -52446,7 +52852,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "",
-        "remaining": ""
+        "remaining": "",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -52557,7 +52965,9 @@
             "url": "https://example.com/lib"
           }
         },
-        "references": []
+        "references": [],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -52570,7 +52980,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "",
-        "remaining": ""
+        "remaining": "",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -52681,7 +53093,9 @@
             "url": "https://example.com/lib"
           }
         },
-        "references": []
+        "references": [],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -52694,7 +53108,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "",
-        "remaining": ""
+        "remaining": "",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -52805,7 +53221,9 @@
             "url": "https://example.com/lib"
           }
         },
-        "references": []
+        "references": [],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -52818,7 +53236,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "",
-        "remaining": ""
+        "remaining": "",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -52929,7 +53349,9 @@
             "url": "https://example.com/lib"
           }
         },
-        "references": []
+        "references": [],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -52942,7 +53364,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "",
-        "remaining": ""
+        "remaining": "",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -53053,7 +53477,9 @@
             "url": "https://example.com/lib"
           }
         },
-        "references": []
+        "references": [],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -53066,7 +53492,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "",
-        "remaining": ""
+        "remaining": "",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -53177,7 +53605,9 @@
             "url": "https://example.com/lib"
           }
         },
-        "references": []
+        "references": [],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -53190,7 +53620,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "",
-        "remaining": ""
+        "remaining": "",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -53301,7 +53733,9 @@
             "url": "https://example.com/lib"
           }
         },
-        "references": []
+        "references": [],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -53314,7 +53748,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "",
-        "remaining": ""
+        "remaining": "",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -53425,7 +53861,9 @@
             "url": "https://example.com/lib"
           }
         },
-        "references": []
+        "references": [],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -53438,7 +53876,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "",
-        "remaining": ""
+        "remaining": "",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -53549,7 +53989,9 @@
             "url": "https://example.com/lib"
           }
         },
-        "references": []
+        "references": [],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -53562,7 +54004,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "",
-        "remaining": ""
+        "remaining": "",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -53673,7 +54117,9 @@
             "url": "https://example.com/lib"
           }
         },
-        "references": []
+        "references": [],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -53686,7 +54132,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "",
-        "remaining": ""
+        "remaining": "",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -53797,7 +54245,9 @@
             "url": "https://example.com/lib"
           }
         },
-        "references": []
+        "references": [],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -53810,7 +54260,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "",
-        "remaining": ""
+        "remaining": "",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -54018,7 +54470,9 @@
               "ref": "topic"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -54031,7 +54485,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Stage",
-        "remaining": "Next work"
+        "remaining": "Next work",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -54315,7 +54771,9 @@
               "ref": "topic"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -54328,7 +54786,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Stage",
-        "remaining": "Next work"
+        "remaining": "Next work",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -54612,7 +55072,9 @@
               "ref": "topic"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -54625,7 +55087,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Stage",
-        "remaining": "Next work"
+        "remaining": "Next work",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -55011,7 +55475,9 @@
               "ref": "topic"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -55024,7 +55490,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Stage",
-        "remaining": "Next work"
+        "remaining": "Next work",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -55310,7 +55778,9 @@
               "ref": "topic"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -55323,7 +55793,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Stage",
-        "remaining": "Next work"
+        "remaining": "Next work",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -55711,7 +56183,9 @@
               "ref": "topic"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -55724,7 +56198,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Stage",
-        "remaining": "Next work"
+        "remaining": "Next work",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -56112,7 +56588,9 @@
               "ref": "topic"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -56125,7 +56603,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Stage",
-        "remaining": "Next work"
+        "remaining": "Next work",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -56515,7 +56995,9 @@
               "ref": "topic"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -56528,7 +57010,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Stage",
-        "remaining": "Next work"
+        "remaining": "Next work",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -56918,7 +57402,9 @@
               "ref": "topic"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -56931,7 +57417,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Stage",
-        "remaining": "Next work"
+        "remaining": "Next work",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -57323,7 +57811,9 @@
               "ref": "topic"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -57336,7 +57826,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Stage",
-        "remaining": "Next work"
+        "remaining": "Next work",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -57760,7 +58252,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -57773,7 +58267,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "now\nnow\nnow\nnow\nnow\nnow\nnow\nnow\nnow\nnow\nnow\nnow\nnow\nnow\nnow\nnow\nnow\nnow\nnow\nnow\nnow\nnow\nnow\nnow\nnow\nnow\nnow\nnow\nnow\nnow\n",
-        "remaining": "next\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\n"
+        "remaining": "next\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\n",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -58050,7 +58546,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -58063,7 +58561,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -58302,7 +58802,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -58315,7 +58817,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -58452,7 +58956,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -58465,7 +58971,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -58602,7 +59110,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -58615,7 +59125,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [],
       "documentLocations": [
@@ -58766,7 +59278,9 @@
               "url": "https://gitlab.example/team/subgroup/repo/-/issues/456"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -58779,7 +59293,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -58912,7 +59428,9 @@
               "url": "https://example.com/界"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -58925,7 +59443,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -59051,7 +59571,9 @@
               "url": "https://example.com"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -59064,7 +59586,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {
@@ -59223,7 +59747,9 @@
               "url": "https://example.com/org/repo/issues/42"
             }
           }
-        ]
+        ],
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "session": {
         "id": "own",
@@ -59236,7 +59762,9 @@
         "state_short": "Implement",
         "status": "active",
         "state": "Implement | verify",
-        "remaining": "界😀é | release"
+        "remaining": "界😀é | release",
+        "revision": 1,
+        "updated_at_ms": 0
       },
       "checkouts": [
         {

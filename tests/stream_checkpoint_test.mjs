@@ -47,8 +47,8 @@ function makeSnapshotActions(initial = defaultConfigSnapshot(), hook) {
   unsetConfig: async key => {if (hook) await hook('unset', key); if (key === 'pi.reporting.model') snap.pi.reporting.model = null; return structuredClone(snap);},
  };
 }
-const stream = { id:'effort', title:'Work', title_mode:'manual', goal:'Goal', goal_mode:'automatic', goal_short:null, status:'active', owner:{host_id:'host'}, repositories:{repo:{url:'https://example.com/repo'}}, references:[] };
-const session = { id:'session', host_id:'host', stream_id:'effort', harness:'pi', harness_session_id:'native', title:'Session', title_mode:'automatic', status:'active', state:'', state_short:null, remaining:'', checkout:null };
+const stream = { id:'effort', title:'Work', title_mode:'manual', goal:'Goal', goal_mode:'automatic', goal_short:null, status:'active', owner:{host_id:'host'},revision:1,updated_at_ms:0, repositories:{repo:{url:'https://example.com/repo'}}, references:[] };
+const session = { id:'session', host_id:'host',revision:1,updated_at_ms:0, stream_id:'effort', harness:'pi', harness_session_id:'native', title:'Session', title_mode:'automatic', status:'active', state:'', state_short:null, remaining:'', checkout:null };
 const context = () => structuredClone({catalog_source:'source-a',host_id:'host',stream,session,sessions:[session],title_defaults:{stream:'automatic',session:'automatic'}});
 const localSync = async () => ({local:'unchanged',sharing:'local-only',domain:null});
 

@@ -5,12 +5,32 @@ use streams::{
 };
 
 fn stream() -> Value {
-    json!({"id": "work", "title": "Café", "goal": null, "owner": {"host_id": "host"}, "references":[]})
+    json!({"id": "work", "title": "Café", "goal": null, "owner": {"host_id": "host"}, "references":[],
+        "revision": 1, "updated_at_ms": 0})
 }
 
 fn session() -> Value {
     json!({"id": "session", "host_id": "host", "stream_id": "work", "harness": "pi",
-        "harness_session_id": "native", "title": "Session"})
+        "harness_session_id": "native", "title": "Session", "revision": 1, "updated_at_ms": 0})
+}
+
+#[test]
+fn records_without_their_stamps_are_refused() {
+    for (kind, record) in [
+        (RecordKind::Stream, stream()),
+        (RecordKind::Session, session()),
+    ] {
+        record_from_data(kind, &record).unwrap();
+        for field in ["revision", "updated_at_ms"] {
+            let mut missing = record.clone();
+            missing.as_object_mut().unwrap().remove(field);
+            let error = record_from_data(kind, &missing).unwrap_err();
+            assert!(
+                error.to_string().contains(field),
+                "{kind:?} {field}: {error}"
+            );
+        }
+    }
 }
 
 fn host(checked_at: &str) -> Value {
