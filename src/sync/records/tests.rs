@@ -9,7 +9,7 @@ use crate::{
 };
 use serde_json::json;
 
-fn put(store: &YamlRecordStore, record: Record) {
+fn put(store: &FileRecordStore, record: Record) {
     store
         .save::<_, StorageError>(&RecordAddress::for_record(&record), |_, _| {
             Ok(RecordChange {
@@ -19,8 +19,8 @@ fn put(store: &YamlRecordStore, record: Record) {
         })
         .unwrap();
 }
-fn setup(path: &Path, host: &str) -> YamlRecordStore {
-    let store = YamlRecordStore::new(path, host).unwrap();
+fn setup(path: &Path, host: &str) -> FileRecordStore {
+    let store = FileRecordStore::new(path, host).unwrap();
     store.initialize().unwrap();
     put(
         &store,
@@ -58,7 +58,7 @@ fn bare(path: &Path) {
         .run(&["init", "--quiet", "--bare"], None, None, &[0])
         .unwrap();
 }
-fn stream(store: &YamlRecordStore, host: &str) -> Stream {
+fn stream(store: &FileRecordStore, host: &str) -> Stream {
     let address = RecordAddress::new(host, RecordKind::Stream, "work").unwrap();
     let read = store
         .with_reader::<_, StorageError>(|reader| reader.read(&address))
@@ -161,7 +161,7 @@ fn foreign_working_tree_edits_are_not_published_or_repaired() {
     assert_eq!(a_sync.sync().sharing, SharingStatus::Confirmed);
     let head = a_sync.git.head().unwrap();
     let path = a.join(
-        crate::yaml_store::records::relative_record_path(
+        crate::file_store::records::relative_record_path(
             &RecordAddress::new("b-host", RecordKind::Stream, "work").unwrap(),
         )
         .unwrap(),
@@ -231,7 +231,7 @@ fn same_record_divergence_refuses_even_when_text_fields_do_not_overlap() {
             .run(&["config", key, value], None, None, &[0])
             .unwrap();
     }
-    let b_records = YamlRecordStore::new(&b, "owner").unwrap();
+    let b_records = FileRecordStore::new(&b, "owner").unwrap();
     let mut left = stream(&a_records, "owner");
     left.goal = Some("left".into());
     put(&a_records, Record::Stream(left));

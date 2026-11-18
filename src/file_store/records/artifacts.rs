@@ -1,17 +1,17 @@
 //! Raw outputs share the catalog lock and host partition with their Session metadata.
 
-use super::{Reader, RecordIoEvent, YamlRecordStore, check_parents, invalid};
+use super::{FileRecordStore, Reader, RecordIoEvent, check_parents, invalid};
 use crate::{
     artifacts::{
         ArtifactKey, ArtifactReader, ArtifactSave, ArtifactStore, ContentChange, validate_content,
     },
     file_io::{atomic_write, ensure_directory, sync_directory},
+    file_store::encode_component,
     model::RecordKind,
     storage::{
         StorageError,
         records::{RecordAddress, RecordChange, RecordRead, RecordReader},
     },
-    yaml_store::encode_component,
 };
 use std::{
     fs,
@@ -94,7 +94,7 @@ impl ArtifactReader for Reader<'_> {
     }
 }
 
-impl ArtifactStore for YamlRecordStore {
+impl ArtifactStore for FileRecordStore {
     fn with_artifacts<T, E: From<StorageError>>(
         &self,
         read: impl FnOnce(&dyn ArtifactReader) -> Result<T, E>,

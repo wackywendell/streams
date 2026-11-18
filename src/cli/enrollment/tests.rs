@@ -9,6 +9,7 @@ use std::{
 };
 use streams::{
     config::{Config, Strategy},
+    file_store::records::RecordIoEvent,
     model::{RecordKind, TitleDefaults},
     operations::membership::MoveIntent,
     runtime::conversations::Harness,
@@ -16,7 +17,6 @@ use streams::{
         StorageError,
         records::{RecordAddress, RecordChange, RecordStore},
     },
-    yaml_store::records::RecordIoEvent,
 };
 
 const NATIVE: &str = "11234567-89ab-4def-8123-456789abcdef";
@@ -212,7 +212,7 @@ fn a_failed_session_save_still_reports_the_stream_it_created() {
     let conversations = f
         .opened
         .root()
-        .join(streams::yaml_store::records::relative_record_path(&address).unwrap())
+        .join(streams::file_store::records::relative_record_path(&address).unwrap())
         .parent()
         .unwrap()
         .to_owned();

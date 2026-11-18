@@ -7,6 +7,7 @@ use super::{
 use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
 use streams::{
     cancellation::Cancellation,
+    file_store::records::{decode_record, relative_record_path},
     frontend::herdr::{HerdrClient, HerdrNativeSnapshot, events::EventPane},
     model::{Record, RecordKind, Session},
     runtime::{
@@ -22,7 +23,6 @@ use streams::{
         CardRecords, CardSnapshot, Scope, Target,
         application::{PaneEvents, PaneHost, Refresh},
     },
-    yaml_store::records::{decode_record, relative_record_path},
 };
 #[cfg(test)]
 mod tests;

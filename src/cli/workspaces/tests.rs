@@ -3,7 +3,7 @@ use std::{fs, sync::Mutex};
 use streams::model::Status;
 use streams::{
     config::Config,
-    yaml_store::records::{RecordIoEvent, YamlRecordStore, relative_record_path},
+    file_store::records::{FileRecordStore, RecordIoEvent, relative_record_path},
 };
 
 #[test]
@@ -21,7 +21,7 @@ fn selected_session_key_reads_only_its_record_without_catalog_discovery() {
         .unwrap();
         let host = config.host_identity().unwrap();
         let settings = config.load().unwrap();
-        YamlRecordStore::new(&settings.catalog_root, host.as_str())
+        FileRecordStore::new(&settings.catalog_root, host.as_str())
             .unwrap()
             .initialize()
             .unwrap();

@@ -5,13 +5,13 @@ use std::sync::{Arc, Mutex};
 
 use streams::{
     application::move_session_observed,
+    file_store::records::{FileRecordStore, RecordIoEvent, decode_record, relative_record_path},
     model::{Record, RecordKind, Session, Stream},
     operations::{DomainOutcome, membership::MoveIntent},
     storage::{
         StorageError,
         records::{RecordAddress, RecordChange, RecordStore},
     },
-    yaml_store::records::{RecordIoEvent, YamlRecordStore, decode_record, relative_record_path},
 };
 
 #[test]
@@ -26,7 +26,7 @@ fn user_reference_edits_swap_on_the_stream_revision_and_a_landed_retry_writes_no
     };
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();
-    let store = YamlRecordStore::new(root, "host").unwrap();
+    let store = FileRecordStore::new(root, "host").unwrap();
     store.initialize().unwrap();
     let value = |url: &str| ReferenceValue {
         name: "Reference".into(),
@@ -108,7 +108,7 @@ fn public_observer_names_actual_session_stream_and_fixed_file_reads() {
     let root = directory.path();
     let events = Arc::new(Mutex::new(Vec::new()));
     let observed = Arc::clone(&events);
-    let store = YamlRecordStore::new(root, "host")
+    let store = FileRecordStore::new(root, "host")
         .unwrap()
         .with_io_observer(move |event| observed.lock().unwrap().push(event));
     store.initialize().unwrap();
@@ -184,7 +184,7 @@ fn membership_save_reads_only_three_records_and_a_repeated_move_writes_nothing()
     let root = directory.path();
     let events = Arc::new(Mutex::new(Vec::new()));
     let observed = Arc::clone(&events);
-    let store = YamlRecordStore::new(root, "host")
+    let store = FileRecordStore::new(root, "host")
         .unwrap()
         .with_io_observer(move |event| observed.lock().unwrap().push(event));
     store.initialize().unwrap();

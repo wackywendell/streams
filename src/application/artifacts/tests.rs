@@ -1,13 +1,13 @@
 use super::*;
 use crate::{
     artifacts::ArtifactEntry,
+    file_store::records::{
+        FileRecordStore, RecordIoEvent, relative_artifact_path, relative_record_path,
+    },
     model::Stream,
     storage::{
         StorageError,
         records::{RecordInventory, RecordStore},
-    },
-    yaml_store::records::{
-        RecordIoEvent, YamlRecordStore, relative_artifact_path, relative_record_path,
     },
 };
 use std::{
@@ -15,7 +15,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-fn put(store: &YamlRecordStore, record: Record) {
+fn put(store: &FileRecordStore, record: Record) {
     store
         .save::<_, StorageError>(&RecordAddress::for_record(&record), |_, _| {
             Ok(RecordChange {
@@ -28,14 +28,14 @@ fn put(store: &YamlRecordStore, record: Record) {
 
 fn setup() -> (
     tempfile::TempDir,
-    YamlRecordStore,
+    FileRecordStore,
     Session,
     Arc<Mutex<Vec<RecordIoEvent>>>,
 ) {
     let root = tempfile::tempdir().unwrap();
     let events = Arc::new(Mutex::new(Vec::new()));
     let capture = events.clone();
-    let store = YamlRecordStore::new(root.path(), "host")
+    let store = FileRecordStore::new(root.path(), "host")
         .unwrap()
         .with_io_observer(move |event| capture.lock().unwrap().push(event));
     store.initialize().unwrap();

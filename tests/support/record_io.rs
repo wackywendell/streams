@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use streams::yaml_store::records::RecordIoEvent;
+use streams::file_store::records::RecordIoEvent;
 
 /// Named read/lock/list attempts, separate from byte transfers and record replacements.
 pub fn accesses(events: &[RecordIoEvent]) -> Vec<RecordIoEvent> {

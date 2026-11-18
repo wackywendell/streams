@@ -285,12 +285,12 @@ fn discarding_an_unreadable_card_replaces_the_stream_in_place_and_removes_the_se
     let partition = f
         .root()
         .join("hosts")
-        .join(streams::yaml_store::encode_component(
+        .join(streams::file_store::encode_component(
             context["host_id"].as_str().unwrap(),
         ));
     let stream_path = partition.join("streams").join(format!(
         "{}.json",
-        streams::yaml_store::encode_component(id)
+        streams::file_store::encode_component(id)
     ));
     let mut stale: Value = serde_json::from_slice(&fs::read(&stream_path).unwrap()).unwrap();
     stale["archived"] = json!(false);
@@ -369,7 +369,7 @@ fn discarding_an_unreadable_card_replaces_the_stream_in_place_and_removes_the_se
     let session_id = card["session"]["id"].as_str().unwrap();
     let session_path = partition.join("conversations").join(format!(
         "{}.json",
-        streams::yaml_store::encode_component(session_id)
+        streams::file_store::encode_component(session_id)
     ));
     fs::write(&session_path, "not a record").unwrap();
     child.request(6, json!({"kind":"discard_unreadable_card"}));

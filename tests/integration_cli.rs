@@ -588,8 +588,8 @@ fn work_selection_uses_exact_members_or_active_local_sessions() {
     use std::sync::{Arc, Mutex};
     use streams::{
         application::{self, integration::Streams},
+        file_store::records::RecordIoEvent,
         model::{Record, Session, Status},
-        yaml_store::records::RecordIoEvent,
     };
     let fixture = SavedFixture::new();
     let host = fixture.records.host().as_str();
@@ -693,7 +693,7 @@ fn saved_batch_shares_host_decodes_and_producer_lists_with_standalone_artifact_p
     };
     use streams::{
         application::{self, integration::Streams},
-        yaml_store::{encode_component, records::RecordIoEvent},
+        file_store::{encode_component, records::RecordIoEvent},
     };
     let fixture = SavedFixture::new();
     let host = fixture.records.host().as_str();
@@ -840,7 +840,7 @@ fn saved_batch_distinguishes_empty_unavailable_and_a_broken_host_partition() {
         .records
         .root()
         .join("hosts")
-        .join(streams::yaml_store::encode_component(
+        .join(streams::file_store::encode_component(
             fixture.records.host().as_str(),
         ))
         .join("conversations");
@@ -2039,7 +2039,7 @@ fn bind_space_uses_only_the_saved_stream_and_one_verified_native_write() {
         .records
         .root()
         .join("hosts")
-        .join(streams::yaml_store::encode_component(&scope.host))
+        .join(streams::file_store::encode_component(&scope.host))
         .join("conversations");
     std::fs::write(partition.join("unrelated-broken.json"), "not a record").unwrap();
     for case in ["accepted", "conflict", "lost", "unpublished"] {
@@ -2180,7 +2180,7 @@ fn session_only_batch_has_no_directory_inventory_or_artifact_reads() {
     use std::sync::{Arc, Mutex};
     use streams::{
         application::{self, integration::Streams},
-        yaml_store::records::RecordIoEvent,
+        file_store::records::RecordIoEvent,
     };
     let fixture = SavedFixture::new();
     let events = Arc::new(Mutex::new(vec![]));
@@ -2226,7 +2226,7 @@ fn malformed_or_non_directory_producers_fail_only_the_affected_stream() {
             .records
             .root()
             .join("hosts")
-            .join(streams::yaml_store::encode_component(
+            .join(streams::file_store::encode_component(
                 fixture.records.host().as_str(),
             ))
             .join("streams/work/artifacts");
@@ -2265,7 +2265,7 @@ fn an_unreadable_producer_directory_is_unavailable_not_empty() {
         .records
         .root()
         .join("hosts")
-        .join(streams::yaml_store::encode_component(
+        .join(streams::file_store::encode_component(
             fixture.records.host().as_str(),
         ))
         .join("streams/work/artifacts");
@@ -2540,11 +2540,11 @@ fn frame_reads_and_reference_opening_resolve_enrolled_sessions_and_viewer_termin
         .records
         .root()
         .join("hosts")
-        .join(streams::yaml_store::encode_component(&scope.host))
+        .join(streams::file_store::encode_component(&scope.host))
         .join("conversations")
         .join(format!(
             "{}.json",
-            streams::yaml_store::encode_component(&fixture.sessions[0].id)
+            streams::file_store::encode_component(&fixture.sessions[0].id)
         ));
     let saved_yaml = std::fs::read(&session_file).unwrap();
     std::fs::write(&session_file, b":::corrupt yaml:::").unwrap();
@@ -3022,7 +3022,7 @@ fn host_streams_lists_all_streams_with_active_session_counts_and_recency() {
         .records
         .root()
         .join("hosts")
-        .join(streams::yaml_store::encode_component(host))
+        .join(streams::file_store::encode_component(host))
         .join("streams")
         .join("work")
         .join("artifacts");
@@ -3154,7 +3154,7 @@ fn host_listings_show_readable_streams_and_name_unreadable_records() {
     use streams::{application, integration::HostListing, model::RecordKind};
 
     let fixture = SavedFixture::new();
-    let host = streams::yaml_store::encode_component(fixture.records.host().as_str());
+    let host = streams::file_store::encode_component(fixture.records.host().as_str());
     let corrupt = |relative: &str| {
         let path = fixture.records.root().join(relative);
         let mut value: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
@@ -3282,7 +3282,7 @@ fn host_listings_show_readable_streams_and_name_unreadable_records() {
     // and a view of a Stream it might belong to shows its readable members and names it.
     let session = format!(
         "hosts/{host}/conversations/{}.json",
-        streams::yaml_store::encode_component(&fixture.sessions[0].id)
+        streams::file_store::encode_component(&fixture.sessions[0].id)
     );
     corrupt(&session);
     let views = read();

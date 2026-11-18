@@ -5,13 +5,13 @@ use std::{collections::BTreeMap, fs, sync::Mutex};
 use streams::{
     agent::{self, ContextRequest},
     config::Config,
+    file_store::records::{FileRecordStore, RecordIoEvent, relative_record_path},
     frontend::herdr::HerdrInventoryPane,
     model::{Record, Reference, Session, Stream},
     storage::{
         StorageError,
         records::{RecordAddress, RecordChange, RecordStore},
     },
-    yaml_store::records::{RecordIoEvent, YamlRecordStore, relative_record_path},
 };
 const NATIVE: &str = "11234567-89ab-4def-8123-456789abcdef";
 
@@ -264,7 +264,7 @@ fn source_reuses_supplied_records_and_each_later_read_addresses_only_its_session
         )
         .unwrap();
         let host = app.config.host_identity().unwrap();
-        YamlRecordStore::new(&settings.catalog_root, host.as_str())
+        FileRecordStore::new(&settings.catalog_root, host.as_str())
             .unwrap()
             .initialize()
             .unwrap();

@@ -132,7 +132,7 @@ impl ArtifactKey {
 
     pub fn reference(&self) -> String {
         [&self.host, &self.stream, &self.session, &self.name]
-            .map(|part| crate::yaml_store::encode_component(part))
+            .map(|part| crate::file_store::encode_component(part))
             .join("/")
     }
 

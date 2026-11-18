@@ -83,7 +83,7 @@ fn tree_validation_allows_equal_stream_ids_on_different_hosts_but_requires_local
 #[test]
 fn explicit_discovery_uses_the_same_codec_and_does_not_read_legacy_history() {
     let directory = tempfile::tempdir().unwrap();
-    let store = YamlRecordStore::new(directory.path(), "host").unwrap();
+    let store = FileRecordStore::new(directory.path(), "host").unwrap();
     store.initialize().unwrap();
     let files = tree();
     for (path, bytes) in &files {
@@ -107,7 +107,7 @@ fn explicit_discovery_rejects_symlinks_unknown_directories_and_malformed_records
     use std::os::unix::fs::symlink;
     for failure in ["symlink", "directory", "malformed"] {
         let directory = tempfile::tempdir().unwrap();
-        let store = YamlRecordStore::new(directory.path(), "host").unwrap();
+        let store = FileRecordStore::new(directory.path(), "host").unwrap();
         store.initialize().unwrap();
         let target = directory.path().join("hosts/host/streams/a.yaml");
         fs::create_dir_all(target.parent().unwrap()).unwrap();
@@ -126,7 +126,7 @@ fn explicit_discovery_rejects_symlinks_unknown_directories_and_malformed_records
 fn listings_name_undecodable_records_and_still_fail_on_unexpected_layout() {
     use std::os::unix::fs::symlink;
     let directory = tempfile::tempdir().unwrap();
-    let store = YamlRecordStore::new(directory.path(), "host").unwrap();
+    let store = FileRecordStore::new(directory.path(), "host").unwrap();
     store.initialize().unwrap();
     for (path, bytes) in &tree() {
         let path = directory.path().join(path);

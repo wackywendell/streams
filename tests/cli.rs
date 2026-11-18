@@ -250,7 +250,7 @@ fn session_attach_captures_explicit_native_id_and_keeps_local_directory_state_pr
 #[test]
 fn membership_move_keeps_checkout_selection_and_never_uses_destination_alias_url() {
     use streams::{
-        application, operations::membership::MoveIntent, yaml_store::records::YamlRecordStore,
+        application, file_store::records::FileRecordStore, operations::membership::MoveIntent,
     };
     let f = Fixture::new();
     f.init();
@@ -296,7 +296,7 @@ fn membership_move_keeps_checkout_selection_and_never_uses_destination_alias_url
     let selected = f.ok(&["session", "directory", session_id])["directory"].clone();
     let checkout_id = selected["checkout_id"].as_str().unwrap();
     let host = session["host_id"].as_str().unwrap();
-    let store = YamlRecordStore::new(f.root(), host).unwrap();
+    let store = FileRecordStore::new(f.root(), host).unwrap();
     let intent = MoveIntent::new(host, "pi", "native", destination_id).unwrap();
     application::move_session_observed(&store, &intent).unwrap();
     assert_eq!(
@@ -336,8 +336,8 @@ fn membership_move_keeps_checkout_selection_and_never_uses_destination_alias_url
 #[test]
 fn record_local_cli_initializes_enrolls_reports_and_retries_without_scans_or_publication() {
     use streams::{
-        model::RecordKind, storage::records::RecordAddress,
-        yaml_store::records::relative_record_path,
+        file_store::records::relative_record_path, model::RecordKind,
+        storage::records::RecordAddress,
     };
     let f = Fixture::new();
     f.init();
@@ -517,9 +517,9 @@ fn record_local_cli_initializes_enrolls_reports_and_retries_without_scans_or_pub
 fn record_local_session_commands_pin_checkout_identity_and_preserve_host_qualified_discovery() {
     use streams::{
         application,
+        file_store::records::{FileRecordStore, relative_record_path},
         model::{Record, Session, Stream},
         storage::records::RecordAddress,
-        yaml_store::records::{YamlRecordStore, relative_record_path},
     };
     let f = Fixture::new();
     let initialized = Command::new("git")
@@ -667,7 +667,7 @@ fn record_local_session_commands_pin_checkout_identity_and_preserve_host_qualifi
     );
 
     let remote_directory = tempfile::tempdir().unwrap();
-    let remote = YamlRecordStore::new(remote_directory.path(), "replica-host").unwrap();
+    let remote = FileRecordStore::new(remote_directory.path(), "replica-host").unwrap();
     remote.initialize().unwrap();
     let remote_stream =
         Record::Stream(Stream::new(id, "Replica effort", None, "replica-host").unwrap());
@@ -1006,7 +1006,7 @@ fn session_references_and_candidates_keep_the_host_qualified_identity() {
     .unwrap();
     let stream_path = f
         .root()
-        .join(streams::yaml_store::records::relative_record_path(&stream_address).unwrap());
+        .join(streams::file_store::records::relative_record_path(&stream_address).unwrap());
     fs::create_dir_all(stream_path.parent().unwrap()).unwrap();
     fs::write(
         stream_path,
@@ -1021,7 +1021,7 @@ fn session_references_and_candidates_keep_the_host_qualified_identity() {
     .unwrap();
     let path = f
         .root()
-        .join(streams::yaml_store::records::relative_record_path(&address).unwrap());
+        .join(streams::file_store::records::relative_record_path(&address).unwrap());
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(path, serde_json::to_vec_pretty(&foreign).unwrap()).unwrap();
     assert_eq!(f.ok(&["session", "show", id])["session"], local);

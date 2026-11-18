@@ -10,6 +10,7 @@ use streams::{
     agent::{CaptureTarget, capture_inputs},
     application::{self, OpenedRecords},
     config::{Config, Strategy},
+    file_store::records::{RecordIoEvent, relative_record_path},
     frontend::herdr::HerdrNativeSnapshot,
     model::{Record, Session, Stream, TitleDefaults},
     runtime::{
@@ -17,7 +18,6 @@ use streams::{
         native_markers::stream_tokens, state::RuntimeState,
     },
     storage::records::RecordAddress,
-    yaml_store::records::{RecordIoEvent, relative_record_path},
 };
 
 struct Fixture {

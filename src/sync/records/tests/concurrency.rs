@@ -19,7 +19,7 @@ fn save_during_network(root: &Path, host: &str, goal: &str) -> Result<(), GitErr
         transport.try_lock().is_err(),
         "sync must retain its own transport lock"
     );
-    let records = YamlRecordStore::new(root, host).unwrap();
+    let records = FileRecordStore::new(root, host).unwrap();
     let mut current = stream(&records, host);
     current.goal = Some(goal.into());
     put(&records, Record::Stream(current));
@@ -62,11 +62,11 @@ fn network_calls_leave_catalog_writable_and_push_only_the_prepared_snapshot() {
         );
         assert_eq!(stream(&records, "host").goal.as_deref(), Some(phase));
         let address = RecordAddress::new("host", RecordKind::Stream, "work").unwrap();
-        let path = crate::yaml_store::records::relative_record_path(&address).unwrap();
+        let path = crate::file_store::records::relative_record_path(&address).unwrap();
         let published =
             RecordSync::tree(&Git::new(&remote, 30.0), "refs/heads/records-v2").unwrap();
         let Record::Stream(published) =
-            crate::yaml_store::records::decode_record(&address, &published[&path])
+            crate::file_store::records::decode_record(&address, &published[&path])
                 .unwrap()
                 .record
         else {
@@ -82,7 +82,7 @@ fn network_calls_leave_catalog_writable_and_push_only_the_prepared_snapshot() {
             let published =
                 RecordSync::tree(&Git::new(&remote, 30.0), "refs/heads/records-v2").unwrap();
             let Record::Stream(published) =
-                crate::yaml_store::records::decode_record(&address, &published[&path])
+                crate::file_store::records::decode_record(&address, &published[&path])
                     .unwrap()
                     .record
             else {
@@ -137,7 +137,7 @@ fn a_save_during_fetch_is_checkpointed_before_same_file_divergence_is_decided() 
             .run(&["config", key, value], None, None, &[0])
             .unwrap();
     }
-    let peer_records = YamlRecordStore::new(&b, "owner").unwrap();
+    let peer_records = FileRecordStore::new(&b, "owner").unwrap();
     let mut incoming = stream(&peer_records, "owner");
     incoming.goal = Some("remote work".into());
     put(&peer_records, Record::Stream(incoming));

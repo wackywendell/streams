@@ -10,7 +10,7 @@ fix the cause or report it; a pass on rerun does not close it.
 | Changed boundary | Iteration check | Additional evidence |
 | --- | --- | --- |
 | Rust lib/bin logic or CLI grammar | `just test-rust-unit` | Relevant `contracts` modules; `just test-rust-fast` for the development gate |
-| Record saves and captured edits | Filter `operations` or `yaml_store::records` | `record_local`, `record_updates` and `application_records` contracts |
+| Record saves and captured edits | Filter `operations` or `file_store::records` | `record_local`, `record_updates` and `application_records` contracts |
 | File transport | Filter `sync::records` | Real-Git CLI and Pi sync acceptance |
 | Native effects and cards | `just test-rust-fast` | `just test-native-rust`, scripted outside changes and PTY contracts |
 | Pi helpers and replay | `just test-pi` or `just test-replay` | Real Rust preview in isolated homes |

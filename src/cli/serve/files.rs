@@ -12,9 +12,9 @@ use std::{
     sync::mpsc::Sender,
 };
 use streams::{
+    file_store::records::relative_record_path,
     model::{RecordKind, Session},
     storage::records::RecordAddress,
-    yaml_store::records::relative_record_path,
 };
 
 type Versions = BTreeMap<&'static str, std::result::Result<Option<Vec<u8>>, String>>;

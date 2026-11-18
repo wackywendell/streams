@@ -683,8 +683,8 @@ fn admitted_session_reads_are_saved_only_and_scope_is_not_a_catalog_selector() {
     use streams::{
         application::{self, integration::Streams},
         config::{Config, Strategy},
+        file_store::records::RecordIoEvent,
         model::{Record, Stream},
-        yaml_store::records::RecordIoEvent,
     };
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().canonicalize().unwrap();

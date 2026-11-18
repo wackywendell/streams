@@ -1,12 +1,12 @@
 use std::sync::{Arc, Mutex};
 
 use streams::{
+    file_store::records::{FileRecordStore, RecordIoEvent, relative_record_path},
     model::TitleDefaults,
     storage::{
         StorageError,
         records::{RecordAddress, RecordChange, RecordRead, RecordReader, RecordSave, RecordStore},
     },
-    yaml_store::records::{RecordIoEvent, YamlRecordStore, relative_record_path},
 };
 
 use super::*;
@@ -26,7 +26,7 @@ fn captured_apply_is_target_local_and_a_landed_retry_writes_nothing_without_publ
         let root = directory.path();
         let events = Arc::new(Mutex::new(Vec::new()));
         let observed = events.clone();
-        let store = YamlRecordStore::new(root, "test-host")
+        let store = FileRecordStore::new(root, "test-host")
             .unwrap()
             .with_io_observer(move |event| observed.lock().unwrap().push(event));
         store.initialize().unwrap();

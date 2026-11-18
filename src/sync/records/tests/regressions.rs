@@ -13,7 +13,7 @@ fn a_fresh_empty_catalog_can_import_before_its_first_record_save() {
         transport(&a, "a-host", Some(&remote)).sync().sharing,
         SharingStatus::Confirmed
     );
-    let b_records = YamlRecordStore::new(&b, "b-host").unwrap();
+    let b_records = FileRecordStore::new(&b, "b-host").unwrap();
     b_records.initialize().unwrap();
     assert!(!b.join(".catalog-staging").exists());
     let result = transport(&b, "b-host", Some(&remote)).sync();
@@ -154,7 +154,7 @@ fn remote_deletion_combines_with_an_independent_local_change() {
     assert_eq!(a_sync.sync().sharing, SharingStatus::Confirmed);
     assert_eq!(b_sync.sync().sharing, SharingStatus::Confirmed);
     assert_eq!(a_sync.sync().sharing, SharingStatus::Confirmed);
-    let relative = crate::yaml_store::records::relative_record_path(
+    let relative = crate::file_store::records::relative_record_path(
         &RecordAddress::new(
             "b-host",
             RecordKind::Session,
@@ -204,7 +204,7 @@ fn incoming_broken_membership_is_rejected_before_install_or_ref_advance() {
     assert_eq!(a_sync.sync().sharing, SharingStatus::Confirmed);
     assert_eq!(b_sync.sync().sharing, SharingStatus::Confirmed);
     assert_eq!(a_sync.sync().sharing, SharingStatus::Confirmed);
-    let relative = crate::yaml_store::records::relative_record_path(
+    let relative = crate::file_store::records::relative_record_path(
         &RecordAddress::new(
             "b-host",
             RecordKind::Session,

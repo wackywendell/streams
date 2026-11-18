@@ -527,9 +527,9 @@ mod tests {
             save_user_edit,
         },
         config::{Config, Strategy},
+        file_store::records::RecordIoEvent,
         model::{Stream, TitleDefaults},
         operations::{effective_stream_status, membership::MoveIntent},
-        yaml_store::records::RecordIoEvent,
     };
 
     fn now_ms() -> u64 {

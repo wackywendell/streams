@@ -1,15 +1,15 @@
 use super::*;
 use crate::{
+    file_store::records::{FileRecordStore, RecordIoEvent, relative_record_path},
     runtime::conversations::Harness,
     storage::records::{RecordChange, RecordStore},
-    yaml_store::records::{RecordIoEvent, YamlRecordStore, relative_record_path},
 };
 use std::{
     fs,
     sync::{Arc, Mutex},
 };
 
-fn put(store: &YamlRecordStore, record: Record) -> Record {
+fn put(store: &FileRecordStore, record: Record) -> Record {
     store
         .save::<_, StorageError>(&RecordAddress::for_record(&record), |_, _| {
             Ok(RecordChange {
@@ -37,7 +37,7 @@ fn addressed_context_reads_only_this_session_and_stream_despite_unrelated_growth
     for size in [0, 64] {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path();
-        let store = YamlRecordStore::new(root, "host").unwrap();
+        let store = FileRecordStore::new(root, "host").unwrap();
         store.initialize().unwrap();
         let session = Session::new(
             Session::id_for("host", "pi", "native"),
@@ -135,7 +135,7 @@ fn addressed_context_reads_only_this_session_and_stream_despite_unrelated_growth
 #[test]
 fn valid_membership_wins_over_stale_ambient_associations_but_explicit_mismatch_refuses() {
     let directory = tempfile::tempdir().unwrap();
-    let store = YamlRecordStore::new(directory.path(), "host").unwrap();
+    let store = FileRecordStore::new(directory.path(), "host").unwrap();
     store.initialize().unwrap();
     put(
         &store,
@@ -184,7 +184,7 @@ fn valid_membership_wins_over_stale_ambient_associations_but_explicit_mismatch_r
 #[test]
 fn completed_format_missing_session_is_unenrolled_but_a_missing_relationship_is_not() {
     let directory = tempfile::tempdir().unwrap();
-    let store = YamlRecordStore::new(directory.path(), "host").unwrap();
+    let store = FileRecordStore::new(directory.path(), "host").unwrap();
     store.initialize().unwrap();
     let context = store
         .with_reader(|reader| {
@@ -231,7 +231,7 @@ fn completed_format_missing_session_is_unenrolled_but_a_missing_relationship_is_
 #[test]
 fn unenrolled_context_uses_only_unambiguous_exact_hints() {
     let directory = tempfile::tempdir().unwrap();
-    let store = YamlRecordStore::new(directory.path(), "host").unwrap();
+    let store = FileRecordStore::new(directory.path(), "host").unwrap();
     store.initialize().unwrap();
     put(
         &store,

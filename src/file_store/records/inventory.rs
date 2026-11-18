@@ -1,7 +1,7 @@
 //! Explicit discovery and transport validation, never called by a named record read.
 
 use super::{
-    RESET_HINT, RecordIoEvent, YamlRecordStore, decode_record, invalid, relative_record_path,
+    FileRecordStore, RESET_HINT, RecordIoEvent, decode_record, invalid, relative_record_path,
 };
 use crate::{
     file_io::ensure_directory,
@@ -136,7 +136,7 @@ pub fn decode_record_tree(
     Ok(records.into_values().collect())
 }
 
-impl YamlRecordStore {
+impl FileRecordStore {
     /// The caller holds the catalog lock; discovery and sync share one physical tree policy.
     pub(crate) fn read_locked_tree(&self) -> Result<BTreeMap<PathBuf, Vec<u8>>, StorageError> {
         self.read_locked(true)
@@ -204,7 +204,7 @@ impl YamlRecordStore {
     }
 }
 
-impl RecordInventory for YamlRecordStore {
+impl RecordInventory for FileRecordStore {
     fn host_sessions(&self, host: &str) -> Result<RecordListing, StorageError> {
         self.host_partition(host, RecordKind::Session, "Session")
     }
@@ -229,7 +229,7 @@ impl RecordInventory for YamlRecordStore {
     }
 }
 
-impl YamlRecordStore {
+impl FileRecordStore {
     fn host_partition(
         &self,
         host: &str,

@@ -9,13 +9,13 @@ use serde_json::json;
 use streams::{
     application,
     config::Config,
+    file_store::records::{FileRecordStore, RecordIoEvent, relative_record_path},
     model::{Record, RecordKind, Session, Stream, TitleDefaults},
     operations::DomainOutcome,
     storage::{
         StorageError,
         records::{RecordAddress, RecordChange, RecordStore},
     },
-    yaml_store::records::{RecordIoEvent, YamlRecordStore, relative_record_path},
 };
 
 const HOST: &str = "01234567-89ab-4def-8123-456789abcdef";
@@ -28,7 +28,7 @@ fn one_record_creation_reads_only_its_target_and_membership_and_a_retry_writes_n
         let root = directory.path();
         let events = Arc::new(Mutex::new(Vec::new()));
         let observed = events.clone();
-        let store = YamlRecordStore::new(root, HOST)
+        let store = FileRecordStore::new(root, HOST)
             .unwrap()
             .with_io_observer(move |event| observed.lock().unwrap().push(event));
         store.initialize().unwrap();
@@ -115,7 +115,7 @@ fn one_record_creation_reads_only_its_target_and_membership_and_a_retry_writes_n
 #[test]
 fn session_creation_refuses_a_missing_same_host_stream_without_installing_a_target() {
     let directory = tempfile::tempdir().unwrap();
-    let store = YamlRecordStore::new(directory.path(), HOST).unwrap();
+    let store = FileRecordStore::new(directory.path(), HOST).unwrap();
     store.initialize().unwrap();
     let session = Record::Session(
         Session::new(
@@ -166,7 +166,7 @@ fn record_factory_opens_only_fixed_metadata_and_retains_source_identity() {
     let config = fixture_config(directory.path());
     host(&config, HOST);
     let root = config.load().unwrap().catalog_root;
-    let store = YamlRecordStore::new(&root, HOST).unwrap();
+    let store = FileRecordStore::new(&root, HOST).unwrap();
     store.initialize().unwrap();
     // Neither unrelated bad records nor old history can enter a point-read dependency set.
     fs::create_dir_all(root.join("hosts/unrelated/streams")).unwrap();
@@ -253,7 +253,7 @@ fn record_factory_rejects_missing_legacy_incomplete_and_foreign_producer_roots_w
     let second_config = fixture_config(second.path());
     host(&second_config, HOST);
     let second_root = second_config.load().unwrap().catalog_root;
-    YamlRecordStore::new(&second_root, OTHER)
+    FileRecordStore::new(&second_root, OTHER)
         .unwrap()
         .initialize()
         .unwrap();

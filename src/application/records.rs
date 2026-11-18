@@ -4,18 +4,18 @@ use std::path::Path;
 
 use crate::{
     config::{Config, HostIdentity, Strategy, source_id},
+    file_store::records::{FileRecordStore, RecordIoEvent},
     model::{Record, RecordKind, Session, Stream},
     runtime::conversations::Harness,
     storage::records::{RecordAddress, RecordInventory, RecordListing, RecordRead, RecordStore},
     sync::records::RecordSync,
-    yaml_store::records::{RecordIoEvent, YamlRecordStore},
 };
 
 use super::Result;
 
 /// An admitted producer and exact-record store, with no snapshot, history or Git access.
 pub struct OpenedRecords {
-    records: YamlRecordStore,
+    records: FileRecordStore,
     host: HostIdentity,
     source_id: String,
 }
@@ -113,7 +113,7 @@ pub fn initialize_records(
     let mut lock = config.lock()?;
     let settings = lock.settings()?;
     let host = lock.host_identity_for_new_catalog()?;
-    let records = YamlRecordStore::new(&settings.catalog_root, host.as_str())?;
+    let records = FileRecordStore::new(&settings.catalog_root, host.as_str())?;
     records.initialize()?;
     RecordSync::initialize(
         records.root(),
@@ -151,7 +151,7 @@ fn open(
 ) -> Result<OpenedRecords> {
     let settings = config.load()?;
     let host = config.host_identity()?;
-    let mut records = YamlRecordStore::new(&settings.catalog_root, host.as_str())?;
+    let mut records = FileRecordStore::new(&settings.catalog_root, host.as_str())?;
     if let Some(observe) = observe {
         records = records.with_io_observer(observe);
     }

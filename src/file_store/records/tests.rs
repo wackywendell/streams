@@ -11,10 +11,10 @@ thread_local! {
     static WRITES: std::cell::RefCell<Vec<(PathBuf, usize)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
-fn setup() -> (tempfile::TempDir, YamlRecordStore) {
+fn setup() -> (tempfile::TempDir, FileRecordStore) {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().to_path_buf();
-    let store = YamlRecordStore::new(&root, "host")
+    let store = FileRecordStore::new(&root, "host")
         .unwrap()
         .with_io_observer(move |event| match event {
             RecordIoEvent::Read(path) | RecordIoEvent::Lock(path) => READS.with(|reads| {
@@ -36,7 +36,7 @@ fn stream(id: &str, title: &str) -> Record {
     Record::Stream(Stream::new(id, title, None, "host").unwrap())
 }
 
-fn put(store: &YamlRecordStore, record: Record) -> RecordSave<()> {
+fn put(store: &FileRecordStore, record: Record) -> RecordSave<()> {
     store
         .save::<_, StorageError>(&RecordAddress::for_record(&record), |_, _| {
             Ok(RecordChange {
@@ -61,7 +61,7 @@ fn reads<T>(f: impl FnOnce() -> T) -> (T, Vec<PathBuf>) {
     (result, paths)
 }
 
-fn read(store: &YamlRecordStore, key: &RecordAddress) -> Result<Option<RecordRead>, StorageError> {
+fn read(store: &FileRecordStore, key: &RecordAddress) -> Result<Option<RecordRead>, StorageError> {
     store.with_reader(|reader| reader.read(key))
 }
 
@@ -116,7 +116,7 @@ fn canonical_paths_include_host_for_every_kind_and_encode_components() {
 fn exact_reads_create_nothing_and_require_explicit_completed_format() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("absent");
-    let store = YamlRecordStore::new(&root, "host").unwrap();
+    let store = FileRecordStore::new(&root, "host").unwrap();
     let key = RecordAddress::for_record(&stream("work", "Work"));
     assert!(read(&store, &key).is_err());
     assert!(!root.exists());
@@ -384,7 +384,7 @@ fn foreign_writes_and_target_replacement_fail_before_any_replacement() {
         .unwrap_err();
     assert!(error.to_string().contains("identity or host"));
     assert!(read(&store, &own).unwrap().is_none());
-    let wrong = YamlRecordStore::new(&store.root, "other").unwrap();
+    let wrong = FileRecordStore::new(&store.root, "other").unwrap();
     assert!(read(&wrong, &own).is_err());
 }
 
@@ -392,7 +392,7 @@ fn foreign_writes_and_target_replacement_fail_before_any_replacement() {
 fn foreign_replicas_are_directly_readable_but_never_writable() {
     let (_dir, store) = setup();
     let other_dir = tempfile::tempdir().unwrap();
-    let other = YamlRecordStore::new(other_dir.path(), "other").unwrap();
+    let other = FileRecordStore::new(other_dir.path(), "other").unwrap();
     other.initialize().unwrap();
     let record = Record::Stream(Stream::new("work", "Foreign", None, "other").unwrap());
     let saved = put(&other, record.clone());

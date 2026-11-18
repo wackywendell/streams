@@ -1,8 +1,8 @@
 use super::*;
 use crate::{
+    file_store::records::FileRecordStore,
     model::{Session, Stream},
     storage::StorageError,
-    yaml_store::records::YamlRecordStore,
 };
 use serde_json::json;
 fn request(stream: Option<&str>) -> EnrollmentRequest {
@@ -14,7 +14,7 @@ fn request(stream: Option<&str>) -> EnrollmentRequest {
     }
     EnrollmentRequest::parse(&wire.to_string(), "source").unwrap()
 }
-fn read_session(store: &YamlRecordStore) -> Option<Session> {
+fn read_session(store: &FileRecordStore) -> Option<Session> {
     store
         .with_reader::<_, StorageError>(|reader| {
             Ok(reader
@@ -33,7 +33,7 @@ fn read_session(store: &YamlRecordStore) -> Option<Session> {
         })
         .unwrap()
 }
-fn put_stream(store: &YamlRecordStore, stream: Stream) {
+fn put_stream(store: &FileRecordStore, stream: Stream) {
     let record = Record::Stream(stream);
     store
         .save::<_, StorageError>(&RecordAddress::for_record(&record), |_, _| {
@@ -47,7 +47,7 @@ fn put_stream(store: &YamlRecordStore, stream: Stream) {
 #[test]
 fn interrupted_enrollment_leaves_only_its_effort_and_retries_each_record_independently() {
     let directory = tempfile::tempdir().unwrap();
-    let store = YamlRecordStore::new(directory.path(), "host").unwrap();
+    let store = FileRecordStore::new(directory.path(), "host").unwrap();
     store.initialize().unwrap();
     let request = request(None);
     let stream = enroll_stream(&store, "host", &request).unwrap();
@@ -74,7 +74,7 @@ fn interrupted_enrollment_leaves_only_its_effort_and_retries_each_record_indepen
 #[test]
 fn existing_enrollment_does_not_edit_text_or_replace_membership() {
     let directory = tempfile::tempdir().unwrap();
-    let store = YamlRecordStore::new(directory.path(), "host").unwrap();
+    let store = FileRecordStore::new(directory.path(), "host").unwrap();
     store.initialize().unwrap();
     let initial = request(None);
     enroll_stream(&store, "host", &initial).unwrap();
@@ -105,7 +105,7 @@ fn existing_enrollment_does_not_edit_text_or_replace_membership() {
 fn enrolled_session_size_is_independent_of_stream_prose() {
     fn session_bytes(goal: &str) -> Vec<u8> {
         let directory = tempfile::tempdir().unwrap();
-        let store = YamlRecordStore::new(directory.path(), "host").unwrap();
+        let store = FileRecordStore::new(directory.path(), "host").unwrap();
         store.initialize().unwrap();
         let mut stream = Stream::new("a", "A", None, "host").unwrap();
         stream.goal = Some(goal.into());
@@ -114,7 +114,7 @@ fn enrolled_session_size_is_independent_of_stream_prose() {
         assert_eq!(observed.stream.goal.as_deref(), Some(goal));
         let saved = observed.save;
         assert_eq!(saved.outcome, DomainOutcome::Changes);
-        let path = crate::yaml_store::records::relative_record_path(&RecordAddress::for_record(
+        let path = crate::file_store::records::relative_record_path(&RecordAddress::for_record(
             &saved.current.record,
         ))
         .unwrap();
@@ -129,7 +129,7 @@ fn enrolled_session_size_is_independent_of_stream_prose() {
 #[test]
 fn missing_stream_changed_intent_and_unrelated_existing_effort_refuse_without_implicit_moves() {
     let directory = tempfile::tempdir().unwrap();
-    let store = YamlRecordStore::new(directory.path(), "host").unwrap();
+    let store = FileRecordStore::new(directory.path(), "host").unwrap();
     store.initialize().unwrap();
     assert!(enroll_session(&store, "host", &request(Some("missing"))).is_err());
     assert!(read_session(&store).is_none());

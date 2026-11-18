@@ -6,11 +6,11 @@ use std::{collections::BTreeMap, fs, path::PathBuf, process::Command, time::Dura
 use streams::{
     application,
     config::Config,
+    file_store::records::relative_record_path,
     model::Record,
     runtime::native_cards::{LaunchedCardContext, PiOwner, SourceLaunch},
     storage::records::RecordAddress,
     tui::Scope,
-    yaml_store::records::relative_record_path,
 };
 
 struct CardFixture {

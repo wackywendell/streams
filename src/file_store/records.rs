@@ -94,13 +94,13 @@ impl RecordIoEvent {
 }
 
 /// The producer is fixed on this handle and checked against its local format marker.
-pub struct YamlRecordStore {
+pub struct FileRecordStore {
     root: PathBuf,
     host: String,
     observer: Option<Box<dyn Fn(RecordIoEvent) + Send + Sync>>,
 }
 
-impl YamlRecordStore {
+impl FileRecordStore {
     pub fn new(root: impl AsRef<Path>, host: impl Into<String>) -> Result<Self, StorageError> {
         let host = host.into();
         check_text(&host, "record-store host", false).map_err(invalid)?;
@@ -226,7 +226,7 @@ pub(crate) fn check_parents(root: &Path, relative: &Path) -> Result<(), StorageE
 }
 
 struct Reader<'a> {
-    store: &'a YamlRecordStore,
+    store: &'a FileRecordStore,
     _lock: crate::file_io::FileLock,
 }
 
@@ -263,7 +263,7 @@ impl RecordReader for Reader<'_> {
     }
 }
 
-impl RecordStore for YamlRecordStore {
+impl RecordStore for FileRecordStore {
     fn with_reader<T, E: From<StorageError>>(
         &self,
         read: impl FnOnce(&dyn RecordReader) -> Result<T, E>,
@@ -284,7 +284,7 @@ impl RecordStore for YamlRecordStore {
     }
 }
 
-impl YamlRecordStore {
+impl FileRecordStore {
     /// Sets a record's revision and update time on every save. The only other place is
     /// `discard_unreadable`, which starts a replacement at revision 1.
     fn save_scoped<T, E: From<StorageError>>(

@@ -12,12 +12,12 @@ use crate::{
         atomic_write, decode_json, ensure_directory, existing_write_lock, read_bytes,
         sync_directory, write_json,
     },
+    file_store::records::{FileRecordStore, catalog_path_host, decode_record_tree},
     model::check_text,
     storage::{
         StorageError,
         records::{RecordInventory, RecordStore},
     },
-    yaml_store::records::{YamlRecordStore, catalog_path_host, decode_record_tree},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -64,7 +64,7 @@ fn git_error(error: GitError) -> StorageError {
 impl RecordSync {
     /// Read only the selected transport's fixed metadata. No Git command or snapshot.
     pub fn open(root: &Path, host: &str) -> Result<Self, StorageError> {
-        YamlRecordStore::new(root, host)?.with_reader::<_, StorageError>(|_| Ok(()))?;
+        FileRecordStore::new(root, host)?.with_reader::<_, StorageError>(|_| Ok(()))?;
         let bytes = read_bytes(&root.join(CONFIG))?
             .ok_or_else(|| invalid(format!("transport is not initialized; {RESET_HINT}")))?;
         let selection: Selection = decode_json(&bytes)?;
@@ -106,7 +106,7 @@ impl RecordSync {
             }
             return Ok(existing);
         }
-        let records = YamlRecordStore::new(root, host)?.inventory()?;
+        let records = FileRecordStore::new(root, host)?.inventory()?;
         for record in &records {
             if crate::storage::records::RecordAddress::for_record(&record.record).host() != host {
                 return Err(invalid(
@@ -225,7 +225,7 @@ impl RecordSync {
         Ok(tree)
     }
     fn working(&self) -> Result<Tree, StorageError> {
-        let tree = YamlRecordStore::new(&self.root, &self.host)?.read_locked_tree()?;
+        let tree = FileRecordStore::new(&self.root, &self.host)?.read_locked_tree()?;
         decode_record_tree(&tree)?;
         Ok(tree)
     }
@@ -375,7 +375,7 @@ impl RecordSync {
     fn install(&self, previous: &Tree, next: &Tree) -> Result<(), StorageError> {
         for path in changed(previous, next) {
             catalog_path_host(&path)?;
-            crate::yaml_store::records::check_parents(&self.root, &path)?;
+            crate::file_store::records::check_parents(&self.root, &path)?;
             let target = self.root.join(&path);
             match fs::symlink_metadata(&target) {
                 Ok(metadata) if !metadata.is_file() => {
@@ -427,7 +427,7 @@ impl RecordSync {
 
     pub fn sync(&self) -> SyncResult {
         if self.strategy() == Strategy::None {
-            return match YamlRecordStore::new(&self.root, &self.host)
+            return match FileRecordStore::new(&self.root, &self.host)
                 .and_then(|store| store.inventory())
             {
                 Ok(_) => SyncResult::new(SharingStatus::LocalOnly, LocalStatus::Unchanged),

@@ -2,7 +2,7 @@ use super::*;
 use crate::cli::Input;
 use serde_json::json;
 use std::{collections::BTreeMap, fs};
-use streams::yaml_store::records::YamlRecordStore;
+use streams::file_store::records::FileRecordStore;
 
 const HOST: &str = "01234567-89ab-4def-8123-456789abcdef";
 
@@ -25,7 +25,7 @@ fn watched_inputs_have_one_canonical_session_and_stream_address_and_both_directo
     )
     .unwrap();
     let settings = app.config.load().unwrap();
-    YamlRecordStore::new(&settings.catalog_root, HOST)
+    FileRecordStore::new(&settings.catalog_root, HOST)
         .unwrap()
         .initialize()
         .unwrap();

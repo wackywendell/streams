@@ -4,13 +4,13 @@ use std::sync::{Arc, Mutex};
 use streams::{
     agent::parse_record_update,
     application::{move_session_observed, save_record_update},
+    file_store::records::{FileRecordStore, RecordIoEvent, relative_record_path},
     model::{NamingMode, Record, RecordKind, Session, Stream, TitleDefaults, TitleMode},
     operations::{DomainOutcome, EditOutcome, membership::MoveIntent},
     storage::{
         StorageError,
         records::{RecordAddress, RecordChange, RecordSave, RecordStore},
     },
-    yaml_store::records::{RecordIoEvent, YamlRecordStore, relative_record_path},
 };
 
 fn session() -> Session {
@@ -27,7 +27,7 @@ fn session() -> Session {
 fn stream(id: &str) -> Stream {
     Stream::new(id, id, None, "host").unwrap()
 }
-fn put(store: &YamlRecordStore, record: Record) {
+fn put(store: &FileRecordStore, record: Record) {
     store
         .save::<_, StorageError>(&RecordAddress::for_record(&record), |_, _| {
             Ok(RecordChange {
@@ -38,27 +38,27 @@ fn put(store: &YamlRecordStore, record: Record) {
         .unwrap();
 }
 /// The saved record, with the revision a fresh capture would carry.
-fn stored(store: &YamlRecordStore, record: Record) -> Record {
+fn stored(store: &FileRecordStore, record: Record) -> Record {
     store
         .with_reader::<_, StorageError>(|reader| reader.read(&RecordAddress::for_record(&record)))
         .unwrap()
         .unwrap()
         .record
 }
-fn stored_session(store: &YamlRecordStore) -> Session {
+fn stored_session(store: &FileRecordStore) -> Session {
     let Record::Session(session) = stored(store, Record::Session(session())) else {
         unreachable!()
     };
     session
 }
-fn stored_stream(store: &YamlRecordStore, id: &str) -> Stream {
+fn stored_stream(store: &FileRecordStore, id: &str) -> Stream {
     let Record::Stream(stream) = stored(store, Record::Stream(stream(id))) else {
         unreachable!()
     };
     stream
 }
-fn setup(root: &std::path::Path) -> YamlRecordStore {
-    let store = YamlRecordStore::new(root, "host").unwrap();
+fn setup(root: &std::path::Path) -> FileRecordStore {
+    let store = FileRecordStore::new(root, "host").unwrap();
     store.initialize().unwrap();
     put(&store, Record::Stream(stream("a")));
     put(&store, Record::Stream(stream("b")));
@@ -68,11 +68,11 @@ fn setup(root: &std::path::Path) -> YamlRecordStore {
 fn wire(before: &Session, actor: &str, state: &str) -> Value {
     json!({"version":2,"title_default":"automatic","catalog_source":"source","kind":"session","actor":actor,"before":before,"changes":{"state":state},"inputs":[]})
 }
-fn update(store: &YamlRecordStore, value: &Value) -> RecordSave<EditOutcome> {
+fn update(store: &FileRecordStore, value: &Value) -> RecordSave<EditOutcome> {
     update_with_defaults(store, value, TitleDefaults::default())
 }
 fn update_with_defaults(
-    store: &YamlRecordStore,
+    store: &FileRecordStore,
     value: &Value,
     defaults: TitleDefaults,
 ) -> RecordSave<EditOutcome> {

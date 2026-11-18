@@ -49,7 +49,7 @@ fn artifact_content_and_session_metadata_sync_to_a_read_only_foreign_replica() {
         1
     );
     assert!(delete_artifact(&b_records, &key).is_err());
-    let path = crate::yaml_store::records::relative_artifact_path(&key).unwrap();
+    let path = crate::file_store::records::relative_artifact_path(&key).unwrap();
     assert_eq!(fs::read(b.join(path)).unwrap(), b"useful output\n");
     delete_artifact(&a_records, &key).unwrap();
     assert_eq!(a_sync.sync().sharing, SharingStatus::Confirmed);
