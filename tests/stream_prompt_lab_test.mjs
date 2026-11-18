@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { createJiti } from 'jiti';
 import { childCli } from './helpers/stream-cli.mjs';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
+import { withPatchSchemas } from './helpers/patch-schemas.mjs';
 const jiti = createJiti(import.meta.url);
 const load = name => jiti.import(new URL(`../extensions/stream-checkpoint/${name}.ts`, import.meta.url).pathname);
 const { infer, buildInferencePayload, parseInferenceResponse, runPreparedInference } = await load('agent');
@@ -18,7 +19,7 @@ const { defaults } = await load('settings');
 const { default: extension } = await load('index');
 const stream = {id:'effort',title:'Work',title_mode:'manual',goal:'Original goal',goal_short:'Old goal',goal_mode:'automatic',status:'active',owner:{host_id:'host'},revision:1,updated_at_ms:0,repositories:{},references:[]};
 const session = {id:sessionId('host','pi','native'),host_id:'host',revision:1,updated_at_ms:0,membership_epoch:0,stream_id:'effort',harness:'pi',harness_session_id:'native',title:'Lane',title_mode:'automatic',status:'active',state:'Original state',state_short:'Old state',remaining:'Next',checkout:null};
-const context = () => structuredClone({catalog_source:'source',host_id:'host',stream,session,sessions:[session],title_defaults:{stream:'automatic',session:'automatic'}});
+const context = () => withPatchSchemas(structuredClone({catalog_source:'source',host_id:'host',stream,session,sessions:[session],title_defaults:{stream:'automatic',session:'automatic'}}));
 const response = args => ({role:'assistant',api:'openai-responses',provider:'test',model:'model',timestamp:1,stopReason:'toolUse',usage:{input:0,output:0,cacheRead:0,cacheWrite:0,totalTokens:0,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}},content:[{type:'toolCall',id:'record',name:'record_card',arguments:args}]});
 function fixture() {
  const dir = mkdtempSync(join(tmpdir(),'streams-prompt-lab-')),root = join(dir,'debug');

@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
 import { createJiti } from 'jiti';
+import { withPatchSchemas } from './helpers/patch-schemas.mjs';
 const jiti=createJiti(import.meta.url);
 const {NativeController}=await jiti.import('../extensions/stream-checkpoint/native.ts');
 const {loadRustNative}=await jiti.import('../extensions/stream-checkpoint/native-rust.ts');
@@ -136,7 +137,7 @@ test('shutdown cancels a pending native request but never sends close or final c
 });
 function paneFixture(t,options={}) {
  const handlers=new Map(),commands=new Map(),tools=new Map(),steps=[],inferences=[],enrollments=[];
- const catalog={catalog_source:'source-a',host_id:'host',stream:null,session:null,sessions:[],title_defaults:{stream:'automatic',session:'automatic'}};
+ const catalog=withPatchSchemas({catalog_source:'source-a',host_id:'host',stream:null,session:null,sessions:[],title_defaults:{stream:'automatic',session:'automatic'}});
  let preference='inherit',unreadable=options.unreadable??null;
  const f=fixture(t,{empty:options.empty,run:async request=>{
   if(options.realClient && ['context','sync','enroll','apply'].includes(request.kind))return {status:'success',result:await cli[request.kind](request.request)};

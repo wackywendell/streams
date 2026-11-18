@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createJiti } from 'jiti';
+import { withPatchSchemas } from './helpers/patch-schemas.mjs';
 const {
   isReferenceTarget, isReferenceText, isReferenceValue, isRepositoryDocument,
   isResourceKey, isSession, isStream, parseLocalContext, referenceUrl, resourceKey,
@@ -15,9 +16,9 @@ const session = {
   membership_epoch:0, title:'Catalog', title_mode:'inherit', status:'active', state:'', state_short:null, remaining:'', checkout:null,
   revision:1, updated_at_ms:0,
 };
-const context = () => structuredClone({
+const context = () => withPatchSchemas(structuredClone({
   catalog_source:'source', host_id:'host', title_defaults:{stream:'automatic', session:'manual'}, stream, session, sessions:[session],
-});
+}));
 
 test('record-local context requires fresh title defaults and rejects Authority-bearing packets', () => {
   const current = context();

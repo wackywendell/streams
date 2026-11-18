@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
 import { PassThrough, Writable } from 'node:stream';
 import { createJiti } from 'jiti';
+import { withPatchSchemas } from './helpers/patch-schemas.mjs';
 const jiti=createJiti(import.meta.url,{interopDefault:true});
 const {StreamsChild}=await jiti.import('../extensions/stream-checkpoint/child.ts');
 const {decodeServerFrame}=await jiti.import('../extensions/stream-checkpoint/child-protocol.ts');
@@ -187,7 +188,7 @@ test('shutdown closes stdin, drains accepted responses and never restarts',async
 });
 test('Pi lifecycle shares one child, branch events do no native work and switching closes the old pipe',async t=>{
  const handlers=new Map(),tools=new Map(),instances=[];
- const catalog={catalog_source:'catalog',host_id:'host',title_defaults:{stream:'automatic',session:'automatic'},stream:null,session:null,sessions:[]};
+ const catalog=withPatchSchemas({catalog_source:'catalog',host_id:'host',title_defaults:{stream:'automatic',session:'automatic'},stream:null,session:null,sessions:[]});
  const ctx={cwd:'/tmp',hasUI:false,sessionManager:{getSessionId:()=> 'first'},ui:{setStatus:()=>{},notify:assert.fail}};
  register({on:(name,handler)=>handlers.set(name,handler),registerCommand:()=>{},registerTool:value=>tools.set(value.name,value),appendEntry:()=>{}},
   {settings:{...defaults,reporting:'manual',enrollment:'manual'},child:()=>{const f=fixture(t);instances.push(f);return f.manager;}});

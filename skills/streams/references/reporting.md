@@ -8,7 +8,7 @@ Use this protocol for generated progress or description changes outside Pi's bui
 streams agent context --harness pi --session-id NATIVE_ID --json
 ```
 
-Use `codex` or `claude` for those harnesses. Context returns persisted local `stream`, `session`, `title_defaults`, `host_id` and `catalog_source`. Its `sessions` list contains only the addressed Session, not a sibling roster. It does not fetch or attach. An optional `--stream-id` supplies an exact initial effort identity; it cannot switch an attached conversation.
+Use `codex` or `claude` for those harnesses. Context returns persisted local `stream`, `session`, `title_defaults`, `host_id`, `catalog_source` and `patch_schemas`. For each returned record and actor (`automatic` or `user`), `patch_schemas` lists the fields that actor may change with the JSON schema of each value; the automatic lists already omit manually protected names and goals. Its `sessions` list contains only the addressed Session, not a sibling roster. It does not fetch or attach. An optional `--stream-id` supplies an exact initial effort identity; it cannot switch an attached conversation.
 
 Keep this capture immutable while generating one target's changes. A session report can update title, lifecycle status, recap, state, remaining and their matching `_short` forms. Recap records this conversation’s cumulative scope and achievements; state records what it is doing right now. Keep short forms to 1–2 words when possible, preferably under 20 characters and always under 25. A stream description report can update title, goal and goal_short, not stream status or archive state. Omit manually protected names/goals. Produce compact derivatives alongside their source, or let them clear when that source changes.
 
@@ -45,7 +45,7 @@ Automatic values contain name, purpose, role, state and target. Document targets
 
 Automatic rows compare the complete captured value; user reference edits apply only to the captured Stream `revision`. Additions require the key to be absent at capture and apply. Automatic restoration of Dropped rows is refused per row; user restoration and deletion require explicit direction. User deletion uses desired=null.
 
-Inspect every `reference_results` row. A partial Changes result can save independent references while refusing others. Surface the unapplied rows. Resubmitting the same captured request is safe but applies nothing new; a later attempt needs new evidence and a fresh capture. The [reference implementation contract](../../../docs/stream-reference-implementation.md) defines exact packet and result schemas.
+Inspect every `reference_results` row. Each row's `desired` is the value it saves, or would save if refused, with recovery hints filled in; it is null for a deletion. A partial Changes result can save independent references while refusing others. Surface the unapplied rows. Resubmitting the same captured request is safe but applies nothing new; a later attempt needs new evidence and a fresh capture. The [reference implementation contract](../../../docs/stream-reference-implementation.md) defines exact packet and result schemas.
 
 ## Initial enrollment
 

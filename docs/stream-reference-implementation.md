@@ -405,6 +405,9 @@ Apply independent rows in proposal order against their affected current referenc
 ```ts
 type ReferenceResult = {
   key: ResourceKey;
+  // The value the row saves, or would save if refused, with runtime-owned
+  // recovery hints filled in; null for a deletion.
+  desired: ReferenceValue | null;
   action: "add" | "update" | "drop" | "restore" | "delete";
   outcome: "changes" | "no-change" | "superseded" | "conflict";
   reason: string;
@@ -433,12 +436,14 @@ For example, a stale automatic update plus an independent addition produces this
   "reference_results": [
     {
       "key": {"kind": "url", "url": "https://example.org/brief"},
+      "desired": {"name": "Brief", "purpose": "Define acceptance", "role": "brief", "state": "active", "target": {"kind": "link", "url": "https://example.org/brief"}},
       "action": "update",
       "outcome": "superseded",
       "reason": "reference changed since capture"
     },
     {
       "key": {"kind": "url", "url": "https://example.org/new"},
+      "desired": {"name": "New", "purpose": "Track the rollout", "role": "background", "state": "active", "target": {"kind": "link", "url": "https://example.org/new"}},
       "action": "add",
       "outcome": "changes",
       "reason": ""
@@ -531,7 +536,7 @@ Remove a retained draft only after acceptance, explicit discard or a no-op again
 
 Reapply prompts for Keep Dropped, Restore Active, Restore Fulfilled or Cancel when the fresh row is Dropped and retained non-null input requests a visible state. Default to Keep Dropped. Ordinary text reapplication must preserve Dropped unless that restoration choice is explicit. Reapplying a deletion displays the current row and requires the Delete confirmation again.
 
-Retained automatic input keeps its original shape until the user acts. Reapply materialises it as a complete user value using the displayed current recovery metadata and the automatic preservation rules, then applies the restoration choice. Edit retained input materialises it against its original capture and opens the complete user form. Further edits retain user authority and the complete selected recovery values. Both paths require explicit user submission.
+Retained automatic input keeps its original shape until the user acts. Pi does not fill in recovery metadata itself: it previews the automatic request through the child and adopts the row's `desired` value as a complete user value. Reapply previews it against the fresh capture, so the value carries the displayed current recovery metadata and the automatic preservation rules, then applies the restoration choice. Edit retained input previews it against its original capture and opens the complete user form. Further edits retain user authority and the complete selected recovery values. Both paths require explicit user submission.
 
 New forms require an explicit kind and role selection, start name, purpose and target fields empty, and default state to Active. Closing or reopening must leave dirty captures unchanged. Keep existing ordinary FieldEdit state and behaviour separate.
 

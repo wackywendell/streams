@@ -57,7 +57,11 @@ exchanges versioned requests and receipts; it never writes catalog files. Report
 bases are addressed persisted records, not a remote display projection.
 
 Context returns `catalog_source`, resolved title defaults, the selected Session
-and its Stream. Source identity is the configured host and canonical catalog path,
+and its Stream, and their patch schemas. For each record and actor, the patch
+schemas list the fields that actor may change, in display order, with the JSON
+schema of each value; the automatic lists already omit protected text. Pi builds
+its field menus and the reporting tool schema from them and leaves validation to
+Rust, showing the refusal Rust returns. Source identity is the configured host and canonical catalog path,
 not an inode or directory-replacement generation. An offline reset stops writers;
 ordinary requests do not detect replacement with copied IDs at the same path.
 

@@ -51,6 +51,9 @@ current record-local runtime's correctness.
   per-operation commits are not part of that transport.
 - CLI and Pi tests retain exact wire expectations and fresh-process reads.
   Independent expected receipts prevent two implementations agreeing on a mistake.
+- Rust alone validates edits. Pi tests that fake a context derive its patch schemas
+  from `tests/fixtures/agent-patch-schemas.json`, which Rust's own tests pin, and
+  fakes that refuse input stand in for Rust's refusal rather than testing Pi rules.
 - Native fakes change actual resources between observation and action, including
   subscription loss, move, close, rename, crash and lost replies. Assert which
   resource received the effect, not only the requested numeric address.

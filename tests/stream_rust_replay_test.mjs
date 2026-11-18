@@ -9,6 +9,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createJiti } from 'jiti';
 import { childCli } from './helpers/stream-cli.mjs';
+import { withPatchSchemas } from './helpers/patch-schemas.mjs';
 const jiti = createJiti(import.meta.url);
 const { captureSessions } = await jiti.import('../extensions/stream-checkpoint/capture.ts');
 const { replayCapture } = await jiti.import('../extensions/stream-checkpoint/replay.ts');
@@ -54,7 +55,7 @@ test('production replay invokes real Rust preview for ordered reports without op
  const id='00000000-0000-4000-8000-000000000001';
  const stream={id:'effort',title:'Work',title_mode:'automatic',goal:'Old goal',goal_short:null,goal_mode:'automatic',status:'active',owner:{host_id:'host'},revision:1,updated_at_ms:0,repositories:{},references:[]};
  const session={id:sessionId('host','pi',id),host_id:'host',revision:1,updated_at_ms:0,membership_epoch:0,stream_id:stream.id,harness:'pi',harness_session_id:id,title:'Lane',title_mode:'automatic',status:'active',state:'Old state',state_short:null,remaining:'Old remaining',checkout:null};
- const catalog={catalog_source:'frozen-source',host_id:'host',stream,session,sessions:[session],title_defaults:{stream:'automatic',session:'automatic'}};
+ const catalog=withPatchSchemas({catalog_source:'frozen-source',host_id:'host',stream,session,sessions:[session],title_defaults:{stream:'automatic',session:'automatic'}});
  const file=transcript(root,id);
  const {capture}=captureSessions({version:1,host_id:'host',streams:[stream],workspaces:[],topology_error:null,target:{kind:'stream',id:stream.id,title:stream.title},samples:[{host_id:'host',harness:'pi',native_session_id:id,open:false,locations:[],catalog,transcript_file:file,unavailable:null}],unsupported:[]},join(root,'private'));
  mkdirSync(join(root,'config','streams'),{recursive:true});writeFileSync(join(root,'config','streams','settings.json'),'INVALID CONFIGURATION');
@@ -80,7 +81,7 @@ test('partial reference replay retains refused restoration and applies an indepe
  const current={name:'Brief',purpose:'Original purpose',role:'brief',state:'active',target:{kind:'issue',url:'https://example.org/brief'}};
  const stream={id:'effort',title:'Work',title_mode:'manual',goal:'Goal',goal_short:null,goal_mode:'manual',status:'active',owner:{host_id:'host'},revision:1,updated_at_ms:0,repositories:{},references:[dropped,current]};
  const session={id:sessionId('host','pi',id),host_id:'host',revision:1,updated_at_ms:0,membership_epoch:0,stream_id:stream.id,harness:'pi',harness_session_id:id,title:'Lane',title_mode:'automatic',status:'active',state:'Old',state_short:null,remaining:'',checkout:null};
- const catalog={catalog_source:'frozen-source',host_id:'host',stream,session,sessions:[session],title_defaults:{stream:'automatic',session:'automatic'},checkouts:[],document_locations:[]};
+ const catalog=withPatchSchemas({catalog_source:'frozen-source',host_id:'host',stream,session,sessions:[session],title_defaults:{stream:'automatic',session:'automatic'},checkouts:[],document_locations:[]});
  const {capture}=captureSessions({version:1,host_id:'host',streams:[stream],workspaces:[],topology_error:null,target:{kind:'stream',id:stream.id,title:stream.title},samples:[{host_id:'host',harness:'pi',native_session_id:id,open:false,locations:[],catalog,transcript_file:file,unavailable:null}],unsupported:[]},join(root,'private'));
  const restore={...dropped},update={...current};restore.state='active';update.purpose='Updated purpose';
  const client=clientFor(id),execute=()=>replayCapture(capture,join(root,'private'),runtime(()=>response({changes:{},reference_proposals:[restore,update]})),model,{kind:'report',force:true},(input,signal)=>client.preview(input,signal),new AbortController().signal);
@@ -93,7 +94,7 @@ test('partial reference replay retains refused restoration and applies an indepe
 }));
 test('unattached setup uses real Rust enrollment preview before reporting',async()=>isolated(async(root,clientFor)=>{
  const id='00000000-0000-4000-8000-000000000002', file=transcript(root,id);
- const catalog={catalog_source:'frozen-source',host_id:'host',stream:null,session:null,sessions:[],title_defaults:{stream:'automatic',session:'automatic'}};
+ const catalog=withPatchSchemas({catalog_source:'frozen-source',host_id:'host',stream:null,session:null,sessions:[],title_defaults:{stream:'automatic',session:'automatic'}});
  const {capture}=captureSessions({version:1,host_id:'host',streams:[],workspaces:[],topology_error:null,target:{kind:'workspace',id:'workspace',title:'Workspace'},samples:[{host_id:'host',harness:'pi',native_session_id:id,open:null,locations:[],catalog,transcript_file:file,unavailable:null}],unsupported:[]},join(root,'private'));
  const tasks=[], client=clientFor(id);
  const {run}=await replayCapture(capture,join(root,'private'),runtime(input=>{

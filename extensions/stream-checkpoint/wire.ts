@@ -31,7 +31,7 @@ export type StreamWire = {
 };
 export type SessionWire = {
   id: string; host_id: string; stream_id: string; harness: string; harness_session_id: string;
-  membership_epoch?: number;
+  membership_epoch: number;
   artifacts?: Record<string, { name: string; description: string }[]>;
   title: string; title_mode: TitleMode; status: Status;
   recap?: string; recap_short?: string | null;
@@ -39,9 +39,13 @@ export type SessionWire = {
   checkout: { repository: string; repository_url?: string | null; ref: string; directory_within_checkout: string } | null;
   revision: number; updated_at_ms: number;
 };
+/** The JSON schema of one field's value: a string, a choice, or either of two. */
+export type FieldSchema = {type?: 'string' | 'null'; enum?: string[]; anyOf?: FieldSchema[]};
+/** What each actor may change in a captured record, in display order, as Rust reports it. */
+export type PatchSchemas = Partial<Record<'stream' | 'session', Record<'automatic' | 'user', {field: string; schema: FieldSchema}[]>>>;
 export type LocalContext = {
   catalog_source: string; host_id: string; stream: StreamWire | null; session: SessionWire | null;
-  sessions: SessionWire[]; title_defaults: TitleDefaults;
+  sessions: SessionWire[]; title_defaults: TitleDefaults; patch_schemas: PatchSchemas;
   checkouts?: unknown[]; document_locations?: unknown[];
 };
 
@@ -138,7 +142,7 @@ export function isSession(value: unknown): value is SessionWire {
     && (value.recap === undefined || text(value.recap))
     && (value.recap_short === undefined || nullableText(value.recap_short))
     && (value.remaining_short === undefined || nullableText(value.remaining_short))
-    && (value.membership_epoch === undefined || count(value.membership_epoch))
+    && count(value.membership_epoch)
     && (value.artifacts === undefined || object(value.artifacts) && Object.entries(value.artifacts).every(([stream, entries]) =>
       identity(stream) && Array.isArray(entries) && entries.every(entry => object(entry) && identity(entry.name) && identity(entry.description))
       && new Set(entries.map(entry => entry.name)).size === entries.length))
@@ -152,7 +156,8 @@ export function parseLocalContext(value: unknown): LocalContext & Record<string,
     || !identity(value.catalog_source) || !identity(value.host_id)
     || !(value.stream === null || isStream(value.stream)) || !(value.session === null || isSession(value.session))
     || !Array.isArray(value.sessions) || !value.sessions.every(isSession)
-    || !object(value.title_defaults) || !mode(value.title_defaults.stream) || !mode(value.title_defaults.session)) {
+    || !object(value.title_defaults) || !mode(value.title_defaults.stream) || !mode(value.title_defaults.session)
+    || !object(value.patch_schemas)) {
     throw new Error('Invalid local catalog context');
   }
   const session = value.session;

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createJiti } from 'jiti';
+import { withPatchSchemas } from './helpers/patch-schemas.mjs';
 const jiti = createJiti(import.meta.url);
 const { StreamCli, receiptCanContinue, receiptHasUnappliedReferences, receiptHasWarning, receiptText, referenceText, resultNeedsAttention, safeReferenceJson } = await jiti.import('../extensions/stream-checkpoint/streams.ts');
 const { FieldEdit } = await jiti.import('../extensions/stream-checkpoint/core.ts');
@@ -45,8 +46,8 @@ test('wire parsing rejects unknown outcomes and ambiguous receipt shapes', async
 test('partial reference receipts preserve acceptance and expose safe diagnostics', async () => {
  const key = {kind:'document',repository_url:'repo\u200d',path:'docs/\nplan.md'};
  const rows = [
-  {key,action:'update',outcome:'superseded',reason:'changed\u001b[31m'},
-  {key:{kind:'url',url:'https://example.org/new'},action:'add',outcome:'changes',reason:''},
+  {key,desired:null,action:'update',outcome:'superseded',reason:'changed\u001b[31m'},
+  {key:{kind:'url',url:'https://example.org/new'},desired:null,action:'add',outcome:'changes',reason:''},
  ];
  const partial = {save:{...save,domain:{outcome:'changes',reference_results:rows}}};
  assert.equal(receiptCanContinue(partial),true);
@@ -77,7 +78,7 @@ test('reference receipt rows require the exact shape', async () => {
 
 test('field editing retains input and its receipt when publication needs repair', async () => {
  const session = {id:'session',host_id:'laptop',stream_id:'effort',title:'Before'};
- const context = {catalog_source:'source',host_id:'laptop',stream:null,session,sessions:[session],title_defaults:{stream:'automatic',session:'automatic'}};
+ const context = withPatchSchemas({catalog_source:'source',host_id:'laptop',stream:null,session,sessions:[session],title_defaults:{stream:'automatic',session:'automatic'}});
  const edit = new FieldEdit('session',context,'title');edit.value='After';
  const value = {...receipt,publication:{...publication,local:'repair-required'}};
  const receipts=[];

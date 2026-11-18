@@ -1,4 +1,4 @@
-import { automaticFields, automaticReferenceRequest, editRequest, referenceSelector } from "./core.ts";
+import { automaticReferenceRequest, editRequest, patchFields, referenceSelector } from "./core.ts";
 import { receiptCanContinue, receiptHasUnappliedReferences, referenceText } from "./streams.ts";
 import type { DiscardedCard, LocalContext, Receipt, ApplyRequest } from "./streams.ts";
 import type { EnrollmentInference, InferenceResult, ReportInference } from "./agent.ts";
@@ -45,7 +45,7 @@ export async function runReport(action: ReportAction, environment: ReportEnviron
   if (kind === "session" && reset) for (const short of ["recap_short", "state_short", "remaining_short"] as const) {
    if (capture.catalog.session![short] != null && !Object.hasOwn(inferred.changes, short)) inferred.changes[short] = null;
   }
-  if (kind === "stream" && reset && capture.catalog.stream!.goal_mode === "automatic" && capture.catalog.stream!.goal_short !== null && !Object.hasOwn(inferred.changes, "goal_short")) inferred.changes.goal_short = null;
+  if (kind === "stream" && reset && patchFields(capture.catalog, "stream", "automatic").some(row => row.field === "goal_short") && capture.catalog.stream!.goal_short !== null && !Object.hasOwn(inferred.changes, "goal_short")) inferred.changes.goal_short = null;
   const recordReceipt = (receipt: Receipt, request?: ApplyRequest): boolean => {
    environment.receipt(receipt);
    const accepted = receiptCanContinue(receipt);
@@ -129,7 +129,7 @@ export async function runReport(action: ReportAction, environment: ReportEnviron
   if (capture.catalog.catalog_source !== sessionBase.catalog_source || capture.catalog.stream?.id !== sessionBase.stream?.id || capture.catalog.session?.id !== sessionBase.session?.id) throw Error("Catalog source or attachment changed; metadata report cancelled");
   if (!capture.valid() || signal.aborted) return savedAny;
  }
- if (!capture.catalog.stream || !automaticFields("stream", capture.catalog.stream, capture.catalog.title_defaults.stream).length) return savedAny;
+ if (!capture.catalog.stream || !patchFields(capture.catalog, "stream", "automatic").length) return savedAny;
  if (!await inferAndApply("stream")) return savedAny;
  return savedAny;
 }

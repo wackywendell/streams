@@ -8,7 +8,8 @@ import { Check, Errors } from "typebox/value";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { LocalContext } from "./streams.ts";
-import { automaticFields, fields, referenceRequest, statuses, validateChanges, type AutomaticReferenceValue, type ReferenceDraft } from "./core.ts";
+import { patchFields, type ReferenceDraft } from "./core.ts";
+import type { FieldSchema, ReferenceValue } from "./wire.ts";
 
 /** Drop the entire incomplete batch, and results with no surviving earlier call. */
 export function completedMessages(messages: any[]): any[] {
@@ -67,15 +68,21 @@ export type ReportInference = InferenceInput & {type: "session" | "stream"; rese
 type DiscussionInference = InferenceInput & {type: "discussion"; discussion?: {role: "user" | "assistant"; text: string}[]};
 export type Inference = EnrollmentInference | ReportInference | DiscussionInference;
 export type EnrollmentResult = {meaningful: boolean; stream?: {title: string; goal?: string; goal_short?: string}; session?: {title: string}};
-export type ReferenceReportResult = {changes: Record<string, unknown>; reference_proposals?: AutomaticReferenceValue[]};
+export type ReferenceReportResult = {changes: Record<string, unknown>; reference_proposals?: ReferenceValue[]};
 export type SessionReportResult = {changes: Record<string, unknown>; reference_proposals?: unknown};
 export type ReportResult = SessionReportResult;
 export type ReferenceDiscussionEdit = {kind:"references"; actor:"automatic" | "user"; changes:ReferenceDraft[]};
 type DiscussionResult = {reply: string; edit?: {kind: "stream" | "session"; actor: "automatic" | "user"; changes: Record<string, unknown>} | ReferenceDiscussionEdit};
 export type Inferred = EnrollmentResult | ReportResult | DiscussionResult;
 export type InferenceResult<T extends Inference> = T extends EnrollmentInference ? EnrollmentResult : T extends ReportInference ? ReportResult : DiscussionResult;
+/** A model tool schema for one field, from Rust's field schema; short forms carry their length hint. */
+function fieldSchema(field: string, schema: FieldSchema): any {
+ if (schema.anyOf) return Type.Union(schema.anyOf.map(option => fieldSchema(field, option)));
+ if (schema.enum) return literalUnion(schema.enum);
+ if (schema.type === "null") return Type.Null();
+ return Type.String(field.endsWith("_short") ? {maxLength: 24} : {});
+}
 export function changesSchema(kind: "stream" | "session", catalog: LocalContext, actor: "automatic" | "user", allowEmpty = true) {
- const before = catalog[kind];if (!before) return Type.Object({}, {additionalProperties: false});
  const descriptions: Record<string, string> = kind === "session" ? {
   recap: "Session purpose and main result in one short sentence, roughly 12 words. Choose one main contribution, not a list; do not start with 'This session'.",
   recap_short: "Condense recap only; prefer 1–2 words, at most 24 characters. Null if recap is empty.",
@@ -86,11 +93,8 @@ export function changesSchema(kind: "stream" | "session", catalog: LocalContext,
  } : {
   goal: "The whole effort's enduring user purpose, not the reporting Session's work. Keep a fitting saved goal; do not append Session topics or milestones.",
  };
- return Type.Object(Object.fromEntries((actor === "automatic" ? automaticFields(kind, before, catalog.title_defaults[kind]) : fields[kind]).map((field) => {
-  let schema: any = Type.String();
-  if (["goal", "goal_short", "recap_short", "state_short", "remaining_short"].includes(field)) schema = Type.Union([Type.String(field.endsWith("_short") ? {maxLength: 24} : {}), Type.Null()]);
-  else if (field.endsWith("_mode")) schema = Type.Union([Type.Literal("automatic"), Type.Literal("manual"), ...(field === "title_mode" ? [Type.Literal("inherit")] : [])]);
-  else if (field === "status") schema = Type.Union(statuses.map((status) => Type.Literal(status)));
+ return Type.Object(Object.fromEntries(patchFields(catalog, kind, actor).map(({field, schema: value}) => {
+  const schema = fieldSchema(field, value);
   return [field, Type.Optional(descriptions[field] ? {...schema, description: descriptions[field]} : schema)];
  })), {additionalProperties: false, ...(allowEmpty ? {} : {minProperties: 1})});
 }
@@ -155,12 +159,13 @@ export function buildInferencePayload(request: Inference, timestamp = 0): Infere
   schema = Type.Object({changes: changesSchema(request.type, request.catalog, "automatic"), ...(request.type === "session" ? {reference_proposals:Type.Optional(Type.Array(referenceValueSchema("automatic")))} : {})}, {additionalProperties: false});
  }
  const messages = request.type === "stream" ? [] : convertToLlm(request.messages);
- const {catalog_source: _source, ...visibleCatalog} = structuredClone(request.catalog);
+ const {catalog_source: _source, patch_schemas: _schemas, ...visibleCatalog} = structuredClone(request.catalog);
+ const automatic = (field: string) => patchFields(request.catalog, "stream", "automatic").some(row => row.field === field);
  const resetting = "reset" in request && request.reset;
  if (resetting) {
   if (request.type === "stream" && visibleCatalog.stream) {
-   if (automaticFields("stream", visibleCatalog.stream, visibleCatalog.title_defaults.stream).includes("title")) visibleCatalog.stream.title = "";
-   if (visibleCatalog.stream.goal_mode === "automatic") {visibleCatalog.stream.goal = null;visibleCatalog.stream.goal_short = null;}
+   if (automatic("title")) visibleCatalog.stream.title = "";
+   if (automatic("goal")) {visibleCatalog.stream.goal = null;visibleCatalog.stream.goal_short = null;}
   }
  }
  const reset = resetting ? "Infer all allowed automatic fields fresh from provided evidence, including a fresh short-handle title when title is an allowed automatic field. Do not anchor on the prior card or return an empty no-change delta. Respect manual fields and their modes." : undefined;
@@ -193,7 +198,7 @@ export function parseInferenceResponse<T extends Inference>(request: T, response
  if (calls.length !== 1 || calls[0].name !== "record_card") throw Error("Reporting model must return exactly one structured record_card call");
  const rawArgs = structuredClone(calls[0].arguments);
  if ((request.type === "session" || request.type === "stream") && rawArgs && typeof rawArgs === "object" && !Array.isArray(rawArgs) && rawArgs.changes && typeof rawArgs.changes === "object" && !Array.isArray(rawArgs.changes)) {
-  const before = request.catalog[request.type]!, allowed = automaticFields(request.type, before, request.catalog.title_defaults[request.type]), changes = rawArgs.changes as Record<string, unknown>;
+  const before = request.catalog[request.type]!, allowed = patchFields(request.catalog, request.type, "automatic").map(row => row.field), changes = rawArgs.changes as Record<string, unknown>;
   for (const [key, value] of Object.entries(changes)) {
    if (!allowed.includes(key) && !key.endsWith("_mode") && Object.hasOwn(before, key)) {delete changes[key];continue;}
    if (["recap", "state", "remaining"].includes(key) && value === null) changes[key] = "";
@@ -210,15 +215,6 @@ export function parseInferenceResponse<T extends Inference>(request: T, response
  if (!Check(schema, rawArgs)) {
   const paths = [...Errors(schema, rawArgs)].map((error) => `${error.instancePath || "/"}: ${error.message}`);
   throw Error(`Reporting model returned invalid structured card fields; nothing was saved (${paths.join("; ")})`);
- }
- if (request.type === "discussion") {
-  const result = rawArgs as DiscussionResult;
-  if (result.edit?.kind === "references") {
-   referenceRequest(request.catalog, result.edit.actor, result.edit.changes);
-  } else if (result.edit) validateChanges(result.edit.kind, request.catalog[result.edit.kind]!, result.edit.changes, result.edit.actor, request.catalog.title_defaults[result.edit.kind]);
- } else if (request.type === "session" || request.type === "stream") {
-  const result = rawArgs as ReportResult;
-  if (Object.keys(result.changes).length) validateChanges(request.type, request.catalog[request.type]!, result.changes, "automatic", request.catalog.title_defaults[request.type]);
  }
  return rawArgs as InferenceResult<T>;
 }

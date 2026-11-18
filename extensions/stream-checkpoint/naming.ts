@@ -1,9 +1,10 @@
-import { editRequest, titleModes } from "./core.ts";
+import { editRequest } from "./core.ts";
 import type { Receipt, StreamCli } from "./streams.ts";
 
 type Target = "session" | "stream";
-type TitleMode = typeof titleModes[number];
-export type NamingEdit = {target: Target; changes: {title: string; title_mode: "manual"} | {title_mode: TitleMode}};
+/** Completion text only; Rust decides which modes exist. */
+const modeDescriptions: Record<string, string> = {automatic:"Allow future title generation", manual:"Protect the saved title from generation", inherit:"Follow the global title default"};
+export type NamingEdit = {target: Target; changes: {title: string; title_mode: "manual"} | {title_mode: string}};
 
 export function parseNamingEdit(command: "name" | "title-mode", args: string): NamingEdit {
  const text = args.trim(), selector = /^(session|stream)(?:\s+|$)/.exec(text);
@@ -13,9 +14,8 @@ export function parseNamingEdit(command: "name" | "title-mode", args: string): N
   if (!value || value.includes("\0")) throw Error("Usage: /streams name [session|stream] <name>");
   return {target, changes: {title: value, title_mode: "manual"}};
  }
- const mode = titleModes.find(mode => mode === value);
- if (!mode) throw Error("Usage: /streams title-mode [session|stream] automatic|manual|inherit");
- return {target, changes: {title_mode: mode}};
+ if (!value || /\s/.test(value)) throw Error("Usage: /streams title-mode [session|stream] automatic|manual|inherit");
+ return {target, changes: {title_mode: value}};
 }
 
 export function namingCompletions(prefix: string): {value: string; label: string; description: string}[] | null {
@@ -25,7 +25,7 @@ export function namingCompletions(prefix: string): {value: string; label: string
  const partial = selector ? rest.slice(selector[0].length) : rest;
  if (/\s/.test(partial)) return null;
  const targets = [{label: "session", description: "This conversation's saved title"}, {label: "stream", description: "The Stream's saved title"}];
- const modes = titleModes.map(label => ({label, description: label === "inherit" ? "Follow the global title default" : label === "manual" ? "Protect the saved title from generation" : "Allow future title generation"}));
+ const modes = Object.entries(modeDescriptions).map(([label, description]) => ({label, description}));
  const choices = [...(!selector ? targets : []), ...(command === "title-mode" ? modes : [])];
  const matches = choices.filter(item => item.label.startsWith(partial)).map(item => ({...item, value: `${command} ${selector?.[0] ?? ""}${item.label}`}));
  return matches.length ? matches : null;

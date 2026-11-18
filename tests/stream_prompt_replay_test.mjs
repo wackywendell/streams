@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createJiti } from 'jiti';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
+import { withPatchSchemas } from './helpers/patch-schemas.mjs';
 const jiti = createJiti(import.meta.url);
 const load = name => jiti.import(new URL(`../extensions/stream-checkpoint/${name}.ts`, import.meta.url).pathname);
 const { captureSessions, loadCapture, parseCaptureInventory, privateDirectory, privateWrite } = await load('capture');
@@ -22,7 +23,7 @@ const stream = {id:'effort', title:'Work', title_mode:'automatic', goal:'Old goa
 const session = {id:sessionId('host','pi','native'),host_id:'host',revision:1,updated_at_ms:0,membership_epoch:0,stream_id:'effort',harness:'pi',harness_session_id:'native',title:'Lane',title_mode:'automatic',status:'active',state:'Old state',state_short:'Old',remaining:'Old remaining',checkout:null};
 const catalog = native => {
  const card = {...session,id:sessionId('host','pi',native),harness_session_id:native};
- return structuredClone({catalog_source:'frozen-source',host_id:'host',stream,session:card,sessions:[card],title_defaults:{stream:'automatic',session:'automatic'}});
+ return withPatchSchemas(structuredClone({catalog_source:'frozen-source',host_id:'host',stream,session:card,sessions:[card],title_defaults:{stream:'automatic',session:'automatic'}}));
 };
 const response = args => ({role:'assistant',content:[{type:'toolCall',id:'call',name:'record_card',arguments:args}],api:'fake',provider:'fake',model:'chosen',stopReason:'toolUse',timestamp:0});
 const runtime = generate => ({model:{...model,id:'not-selected'}, modelRegistry:{find:(provider,id)=>provider===model.provider && id===model.id?model:undefined,complete:async(selected,payload,options)=>{assert.equal(selected.id,'chosen');return generate(payload,options);}}});
@@ -52,7 +53,7 @@ function previewFixture(onRequest=()=>{}) {
    next.stream ??= {...structuredClone(stream),...request.stream};
    next.session = {...structuredClone(session),...request.session,id:sessionId('host',request.harness,request.harness_session_id),harness_session_id:request.harness_session_id};next.sessions=[structuredClone(next.session)];
   }
-  return {catalog:next,receipt:{save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}},simulated:true}};
+  return {catalog:withPatchSchemas(next),receipt:{save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}},simulated:true}};
  };
 }
 

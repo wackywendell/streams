@@ -2,8 +2,8 @@ import { Editor, SelectList, type SelectItem, matchesKey, truncateToWidth, wrapT
 import { DynamicBorder, getSelectListTheme } from "@earendil-works/pi-coding-agent";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { referenceText, safeReferenceJson, type LocalContext, type Receipt, type Reference, type ReferenceValue, type ResourceKey, type StreamCli } from "./streams.ts";
-import { FieldEdit, ReferenceEdit, fields, isAutomaticReferenceValue, materialiseReference, referenceSelector, statuses, titleModes } from "./core.ts";
-import { isReferenceValue, resourceKey } from "./wire.ts";
+import { FieldEdit, ReferenceEdit, fieldChoices, fieldClears, patchFields, referenceSelector } from "./core.ts";
+import { resourceKey } from "./wire.ts";
 export type DiscussionState = {input: string; messages: {role: "user" | "assistant"; text: string}[]; error?: string};
 export type CardState = {discussion: DiscussionState; edits: Map<string, FieldEdit>; referenceEdits?: Map<string, ReferenceEdit>};
 /** A small composer built around Pi's editor; unsent input survives close/reopen. */
@@ -66,8 +66,8 @@ async function saveReference(ctx: ExtensionContext, cli: StreamCli, edits: Map<s
  catch (error) {ctx.ui.notify(referenceText(error instanceof Error ? error.message : String(error)), "error");return false;}
 }
 async function editReferenceForm(ctx: ExtensionContext, cli: StreamCli, edits: Map<string, ReferenceEdit>, selector: string, edit: ReferenceEdit, receipt: (value: Receipt) => void): Promise<void> {
- if (edit.actor === "automatic" && isAutomaticReferenceValue(edit.desired)) {
-  edit.desired = materialiseReference(edit.desired, edit.key ? referenceByKey(edit.base, edit.key) : undefined, edit.base.session);edit.actor = "user";
+ if (edit.actor === "automatic") {
+  try {await edit.adopt(cli);} catch (error) {ctx.ui.notify(referenceText(error instanceof Error ? error.message : String(error)), "error");return;}
  }
  for (;;) {
   const value = edit.desired as any;
@@ -77,7 +77,7 @@ async function editReferenceForm(ctx: ExtensionContext, cli: StreamCli, edits: M
   if (action === "Discard input") {edits.delete(selector);return;}
   if (!action || action === "Keep input and close") {if (!edit.dirty && !edit.error) edits.delete(selector);return;}
   if (action === "Save reference") {
-   if (captured?.state === "dropped" && isReferenceValue(value) && value.state !== "dropped") {
+   if (captured?.state === "dropped" && value && value.state !== "dropped") {
     const choice = await ctx.ui.select("This reference is Dropped. Choose how to save.", ["Keep Dropped", "Restore Active", "Restore Fulfilled", "Cancel"]);
     if (!choice || choice === "Cancel") continue;
     value.state = choice === "Restore Active" ? "active" : choice === "Restore Fulfilled" ? "fulfilled" : "dropped";
@@ -139,12 +139,15 @@ async function manageReferences(ctx: ExtensionContext, cli: StreamCli, state: Ca
     if (!current) {await ctx.ui.select(`${heading}\nCurrent: Source absent`, ["Back"]);continue;}
     const confirm = await ctx.ui.select(`${heading}\nCurrent: ${safeReferenceJson(current)}\nRetained input: ${safeReferenceJson(edit.desired)}`, ["Reapply", "Cancel"]);
     if (confirm !== "Reapply") continue;
-    let desired = edit.desired;
+    let desired = edit.desired as ReferenceValue | null;
     if (desired === null) {if (!await confirmDeletion(ctx, current.name)) continue;}
     else {
-     if (edit.actor === "automatic" && isAutomaticReferenceValue(desired)) desired = materialiseReference(desired, current, fresh.session);
-     if (!isReferenceValue(desired)) {edit.error = "Retained input is invalid; edit it before reapplying.";continue;}
-     desired = structuredClone(desired);
+     if (edit.actor === "automatic") {
+      const adopted = new ReferenceEdit(fresh, key, "automatic", desired);
+      try {await adopted.adopt(cli);} catch (error) {edit.error = error instanceof Error ? error.message : String(error);continue;}
+      desired = adopted.desired as ReferenceValue;
+     }
+     desired = structuredClone(desired) as ReferenceValue;
      if (current.state === "dropped" && desired.state !== "dropped") {
       const choice = await ctx.ui.select("This reference is Dropped. Choose how to reapply.", ["Keep Dropped", "Restore Active", "Restore Fulfilled", "Cancel"]);
       if (!choice || choice === "Cancel") continue;
@@ -176,11 +179,12 @@ export async function editField(ctx: ExtensionContext, cli: StreamCli, catalog: 
  try {
   for (;;) {
    if (editValue) {
-    if (field === "status" || field.endsWith("_mode")) {
-     const value = await ctx.ui.select(`${kind} ${field} · current: ${edit.value}${edit.error ? `\n${edit.error}` : ""}`, field === "status" ? statuses : field === "title_mode" ? [...titleModes] : ["automatic", "manual"]);if (value === undefined) return;edit.value = value;
+    const choices = fieldChoices(edit.base, kind, field);
+    if (choices) {
+     const value = await ctx.ui.select(`${kind} ${field} · current: ${edit.value}${edit.error ? `\n${edit.error}` : ""}`, choices);if (value === undefined) return;edit.value = value;
     } else {
      const value = await ctx.ui.editor(`${kind} ${field}${edit.error ? `\n${edit.error}` : ""}`, String(edit.value ?? ""));
-     if (value === undefined) return;edit.value = ["goal", "goal_short", "recap_short", "state_short", "remaining_short"].includes(field) && !value.trim() ? null : value;
+     if (value === undefined) return;edit.value = fieldClears(edit.base, kind, field) && !value.trim() ? null : value;
     }
     editValue = false;
    }
@@ -213,7 +217,7 @@ export async function openCard(ctx: ExtensionContext, cli: StreamCli, state: Car
    {value: "settings", label: "Settings…", description: "Configure automatic reporting cadence, model, and naming"},
    {value: "close", label: "Close", description: "Close this dialog (Esc)"},
   ];
-  const streamFields = fields.stream.filter((f) => !(f === "goal_short" && stream.goal === null));
+  const streamFields = patchFields(catalog, "stream", "user").map(row => row.field).filter((f) => !(f === "goal_short" && stream.goal === null));
   const streamItems: SelectItem[] = streamFields.map((field) => ({
    value: `field:stream:${field}`,
    label: `${field}…${state.edits.has(`stream:${field}`) ? " *" : ""}`,
@@ -225,7 +229,7 @@ export async function openCard(ctx: ExtensionContext, cli: StreamCli, state: Car
    {value: "finish:stream", label: "Finish…", description: "Mark the Stream as done; Sessions remain unchanged"},
    {value: "close:stream", label: stream.status === "closed" ? "Restore…" : "Close…", description: stream.status === "closed" ? "Reopen this closed Stream as active" : "Close this Stream as abandoned"},
   );
-  const sessionItems: SelectItem[] = session ? fields.session.map((field) => ({
+  const sessionItems: SelectItem[] = session ? patchFields(catalog, "session", "user").map(({field}) => ({
    value: `field:session:${field}`,
    label: `${field}…${state.edits.has(`session:${field}`) ? " *" : ""}`,
    description: `${formatFieldPreview((session as any)[field])}${state.edits.has(`session:${field}`) ? " · retained unsaved edit" : ""}`,

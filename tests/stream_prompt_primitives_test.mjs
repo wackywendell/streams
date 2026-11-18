@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createJiti } from 'jiti';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
+import { withPatchSchemas } from './helpers/patch-schemas.mjs';
 const jiti=createJiti(import.meta.url),load=name=>jiti.import(new URL(`../extensions/stream-checkpoint/${name}.ts`,import.meta.url).pathname);
 const {captureSessions,loadCapture}=await load('capture'),{prepare,run}=await load('prompt-lab'),{executeLab}=await load('lab'),{loadPrepared,savePrepared}=await load('lab-artifacts');
 const model={provider:'test',id:'model',contextWindow:100000},selection={provider:model.provider,id:model.id};
@@ -15,7 +16,7 @@ function fixture(){
  const directory=mkdtempSync(join(tmpdir(),'streams-primitives-')),root=join(directory,'debug'),manager=SessionManager.inMemory(directory,{id:'native'});
  const stream={id:'effort',title:'Work',title_mode:'automatic',goal:'Goal',goal_short:null,goal_mode:'automatic',status:'active',owner:{host_id:'host'},revision:1,updated_at_ms:0,repositories:{},references:[]};
  const session={id:sessionId('host','pi','native'),host_id:'host',revision:1,updated_at_ms:0,membership_epoch:0,stream_id:'effort',harness:'pi',harness_session_id:'native',title:'Lane',title_mode:'automatic',status:'active',state:'Before',state_short:null,remaining:'Next',checkout:null};
- const catalog={catalog_source:'source',host_id:'host',stream,session,sessions:[session],title_defaults:{stream:'automatic',session:'automatic'}};
+ const catalog=withPatchSchemas({catalog_source:'source',host_id:'host',stream,session,sessions:[session],title_defaults:{stream:'automatic',session:'automatic'}});
  manager.appendMessage({role:'user',content:[{type:'text',text:'Synthetic evidence'},{type:'image',data:'AA==',mimeType:'image/png'}],timestamp:1});
  manager.appendMessage({...response({}),content:[{type:'toolCall',id:'call',name:'bash',arguments:{command:'synthetic'}}]});
  manager.appendMessage({role:'toolResult',toolCallId:'call',toolName:'bash',content:[{type:'text',text:'Full tool evidence'}],isError:false,timestamp:2});

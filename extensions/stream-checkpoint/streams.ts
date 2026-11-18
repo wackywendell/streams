@@ -2,10 +2,10 @@ import type { ArtifactRequest, ChildRequest, ConfigSnapshot, DomainObject, Runne
 export type { CardMode, CardSettings, ConfigSnapshot } from "./child-protocol.ts";
 export type { Runner } from "./child-protocol.ts";
 
-import { parseLocalContext, isResourceKey, isStream as stream, isSession as session, type ResourceKey, type StreamWire, type SessionWire, type LocalContext, type Mode } from "./wire.ts";
+import { parseLocalContext, isReferenceValue, isResourceKey, isStream as stream, isSession as session, type ResourceKey, type ReferenceValue, type StreamWire, type SessionWire, type LocalContext, type Mode } from "./wire.ts";
 export { isReferenceText } from "./wire.ts";
 export type { Status, Mode, Reference, ReferenceValue, ReferenceTarget, ResourceKey, StreamWire, SessionWire, LocalContext } from "./wire.ts";
-export type ReferenceResult = {key: ResourceKey; action: "add" | "update" | "drop" | "restore" | "delete"; outcome: "changes" | "no-change" | "superseded" | "conflict"; reason: string};
+export type ReferenceResult = {key: ResourceKey; desired: ReferenceValue | null; action: "add" | "update" | "drop" | "restore" | "delete"; outcome: "changes" | "no-change" | "superseded" | "conflict"; reason: string};
 export type LocalStatus = "unchanged" | "persisted" | "committed" | "repair-required";
 export type SharingStatus = "local-only" | "pending" | "confirmed" | "blocked" | "failed" | "uncertain";
 export type Result = { warnings?: string[]; local: LocalStatus; sharing?: SharingStatus; domain: { outcome: "changes" | "no-change" | "superseded" | "conflict"; reference_results?: ReferenceResult[]; [key: string]: unknown }; detail?: string; [key: string]: unknown };
@@ -30,8 +30,8 @@ function referenceKeyJson(key: ResourceKey): string {
  return safeReferenceJson(key.kind === "url" ? {kind:key.kind, url:key.url} : {kind:key.kind, repository_url:key.repository_url, path:key.path});
 }
 const referenceResult = (value: unknown): value is ReferenceResult => object(value)
- && Object.keys(value).length === 4 && ["key", "action", "outcome", "reason"].every(key => Object.hasOwn(value, key))
- && isResourceKey(value.key) && ["add", "update", "drop", "restore", "delete"].includes(value.action)
+ && Object.keys(value).length === 5 && ["key", "desired", "action", "outcome", "reason"].every(key => Object.hasOwn(value, key))
+ && isResourceKey(value.key) && (value.desired === null || isReferenceValue(value.desired)) && ["add", "update", "drop", "restore", "delete"].includes(value.action)
  && ["changes", "no-change", "superseded", "conflict"].includes(value.outcome) && typeof value.reason === "string";
 const statuses = (v: unknown): v is Record<string, any> => object(v) && ["unchanged", "persisted", "committed", "repair-required"].includes(v.local) && (v.sharing === undefined || ["local-only", "pending", "confirmed", "blocked", "failed", "uncertain"].includes(v.sharing));
 const result = (v: unknown): v is Result => statuses(v) && object(v.domain) && ["changes", "no-change", "superseded", "conflict"].includes(v.domain.outcome) && (v.domain.reference_results === undefined || Array.isArray(v.domain.reference_results) && v.domain.reference_results.every(referenceResult));
