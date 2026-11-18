@@ -339,16 +339,6 @@ pub struct WantedConversation {
     pub conversation: ConversationId,
     pub locator: Option<PathBuf>,
 }
-pub enum ExecutionQuery {
-    Work {
-        stream: String,
-        wanted: Vec<WantedConversation>,
-    },
-    Terminals {
-        terminals: Vec<NativeRef>,
-        foreground: Option<NativeRef>,
-    },
-}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ForegroundConversation {
     Current(ConversationId),
@@ -367,10 +357,6 @@ pub trait PresentationSnapshot {
     fn stream_for_space(&self, space: &NativeRef) -> Option<String>;
     fn caller_space(&self) -> Option<NativeRef>;
     fn space_for_terminal(&self, terminal: &NativeRef) -> Option<NativeRef>;
-}
-pub trait NativeObservation {
-    type Presentation: PresentationSnapshot;
-    fn presentation(&self) -> Access<&Self::Presentation>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1011,35 +997,6 @@ pub fn resolve_artifact_summary(
         .into_iter()
         .find(|summary| &summary.key == key)
         .ok_or_else(|| crate::runtime::invalid("saved artifact reference is unavailable"))
-}
-
-/// Each operation retains its adapter observation. Accessors do no I/O.
-pub trait NativeIntegration {
-    type Observation: NativeObservation;
-    type Execution: ExecutionSnapshot;
-    fn opening_support(&self) -> Option<OpeningSupport>;
-    fn observe(&mut self) -> Result<Self::Observation>;
-    fn inspect_execution(
-        &mut self,
-        observed: &Self::Observation,
-        query: &ExecutionQuery,
-    ) -> Access<Self::Execution>;
-    fn execute_open(&mut self, plan: &PreparedOpen) -> OpenEffects;
-    fn open_target(
-        &mut self,
-        target: &ResolvedTarget,
-        at: Option<&NativeRef>,
-    ) -> ReferenceOpenReport;
-}
-
-/// Submit one already-validated plan. Preserve each effect without observing or retrying it.
-pub fn apply_prepared_open(
-    native: &mut impl NativeIntegration,
-    plan: PreparedOpen,
-    sessions: BTreeMap<String, SessionOpenResult>,
-) -> OpenReport {
-    let effects = native.execute_open(&plan);
-    complete_open(plan, effects, sessions)
 }
 
 /// Map one native submission, including adapters with legacy CLI error reporting.

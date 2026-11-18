@@ -40,31 +40,6 @@ impl ExecutionSnapshot for Facts {
         panic!("classification is not a foreground query")
     }
 }
-struct NoPresentation;
-impl PresentationSnapshot for NoPresentation {
-    fn contains_space(&self, _: &NativeRef) -> bool {
-        false
-    }
-    fn associated_spaces(&self, _: &str) -> Vec<NativeRef> {
-        panic!("prepared application does not reobserve")
-    }
-    fn stream_for_space(&self, _: &NativeRef) -> Option<String> {
-        panic!("prepared application does not reobserve")
-    }
-    fn caller_space(&self) -> Option<NativeRef> {
-        panic!("prepared application does not reobserve")
-    }
-    fn space_for_terminal(&self, _: &NativeRef) -> Option<NativeRef> {
-        panic!("prepared application does not reobserve")
-    }
-}
-struct NoObservation;
-impl NativeObservation for NoObservation {
-    type Presentation = NoPresentation;
-    fn presentation(&self) -> Access<&NoPresentation> {
-        panic!("prepared application does not reobserve")
-    }
-}
 #[derive(Default)]
 struct OnceNative {
     effects: Option<OpenEffects>,
@@ -73,18 +48,7 @@ struct OnceNative {
     directories: Vec<std::path::PathBuf>,
     environments: Vec<BTreeMap<String, String>>,
 }
-impl NativeIntegration for OnceNative {
-    type Observation = NoObservation;
-    type Execution = Facts;
-    fn opening_support(&self) -> Option<OpeningSupport> {
-        panic!("prepared application does not reselect")
-    }
-    fn observe(&mut self) -> std::result::Result<NoObservation, streams::runtime::RuntimeError> {
-        panic!("prepared application does not reobserve")
-    }
-    fn inspect_execution(&mut self, _: &NoObservation, _: &ExecutionQuery) -> Access<Facts> {
-        panic!("prepared application does not reobserve")
-    }
+impl OnceNative {
     fn execute_open(&mut self, plan: &PreparedOpen) -> OpenEffects {
         self.calls += 1;
         for launch in &plan.launches {
@@ -98,9 +62,6 @@ impl NativeIntegration for OnceNative {
             }
         }
         self.effects.take().expect("opening submits once")
-    }
-    fn open_target(&mut self, _: &ResolvedTarget, _: Option<&NativeRef>) -> ReferenceOpenReport {
-        panic!("opening does not navigate")
     }
 }
 
@@ -312,9 +273,10 @@ fn prepared_application_preserves_partial_effects_exact_inputs_and_does_not_repl
     let running = SessionOpenResult::AlreadyRunning {
         locations: NonEmpty::new(terminal("running"), []),
     };
-    let report = apply_prepared_open(
-        &mut native,
+    let effects = native.execute_open(&plan);
+    let report = complete_open(
         plan,
+        effects,
         BTreeMap::from([("live".into(), running.clone())]),
     );
     assert_eq!(native.calls, 1);
@@ -382,7 +344,8 @@ fn an_initial_shell_keeps_its_own_uncertain_effect_without_a_fictitious_session(
         adopt: vec![],
         focus: true,
     };
-    let report = apply_prepared_open(&mut native, plan, BTreeMap::new());
+    let effects = native.execute_open(&plan);
+    let report = complete_open(plan, effects, BTreeMap::new());
     assert_eq!(native.calls, 1);
     assert!(report.sessions.is_empty());
     assert_eq!(
