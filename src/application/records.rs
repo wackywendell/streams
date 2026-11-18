@@ -51,8 +51,15 @@ impl OpenedRecords {
             let sync = RecordSync::open(self.root(), self.host.as_str())?;
             Ok(sync.last_updated_ms(addresses)?)
         } else {
-            Ok(self.records.last_updated_ms(addresses)?)
+            self.local_last_updated_ms(addresses)
         }
+    }
+    /// Local file mtime timestamps without admitting transport configuration.
+    pub fn local_last_updated_ms(
+        &self,
+        addresses: &[RecordAddress],
+    ) -> Result<std::collections::BTreeMap<RecordAddress, u64>> {
+        Ok(self.records.last_updated_ms(addresses)?)
     }
     /// Explicit human discovery/inspection only; ordinary commands use `records()`.
     pub fn inventory(&self) -> Result<Vec<RecordRead>> {

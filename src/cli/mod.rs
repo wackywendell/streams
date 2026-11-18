@@ -474,7 +474,7 @@ impl App {
         }
         let selection = frontend::resolve_frontend(configured, requested, &self.environment)?;
         if selection.resolved.as_ref() == Some(&frontend::FrontendId::hc()) {
-            use streams::integration::{PresentationSnapshot, WorkScope};
+            use streams::integration::WorkScope;
             let caller = self
                 .environment
                 .get("HC_TERMINAL_ID")
@@ -494,19 +494,14 @@ impl App {
             let client = frontend::hc::HcClient::connect(socket, None, 30.0, None)
                 .map_err(|error| CliError::message(error.message))?;
             let mut operation = runtime::hc::HcOperation::new(client);
-            let presentation = operation
-                .presentation_for_caller(&scope, Some(caller))
-                .map_err(|error| CliError::message(error.message))?;
-            let space = presentation.caller_space().ok_or_else(|| {
-                CliError::message(
-                    "calling space is not published in the layout; pass an explicit reference",
-                )
-            })?;
-            return presentation.stream_for_space(&space).ok_or_else(|| {
-                CliError::message(
-                    "calling workspace has no Stream selector; pass an explicit reference",
-                )
-            });
+            return operation
+                .caller_stream_id(&scope, caller)
+                .map_err(|error| CliError::message(error.message))?
+                .ok_or_else(|| {
+                    CliError::message(
+                        "calling workspace has no Stream selector; pass an explicit reference",
+                    )
+                });
         }
         let connection = self.native_frontend(&selection, 30.0)?;
         let client = connection
@@ -811,12 +806,23 @@ impl App {
                 refresh,
             } => {
                 let opened = application::open_records(&self.config)?;
+                let settings = self.config.load()?;
+                let cutoff_ms =
+                    streams::operations::decay_cutoff_ms(settings.lifecycle.decay_days, now_ms());
                 let publication = if refresh {
                     Some(self.refresh_records(&opened)?)
                 } else {
                     None
                 };
-                catalog::list_records(&opened, query.as_deref(), &status, closed, all, publication)
+                catalog::list_records(
+                    &opened,
+                    query.as_deref(),
+                    &status,
+                    closed,
+                    all,
+                    cutoff_ms,
+                    publication,
+                )
             }
             Command::Show { target, refresh } => self.show_records(&target, refresh),
             Command::Create { title, fields, cwd } => {
@@ -856,8 +862,7 @@ impl App {
                     ));
                 }
                 let stream = self.record_target(&opened, &target)?;
-                let stream_id = stream.id.clone();
-                let mut output = catalog::update_record(
+                catalog::update_record(
                     &opened,
                     &stream,
                     title,
@@ -865,27 +870,7 @@ impl App {
                     settings.naming,
                     |path| self.read_text(path),
                     || Uuid::new_v4().to_string(),
-                )?;
-                if output.accepted_save
-                    && output
-                        .value
-                        .get("stream")
-                        .and_then(|s| s.get("status"))
-                        .and_then(Value::as_str)
-                        == Some("closed")
-                {
-                    let children = application::lifecycle::close_stream_sessions(
-                        &opened,
-                        &stream_id,
-                        &Uuid::new_v4().to_string(),
-                    );
-                    if let Some(error) = children.completion_error {
-                        output.code = 2;
-                        output.notices.push(error.clone());
-                        output.value["completion_error"] = json!(error);
-                    }
-                }
-                Ok(output)
+                )
             }
             Command::Close { target } => {
                 self.set_stream_status(&target, streams::model::Status::Closed)
@@ -925,9 +910,6 @@ impl App {
                     output.code = 2;
                     output.notices.extend(summary.errors);
                 }
-                if output.accepted_save {
-                    let _ = self.notify_hc_save();
-                }
                 Ok(output)
             }
             Command::Sync => self.sync_records(),
@@ -947,8 +929,7 @@ impl App {
             ));
         }
         let stream = self.record_target(&opened, target)?;
-        let stream_id = stream.id.clone();
-        let mut output = catalog::save_stream_edit(
+        catalog::save_stream_edit(
             &opened,
             &stream,
             json!({"status": status})
@@ -957,20 +938,7 @@ impl App {
                 .clone(),
             settings.naming,
             &Uuid::new_v4().to_string(),
-        )?;
-        if output.accepted_save && status == streams::model::Status::Closed {
-            let children = application::lifecycle::close_stream_sessions(
-                &opened,
-                &stream_id,
-                &Uuid::new_v4().to_string(),
-            );
-            if let Some(error) = children.completion_error {
-                output.code = 2;
-                output.notices.push(error.clone());
-                output.value["completion_error"] = json!(error);
-            }
-        }
-        Ok(output)
+        )
     }
     fn configure(&self, overrides_flag: bool, action: Option<ConfigCommand>) -> Result<Output> {
         let format_plain = |toml_val: &toml::Value, json_val: &Value| -> Result<String> {
@@ -1191,29 +1159,7 @@ impl App {
                 "catalog root setting changed during apply",
             ));
         }
-        let mut output = catalog::apply(
-            opened.records(),
-            source,
-            opened.source_id(),
-            settings.naming,
-        )?;
-        if output.accepted_save
-            && let Some(stream) = output.value.get("stream")
-            && stream.get("status").and_then(Value::as_str) == Some("closed")
-            && let Some(stream_id) = stream.get("id").and_then(Value::as_str)
-        {
-            let children = application::lifecycle::close_stream_sessions(
-                &opened,
-                stream_id,
-                &Uuid::new_v4().to_string(),
-            );
-            if let Some(error) = children.completion_error {
-                output.code = 2;
-                output.notices.push(error.clone());
-                output.value["completion_error"] = json!(error);
-            }
-        }
-        Ok(output)
+        catalog::apply_opened(&opened, source, settings.naming)
     }
 }
 

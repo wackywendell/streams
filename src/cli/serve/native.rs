@@ -485,27 +485,6 @@ impl Controller {
                 json!({"native":"inactive","reason":"outside_herdr"}),
             ));
         }
-        let mut resumed_save = false;
-        let mut resume_warning: Option<String> = None;
-        if matches!(request, Request::SessionStarted {})
-            && let Ok(opened) = application::open_records(&self.app.config)
-        {
-            let op = uuid::Uuid::new_v4().to_string();
-            match application::lifecycle::resume_session(
-                &opened,
-                Harness::Pi,
-                &self.session_id,
-                &op,
-            ) {
-                Ok(update) => {
-                    resumed_save = !update.saves.is_empty();
-                    resume_warning = update.completion_error;
-                }
-                Err(error) => {
-                    resume_warning = Some(error.to_string());
-                }
-            }
-        }
         let pass = self.observe(&cancelled, None, FileBaseline::Required)?;
         if pass.context.session.is_none() {
             if matches!(request, Request::OpenCard {} | Request::CloseCard {}) {
@@ -543,14 +522,7 @@ impl Controller {
             _ => unreachable!("native lifecycle request"),
         };
         self.watch_engine(&engine);
-        let mut output = Output::value(result);
-        if resumed_save && let Err(error) = self.saved(cancelled) {
-            output.notices.push(error.to_string());
-        }
-        if let Some(warning) = resume_warning {
-            output.notices.push(warning);
-        }
-        Ok(output)
+        Ok(Output::value(result))
     }
     fn project(
         &mut self,

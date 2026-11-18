@@ -196,6 +196,17 @@ struct WorkLabel {
     stream: String,
 }
 
+impl WorkLabel {
+    fn parse(label: &str) -> Option<Self> {
+        let value = crate::codec::load_json(label).ok()?;
+        let route = serde_json::from_value::<Self>(value).ok()?;
+        (route.version == 1
+            && route.scope.validate().is_ok()
+            && crate::model::check_text(&route.stream, "stream", false).is_ok())
+        .then_some(route)
+    }
+}
+
 /// The same retained source observation scoped to one admitted catalog and host.
 pub struct HcWorkExecution {
     sources: RegisteredSources,
@@ -267,15 +278,7 @@ impl RegisteredSources {
                 placement_hints.insert(address.to_owned());
             }
             if let Some(label) = terminal.labels.get("streams.work") {
-                let route = crate::codec::load_json(label)
-                    .ok()
-                    .and_then(|value| serde_json::from_value::<WorkLabel>(value).ok())
-                    .filter(|route| {
-                        route.version == 1
-                            && route.scope.validate().is_ok()
-                            && crate::model::check_text(&route.stream, "stream", false).is_ok()
-                    });
-                match route {
+                match WorkLabel::parse(label) {
                     Some(route) => routes.push(WorkRoute {
                         scope: route.scope,
                         stream: route.stream,
@@ -1221,12 +1224,21 @@ impl HcOperation {
         Ok(presentation)
     }
 
+    /// Resolve the Stream associated with `caller_terminal`:
+    /// check its own space first, then walk up to 8 terminals (including `caller_terminal`)
+    /// checking `streams.work` labels and space associations at each hop in nearest-ancestor order.
     pub fn caller_stream_id(
         &mut self,
         scope: &WorkScope,
         caller_terminal: &str,
     ) -> Result<Option<String>, FrontendError> {
         use crate::integration::PresentationSnapshot;
+        if caller_terminal.is_empty()
+            || caller_terminal.contains('/')
+            || crate::model::check_text(caller_terminal, "terminal", false).is_err()
+        {
+            return Ok(None);
+        }
         let presentation = self.presentation_for_caller(scope, Some(caller_terminal))?;
         if let Some(stream) = presentation
             .caller_space()
@@ -1234,56 +1246,51 @@ impl HcOperation {
         {
             return Ok(Some(stream));
         }
-        let mut ancestors = Vec::new();
-        if self.supports("terminal.get") {
-            let mut visited = BTreeSet::new();
-            let mut current = caller_terminal.to_owned();
-            let mut depth = 0usize;
-            while depth < 8 && visited.insert(current.clone()) {
-                depth += 1;
-                let Ok(value) = self
-                    .client
-                    .request("terminal.get", &json!({ "terminal": current }))
-                else {
-                    break;
-                };
-                if depth > 1
-                    && let Some(label) = value
-                        .get("labels")
-                        .and_then(Value::as_object)
-                        .and_then(|labels| labels.get("streams.work"))
-                        .and_then(Value::as_str)
-                    && let Ok(parsed) = crate::codec::load_json(label)
-                    && let Ok(route) = serde_json::from_value::<WorkLabel>(parsed)
-                    && route.version == 1
-                    && route.scope == *scope
-                    && crate::model::check_text(&route.stream, "Stream", false).is_ok()
-                {
-                    return Ok(Some(route.stream));
-                }
-                if depth > 1 {
-                    ancestors.push(NativeRef {
-                        adapter: FrontendId::hc(),
-                        endpoint: presentation.published.endpoint.clone(),
-                        key: current.clone(),
-                    });
-                }
-                let Some(parent) = value
-                    .get("parent")
-                    .and_then(Value::as_str)
-                    .filter(|p| !p.is_empty() && !p.contains('/'))
-                else {
-                    break;
-                };
-                current = parent.to_owned();
-            }
+        if !self.supports("terminal.get") {
+            return Ok(None);
         }
-        for ancestor in ancestors {
-            if let Some(space) = presentation.space_for_terminal(&ancestor)
-                && let Some(stream) = presentation.stream_for_space(&space)
+        let mut visited = BTreeSet::new();
+        let mut current = caller_terminal.to_owned();
+        let mut depth = 0usize;
+        while depth < 8 && visited.insert(current.clone()) {
+            depth += 1;
+            let value = match self
+                .client
+                .request("terminal.get", &json!({ "terminal": current }))
             {
-                return Ok(Some(stream));
+                Ok(value) => value,
+                Err(_) => break,
+            };
+            if let Some(label) = value
+                .get("labels")
+                .and_then(Value::as_object)
+                .and_then(|labels| labels.get("streams.work"))
+                .and_then(Value::as_str)
+                && let Some(route) = WorkLabel::parse(label)
+                && route.scope == *scope
+            {
+                return Ok(Some(route.stream));
             }
+            if depth > 1 {
+                let ancestor = NativeRef {
+                    adapter: FrontendId::hc(),
+                    endpoint: presentation.published.endpoint.clone(),
+                    key: current.clone(),
+                };
+                if let Some(space) = presentation.space_for_terminal(&ancestor)
+                    && let Some(stream) = presentation.stream_for_space(&space)
+                {
+                    return Ok(Some(stream));
+                }
+            }
+            let Some(parent) = value
+                .get("parent")
+                .and_then(Value::as_str)
+                .filter(|p| !p.is_empty() && !p.contains('/'))
+            else {
+                break;
+            };
+            current = parent.to_owned();
         }
         Ok(None)
     }

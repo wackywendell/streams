@@ -13,6 +13,24 @@ use strum::{AsRefStr, Display, EnumString, VariantNames};
 use crate::codec::{record_from_data, record_to_data};
 use crate::model::{NamingMode, Record, RecordKind, Session, Status, ValidationError};
 
+const DAY_MS: u64 = 86_400_000;
+
+/// Compute the epoch-millisecond staleness cutoff for `decay_days` at `now_ms`.
+/// Returns `None` when decay is disabled (`decay_days == 0`) or `now_ms` precedes the window.
+pub fn decay_cutoff_ms(decay_days: u32, now_ms: u64) -> Option<u64> {
+    if decay_days == 0 {
+        return None;
+    }
+    let threshold_ms = u64::from(decay_days).saturating_mul(DAY_MS);
+    let cutoff_ms = now_ms.saturating_sub(threshold_ms);
+    (cutoff_ms > 0).then_some(cutoff_ms)
+}
+
+/// Whether `last_updated_ms` falls strictly before an active staleness cutoff.
+pub fn is_stale_ms(last_updated_ms: u64, cutoff_ms: Option<u64>) -> bool {
+    cutoff_ms.is_some_and(|cutoff| last_updated_ms > 0 && last_updated_ms < cutoff)
+}
+
 /// Read-time Stream activity projection: preserves explicit effort lifecycle states
 /// (Done, Closed, Blocked, Waiting) and derives live activity from child Sessions
 /// when the Stream is Active or Parked.
@@ -32,6 +50,21 @@ pub fn effective_stream_status(stream_status: Status, sessions: &[&Session]) -> 
         Status::Waiting
     } else {
         Status::Parked
+    }
+}
+
+/// Unified read-time Stream status projection combining `effective_stream_status` and
+/// read-only age decay (`cutoff_ms`).
+pub fn project_stream_status(
+    stream_status: Status,
+    sessions: &[&Session],
+    last_updated_ms: u64,
+    cutoff_ms: Option<u64>,
+) -> Status {
+    if stream_status.is_open() && is_stale_ms(last_updated_ms, cutoff_ms) {
+        Status::Closed
+    } else {
+        effective_stream_status(stream_status, sessions)
     }
 }
 

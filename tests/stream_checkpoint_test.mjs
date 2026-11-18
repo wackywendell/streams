@@ -1738,25 +1738,36 @@ test('record-local save receipt does not claim publication and uncertain writes 
  await assert.rejects(publication.sync(),/Invalid catalog receipt/);
 });
 
-test('interactive TUI sessions park on shutdown, stream reset does not mutate session status, and excluded contexts never start child or native controllers', async () => {
+test('interactive TUI sessions resume on start and park on shutdown without a frontend, stream reset does not mutate session status, and excluded contexts never start child or native controllers', async () => {
  const lifecycleCalls=[];let inferCalls=0;
  const handlers=new Map();
  const liveCatalog=context();liveCatalog.session={...liveCatalog.session,status:'parked'};
  const notices=[];
  registerWorkCard({on:(name,fn)=>handlers.set(name,fn),registerCommand:()=>{},registerTool:()=>{},appendEntry:()=>{}},{
   settings:{...defaults,reporting:'automatic',enrollment:'automatic',frequency:1},
-  cli:{sync:localSync,context:async()=>structuredClone(liveCatalog),lifecycle:async action=>{lifecycleCalls.push(action);return {session_changed:action==='park',stream_changed:false};},apply:async()=>({save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}},session:liveCatalog.session})},
+  cli:{sync:localSync,context:async()=>structuredClone(liveCatalog),lifecycle:async action=>{lifecycleCalls.push(action);return {session_changed:true,stream_changed:false};},apply:async()=>({save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}},session:liveCatalog.session})},
   infer:async()=>{inferCalls++;return {changes:{}};},
  });
  const tuiCtx={mode:'tui',hasUI:true,cwd:'/repo',sessionManager:{getSessionId:()=> 'native',getSessionFile:()=>'/tmp/s.jsonl',getLeafId:()=> 'leaf',getBranch:()=>[{id:'leaf'}],buildSessionProjection:()=>({messages:[{role:'user',content:'Real work',timestamp:0}]})},ui:{notify:text=>notices.push(text),setStatus:()=>{}}};
  await handlers.get('session_start')({},tuiCtx);
- assert.deepEqual(lifecycleCalls,[]);
+ assert.deepEqual(lifecycleCalls,['resume']);
  handlers.get('agent_end')({messages:[{role:'assistant',stopReason:'stop'}]},tuiCtx);
  await until(()=>inferCalls>=1);
- assert.deepEqual(lifecycleCalls,[]);
+ assert.deepEqual(lifecycleCalls,['resume']);
  await handlers.get('session_shutdown')({},tuiCtx);
- assert.deepEqual(lifecycleCalls,['park']);
+ assert.deepEqual(lifecycleCalls,['resume','park']);
  assert.deepEqual(notices,[]);
+
+ // Production-shape child factory without native UI still resumes on start and parks on shutdown.
+ const prodHandlers=new Map(),prodRequests=[];
+ registerWorkCard({on:(name,fn)=>prodHandlers.set(name,fn),registerCommand:()=>{},registerTool:()=>{},appendEntry:()=>{}},{
+  settings:{...defaults,reporting:'automatic',enrollment:'automatic',frequency:1},
+  child:()=>({run:async req=>{prodRequests.push(req);return {status:'success',result:{session_changed:true,stream_changed:false,saves:[]}};},stop:async()=>{}}),
+ });
+ const plainTuiCtx={mode:'tui',hasUI:true,cwd:'/repo',sessionManager:{getSessionId:()=> 'plain-1',getSessionFile:()=>'/tmp/plain.jsonl',getLeafId:()=> 'l0',getBranch:()=>[{id:'l0'}],buildSessionProjection:()=>({messages:[{role:'user',content:'Prior work',timestamp:0}]})},ui:{notify:()=>{},setStatus:()=>{}}};
+ await prodHandlers.get('session_start')({},plainTuiCtx);
+ await prodHandlers.get('session_shutdown')({},plainTuiCtx);
+ assert.deepEqual(prodRequests.filter(r=>r.kind==='lifecycle').map(r=>r.action),['resume','park']);
 
  // Stream-only reset on a parked Session must keep capture observational and not call lifecycle.
  const resetCalls=[];

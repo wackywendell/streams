@@ -52,7 +52,7 @@ const isInteractiveTui = (ctx: ExtensionContext): boolean =>
  ctx.hasUI === true &&
  ctx.mode === "tui" &&
  shouldStartStreams(ctx) &&
- hasConversation(ctx.sessionManager);
+ (typeof ctx.sessionManager.buildSessionProjection !== "function" || hasConversation(ctx.sessionManager));
 
 export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}): void {
  const agentDir = options.agentDir ?? process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
@@ -408,6 +408,9 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
   const state = useContext(ctx, true);
   if (!state.hydrated) await state.hydrate;
   else await state.ready;
+  if (isInteractiveTui(ctx)) {
+   try { await clientFor(ctx, state).lifecycle?.("resume"); } catch(error) { if (current(state, ctx)) warning(error); }
+  }
   if (current(state, ctx)) await sync(ctx, "start", state);
  });
  pi.on("session_info_changed", async (event, ctx) => {
@@ -436,7 +439,7 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
   clearStatusTimer();ctx.ui.setStatus?.("stream-debug", undefined);
   native?.stop();scope.reset(ctx, true);
   if (isInteractiveTui(ctx)) {
-   try { await clientFor(ctx, state).lifecycle?.("park"); } catch {}
+   try { await clientFor(ctx, state).lifecycle?.("park"); } catch(error) { warning(error); }
   }
   // Flush already-saved catalog changes only, never infer a final summary.
   try {await sync(ctx, "shutdown", state);} finally {

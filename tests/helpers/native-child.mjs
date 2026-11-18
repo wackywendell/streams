@@ -16,6 +16,6 @@ input.on('line',line=>{
  if(value.wait===request.kind)return;
  if(value.fail===request.kind) {send({type:'response',id,outcome:{status:'error',error:{kind:value.failureKind??'runtime',message:value.failMessage??'uncertain native effect; pending retained'}}});return;}
  const result=value.invalid===request.kind?{}:request.kind==='session_started'?{native:'active',display:value.automatic?'opened':'suppressed'}
-  :request.kind==='attach'?{native:'active'}:request.kind==='open_card'?{display:'opened'}:request.kind==='close_card'?{closed:true}:request.kind==='sync'?{local:'unchanged',sharing:'local-only',domain:null}:{};
+  :request.kind==='attach'?{native:'active'}:request.kind==='open_card'?{display:'opened'}:request.kind==='close_card'?{closed:true}:request.kind==='sync'?{local:'unchanged',sharing:'local-only',domain:null}:request.kind==='lifecycle'?{session_changed:false,stream_changed:false,saves:[]}:{};
  reply(id,result);send({type:'view',view:{desired_pi_name:value.sessionNaming?value.title:null}});
 });

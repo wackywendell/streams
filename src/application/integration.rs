@@ -6,15 +6,14 @@ use crate::{
         ConversationId, LinkKind, ReadReply, Reference, ResolvedTarget, SessionView, WorkScope,
     },
     model::{Record, RecordKind, Session, Status, Stream, ValidationError},
-    operations::effective_stream_status,
+    operations::{decay_cutoff_ms, project_stream_status},
     storage::records::{RecordAddress, RecordReader, RecordStore},
 };
 
 pub struct Streams<'a> {
     records: &'a OpenedRecords,
     scope: WorkScope,
-    decay_days: u32,
-    now_ms: u64,
+    lifecycle_cutoff: Option<u64>,
 }
 
 impl<'a> Streams<'a> {
@@ -25,13 +24,11 @@ impl<'a> Streams<'a> {
                 catalog: records.source_id().into(),
                 host: records.host().as_str().into(),
             },
-            decay_days: 0,
-            now_ms: 0,
+            lifecycle_cutoff: None,
         }
     }
     pub fn with_lifecycle(mut self, decay_days: u32, now_ms: u64) -> Self {
-        self.decay_days = decay_days;
-        self.now_ms = now_ms;
+        self.lifecycle_cutoff = decay_cutoff_ms(decay_days, now_ms);
         self
     }
     /// A supplied scope is an assertion, never a selector for another catalog or host.
@@ -74,8 +71,7 @@ impl<'a> Streams<'a> {
                         let Record::Session(session) = value.record else {
                             unreachable!("Session partition")
                         };
-                        (session.stream_id == stream.id
-                            && session.status == crate::model::Status::Active)
+                        (session.stream_id == stream.id && session.status.is_open_eligible())
                             .then_some(session)
                     })
                     .collect();
@@ -259,21 +255,12 @@ impl<'a> Streams<'a> {
         sessions: &[&Session],
         last_updated_ms: u64,
     ) -> Status {
-        let cutoff_ms = if self.decay_days > 0 && self.now_ms > 0 {
-            self.now_ms
-                .saturating_sub(u64::from(self.decay_days).saturating_mul(86_400_000))
-        } else {
-            0
-        };
-        if !matches!(stream_status, Status::Done | Status::Closed)
-            && cutoff_ms > 0
-            && last_updated_ms > 0
-            && last_updated_ms < cutoff_ms
-        {
-            Status::Closed
-        } else {
-            effective_stream_status(stream_status, sessions)
-        }
+        project_stream_status(
+            stream_status,
+            sessions,
+            last_updated_ms,
+            self.lifecycle_cutoff,
+        )
     }
 
     fn host_stream_summaries(
@@ -657,7 +644,22 @@ impl<'a> Streams<'a> {
                 }
             }
         }
-        let status = effective_stream_status(stream.status, &members);
+        let last_updated_ms = if self.lifecycle_cutoff.is_some() {
+            let host = self.records.host().as_str();
+            let mut addrs = Vec::with_capacity(1 + members.len());
+            addrs.push(RecordAddress::new(host, RecordKind::Stream, &stream.id)?);
+            for member in &members {
+                addrs.push(RecordAddress::new(host, RecordKind::Session, &member.id)?);
+            }
+            self.records
+                .last_updated_ms(&addrs)?
+                .into_values()
+                .max()
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        let status = self.projected_status(stream.status, &members, last_updated_ms);
         Ok(StreamView {
             id: stream.id,
             title: stream.title,

@@ -1,5 +1,6 @@
 use super::*;
 use std::{fs, sync::Mutex};
+use streams::model::Status;
 use streams::{
     config::Config,
     yaml_store::records::{RecordIoEvent, YamlRecordStore, relative_record_path},
@@ -145,9 +146,10 @@ fn reopen_selects_current_active_local_members_not_native_or_saved_layout_state(
         },
     ];
     let selected = requested_sessions(&stream, &records, None).unwrap();
-    assert_eq!(selected.len(), 2);
+    assert_eq!(selected.len(), 3);
     assert_eq!(selected[0].harness_session_id, "first");
-    assert_eq!(selected[1].harness_session_id, "second");
+    assert_eq!(selected[1].harness_session_id, "parked");
+    assert_eq!(selected[2].harness_session_id, "second");
     let mut reversed = records.clone();
     reversed.reverse();
     let selected = requested_sessions(&stream, &reversed, None).unwrap();
@@ -163,11 +165,11 @@ fn reopen_selects_current_active_local_members_not_native_or_saved_layout_state(
 }
 
 #[test]
-fn explicit_session_selection_can_resume_parked_or_done_but_never_another_membership() {
+fn explicit_session_selection_can_resume_done_or_closed_but_never_another_membership() {
     let stream = Stream::new("work", "Work", None, "local").unwrap();
     let records = vec![
         session("local", "work", "done", Status::Done),
-        session("local", "work", "parked", Status::Parked),
+        session("local", "work", "closed", Status::Closed),
         session("local", "other", "moved", Status::Active),
     ];
     assert!(

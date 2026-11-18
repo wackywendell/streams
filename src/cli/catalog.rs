@@ -12,6 +12,7 @@ use streams::{
     application::{self, OpenedRecords},
     codec::record_to_data,
     model::{Record, Status, Stream, TitleDefaults, ValidationError},
+    storage::records::RecordStore,
     sync::records::RecordSync,
 };
 
@@ -21,6 +22,7 @@ pub(super) fn list_records(
     status: &[Status],
     closed: bool,
     all: bool,
+    cutoff_ms: Option<u64>,
     publication: Option<serde_json::Value>,
 ) -> Result<Output> {
     let query = query.map(fold);
@@ -29,25 +31,103 @@ pub(super) fn list_records(
         (String, String),
         Vec<streams::model::Session>,
     > = std::collections::BTreeMap::new();
+    let mut addresses = Vec::new();
     for read in &records {
-        if let Record::Session(session) = &read.record {
-            sessions_by_stream
-                .entry((session.host_id.clone(), session.stream_id.clone()))
-                .or_default()
-                .push(session.clone());
+        match &read.record {
+            Record::Session(session) => {
+                if cutoff_ms.is_some() && session.host_id == opened.host().as_str() {
+                    addresses.push(
+                        streams::storage::records::RecordAddress::new(
+                            &session.host_id,
+                            streams::model::RecordKind::Session,
+                            &session.id,
+                        )
+                        .map_err(application::ApplicationError::from)?,
+                    );
+                }
+                sessions_by_stream
+                    .entry((session.host_id.clone(), session.stream_id.clone()))
+                    .or_default()
+                    .push(session.clone());
+            }
+            Record::Stream(stream) => {
+                if cutoff_ms.is_some() && stream.owner_host_id == opened.host().as_str() {
+                    addresses.push(
+                        streams::storage::records::RecordAddress::new(
+                            &stream.owner_host_id,
+                            streams::model::RecordKind::Stream,
+                            &stream.id,
+                        )
+                        .map_err(application::ApplicationError::from)?,
+                    );
+                }
+            }
+            Record::Host(_) => {}
         }
+    }
+    let timestamps = if cutoff_ms.is_some() && !addresses.is_empty() {
+        opened
+            .last_updated_ms(&addresses)
+            .or_else(|_| opened.local_last_updated_ms(&addresses))?
+    } else {
+        std::collections::BTreeMap::new()
+    };
+    let mut latest_session_ms: std::collections::BTreeMap<(String, String), u64> =
+        std::collections::BTreeMap::new();
+    for ((host_id, stream_id), members) in &sessions_by_stream {
+        if host_id != opened.host().as_str() {
+            continue;
+        }
+        let mut latest = 0u64;
+        for session in members {
+            let addr = streams::storage::records::RecordAddress::new(
+                host_id,
+                streams::model::RecordKind::Session,
+                &session.id,
+            )
+            .map_err(application::ApplicationError::from)?;
+            if let Some(&ms) = timestamps.get(&addr) {
+                latest = latest.max(ms);
+            }
+        }
+        latest_session_ms.insert((host_id.clone(), stream_id.clone()), latest);
     }
     let mut streams: Vec<_> = records
         .into_iter()
         .filter_map(|read| match read.record {
             Record::Stream(mut stream) => {
-                if let Some(members) =
-                    sessions_by_stream.get(&(stream.owner_host_id.clone(), stream.id.clone()))
-                {
-                    let refs: Vec<&_> = members.iter().collect();
-                    stream.status =
-                        streams::operations::effective_stream_status(stream.status, &refs);
-                }
+                let members = sessions_by_stream
+                    .get(&(stream.owner_host_id.clone(), stream.id.clone()))
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
+                let refs: Vec<&_> = members.iter().collect();
+                let (last_updated_ms, stream_cutoff) =
+                    if cutoff_ms.is_some() && stream.owner_host_id == opened.host().as_str() {
+                        let stream_addr = streams::storage::records::RecordAddress::new(
+                            &stream.owner_host_id,
+                            streams::model::RecordKind::Stream,
+                            &stream.id,
+                        )
+                        .ok();
+                        let stream_ms = stream_addr
+                            .as_ref()
+                            .and_then(|addr| timestamps.get(addr))
+                            .copied()
+                            .unwrap_or(0);
+                        let session_ms = latest_session_ms
+                            .get(&(stream.owner_host_id.clone(), stream.id.clone()))
+                            .copied()
+                            .unwrap_or(0);
+                        (stream_ms.max(session_ms), cutoff_ms)
+                    } else {
+                        (0, None)
+                    };
+                stream.status = streams::operations::project_stream_status(
+                    stream.status,
+                    &refs,
+                    last_updated_ms,
+                    stream_cutoff,
+                );
                 Some(stream)
             }
             _ => None,
@@ -138,7 +218,9 @@ pub(super) fn save_stream_edit(
     defaults: TitleDefaults,
     operation_id: &str,
 ) -> Result<Output> {
-    finish_save(
+    finish_stream_save(
+        opened,
+        Some(stream.status),
         operation_id,
         application::save_user_edit(
             opened.records(),
@@ -150,6 +232,7 @@ pub(super) fn save_stream_edit(
     )
 }
 
+#[cfg(test)]
 pub(super) fn apply(
     store: &impl streams::storage::records::RecordStore,
     captured: &str,
@@ -161,6 +244,58 @@ pub(super) fn apply(
         update.operation_id(),
         application::save_record_update(store, &update),
     )
+}
+
+pub(super) fn apply_opened(
+    opened: &OpenedRecords,
+    source: &str,
+    defaults: streams::model::TitleDefaults,
+) -> Result<Output> {
+    let update = agent::parse_record_update(source, opened.source_id(), defaults)?;
+    let before_status = if update.target().kind() == streams::model::RecordKind::Stream {
+        opened
+            .records()
+            .with_reader(|reader| reader.read(update.target()))
+            .map_err(application::ApplicationError::from)?
+            .and_then(|read| match read.record {
+                Record::Stream(stream) => Some(stream.status),
+                _ => None,
+            })
+    } else {
+        None
+    };
+    finish_stream_save(
+        opened,
+        before_status,
+        update.operation_id(),
+        application::save_record_update(opened.records(), &update),
+    )
+}
+
+fn finish_stream_save(
+    opened: &OpenedRecords,
+    before_status: Option<Status>,
+    operation_id: &str,
+    saved: application::Result<streams::storage::records::RecordSave>,
+) -> Result<Output> {
+    let after_record = saved.as_ref().ok().map(|s| s.current.record.clone());
+    let mut output = finish_save(operation_id, saved)?;
+    if output.accepted_save
+        && let Some(before) = before_status
+        && let Some(after) = &after_record
+        && let Some(children) = application::lifecycle::cascade_stream_close_if_transitioned(
+            opened,
+            before,
+            after,
+            &uuid::Uuid::new_v4().to_string(),
+        )
+        && let Some(error) = children.completion_error
+    {
+        output.code = 2;
+        output.notices.push(error.clone());
+        output.value["completion_error"] = json!(error);
+    }
+    Ok(output)
 }
 
 pub(super) fn finish_save(

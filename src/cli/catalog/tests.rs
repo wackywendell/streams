@@ -106,7 +106,7 @@ impl Fixture {
         closed: bool,
         all: bool,
     ) -> Result<Output> {
-        list_records(&self.opened, query, status, closed, all, None)
+        list_records(&self.opened, query, status, closed, all, None, None)
     }
     fn update(&self, reference: &str, intent: StreamFields) -> Result<Output> {
         update_record(

@@ -116,33 +116,6 @@ impl HcSource {
             })));
         };
         let mut warnings = Vec::new();
-        if matches!(request, Request::SessionStarted {})
-            && matches!(
-                session.status,
-                streams::model::Status::Parked | streams::model::Status::Closed
-            )
-            && let Ok(opened) = streams::application::open_records(&app.config)
-        {
-            let op = format!("hc-session-resume:{}", uuid::Uuid::new_v4());
-            match streams::application::lifecycle::resume_session(
-                &opened,
-                streams::runtime::conversations::Harness::Pi,
-                &server.session_id,
-                &op,
-            ) {
-                Ok(update) => {
-                    if let Some(error) = update.completion_error {
-                        warnings.push(error);
-                    }
-                    if !update.saves.is_empty()
-                        && let Err(error) = source.notify_saved(&resolved.scope, stopping.clone())
-                    {
-                        warnings.push(error.to_string());
-                    }
-                }
-                Err(error) => warnings.push(error.to_string()),
-            }
-        }
         if let Err(error) =
             source.bind_session(&resolved.scope, &session.stream_id, stopping.clone())
         {
@@ -178,13 +151,22 @@ impl HcSource {
             },
         )?;
         let Self::Registered(source) = self else {
+            let mut first_error = None;
             if bind_space
                 && let Some(session) = &resolved.session
                 && let Err(error) = app.bind_hc_caller_terminal(&session.stream_id)
             {
-                return Err(error);
+                first_error = Some(error);
             }
-            return app.notify_hc_save();
+            if let Err(error) = app.notify_hc_save()
+                && first_error.is_none()
+            {
+                first_error = Some(error);
+            }
+            return match first_error {
+                Some(error) => Err(error),
+                None => Ok(()),
+            };
         };
         let mut first_error = None;
         if bind_space

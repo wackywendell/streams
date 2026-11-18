@@ -39,6 +39,21 @@ pub enum Status {
     Closed,
 }
 
+impl Status {
+    /// Whether work is neither finished (`done`) nor `closed`.
+    pub const fn is_open(self) -> bool {
+        matches!(
+            self,
+            Self::Active | Self::Waiting | Self::Blocked | Self::Parked
+        )
+    }
+
+    /// Whether a local Session is eligible for automatic open/resume selection.
+    pub const fn is_open_eligible(self) -> bool {
+        matches!(self, Self::Active | Self::Parked)
+    }
+}
+
 /// Whether generated reports may replace text. Manual text remains user-owned.
 #[derive(
     Debug,

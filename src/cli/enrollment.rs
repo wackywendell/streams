@@ -184,6 +184,17 @@ impl App {
                         &streams::process::NativeProcessRunner,
                     )?;
             }
+            if stream.status == streams::model::Status::Closed
+                && session.status == streams::model::Status::Active
+                && let Some(reopened) = application::lifecycle::reopen_closed_stream(
+                    opened,
+                    &stream.id,
+                    &format!("{}:reopen", request.operation_id()),
+                )?
+                && let Record::Stream(updated) = reopened.save.current.record
+            {
+                receipt.stream = Some(updated);
+            }
             directory_selected = true;
             Ok(())
         })();

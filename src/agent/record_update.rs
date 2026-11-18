@@ -37,6 +37,9 @@ impl RecordUpdate {
             CapturedEdit::References(edit) => edit.operation_id(),
         }
     }
+    pub fn target(&self) -> &RecordAddress {
+        &self.request.target
+    }
 }
 
 #[derive(Deserialize)]

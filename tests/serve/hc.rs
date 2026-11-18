@@ -822,7 +822,23 @@ fn hc_lifecycle_emits_save_notice_when_changed_and_none_on_noop() {
         );
         drop(conn);
 
-        // 4. Repeat lifecycle park (no-op) does NOT connect to hc or emit a notice; next is EOF retire.
+        // 4. Repeat lifecycle park (no-op) does NOT connect to hc or emit a notice.
+        // 5. Lifecycle resume (parked -> active) emits a new save notice; next is EOF retire.
+        let mut conn = BufReader::new(listener.accept().unwrap().0);
+        respond_hello(&mut conn);
+        let set_notice3 = request(&mut conn, "terminal.label");
+        let tok3 = set_notice3["params"]["labels"][&notice_key_for_server]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_ne!(tok3, tok2);
+        reply(
+            &mut conn,
+            &set_notice3,
+            terminal(json!({(&notice_key_for_server): tok3})),
+        );
+        drop(conn);
+
         let mut conn = BufReader::new(listener.accept().unwrap().0);
         respond_hello(&mut conn);
         let retire = request(&mut conn, "terminal.label");
@@ -871,6 +887,15 @@ fn hc_lifecycle_emits_save_notice_when_changed_and_none_on_noop() {
     assert_eq!(resp4["id"], 4);
     assert_eq!(resp4["outcome"]["status"], "success");
     assert_eq!(resp4["outcome"]["result"]["session_changed"], false);
+
+    // Resume (parked -> active) emits view + save notice.
+    child.send(json!({"type":"request","id":5,"request":{"kind":"lifecycle","action":"resume"},"pi_context":context()}));
+    let view5 = child.next();
+    assert_eq!(view5["type"], "view");
+    let resp5 = child.next();
+    assert_eq!(resp5["id"], 5);
+    assert_eq!(resp5["outcome"]["status"], "success");
+    assert_eq!(resp5["outcome"]["result"]["session_changed"], true);
 
     assert_eq!(child.finish(), (0, String::new()));
     server.join().unwrap();

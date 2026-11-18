@@ -130,6 +130,13 @@ impl App {
                             url,
                             None,
                         )?;
+                        if stream.status == streams::model::Status::Closed {
+                            application::lifecycle::reopen_closed_stream(
+                                &opened,
+                                &stream.id,
+                                &format!("{operation}:reopen"),
+                            )?;
+                        }
                         Ok(())
                     })();
                     if let Err(error) = completion {
@@ -277,22 +284,11 @@ impl App {
                         application::lifecycle::park_session(&opened, harness, &session_id, &op)?
                     }
                 };
-                let mut output = Output::value(json!({
-                    "session_changed": update.session_changed,
-                    "stream_changed": update.stream_changed,
-                    "saves": update.saves.len(),
-                    "session": update.session.as_ref().map(|s| {
-                        streams::codec::record_to_data(&streams::model::Record::Session(s.clone()))
-                    }),
-                }));
+                let mut output = Output::value(update.to_json());
                 output.accepted_save = !update.saves.is_empty();
                 if let Some(error) = update.completion_error {
                     output.code = 2;
-                    output.notices.push(error.clone());
-                    output.value["completion_error"] = json!(error);
-                }
-                if output.accepted_save {
-                    let _ = self.notify_hc_save();
+                    output.notices.push(error);
                 }
                 Ok(output)
             }

@@ -37,7 +37,12 @@ pub(super) fn execute(app: &App, session_id: &str, request: Request) -> Result<O
         Request::Apply { request } => app.apply_request(&serde_json::to_string(&request)?),
         Request::ListStreams {} => {
             let opened = application::open_records(&app.config)?;
-            catalog::list_records(&opened, None, &[], false, false, None)
+            let settings = app.config.load()?;
+            let cutoff_ms = streams::operations::decay_cutoff_ms(
+                settings.lifecycle.decay_days,
+                super::super::now_ms(),
+            );
+            catalog::list_records(&opened, None, &[], false, false, cutoff_ms, None)
         }
         Request::SetTitleDefault { target, mode } => app.set_title_default(target, mode),
         Request::GetConfig {} => Ok(Output::value(
@@ -88,31 +93,7 @@ pub(super) fn execute(app: &App, session_id: &str, request: Request) -> Result<O
                     application::lifecycle::park_session(&opened, Harness::Pi, session_id, &op)?
                 }
             };
-            let saves: Vec<serde_json::Value> = update
-                .saves
-                .iter()
-                .map(|save| {
-                    json!({
-                        "operation_id": op,
-                        "save": {
-                            "local": if save.repeated { "unchanged" } else { "persisted" },
-                            "domain": save.outcome,
-                        }
-                    })
-                })
-                .collect();
-            let mut body = json!({
-                "session_changed": update.session_changed,
-                "stream_changed": update.stream_changed,
-                "saves": saves,
-                "session": update.session.as_ref().map(|s| {
-                    streams::codec::record_to_data(&streams::model::Record::Session(s.clone()))
-                }),
-            });
-            if let Some(error) = &update.completion_error {
-                body["completion_error"] = json!(error);
-            }
-            let mut output = Output::value(body);
+            let mut output = Output::value(update.to_json());
             output.accepted_save = !update.saves.is_empty();
             if let Some(error) = update.completion_error {
                 output.code = 2;

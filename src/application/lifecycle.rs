@@ -4,12 +4,16 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 
-use super::{OpenedRecords, Result};
+use super::{ApplicationError, OpenedRecords, Result};
 use crate::{
+    codec::record_to_data,
     model::{Record, RecordKind, Session, Status, ValidationError},
-    operations::DomainOutcome,
+    operations::{DomainOutcome, decay_cutoff_ms, is_stale_ms},
     runtime::conversations::Harness,
-    storage::records::{RecordAddress, RecordChange, RecordRequest, RecordSave, RecordStore},
+    storage::{
+        StorageError,
+        records::{RecordAddress, RecordChange, RecordRequest, RecordSave, RecordStore},
+    },
 };
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
@@ -21,18 +25,62 @@ pub struct DecaySummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LifecycleSave {
+    pub operation_id: String,
+    pub save: RecordSave,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LifecycleOutcome {
     pub session: Option<Session>,
     pub session_changed: bool,
     pub stream_changed: bool,
-    pub saves: Vec<RecordSave>,
+    pub saves: Vec<LifecycleSave>,
     pub completion_error: Option<String>,
+}
+
+impl LifecycleOutcome {
+    pub fn unchanged(session: Option<Session>) -> Self {
+        Self {
+            session,
+            session_changed: false,
+            stream_changed: false,
+            saves: Vec::new(),
+            completion_error: None,
+        }
+    }
+
+    pub fn to_json(&self) -> serde_json::Value {
+        let saves: Vec<serde_json::Value> = self
+            .saves
+            .iter()
+            .map(|entry| {
+                serde_json::json!({
+                    "operation_id": entry.operation_id,
+                    "save": {
+                        "local": if entry.save.repeated { "unchanged" } else { "persisted" },
+                        "domain": entry.save.outcome,
+                    }
+                })
+            })
+            .collect();
+        let mut body = serde_json::json!({
+            "session_changed": self.session_changed,
+            "stream_changed": self.stream_changed,
+            "saves": saves,
+            "session": self.session.as_ref().map(|s| record_to_data(&Record::Session(s.clone()))),
+        });
+        if let Some(error) = &self.completion_error {
+            body["completion_error"] = serde_json::json!(error);
+        }
+        body
+    }
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct CloseChildrenOutcome {
     pub closed_sessions: usize,
-    pub saves: Vec<RecordSave>,
+    pub saves: Vec<LifecycleSave>,
     pub completion_error: Option<String>,
 }
 
@@ -42,56 +90,125 @@ struct SessionGuard<'a> {
     stream_id: Option<&'a str>,
 }
 
+enum LifecycleSaveError {
+    App(ApplicationError),
+    GuardRejected(Box<Record>),
+}
+
+impl From<StorageError> for LifecycleSaveError {
+    fn from(error: StorageError) -> Self {
+        Self::App(error.into())
+    }
+}
+
+impl From<ValidationError> for LifecycleSaveError {
+    fn from(error: ValidationError) -> Self {
+        Self::App(error.into())
+    }
+}
+
+fn save_record_status(
+    store: &impl RecordStore,
+    address: RecordAddress,
+    operation_id: &str,
+    next_status: Status,
+    allowed: impl Fn(Status) -> bool,
+    guard: SessionGuard<'_>,
+) -> Result<(Record, Option<LifecycleSave>)> {
+    let kind_label = match address.kind() {
+        RecordKind::Session => "session_status",
+        RecordKind::Stream => "stream_status",
+        RecordKind::Host => return Err(ValidationError::new("invalid lifecycle target").into()),
+    };
+    let expected_kind = address.kind();
+    let request = RecordRequest::new(
+        address,
+        operation_id,
+        &serde_json::json!({"lifecycle": kind_label, "status": next_status}),
+    )?;
+    let saved = store.save::<LifecycleSaveError>(&request, |_, before| {
+        let Some(before) = before else {
+            let missing = if expected_kind == RecordKind::Session {
+                "Session is missing"
+            } else {
+                "Stream is missing"
+            };
+            return Err(ValidationError::new(missing).into());
+        };
+        let mut record = before.record.clone();
+        let (id_owned, current_status, stream_ok) = match &record {
+            Record::Session(session) if expected_kind == RecordKind::Session => (
+                session.id.clone(),
+                session.status,
+                guard.stream_id.is_none_or(|sid| sid == session.stream_id),
+            ),
+            Record::Stream(stream) if expected_kind == RecordKind::Stream => {
+                (stream.id.clone(), stream.status, true)
+            }
+            _ => {
+                return Err(ValidationError::new("lifecycle target record kind mismatch").into());
+            }
+        };
+        let revision_ok = guard.revision.is_none_or(|rev| rev == before.revision);
+        if !(revision_ok && stream_ok && allowed(current_status) && current_status != next_status) {
+            // Abort without calling atomic_write or appending a no-op receipt.
+            return Err(LifecycleSaveError::GuardRejected(Box::new(
+                before.record.clone(),
+            )));
+        }
+        match &mut record {
+            Record::Session(session) => session.status = next_status,
+            Record::Stream(stream) => stream.status = next_status,
+            Record::Host(_) => unreachable!(),
+        }
+        let receipt = match expected_kind {
+            RecordKind::Session => serde_json::json!({
+                "outcome": DomainOutcome::Changes,
+                "session_id": id_owned,
+                "status": next_status,
+            }),
+            RecordKind::Stream => serde_json::json!({
+                "outcome": DomainOutcome::Changes,
+                "stream_id": id_owned,
+                "status": next_status,
+            }),
+            RecordKind::Host => unreachable!(),
+        };
+        Ok(RecordChange {
+            record,
+            outcome: receipt.as_object().expect("receipt object").clone(),
+        })
+    });
+    match saved {
+        Ok(save) => {
+            let record = save.current.record.clone();
+            let entry = LifecycleSave {
+                operation_id: operation_id.to_owned(),
+                save,
+            };
+            Ok((record, Some(entry)))
+        }
+        Err(LifecycleSaveError::GuardRejected(record)) => Ok((*record, None)),
+        Err(LifecycleSaveError::App(error)) => Err(error),
+    }
+}
+
 fn save_session_status(
     store: &impl RecordStore,
     host: &str,
     session_id: &str,
     operation_id: &str,
     next_status: Status,
-    allowed_from: &[Status],
+    allowed: impl Fn(Status) -> bool,
     guard: SessionGuard<'_>,
-) -> Result<(Option<Session>, Option<RecordSave>)> {
+) -> Result<(Option<Session>, Option<LifecycleSave>)> {
     let address = RecordAddress::new(host, RecordKind::Session, session_id)?;
-    let request = RecordRequest::new(
-        address,
-        operation_id,
-        &serde_json::json!({"lifecycle":"session_status","status":next_status}),
-    )?;
-    let mut changed = false;
-    let saved = store.save::<super::ApplicationError>(&request, |_, before| {
-        let Some(before) = before else {
-            return Err(ValidationError::new("Session is missing").into());
-        };
-        let Record::Session(mut session) = before.record.clone() else {
-            return Err(ValidationError::new("lifecycle target must be a Session").into());
-        };
-        let revision_ok = guard.revision.is_none_or(|rev| rev == before.revision);
-        let stream_ok = guard.stream_id.is_none_or(|sid| sid == session.stream_id);
-        let outcome = if revision_ok
-            && stream_ok
-            && allowed_from.contains(&session.status)
-            && session.status != next_status
-        {
-            session.status = next_status;
-            changed = true;
-            DomainOutcome::Changes
-        } else {
-            DomainOutcome::NoChange
-        };
-        let receipt = serde_json::json!({
-            "outcome": outcome,
-            "session_id": session.id,
-            "status": session.status,
-        });
-        Ok(RecordChange {
-            record: Record::Session(session),
-            outcome: receipt.as_object().expect("receipt object").clone(),
-        })
-    })?;
-    let Record::Session(session) = saved.current.record.clone() else {
+    let (record, save) =
+        save_record_status(store, address, operation_id, next_status, allowed, guard)?;
+    let Record::Session(session) = record else {
         return Err(ValidationError::new("lifecycle target must be a Session").into());
     };
-    Ok((Some(session), changed.then_some(saved)))
+    Ok((Some(session), save))
 }
 
 fn save_stream_status(
@@ -100,66 +217,56 @@ fn save_stream_status(
     stream_id: &str,
     operation_id: &str,
     next_status: Status,
-    allowed_from: &[Status],
+    allowed: impl Fn(Status) -> bool,
     expected_revision: Option<&str>,
-) -> Result<Option<RecordSave>> {
+) -> Result<Option<LifecycleSave>> {
     let address = RecordAddress::new(host, RecordKind::Stream, stream_id)?;
-    let request = RecordRequest::new(
+    let (_, save) = save_record_status(
+        store,
         address,
         operation_id,
-        &serde_json::json!({"lifecycle":"stream_status","status":next_status}),
+        next_status,
+        allowed,
+        SessionGuard {
+            revision: expected_revision,
+            stream_id: None,
+        },
     )?;
-    let mut changed = false;
-    let saved = store.save::<super::ApplicationError>(&request, |_, before| {
-        let Some(before) = before else {
-            return Err(ValidationError::new("Stream is missing").into());
-        };
-        let Record::Stream(mut stream) = before.record.clone() else {
-            return Err(ValidationError::new("lifecycle target must be a Stream").into());
-        };
-        let revision_ok = expected_revision.is_none_or(|rev| rev == before.revision);
-        let outcome =
-            if revision_ok && allowed_from.contains(&stream.status) && stream.status != next_status
-            {
-                stream.status = next_status;
-                changed = true;
-                DomainOutcome::Changes
-            } else {
-                DomainOutcome::NoChange
-            };
-        let receipt = serde_json::json!({
-            "outcome": outcome,
-            "stream_id": stream.id,
-            "status": stream.status,
-        });
-        Ok(RecordChange {
-            record: Record::Stream(stream),
-            outcome: receipt.as_object().expect("receipt object").clone(),
-        })
-    })?;
-    Ok(changed.then_some(saved))
+    Ok(save)
 }
 
-/// Reopen a `closed` Stream only when an enrolled Session in it is actively resumed/enrolled.
-/// Reads and saves only the addressed Stream record (zero host scans).
+/// Reopen a `closed` Stream when an enrolled Session in it is actively resumed or enrolled.
+/// Reads first so an already-open Stream performs zero write-lock acquisitions or file rewrites.
 pub fn reopen_closed_stream(
     opened: &OpenedRecords,
     stream_id: &str,
     operation_id: &str,
-) -> Result<Option<RecordSave>> {
+) -> Result<Option<LifecycleSave>> {
+    let host = opened.host().as_str();
+    let addr = RecordAddress::new(host, RecordKind::Stream, stream_id)?;
+    let read = opened
+        .records()
+        .with_reader(|r| r.read(&addr))?
+        .ok_or_else(|| ValidationError::new("Stream is missing"))?;
+    let Record::Stream(stream) = read.record else {
+        return Err(ValidationError::new("lifecycle target must be a Stream").into());
+    };
+    if stream.status != Status::Closed {
+        return Ok(None);
+    }
     save_stream_status(
         opened.records(),
-        opened.host().as_str(),
+        host,
         stream_id,
         operation_id,
         Status::Active,
-        &[Status::Closed],
+        |status| status == Status::Closed,
         None,
     )
 }
 
-/// Close every non-done, non-closed Session still belonging to `stream_id`, preserving
-/// all accepted saves and surfacing any partial failure without rolling back prior writes.
+/// Close every open Session still belonging to `stream_id`, preserving all accepted saves
+/// and surfacing any partial failure without rolling back prior writes.
 pub fn close_stream_sessions(
     opened: &OpenedRecords,
     stream_id: &str,
@@ -176,20 +283,20 @@ pub fn close_stream_sessions(
             };
         }
     };
-    let mut candidates = Vec::new();
-    for read in session_reads {
-        let Record::Session(session) = read.record else {
-            continue;
-        };
-        if session.stream_id != stream_id || matches!(session.status, Status::Done | Status::Closed)
-        {
-            continue;
-        }
-        candidates.push((session.id, read.revision));
-    }
+    let candidates: Vec<String> = session_reads
+        .into_iter()
+        .filter_map(|read| match read.record {
+            Record::Session(session)
+                if session.stream_id == stream_id && session.status.is_open() =>
+            {
+                Some(session.id)
+            }
+            _ => None,
+        })
+        .collect();
     let mut outcome = CloseChildrenOutcome::default();
     let mut errors = Vec::new();
-    for (session_id, revision) in candidates {
+    for session_id in candidates {
         let op = format!("{operation_id_prefix}:{session_id}");
         match save_session_status(
             opened.records(),
@@ -197,14 +304,9 @@ pub fn close_stream_sessions(
             &session_id,
             &op,
             Status::Closed,
-            &[
-                Status::Active,
-                Status::Waiting,
-                Status::Blocked,
-                Status::Parked,
-            ],
+            Status::is_open,
             SessionGuard {
-                revision: Some(&revision),
+                revision: None,
                 stream_id: Some(stream_id),
             },
         ) {
@@ -222,56 +324,57 @@ pub fn close_stream_sessions(
     outcome
 }
 
-/// Reactivate a parked or closed Session, reopening a closed Stream only if the Session
-/// actually transitioned. Preserves accepted Session writes if reopening the Stream fails.
-pub fn resume_session(
+/// Cascade child Session closures when a Stream edit transitions its status to `Closed`.
+pub fn cascade_stream_close_if_transitioned(
+    opened: &OpenedRecords,
+    before_status: Status,
+    after_record: &Record,
+    operation_id_prefix: &str,
+) -> Option<CloseChildrenOutcome> {
+    let Record::Stream(stream) = after_record else {
+        return None;
+    };
+    if before_status == Status::Closed || stream.status != Status::Closed {
+        return None;
+    }
+    Some(close_stream_sessions(
+        opened,
+        &stream.id,
+        operation_id_prefix,
+    ))
+}
+
+fn transition_session_status(
     opened: &OpenedRecords,
     harness: Harness,
     native_id: &str,
     operation_id: &str,
+    next_status: Status,
+    allowed: impl Fn(Status) -> bool + Copy,
+    reopen_stream: bool,
 ) -> Result<LifecycleOutcome> {
     let host = opened.host().as_str();
     let id = Session::id_for(host, harness.as_ref(), native_id);
     let addr = RecordAddress::new(host, RecordKind::Session, &id)?;
     let Some(read) = opened.records().with_reader(|r| r.read(&addr))? else {
-        return Ok(LifecycleOutcome {
-            session: None,
-            session_changed: false,
-            stream_changed: false,
-            saves: Vec::new(),
-            completion_error: None,
-        });
+        return Ok(LifecycleOutcome::unchanged(None));
     };
     let Record::Session(existing) = read.record else {
-        return Ok(LifecycleOutcome {
-            session: None,
-            session_changed: false,
-            stream_changed: false,
-            saves: Vec::new(),
-            completion_error: None,
-        });
+        return Ok(LifecycleOutcome::unchanged(None));
     };
-    if !matches!(existing.status, Status::Parked | Status::Closed) {
-        return Ok(LifecycleOutcome {
-            session: Some(existing),
-            session_changed: false,
-            stream_changed: false,
-            saves: Vec::new(),
-            completion_error: None,
-        });
-    }
-    let (session, session_save) = save_session_status(
-        opened.records(),
-        host,
-        &existing.id,
-        &format!("{operation_id}:session"),
-        Status::Active,
-        &[Status::Parked, Status::Closed],
-        SessionGuard {
-            revision: Some(&read.revision),
-            stream_id: None,
-        },
-    )?;
+    let (session, session_save) = if allowed(existing.status) && existing.status != next_status {
+        save_session_status(
+            opened.records(),
+            host,
+            &existing.id,
+            &format!("{operation_id}:session"),
+            next_status,
+            allowed,
+            SessionGuard::default(),
+        )?
+    } else {
+        (Some(existing), None)
+    };
     let mut saves = Vec::new();
     let session_changed = if let Some(save) = session_save {
         saves.push(save);
@@ -281,7 +384,10 @@ pub fn resume_session(
     };
     let mut stream_changed = false;
     let mut completion_error = None;
-    if session_changed && let Some(session_ref) = &session {
+    if reopen_stream
+        && let Some(session_ref) = &session
+        && session_ref.status == Status::Active
+    {
         match reopen_closed_stream(
             opened,
             &session_ref.stream_id,
@@ -306,6 +412,25 @@ pub fn resume_session(
     })
 }
 
+/// Reactivate a parked or closed Session, reopening a closed parent Stream when active.
+/// Preserves accepted Session writes if reopening the Stream fails.
+pub fn resume_session(
+    opened: &OpenedRecords,
+    harness: Harness,
+    native_id: &str,
+    operation_id: &str,
+) -> Result<LifecycleOutcome> {
+    transition_session_status(
+        opened,
+        harness,
+        native_id,
+        operation_id,
+        Status::Active,
+        |status| matches!(status, Status::Parked | Status::Closed),
+        true,
+    )
+}
+
 /// Park an active Session when its harness conversation shuts down.
 /// Reads and saves only the addressed Session record (zero host scans, never reopens a Stream).
 pub fn park_session(
@@ -314,62 +439,15 @@ pub fn park_session(
     native_id: &str,
     operation_id: &str,
 ) -> Result<LifecycleOutcome> {
-    let host = opened.host().as_str();
-    let id = Session::id_for(host, harness.as_ref(), native_id);
-    let addr = RecordAddress::new(host, RecordKind::Session, &id)?;
-    let Some(read) = opened.records().with_reader(|r| r.read(&addr))? else {
-        return Ok(LifecycleOutcome {
-            session: None,
-            session_changed: false,
-            stream_changed: false,
-            saves: Vec::new(),
-            completion_error: None,
-        });
-    };
-    let Record::Session(existing) = read.record else {
-        return Ok(LifecycleOutcome {
-            session: None,
-            session_changed: false,
-            stream_changed: false,
-            saves: Vec::new(),
-            completion_error: None,
-        });
-    };
-    if existing.status != Status::Active {
-        return Ok(LifecycleOutcome {
-            session: Some(existing),
-            session_changed: false,
-            stream_changed: false,
-            saves: Vec::new(),
-            completion_error: None,
-        });
-    }
-    let (session, session_save) = save_session_status(
-        opened.records(),
-        host,
-        &existing.id,
-        &format!("{operation_id}:session"),
+    transition_session_status(
+        opened,
+        harness,
+        native_id,
+        operation_id,
         Status::Parked,
-        &[Status::Active],
-        SessionGuard {
-            revision: Some(&read.revision),
-            stream_id: None,
-        },
-    )?;
-    let mut saves = Vec::new();
-    let session_changed = if let Some(save) = session_save {
-        saves.push(save);
-        true
-    } else {
-        false
-    };
-    Ok(LifecycleOutcome {
-        session,
-        session_changed,
-        stream_changed: false,
-        saves,
-        completion_error: None,
-    })
+        |status| status == Status::Active,
+        false,
+    )
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -383,14 +461,9 @@ pub(crate) fn plan_decay(
     decay_days: u32,
     now_ms: u64,
 ) -> Result<DecayPlan> {
-    if decay_days == 0 {
+    let Some(cutoff_ms) = decay_cutoff_ms(decay_days, now_ms) else {
         return Ok(DecayPlan::default());
-    }
-    let threshold_ms = u64::from(decay_days).saturating_mul(86_400_000);
-    let cutoff_ms = now_ms.saturating_sub(threshold_ms);
-    if cutoff_ms == 0 {
-        return Ok(DecayPlan::default());
-    }
+    };
 
     let host = opened.host().as_str();
     let session_reads = opened.host_sessions()?;
@@ -432,22 +505,19 @@ pub(crate) fn plan_decay(
         let stream_ms = timestamps.get(&addr).copied().unwrap_or(0);
         let session_ms = latest_session_ms.get(&stream.id).copied().unwrap_or(0);
         let effective_ms = stream_ms.max(session_ms);
-        if !matches!(stream.status, Status::Done | Status::Closed)
-            && effective_ms > 0
-            && effective_ms < cutoff_ms
-        {
+        if stream.status.is_open() && is_stale_ms(effective_ms, Some(cutoff_ms)) {
             decayed_streams.insert(stream.id.clone());
             plan.streams.push((stream.id.clone(), revision.clone()));
         }
     }
 
     for (s, revision) in &sessions {
-        if matches!(s.status, Status::Done | Status::Closed) {
+        if !s.status.is_open() {
             continue;
         }
         let addr = RecordAddress::new(host, RecordKind::Session, &s.id)?;
         let ms = timestamps.get(&addr).copied().unwrap_or(0);
-        if decayed_streams.contains(&s.stream_id) || (ms > 0 && ms < cutoff_ms) {
+        if decayed_streams.contains(&s.stream_id) || is_stale_ms(ms, Some(cutoff_ms)) {
             plan.sessions
                 .push((s.id.clone(), s.stream_id.clone(), revision.clone()));
         }
@@ -463,6 +533,7 @@ pub(crate) fn apply_decay_plan(
 ) -> DecaySummary {
     let host = opened.host().as_str();
     let mut summary = DecaySummary::default();
+    let mut skipped_streams = BTreeSet::new();
 
     for (session_id, stream_id, revision) in &plan.sessions {
         let op = format!("{operation_id_prefix}:decay:session:{session_id}");
@@ -472,26 +543,29 @@ pub(crate) fn apply_decay_plan(
             session_id,
             &op,
             Status::Closed,
-            &[
-                Status::Active,
-                Status::Waiting,
-                Status::Blocked,
-                Status::Parked,
-            ],
+            Status::is_open,
             SessionGuard {
                 revision: Some(revision),
                 stream_id: Some(stream_id),
             },
         ) {
             Ok((_, Some(_))) => summary.closed_sessions += 1,
-            Ok((_, None)) => {}
-            Err(error) => summary
-                .errors
-                .push(format!("session {session_id}: {error}")),
+            Ok((_, None)) => {
+                skipped_streams.insert(stream_id.clone());
+            }
+            Err(error) => {
+                skipped_streams.insert(stream_id.clone());
+                summary
+                    .errors
+                    .push(format!("session {session_id}: {error}"));
+            }
         }
     }
 
     for (stream_id, revision) in &plan.streams {
+        if skipped_streams.contains(stream_id) {
+            continue;
+        }
         let op = format!("{operation_id_prefix}:decay:stream:{stream_id}");
         match save_stream_status(
             opened.records(),
@@ -499,12 +573,7 @@ pub(crate) fn apply_decay_plan(
             stream_id,
             &op,
             Status::Closed,
-            &[
-                Status::Active,
-                Status::Waiting,
-                Status::Blocked,
-                Status::Parked,
-            ],
+            Status::is_open,
             Some(revision),
         ) {
             Ok(Some(_)) => summary.closed_streams += 1,
@@ -788,7 +857,7 @@ mod tests {
             &s_active.id,
             "close-moved",
             Status::Closed,
-            &[Status::Active],
+            Status::is_open,
             SessionGuard {
                 revision: None,
                 stream_id: Some("a"),
@@ -848,26 +917,94 @@ mod tests {
         save_user_edit(
             opened.records(),
             "concurrent-report",
-            &Record::Session(s_raced),
+            &Record::Session(s_raced.clone()),
             &changes,
             TitleDefaults::default(),
         )
         .unwrap();
+        let raced_addr = RecordAddress::new(&host, RecordKind::Session, &s_raced.id).unwrap();
+        let raced_rev_before = opened
+            .records()
+            .with_reader(|r| r.read(&raced_addr))
+            .unwrap()
+            .unwrap()
+            .revision;
 
         let summary = apply_decay_plan(&opened, &plan, "decay-stale");
         assert_eq!(
             summary,
             DecaySummary {
                 closed_sessions: 1, // n-stale closed, n-raced skipped due to revision mismatch!
-                closed_streams: 1,
+                closed_streams: 0,  // stale Stream stays open because n-raced remained Active!
                 errors: Vec::new(),
             }
         );
         assert_eq!(read_session_status(&opened, "n-stale"), Status::Closed);
         assert_eq!(read_session_status(&opened, "n-raced"), Status::Active);
-        assert_eq!(read_stream_status(&opened, "stale"), Status::Closed);
+        assert_eq!(read_stream_status(&opened, "stale"), Status::Active);
+        // Guard rejection must NOT rewrite n-raced or bump its revision!
+        let raced_rev_after = opened
+            .records()
+            .with_reader(|r| r.read(&raced_addr))
+            .unwrap()
+            .unwrap()
+            .revision;
+        assert_eq!(raced_rev_before, raced_rev_after);
         assert_eq!(read_session_status(&opened, "n-done"), Status::Done);
         assert_eq!(read_stream_status(&opened, "finished"), Status::Done);
+    }
+
+    #[test]
+    fn park_and_resume_tolerate_concurrent_non_status_edits_and_reopen_closed_stream_on_active() {
+        let (_dir, config, opened) = setup_opened();
+        let host = opened.host().as_str().to_string();
+        let mut closed_stream = Stream::new("work", "Work", None, &host).unwrap();
+        closed_stream.status = Status::Closed;
+        create_record(opened.records(), "cs-1", &Record::Stream(closed_stream)).unwrap();
+
+        // Already-active session inside a closed stream reopens the stream on resume without a redundant session write.
+        let active = session_with_status(&host, "work", "n-active", Status::Active);
+        create_record(opened.records(), "cs-2", &Record::Session(active.clone())).unwrap();
+        let reopened = resume_session(&opened, Harness::Pi, "n-active", "resume-active").unwrap();
+        assert!(!reopened.session_changed);
+        assert!(reopened.stream_changed);
+        assert_eq!(reopened.saves.len(), 1);
+        assert_eq!(read_stream_status(&opened, "work"), Status::Active);
+
+        // Second resume on already-open stream performs zero file writes or lock acquisitions.
+        let events = Arc::new(Mutex::new(Vec::<RecordIoEvent>::new()));
+        let sink = events.clone();
+        let observed =
+            open_records_observed(&config, move |ev| sink.lock().unwrap().push(ev)).unwrap();
+        events.lock().unwrap().clear();
+        let noop = resume_session(&observed, Harness::Pi, "n-active", "resume-noop").unwrap();
+        assert!(!noop.session_changed);
+        assert!(!noop.stream_changed);
+        assert!(noop.saves.is_empty());
+        assert!(
+            events
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|ev| !matches!(ev, RecordIoEvent::Written(_, _)))
+        );
+
+        // Concurrent non-status edit does not block park_session.
+        let changes = json!({"recap": "Concurrent report"})
+            .as_object()
+            .unwrap()
+            .clone();
+        save_user_edit(
+            opened.records(),
+            "concurrent-report-2",
+            &Record::Session(active),
+            &changes,
+            TitleDefaults::default(),
+        )
+        .unwrap();
+        let parked = park_session(&opened, Harness::Pi, "n-active", "park-concurrent").unwrap();
+        assert!(parked.session_changed);
+        assert_eq!(read_session_status(&opened, "n-active"), Status::Parked);
     }
 
     #[test]

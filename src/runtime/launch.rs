@@ -7,7 +7,7 @@ use super::{
     conversations::{ConversationRoots, Harness, conversation_file},
     invalid, text,
 };
-use crate::model::{Session, Status, Stream};
+use crate::model::{Session, Stream};
 
 /// Resolve on the owner before hc can interpret argv[0] as a template name.
 pub fn resolve_executable(
@@ -130,7 +130,7 @@ fn shell_quote(value: &str) -> String {
     }
 }
 
-/// Explicit references may select done/parked sessions; implicit selection never does.
+/// Explicit references may select done/closed sessions; implicit selection picks open sessions.
 pub fn select_session<'a>(
     stream: &Stream,
     sessions: &'a [Session],
@@ -172,7 +172,7 @@ pub fn select_session<'a>(
     } else {
         eligible
             .into_iter()
-            .filter(|s| !matches!(s.status, Status::Done | Status::Parked | Status::Closed))
+            .filter(|s| s.status.is_open())
             .collect()
     };
     match (matches.as_slice(), reference) {

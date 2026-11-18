@@ -3,7 +3,7 @@ use args::{SessionSelection, StreamFields};
 use std::sync::{Arc, atomic::AtomicBool};
 use streams::{
     frontend::{FrontendId, herdr::HerdrNativeSnapshot},
-    model::{RecordKind, Status},
+    model::RecordKind,
     runtime::{
         conversations::ConversationRoots,
         native_markers::selected_stream,
@@ -74,7 +74,7 @@ fn requested_sessions<'a>(
     }
     Ok(members
         .into_iter()
-        .filter(|session| session.status == Status::Active)
+        .filter(|session| session.status.is_open_eligible())
         .collect())
 }
 

@@ -3093,4 +3093,63 @@ fn host_streams_lists_all_streams_with_active_session_counts_and_recency() {
             .windows(2)
             .all(|w| w[0].last_updated_ms >= w[1].last_updated_ms)
     );
+
+    // Parked sessions remain eligible for Streams::select_open alongside Active sessions.
+    let mut parked_session = fixture.sessions[0].clone();
+    parked_session.status = Status::Parked;
+    application::save_user_edit(
+        fixture.records.records(),
+        "park-for-select-open",
+        &Record::Session(fixture.sessions[0].clone()),
+        &json!({"status": "parked"}).as_object().unwrap().clone(),
+        streams::model::TitleDefaults::default(),
+    )
+    .unwrap();
+    let (_, selected_open) = application::integration::Streams::new(&fixture.records)
+        .select_open("work", &SessionSelection::AllEligible)
+        .unwrap();
+    assert!(
+        selected_open
+            .iter()
+            .any(|s| s.id == fixture.sessions[0].id && s.status == Status::Parked)
+    );
+
+    // HostStreams and StreamView agree on projected Closed status under decay_days.
+    let future_now =
+        value.iter().map(|s| s.last_updated_ms).max().unwrap_or(0) + 20u64 * 86_400_000;
+    let decayed_facade =
+        application::integration::Streams::new(&fixture.records).with_lifecycle(14, future_now);
+    let decayed_replies = decayed_facade
+        .read_views(
+            &[
+                ViewSelection::HostStreams {},
+                ViewSelection::SavedStream {
+                    stream: "work".into(),
+                },
+            ],
+            Access::Unavailable {
+                reason: "none".into(),
+            },
+            Access::Unavailable {
+                reason: "none".into(),
+            },
+        )
+        .unwrap();
+    let WireResult::Ok(ModReadValue::HostStreams {
+        value: decayed_list,
+    }) = &decayed_replies[0]
+    else {
+        panic!("expected HostStreams");
+    };
+    let WireResult::Ok(ModReadValue::Stream {
+        value: decayed_view,
+    }) = &decayed_replies[1]
+    else {
+        panic!("expected StreamView");
+    };
+    assert_eq!(
+        decayed_list.iter().find(|s| s.id == "work").unwrap().status,
+        Status::Closed
+    );
+    assert_eq!(decayed_view.status, Status::Closed);
 }
