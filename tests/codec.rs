@@ -218,7 +218,6 @@ fn defaults_apply_only_to_missing_nonnullable_fields() {
     assert_eq!(encoded["title_mode"], "inherit");
     assert_eq!(encoded["goal_mode"], "automatic");
     assert_eq!(encoded["status"], "active");
-    assert_eq!(encoded["archived"], false);
     assert_eq!(encoded["repositories"], json!({}));
     assert_eq!(encoded["goal_short"], Value::Null);
     assert_eq!(encoded["references"], json!([]));
@@ -226,7 +225,6 @@ fn defaults_apply_only_to_missing_nonnullable_fields() {
         "title_mode",
         "goal_mode",
         "status",
-        "archived",
         "repositories",
         "references",
     ] {

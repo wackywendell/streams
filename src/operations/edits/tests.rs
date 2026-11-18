@@ -208,14 +208,14 @@ fn local_work_and_stream_input_changes_supersede_old_inference() {
         edit.apply(&target, Some(&current), NamingMode::Automatic),
         Reconciliation::Changes { .. }
     ));
-    let mut archived_target = target.clone();
-    archived_target.archived = true;
+    let mut closed_target = target.clone();
+    closed_target.status = Status::Closed;
     let Record::Stream(after) =
-        changed(edit.apply(&archived_target, Some(&before), NamingMode::Automatic))
+        changed(edit.apply(&closed_target, Some(&before), NamingMode::Automatic))
     else {
         unreachable!()
     };
-    assert!(after.archived);
+    assert_eq!(after.status, Status::Closed);
     assert_eq!(after.goal.as_deref(), Some("old goal"));
     let mut prose_changed_target = target.clone();
     prose_changed_target.goal = Some("concurrent goal".into());

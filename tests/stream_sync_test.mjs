@@ -15,7 +15,7 @@ const { editRequest } = await load('core');
 const { defaults } = await load('settings');
 const local = {local:'unchanged',sharing:'local-only',domain:null};
 function context() {
- const stream={id:'effort',title:'Manual',title_mode:'manual',goal:'Manual goal',goal_short:null,goal_mode:'manual',status:'active',archived:false,owner:{host_id:'host'},repositories:{},references:[]};
+ const stream={id:'effort',title:'Manual',title_mode:'manual',goal:'Manual goal',goal_short:null,goal_mode:'manual',status:'active',owner:{host_id:'host'},repositories:{},references:[]};
  const session={id:'session',host_id:'host',stream_id:'effort',harness:'pi',harness_session_id:'native',title:'Session',title_mode:'automatic',status:'active',state:'',state_short:null,remaining:'',checkout:null};
  return {catalog_source:'source',host_id:'host',stream,session,sessions:[session],title_defaults:{stream:'automatic',session:'automatic'}};
 }

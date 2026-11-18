@@ -151,7 +151,7 @@ function paneFixture(t,options={}) {
   return {status:'success',result:request.kind==='close_card'?{closed:true}:{display:'opened'}};
  }});
  const attach=()=>{
-  catalog.stream={id:'effort',title:'Work',title_mode:'automatic',goal:'Goal',goal_mode:'automatic',goal_short:null,status:'active',archived:false,owner:{host_id:'host'},repositories:{},references:[]};
+  catalog.stream={id:'effort',title:'Work',title_mode:'automatic',goal:'Goal',goal_mode:'automatic',goal_short:null,status:'active',owner:{host_id:'host'},repositories:{},references:[]};
   catalog.session={id:f.id,host_id:'host',stream_id:'effort',harness:'pi',harness_session_id:f.id,title:'Contribution',title_mode:'automatic',status:'active',recap:'',state:'',state_short:null,remaining:'',checkout:null};
   catalog.sessions=[catalog.session];
  };
@@ -186,7 +186,7 @@ test('empty startup and explicit reports do no native or model work',async t=>{
 });
 test('first report waits for native startup and captures the workspace Stream before enrollment',async t=>{
  environment(t);let release;
- const stream={id:'effort',title:'Work',title_mode:'automatic',goal:'Goal',goal_mode:'automatic',goal_short:null,status:'active',archived:false,owner:{host_id:'host'},repositories:{},references:[]};
+ const stream={id:'effort',title:'Work',title_mode:'automatic',goal:'Goal',goal_mode:'automatic',goal_short:null,status:'active',owner:{host_id:'host'},repositories:{},references:[]};
  const f=paneFixture(t,{empty:true,workspaceStream:stream,beforeStart:()=>new Promise(resolve=>release=resolve),infer:async(_ctx,request)=>{
   if(request.type==='enroll')assert.deepEqual(request.catalog.stream,stream);
  }});
@@ -202,7 +202,7 @@ test('first report waits for native startup and captures the workspace Stream be
 });
 for(const operation of ['read','select','create','attach'])test(`first ${operation} initializes native context even with reporting and enrollment manual`,async t=>{
  environment(t);
- const stream={id:'effort',title:'Work',title_mode:'automatic',goal:'Goal',goal_mode:'automatic',goal_short:null,status:'active',archived:false,owner:{host_id:'host'},repositories:{},references:[]};
+ const stream={id:'effort',title:'Work',title_mode:'automatic',goal:'Goal',goal_mode:'automatic',goal_short:null,status:'active',owner:{host_id:'host'},repositories:{},references:[]};
  const f=paneFixture(t,{empty:true,realClient:true,workspaceStream:stream,settings:{reporting:'manual',enrollment:'manual'}});
  f.ctx.ui.editor=async(_title,initial)=>initial||'Contribution';f.ctx.ui.confirm=async()=>true;
  await f.start();assert.deepEqual(f.steps,[]);

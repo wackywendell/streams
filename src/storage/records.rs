@@ -126,6 +126,10 @@ pub trait RecordInventory {
     fn inventory(&self) -> Result<Vec<RecordRead>, StorageError>;
     fn host_sessions(&self, host: &str) -> Result<Vec<RecordRead>, StorageError>;
     fn host_streams(&self, host: &str) -> Result<Vec<RecordRead>, StorageError>;
+    fn last_updated_ms(
+        &self,
+        addresses: &[RecordAddress],
+    ) -> Result<std::collections::BTreeMap<RecordAddress, u64>, StorageError>;
 }
 
 /// Serialization belongs to the adapter. No action manages a multi-file transaction.

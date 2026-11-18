@@ -13,7 +13,7 @@ const response=changes=>({role:'assistant',api:'openai-responses',provider:'test
 const runtime=complete=>({model,modelRegistry:{find:(p,id)=>p===model.provider&&id===model.id?model:undefined,complete}});
 function fixture(){
  const directory=mkdtempSync(join(tmpdir(),'streams-primitives-')),root=join(directory,'debug'),manager=SessionManager.inMemory(directory,{id:'native'});
- const stream={id:'effort',title:'Work',title_mode:'automatic',goal:'Goal',goal_short:null,goal_mode:'automatic',status:'active',archived:false,owner:{host_id:'host'},repositories:{},references:[]};
+ const stream={id:'effort',title:'Work',title_mode:'automatic',goal:'Goal',goal_short:null,goal_mode:'automatic',status:'active',owner:{host_id:'host'},repositories:{},references:[]};
  const session={id:sessionId('host','pi','native'),host_id:'host',stream_id:'effort',harness:'pi',harness_session_id:'native',title:'Lane',title_mode:'automatic',status:'active',state:'Before',state_short:null,remaining:'Next',checkout:null};
  const catalog={catalog_source:'source',host_id:'host',stream,session,sessions:[session],title_defaults:{stream:'automatic',session:'automatic'}};
  manager.appendMessage({role:'user',content:[{type:'text',text:'Synthetic evidence'},{type:'image',data:'AA==',mimeType:'image/png'}],timestamp:1});

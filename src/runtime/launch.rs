@@ -172,7 +172,7 @@ pub fn select_session<'a>(
     } else {
         eligible
             .into_iter()
-            .filter(|s| !matches!(s.status, Status::Done | Status::Parked))
+            .filter(|s| !matches!(s.status, Status::Done | Status::Parked | Status::Closed))
             .collect()
     };
     match (matches.as_slice(), reference) {

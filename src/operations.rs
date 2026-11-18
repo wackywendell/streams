@@ -326,7 +326,6 @@ record_fields! {
             goal_short: (true, Automatic),
             goal_mode: (false, User),
             status: (false, User),
-            archived: (false, User),
             repositories: (true, None),
         ]
     },
@@ -405,7 +404,7 @@ mod field_policy_tests {
             ),
             (
                 RecordKind::Stream,
-                "title_mode goal_mode status archived",
+                "title_mode goal_mode status",
                 false,
                 true,
                 false,

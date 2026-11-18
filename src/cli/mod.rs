@@ -780,7 +780,7 @@ impl App {
             Command::List {
                 query,
                 status,
-                archived,
+                closed,
                 all,
                 refresh,
             } => {
@@ -790,14 +790,7 @@ impl App {
                 } else {
                     None
                 };
-                catalog::list_records(
-                    &opened,
-                    query.as_deref(),
-                    &status,
-                    archived,
-                    all,
-                    publication,
-                )
+                catalog::list_records(&opened, query.as_deref(), &status, closed, all, publication)
             }
             Command::Show { target, refresh } => self.show_records(&target, refresh),
             Command::Create { title, fields, cwd } => {
@@ -847,8 +840,12 @@ impl App {
                     || Uuid::new_v4().to_string(),
                 )
             }
-            Command::Archive { target } => self.archive(&target, true),
-            Command::Restore { target } => self.archive(&target, false),
+            Command::Close { target } => {
+                self.set_stream_status(&target, streams::model::Status::Closed)
+            }
+            Command::Restore { target } => {
+                self.set_stream_status(&target, streams::model::Status::Active)
+            }
             Command::Check { reference } => {
                 let opened = application::open_records(&self.config)?;
                 catalog::check(&opened, reference.as_deref())
@@ -861,21 +858,21 @@ impl App {
             Command::Agent { command } => self.agent(command),
         }
     }
-    fn archive(&self, target: &Target, archived: bool) -> Result<Output> {
+    fn set_stream_status(&self, target: &Target, status: streams::model::Status) -> Result<Output> {
         let opened = application::open_records(&self.config)?;
         let settings = self.config.load()?;
         if settings.catalog_root != opened.root() {
             return Err(CliError::message(
-                "catalog root setting changed during archive",
+                "catalog root setting changed during status update",
             ));
         }
         let stream = self.record_target(&opened, target)?;
         catalog::save_stream_edit(
             &opened,
             &stream,
-            json!({"archived":archived})
+            json!({"status": status})
                 .as_object()
-                .expect("archive fields")
+                .expect("status field")
                 .clone(),
             settings.naming,
             &Uuid::new_v4().to_string(),

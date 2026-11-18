@@ -248,6 +248,9 @@ impl<'a> Streams<'a> {
         sessions: &std::collections::BTreeMap<String, Session>,
     ) -> Result<Vec<crate::integration::StreamSummary>> {
         use crate::integration::StreamSummary;
+        let host = self.records.host().as_str();
+        let stream_reads = self.records.host_streams()?;
+        let mut addresses = Vec::with_capacity(stream_reads.len() + sessions.len());
         let mut counts: std::collections::BTreeMap<String, (usize, usize)> =
             std::collections::BTreeMap::new();
         for session in sessions.values() {
@@ -256,15 +259,34 @@ impl<'a> Streams<'a> {
                 entry.0 += 1;
             }
             entry.1 += 1;
+            addresses.push(RecordAddress::new(host, RecordKind::Session, &session.id)?);
         }
-        let mut summaries = Vec::new();
-        for read in self.records.host_streams()? {
+        let mut streams = Vec::with_capacity(stream_reads.len());
+        for read in stream_reads {
             let Record::Stream(stream) = read.record else {
                 unreachable!("Stream partition")
             };
-            if stream.archived {
-                continue;
+            addresses.push(RecordAddress::new(host, RecordKind::Stream, &stream.id)?);
+            streams.push(stream);
+        }
+        let timestamps = self.records.last_updated_ms(&addresses)?;
+        let mut latest_session_ms: std::collections::BTreeMap<String, u64> =
+            std::collections::BTreeMap::new();
+        for session in sessions.values() {
+            let addr = RecordAddress::new(host, RecordKind::Session, &session.id)?;
+            if let Some(&ms) = timestamps.get(&addr) {
+                let entry = latest_session_ms
+                    .entry(session.stream_id.clone())
+                    .or_insert(0);
+                *entry = (*entry).max(ms);
             }
+        }
+        let mut summaries = Vec::with_capacity(streams.len());
+        for stream in streams {
+            let stream_addr = RecordAddress::new(host, RecordKind::Stream, &stream.id)?;
+            let stream_ms = timestamps.get(&stream_addr).copied().unwrap_or(0);
+            let session_ms = latest_session_ms.get(&stream.id).copied().unwrap_or(0);
+            let last_updated_ms = stream_ms.max(session_ms);
             let (active_sessions, total_sessions) =
                 counts.get(&stream.id).copied().unwrap_or((0, 0));
             summaries.push(StreamSummary {
@@ -274,11 +296,12 @@ impl<'a> Streams<'a> {
                 status: stream.status,
                 active_sessions,
                 total_sessions,
+                last_updated_ms,
             });
         }
         summaries.sort_by_cached_key(|summary| {
             (
-                summary.active_sessions == 0,
+                std::cmp::Reverse(summary.last_updated_ms),
                 icu_casemap::CaseMapper::new()
                     .fold_string(&summary.title)
                     .into_owned(),

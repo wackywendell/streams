@@ -127,8 +127,8 @@ pub(super) enum Command {
         query: Option<String>,
         #[arg(long, action = ArgAction::Append)]
         status: Vec<Status>,
-        #[arg(long, conflicts_with = "all")]
-        archived: bool,
+        #[arg(long, alias = "archived", conflicts_with = "all")]
+        closed: bool,
         #[arg(long)]
         all: bool,
         #[arg(long)]
@@ -180,7 +180,8 @@ pub(super) enum Command {
         #[command(flatten)]
         fields: StreamFields,
     },
-    Archive {
+    #[command(alias = "archive")]
+    Close {
         #[command(flatten)]
         target: Target,
     },
@@ -614,12 +615,12 @@ mod tests {
         assert!(matches!(
             parsed.command,
             Command::List {
-                archived: false,
+                closed: false,
                 all: false,
                 ..
             }
         ));
-        for flag in ["--all", "--archived"] {
+        for flag in ["--all", "--closed", "--archived"] {
             let parsed = parse(&[
                 "list",
                 "query",
@@ -632,11 +633,11 @@ mod tests {
             ])
             .unwrap();
             assert!(
-                matches!(parsed.command, Command::List { query: Some(query), status, archived, all, refresh: true } if query == "query" && status == [Status::Waiting, Status::Blocked] && archived == (flag == "--archived") && all == (flag == "--all"))
+                matches!(parsed.command, Command::List { query: Some(query), status, closed, all, refresh: true } if query == "query" && status == [Status::Waiting, Status::Blocked] && closed == (flag != "--all") && all == (flag == "--all"))
             );
         }
         assert_eq!(
-            parse(&["list", "--all", "--archived"]).unwrap_err().kind(),
+            parse(&["list", "--all", "--closed"]).unwrap_err().kind(),
             clap::error::ErrorKind::ArgumentConflict
         );
     }

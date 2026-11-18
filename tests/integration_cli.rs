@@ -3022,12 +3022,13 @@ fn frame_reads_and_reference_opening_resolve_enrolled_sessions_and_viewer_termin
 }
 
 #[test]
-fn host_streams_lists_non_archived_streams_with_active_session_counts() {
+fn host_streams_lists_all_streams_with_active_session_counts_and_recency() {
     use serde_json::json;
+    use std::collections::BTreeMap;
     use streams::{
         application,
         integration::{ModReadValue, ModReply, ModResult, WireResult},
-        model::{Record, Stream},
+        model::{Record, Status, Stream},
     };
 
     let fixture = SavedFixture::new();
@@ -3042,9 +3043,9 @@ fn host_streams_lists_non_archived_streams_with_active_session_counts() {
         .join("work")
         .join("artifacts");
     std::fs::create_dir_all(&artifact_dir).unwrap();
-    let mut archived = Stream::new("archived", "Archived", None, host).unwrap();
-    archived.archived = true;
-    application::create_record(fixture.records.records(), "arch", &Record::Stream(archived))
+    let mut closed = Stream::new("closed", "Closed", None, host).unwrap();
+    closed.status = Status::Closed;
+    application::create_record(fixture.records.records(), "close", &Record::Stream(closed))
         .unwrap();
 
     let mut req = fixture.envelope(json!({
@@ -3066,11 +3067,30 @@ fn host_streams_lists_non_archived_streams_with_active_session_counts() {
     let WireResult::Ok(ModReadValue::HostStreams { value }) = &values[0] else {
         panic!("host streams value")
     };
-    assert_eq!(
+    let by_id: BTreeMap<_, _> = value
+        .iter()
+        .map(|s| {
+            (
+                s.id.as_str(),
+                (
+                    s.status,
+                    s.active_sessions,
+                    s.total_sessions,
+                    s.last_updated_ms,
+                ),
+            )
+        })
+        .collect();
+    assert_eq!(by_id.len(), 4);
+    assert_eq!(by_id["work"].0, Status::Active);
+    assert_eq!((by_id["work"].1, by_id["work"].2), (2, 2));
+    assert_eq!((by_id["next"].1, by_id["next"].2), (1, 1));
+    assert_eq!((by_id["empty"].1, by_id["empty"].2), (0, 0));
+    assert_eq!(by_id["closed"].0, Status::Closed);
+    assert!(value.iter().all(|s| s.last_updated_ms > 0));
+    assert!(
         value
-            .iter()
-            .map(|s| (s.id.as_str(), s.active_sessions, s.total_sessions))
-            .collect::<Vec<_>>(),
-        vec![("next", 1, 1), ("work", 2, 2), ("empty", 0, 0)]
+            .windows(2)
+            .all(|w| w[0].last_updated_ms >= w[1].last_updated_ms)
     );
 }

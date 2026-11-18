@@ -52,7 +52,7 @@ function transcript(root,id) {
 
 test('production replay invokes real Rust preview for ordered reports without opening poisoned configuration',async()=>isolated(async(root,clientFor)=>{
  const id='00000000-0000-4000-8000-000000000001';
- const stream={id:'effort',title:'Work',title_mode:'automatic',goal:'Old goal',goal_short:null,goal_mode:'automatic',status:'active',archived:false,owner:{host_id:'host'},repositories:{},references:[]};
+ const stream={id:'effort',title:'Work',title_mode:'automatic',goal:'Old goal',goal_short:null,goal_mode:'automatic',status:'active',owner:{host_id:'host'},repositories:{},references:[]};
  const session={id:sessionId('host','pi',id),host_id:'host',stream_id:stream.id,harness:'pi',harness_session_id:id,title:'Lane',title_mode:'automatic',status:'active',state:'Old state',state_short:null,remaining:'Old remaining',checkout:null};
  const catalog={catalog_source:'frozen-source',host_id:'host',stream,session,sessions:[session],title_defaults:{stream:'automatic',session:'automatic'}};
  const file=transcript(root,id);
@@ -78,7 +78,7 @@ test('partial reference replay retains refused restoration and applies an indepe
  const id='00000000-0000-4000-8000-000000000004',file=transcript(root,id);
  const dropped={name:'Retired',purpose:'Old purpose',role:'dependency',state:'dropped',target:{kind:'link',url:'https://example.org/retired'},revision:'old-dropped'};
  const current={name:'Brief',purpose:'Original purpose',role:'brief',state:'active',target:{kind:'issue',url:'https://example.org/brief'},revision:'old-brief'};
- const stream={id:'effort',title:'Work',title_mode:'manual',goal:'Goal',goal_short:null,goal_mode:'manual',status:'active',archived:false,owner:{host_id:'host'},repositories:{},references:[dropped,current]};
+ const stream={id:'effort',title:'Work',title_mode:'manual',goal:'Goal',goal_short:null,goal_mode:'manual',status:'active',owner:{host_id:'host'},repositories:{},references:[dropped,current]};
  const session={id:sessionId('host','pi',id),host_id:'host',stream_id:stream.id,harness:'pi',harness_session_id:id,title:'Lane',title_mode:'automatic',status:'active',state:'Old',state_short:null,remaining:'',checkout:null};
  const catalog={catalog_source:'frozen-source',host_id:'host',stream,session,sessions:[session],title_defaults:{stream:'automatic',session:'automatic'},checkouts:[],document_locations:[]};
  const {capture}=captureSessions({version:1,host_id:'host',streams:[stream],workspaces:[],topology_error:null,target:{kind:'stream',id:stream.id,title:stream.title},samples:[{host_id:'host',harness:'pi',native_session_id:id,open:false,locations:[],catalog,transcript_file:file,unavailable:null}],unsupported:[]},join(root,'private'));

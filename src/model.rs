@@ -36,6 +36,7 @@ pub enum Status {
     Blocked,
     Parked,
     Done,
+    Closed,
 }
 
 /// Whether generated reports may replace text. Manual text remains user-owned.
@@ -524,8 +525,6 @@ pub struct Stream {
     pub goal_mode: NamingMode,
     #[serde(default)]
     pub status: Status,
-    #[serde(default)]
-    pub archived: bool,
     #[serde(default, deserialize_with = "object_map")]
     pub repositories: BTreeMap<String, Repository>,
     #[serde(deserialize_with = "objects")]
@@ -533,7 +532,7 @@ pub struct Stream {
 }
 
 impl Stream {
-    /// Creates an active, unarchived stream with inherited title policy and no references.
+    /// Creates an active stream with inherited title policy and no references.
     pub fn new(
         id: impl Into<String>,
         title: impl Into<String>,
@@ -549,7 +548,6 @@ impl Stream {
             goal_short: None,
             goal_mode: NamingMode::Automatic,
             status: Status::Active,
-            archived: false,
             repositories: BTreeMap::new(),
             references: Vec::new(),
         }

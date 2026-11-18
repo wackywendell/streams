@@ -342,6 +342,7 @@ pub(super) fn render(
             crate::model::Status::Blocked => ("!", Style::new().fg(Color::Red)),
             crate::model::Status::Parked => ("○", DIM),
             crate::model::Status::Done => ("✓", Style::new().fg(Color::Green)),
+            crate::model::Status::Closed => ("×", DIM),
         };
         let status = format!("{symbol} {status}");
         let status_width = cells(&status);

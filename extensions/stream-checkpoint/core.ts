@@ -2,10 +2,10 @@ import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { isReferenceText, receiptCanContinue, receiptHasUnappliedReferences, type ApplyRequest, type LocalContext, type Receipt, type Reference, type ReferenceValue, type ReferenceTarget, type ResourceKey, type SessionWire, type StreamWire, type Mode } from "./streams.ts";
 import { isReferenceValue, isResourceKey, parseLocalContext, resourceKey } from "../../integrations/herdr-work-cards/src/streams-context.ts";
-export const statuses = ["active", "waiting", "blocked", "parked", "done"];
+export const statuses = ["active", "waiting", "blocked", "parked", "done", "closed"];
 export const titleModes = ["automatic", "manual", "inherit"] as const;
 export const fields = {
- stream: ["title", "title_mode", "goal", "goal_short", "goal_mode", "status", "archived"],
+ stream: ["title", "title_mode", "goal", "goal_short", "goal_mode", "status"],
  session: ["title", "title_mode", "status", "recap", "recap_short", "state", "state_short", "remaining", "remaining_short"],
 };
 export function automaticFields(kind: "stream" | "session", before: StreamWire | SessionWire, defaultMode: Mode): string[] {
@@ -25,7 +25,6 @@ export function validateChanges(kind: "stream" | "session", before: StreamWire |
   else if (key === "title_mode" && !titleModes.some(mode => mode === value)) throw Error("title_mode: choose automatic, manual or inherit");
   else if (key === "goal_mode" && !["automatic", "manual"].includes(String(value))) throw Error("goal_mode: choose automatic or manual");
   else if (key === "status" && !statuses.includes(String(value))) throw Error("Choose a valid status");
-  else if (key === "archived" && typeof value !== "boolean") throw Error("archived must be boolean");
   else if (["goal", "goal_short", "recap_short", "state_short", "remaining_short"].includes(key) && value !== null) nonempty(value, key);
   else if (["recap", "state", "remaining"].includes(key) && (typeof value !== "string" || value.includes("\0"))) throw Error(`${key} must be text`);
  }

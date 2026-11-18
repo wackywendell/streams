@@ -198,6 +198,40 @@ impl RecordInventory for YamlRecordStore {
         let _scope = self.scope(false)?;
         decode_record_tree(&self.read_locked_tree()?)
     }
+
+    fn last_updated_ms(
+        &self,
+        addresses: &[RecordAddress],
+    ) -> Result<BTreeMap<RecordAddress, u64>, StorageError> {
+        let _scope = self.scope(false)?;
+        let mut out = BTreeMap::new();
+        for address in addresses {
+            let relative = relative_record_path(address)?;
+            if let Some(ms) = record_mtime_ms(&self.root, &relative)? {
+                out.insert(address.clone(), ms);
+            }
+        }
+        Ok(out)
+    }
+}
+
+pub(crate) fn record_mtime_ms(root: &Path, relative: &Path) -> Result<Option<u64>, StorageError> {
+    super::check_parents(root, relative)?;
+    let full = root.join(relative);
+    let meta = match fs::symlink_metadata(&full) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(invalid(error)),
+    };
+    if !meta.file_type().is_file() {
+        return Err(invalid("record entry must be a regular file"));
+    }
+    let modified = meta.modified().map_err(invalid)?;
+    let ms = modified
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    Ok(Some(u64::try_from(ms).unwrap_or(u64::MAX)))
 }
 
 impl YamlRecordStore {

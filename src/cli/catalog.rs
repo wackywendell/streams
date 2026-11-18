@@ -19,7 +19,7 @@ pub(super) fn list_records(
     opened: &streams::application::OpenedRecords,
     query: Option<&str>,
     status: &[Status],
-    archived: bool,
+    closed: bool,
     all: bool,
     publication: Option<serde_json::Value>,
 ) -> Result<Output> {
@@ -32,8 +32,11 @@ pub(super) fn list_records(
             _ => None,
         })
         .filter(|stream| {
-            (all || stream.archived == archived)
-                && (status.is_empty() || status.contains(&stream.status))
+            (all || if closed {
+                stream.status == Status::Closed
+            } else {
+                stream.status != Status::Closed || status.contains(&Status::Closed)
+            }) && (status.is_empty() || status.contains(&stream.status))
                 && query.as_ref().is_none_or(|query| {
                     fold(&stream.title).contains(query)
                         || fold(stream.goal.as_deref().unwrap_or("")).contains(query)

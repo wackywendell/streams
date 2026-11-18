@@ -5,7 +5,7 @@ use std::collections::{BTreeSet, VecDeque};
 use serde_json::{Map, Value, json};
 use streams::model::{
     NamingMode, Record, Reference, ReferenceRole, ReferenceState, ReferenceTarget, ReferenceValue,
-    Session, Stream, TitleDefaults, TitleMode,
+    Session, Status, Stream, TitleDefaults, TitleMode,
 };
 use streams::operations::edits::{
     REPORT_ADMISSION_IOA, SessionEdit, StreamEdit, report_admission_allows,
@@ -440,7 +440,7 @@ fn non_prose_metadata_edits_and_session_work_remain_orthogonal_to_stream_admissi
     // leave admission booleans unchanged and do not cause Conflict on automatic reports.
     world.session.title_mode = TitleMode::Automatic;
     world.stream_a.title_mode = TitleMode::Automatic;
-    world.stream_a.archived = true;
+    world.stream_a.status = Status::Closed;
     world.stream_a.references.push(
         Reference::new(
             ReferenceValue {
@@ -481,7 +481,7 @@ fn non_prose_metadata_edits_and_session_work_remain_orthogonal_to_stream_admissi
     let Record::Stream(updated_stream) = *record else {
         unreachable!()
     };
-    assert!(updated_stream.archived);
+    assert_eq!(updated_stream.status, Status::Closed);
     assert_eq!(updated_stream.title_mode, TitleMode::Automatic);
     assert_eq!(updated_stream.references.len(), 1);
     assert_eq!(

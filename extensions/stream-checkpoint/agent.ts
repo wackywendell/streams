@@ -91,7 +91,6 @@ export function changesSchema(kind: "stream" | "session", catalog: LocalContext,
   if (["goal", "goal_short", "recap_short", "state_short", "remaining_short"].includes(field)) schema = Type.Union([Type.String(field.endsWith("_short") ? {maxLength: 24} : {}), Type.Null()]);
   else if (field.endsWith("_mode")) schema = Type.Union([Type.Literal("automatic"), Type.Literal("manual"), ...(field === "title_mode" ? [Type.Literal("inherit")] : [])]);
   else if (field === "status") schema = Type.Union(statuses.map((status) => Type.Literal(status)));
-  else if (field === "archived") schema = Type.Boolean();
   return [field, Type.Optional(descriptions[field] ? {...schema, description: descriptions[field]} : schema)];
  })), {additionalProperties: false, ...(allowEmpty ? {} : {minProperties: 1})});
 }

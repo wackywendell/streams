@@ -1,4 +1,4 @@
-export type Status = 'active' | 'waiting' | 'blocked' | 'parked' | 'done';
+export type Status = 'active' | 'waiting' | 'blocked' | 'parked' | 'done' | 'closed';
 export type Mode = 'automatic' | 'manual';
 export type TitleMode = Mode | 'inherit';
 export type TitleDefaults = { stream: Mode; session: Mode };
@@ -23,7 +23,7 @@ export type Reference = ReferenceValue & {revision: string};
 
 export type StreamWire = {
   id: string; title: string; title_mode: TitleMode; goal: string | null; goal_short: string | null;
-  goal_mode: Mode; status: Status; archived: boolean; owner: { host_id: string };
+  goal_mode: Mode; status: Status; owner: { host_id: string };
   repositories: Record<string, { url: string }>; references: Reference[];
 };
 export type SessionWire = {
@@ -47,7 +47,7 @@ const identity = (value: unknown): value is string => text(value) && value.trim(
 const nullableText = (value: unknown) => value === null || text(value);
 const mode = (value: unknown): value is Mode => value === 'automatic' || value === 'manual';
 const titleMode = (value: unknown): value is TitleMode => mode(value) || value === 'inherit';
-const status = (value: unknown): value is Status => typeof value === 'string' && ['active', 'waiting', 'blocked', 'parked', 'done'].includes(value);
+const status = (value: unknown): value is Status => typeof value === 'string' && ['active', 'waiting', 'blocked', 'parked', 'done', 'closed'].includes(value);
 
 export function isReferenceText(value: unknown): value is string {
   return typeof value === 'string'
@@ -119,7 +119,7 @@ export function isReference(value: unknown): value is Reference {
 export function isStream(value: unknown): value is StreamWire {
   if (!object(value) || !identity(value.id) || !text(value.title) || !titleMode(value.title_mode)
     || !nullableText(value.goal) || !nullableText(value.goal_short) || !mode(value.goal_mode)
-    || !status(value.status) || typeof value.archived !== 'boolean' || !object(value.owner) || !identity(value.owner.host_id)
+    || !status(value.status) || !object(value.owner) || !identity(value.owner.host_id)
     || !object(value.repositories) || !Object.entries(value.repositories).every(([alias, repo]) => identity(alias) && object(repo) && identity(repo.url))
     || ['documents', 'issues', 'prs'].some(key => Object.hasOwn(value, key))
     || !Array.isArray(value.references) || !value.references.every(isReference)) return false;

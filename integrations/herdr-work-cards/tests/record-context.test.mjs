@@ -7,7 +7,7 @@ import {
 
 const stream = {
   id:'effort', title:'Streams', title_mode:'inherit', goal:null, goal_short:null, goal_mode:'automatic',
-  status:'active', archived:false, owner:{host_id:'host'}, repositories:{}, references:[],
+  status:'active', owner:{host_id:'host'}, repositories:{}, references:[],
 };
 const session = {
   id:'ab441ac4-d600-5fd6-babf-fc43ab65623d', host_id:'host', stream_id:'effort', harness:'pi', harness_session_id:'native',

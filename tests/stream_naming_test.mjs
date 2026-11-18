@@ -15,7 +15,7 @@ const { editField } = await jiti.import(new URL('../extensions/stream-checkpoint
 function context() {
  const session = {id:'session', host_id:'host', stream_id:'effort', harness:'pi', harness_session_id:'native', title:'Saved title', title_mode:'automatic', status:'active', state:'Work', state_short:null, remaining:'', checkout:null};
  return {catalog_source:'source',host_id:'host',title_defaults:{stream:'automatic',session:'automatic'},
-  stream:{id:'effort',title:'Effort',title_mode:'inherit',goal:null,goal_short:null,goal_mode:'automatic',owner:{host_id:'host'},status:'active',archived:false,repositories:{},references:[]},
+  stream:{id:'effort',title:'Effort',title_mode:'inherit',goal:null,goal_short:null,goal_mode:'automatic',owner:{host_id:'host'},status:'active',repositories:{},references:[]},
   session,sessions:[session]};
 }
 const accepted = {operation_id:'name',save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}};

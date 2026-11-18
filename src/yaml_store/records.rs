@@ -4,6 +4,7 @@
 mod artifacts;
 mod inventory;
 pub use artifacts::{artifact_key_from_path, decode_artifact_content, relative_artifact_path};
+pub(crate) use inventory::record_mtime_ms;
 pub use inventory::{address_from_relative_path, catalog_path_host, decode_record_tree};
 
 use std::{

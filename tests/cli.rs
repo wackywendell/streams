@@ -442,7 +442,7 @@ fn record_local_cli_initializes_enrolls_reports_and_retries_without_scans_or_pub
     assert_eq!(code, 0, "{saved}");
     assert_eq!(saved["session"]["state"], "Complete");
     assert_eq!(f.ok(&args)["session"], saved["session"]);
-    for (intent, archived) in [
+    for (intent, expected_status) in [
         (
             vec![
                 "update",
@@ -455,10 +455,10 @@ fn record_local_cli_initializes_enrolls_reports_and_retries_without_scans_or_pub
                 "app",
                 "https://example.test/app.git",
             ],
-            None,
+            "waiting",
         ),
-        (vec!["archive", "--current"], Some(true)),
-        (vec!["restore", "--current"], Some(false)),
+        (vec!["close", "--current"], "closed"),
+        (vec!["restore", "--current"], "active"),
     ] {
         let edited = f
             .command()
@@ -478,10 +478,7 @@ fn record_local_cli_initializes_enrolls_reports_and_retries_without_scans_or_pub
         assert!(edited.get("publication").is_none());
         assert_eq!(edited["stream"]["title"], "Human title");
         assert_eq!(edited["stream"]["title_mode"], "manual");
-        assert_eq!(edited["stream"]["status"], "waiting");
-        if let Some(archived) = archived {
-            assert_eq!(edited["stream"]["archived"], archived);
-        }
+        assert_eq!(edited["stream"]["status"], expected_status);
     }
     assert_eq!(
         f.ok(&args)["stream"]["repositories"]["app"]["url"],
@@ -895,8 +892,15 @@ fn local_catalog_does_not_require_git_in_plain_directories() {
         );
         let data: Value = serde_json::from_slice(&output.stdout).unwrap();
         assert!(data.get("runtime").is_none(), "{data}");
-        if matches!(args[0], "archive" | "restore") {
-            assert_eq!(data["stream"]["archived"], args[0] == "archive");
+        if matches!(args[0], "close" | "archive" | "restore") {
+            assert_eq!(
+                data["stream"]["status"],
+                if args[0] == "restore" {
+                    "active"
+                } else {
+                    "closed"
+                }
+            );
         }
         assert!(!probe.exists());
     }

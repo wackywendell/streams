@@ -43,6 +43,7 @@ fn domain_enums_have_one_strict_wire_spelling() {
         (Status::Blocked, "blocked"),
         (Status::Parked, "parked"),
         (Status::Done, "done"),
+        (Status::Closed, "closed"),
     ]);
     roundtrip(&[
         (NamingMode::Automatic, "automatic"),

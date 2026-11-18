@@ -103,10 +103,10 @@ impl Fixture {
         &self,
         query: Option<&str>,
         status: &[Status],
-        archived: bool,
+        closed: bool,
         all: bool,
     ) -> Result<Output> {
-        list_records(&self.opened, query, status, archived, all, None)
+        list_records(&self.opened, query, status, closed, all, None)
     }
     fn update(&self, reference: &str, intent: StreamFields) -> Result<Output> {
         update_record(
@@ -119,11 +119,11 @@ impl Fixture {
             || self.operation_id(),
         )
     }
-    fn archive(&self, reference: &str, archived: bool) -> Result<Output> {
+    fn set_status(&self, reference: &str, status: Status) -> Result<Output> {
         save_stream_edit(
             &self.opened,
             &self.select(reference),
-            json!({"archived":archived}).as_object().unwrap().clone(),
+            json!({"status": status}).as_object().unwrap().clone(),
             TitleDefaults::default(),
             &self.operation_id(),
         )
@@ -183,9 +183,8 @@ fn local_catalog_manages_fields_visibility_and_full_unicode_literal_selection() 
     }
     assert_eq!(reads, vec![Path::new("goal.txt"), Path::new("-")]);
 
-    let archived = ok(f.archive(id, true));
-    assert_eq!(archived["stream"]["archived"], true);
-    assert_eq!(archived["stream"]["status"], "waiting");
+    let closed = ok(f.set_status(id, Status::Closed));
+    assert_eq!(closed["stream"]["status"], "closed");
     assert_eq!(
         ok(f.list(None, &[], false, false))["streams"]
             .as_array()
@@ -201,9 +200,8 @@ fn local_catalog_manages_fields_visibility_and_full_unicode_literal_selection() 
             .len(),
         2
     );
-    let restored = ok(f.archive(id, false));
-    assert_eq!(restored["stream"]["archived"], false);
-    assert_eq!(restored["stream"]["status"], "waiting");
+    let restored = ok(f.set_status(id, Status::Active));
+    assert_eq!(restored["stream"]["status"], "active");
     assert_eq!(
         ok(check(&f.opened, Some(id))),
         json!({"valid":true,"streams":1,"sessions":0})

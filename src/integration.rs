@@ -191,6 +191,8 @@ pub struct StreamSummary {
     pub status: Status,
     pub active_sessions: usize,
     pub total_sessions: usize,
+    #[serde(default)]
+    pub last_updated_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -178,8 +178,7 @@ export async function editField(ctx: ExtensionContext, cli: StreamCli, catalog: 
    if (editValue) {
     if (field === "status" || field.endsWith("_mode")) {
      const value = await ctx.ui.select(`${kind} ${field} · current: ${edit.value}${edit.error ? `\n${edit.error}` : ""}`, field === "status" ? statuses : field === "title_mode" ? [...titleModes] : ["automatic", "manual"]);if (value === undefined) return;edit.value = value;
-    } else if (field === "archived") edit.value = !edit.base.stream!.archived;
-    else {
+    } else {
      const value = await ctx.ui.editor(`${kind} ${field}${edit.error ? `\n${edit.error}` : ""}`, String(edit.value ?? ""));
      if (value === undefined) return;edit.value = ["goal", "goal_short", "recap_short", "state_short", "remaining_short"].includes(field) && !value.trim() ? null : value;
     }
@@ -214,7 +213,7 @@ export async function openCard(ctx: ExtensionContext, cli: StreamCli, state: Car
    {value: "settings", label: "Settings…", description: "Configure automatic reporting cadence, model, and naming"},
    {value: "close", label: "Close", description: "Close this dialog (Esc)"},
   ];
-  const streamFields = fields.stream.filter((f) => f !== "archived" && !(f === "goal_short" && stream.goal === null));
+  const streamFields = fields.stream.filter((f) => !(f === "goal_short" && stream.goal === null));
   const streamItems: SelectItem[] = streamFields.map((field) => ({
    value: `field:stream:${field}`,
    label: `${field}…${state.edits.has(`stream:${field}`) ? " *" : ""}`,
@@ -224,7 +223,7 @@ export async function openCard(ctx: ExtensionContext, cli: StreamCli, state: Car
    {value: "references", label: "References…", description: "Manage saved references, including Dropped entries"},
    {value: "reset:stream", label: "Reset…", description: "Regenerate only the Stream's automatic fields"},
    {value: "finish:stream", label: "Finish…", description: "Mark the Stream as done; Sessions remain unchanged"},
-   {value: "archive", label: `${stream.archived ? "Restore…" : "Archive…"}${state.edits.has("stream:archived") ? " *" : ""}`, description: state.edits.has("stream:archived") ? "Retained unsaved archive edit" : stream.archived ? "Unarchive this Stream" : "Hide this Stream from default active lists"},
+   {value: "close:stream", label: stream.status === "closed" ? "Restore…" : "Close…", description: stream.status === "closed" ? "Reopen this closed Stream as active" : "Close this Stream as abandoned"},
   );
   const sessionItems: SelectItem[] = session ? fields.session.map((field) => ({
    value: `field:session:${field}`,
@@ -278,7 +277,7 @@ export async function openCard(ctx: ExtensionContext, cli: StreamCli, state: Car
       width,
      );
      const summary = [
-      ` ${section("Stream")} · ${clean(stream.title)} ${theme.fg("muted", `[${stream.status}${stream.archived ? " · archived" : ""} · title:${stream.title_mode} · goal:${stream.goal_mode}]`)}`,
+      ` ${section("Stream")} · ${clean(stream.title)} ${theme.fg("muted", `[${stream.status} · title:${stream.title_mode} · goal:${stream.goal_mode}]`)}`,
       ...line(`Goal: ${stream.goal ?? "—"}`, 2),
       ` ${section("Session")} · ${clean(session?.title ?? "Not yet enrolled")} ${session ? theme.fg("muted", `[${session.status} · title:${session.title_mode}]`) : ""}`,
       ...(session ? [
@@ -327,11 +326,11 @@ export async function openCard(ctx: ExtensionContext, cli: StreamCli, state: Car
    if (!await ctx.ui.confirm(kind === "session" ? "Finish Session?" : "Finish Stream?", kind === "session" ? "Finish only this Session; the Stream remains unchanged?" : "Mark the Stream done? Other Sessions are not automatically finished.")) continue;
    const edit = new FieldEdit(kind, catalog, "status");edit.value = "done";
    try {await edit.save(cli, actions.receipt);} catch(error) {state.edits.set(`${kind}:status`, edit);ctx.ui.notify(String(error), "error");}
-  } else if (action === "archive") {
-   if (state.edits.has("stream:archived")) {await editField(ctx, cli, catalog, "stream", "archived", state, actions.receipt);continue;}
-   if (!await ctx.ui.confirm(stream.archived ? "Restore Stream?" : "Archive Stream?", stream.archived ? "Show this Stream in default active lists?" : "Hide this Stream from default active lists?")) continue;
-   const edit = new FieldEdit("stream", catalog, "archived");edit.value = !stream.archived;
-   try {await edit.save(cli, actions.receipt);} catch(error) {state.edits.set("stream:archived", edit);ctx.ui.notify(String(error), "error");}
+  } else if (action === "close:stream") {
+   const restoring = stream.status === "closed";
+   if (!await ctx.ui.confirm(restoring ? "Restore Stream?" : "Close Stream?", restoring ? "Reopen this closed Stream as active?" : "Mark this Stream closed (abandoned)?")) continue;
+   const edit = new FieldEdit("stream", catalog, "status");edit.value = restoring ? "active" : "closed";
+   try {await edit.save(cli, actions.receipt);} catch(error) {state.edits.set("stream:status", edit);ctx.ui.notify(String(error), "error");}
   }
  }
 }

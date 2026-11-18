@@ -47,7 +47,7 @@ function makeSnapshotActions(initial = defaultConfigSnapshot(), hook) {
   unsetConfig: async key => {if (hook) await hook('unset', key); if (key === 'pi.reporting.model') snap.pi.reporting.model = null; return structuredClone(snap);},
  };
 }
-const stream = { id:'effort', title:'Work', title_mode:'manual', goal:'Goal', goal_mode:'automatic', goal_short:null, status:'active', archived:false, owner:{host_id:'host'}, repositories:{repo:{url:'https://example.com/repo'}}, references:[] };
+const stream = { id:'effort', title:'Work', title_mode:'manual', goal:'Goal', goal_mode:'automatic', goal_short:null, status:'active', owner:{host_id:'host'}, repositories:{repo:{url:'https://example.com/repo'}}, references:[] };
 const session = { id:'session', host_id:'host', stream_id:'effort', harness:'pi', harness_session_id:'native', title:'Session', title_mode:'automatic', status:'active', state:'', state_short:null, remaining:'', checkout:null };
 const context = () => structuredClone({catalog_source:'source-a',host_id:'host',stream,session,sessions:[session],title_defaults:{stream:'automatic',session:'automatic'}});
 const localSync = async () => ({local:'unchanged',sharing:'local-only',domain:null});
@@ -498,7 +498,7 @@ test('automatic reset unlocks manual names before fresh inference and keeps life
   {kind:'session',actor:'user',changes:{title_mode:'automatic'}},
   {kind:'stream',actor:'user',changes:{title_mode:'automatic',goal_mode:'automatic'}},
  ]);
- assert.equal(catalog.stream.status,'active');assert.equal(catalog.stream.archived,false);
+ assert.equal(catalog.stream.status,'active');
 });
 test('reporting settings have explicit stable knobs and reject invalid cadence',()=>{
  const custom={...defaults,reporting:'manual',enrollment:'manual',frequency:3,context:'full',model:{provider:'custom',id:'helper'},session_logging:true};
@@ -1292,7 +1292,7 @@ test('automatic Stream captures its addressed contribution; Session and manual S
 test('automatic Session status is reportable; automatic Stream lifecycle remains forbidden',()=>{
  assert.ok(automaticFields('session',session,'automatic').includes('status'));
  assert.doesNotThrow(()=>editRequest(context(),'session',{status:'blocked'},'automatic'));
- for(const changes of [{status:'parked'},{status:'done'},{archived:true}])assert.throws(()=>editRequest(context(),'stream',changes,'automatic'),/allowed/);
+ for(const changes of [{status:'parked'},{status:'done'},{status:'closed'}])assert.throws(()=>editRequest(context(),'stream',changes,'automatic'),/allowed/);
 });
 test('compact goal requires effective goal only when a nonnull short is submitted; empty writes rejected',()=>{
  const catalog=context();catalog.stream.goal=null;
@@ -1315,8 +1315,8 @@ test('retained invalid short goal is blocked before CLI and archive has one conf
  const edit=new FieldEdit('stream',catalog,'goal_short');edit.value='No source goal';state.edits.set('stream:goal_short',edit);let menus=0;
  await editField({ui:{select:async(title)=>{if(menus++===0)return 'Save field';assert.match(title,/goal/i);return 'Keep input and close';},notify:()=>{}}},{apply:()=>assert.fail('invalid short must be local validation')},catalog,'stream','goal_short',state,()=>{});
  assert.equal(edit.value,'No source goal');assert.match(edit.error,/goal/);
- const actions=['Stream · Archive…','Close'];let confirmations=0,writes=0;
- await openCard({sessionManager:{getSessionId:()=> 'native'},ui:{select:async(title,rows)=>{assert.ok(rows.every(row=>!row.startsWith('Stream · goal_short')));return actions.shift();},confirm:async()=>{confirmations++;return true;},notify:()=>{}}},{context:async()=>catalog,apply:async req=>{writes++;assert.deepEqual(req.changes,{archived:true});return {save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}};}},state,{receipt:()=>{},discuss:()=>{},settings:()=>{},report:()=>{}});
+ const actions=['Stream · Close…','Close'];let confirmations=0,writes=0;
+ await openCard({sessionManager:{getSessionId:()=> 'native'},ui:{select:async(title,rows)=>{assert.ok(rows.every(row=>!row.startsWith('Stream · goal_short')));return actions.shift();},confirm:async()=>{confirmations++;return true;},notify:()=>{}}},{context:async()=>catalog,apply:async req=>{writes++;assert.deepEqual(req.changes,{status:'closed'});return {save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}};}},state,{receipt:()=>{},discuss:()=>{},settings:()=>{},report:()=>{}});
  assert.equal(confirmations,1);assert.equal(writes,1);
 });
 test('fallback reference manager selects identical metadata by exact keys for edit and drop',async()=>{
@@ -1600,10 +1600,10 @@ test('openCard renders 3-tab Pi TUI (Actions, Stream, Session) and edits fields 
  assert.match(renders[1],/\[ 2: Stream \]/);
  assert.match(renders[2],/\[ 3: Session \]/);
  assert.match(renders[0],/Reset Stream and Session…/);
- assert.doesNotMatch(renders[0],/Finish…|Archive…|edit fields/);
- assert.match(renders[1],/Reset…[\s\S]*Finish…[\s\S]*Archive…/);
+ assert.doesNotMatch(renders[0],/Finish…|Close…|Archive…|edit fields/);
+ assert.match(renders[1],/Reset…[\s\S]*Finish…[\s\S]*Close…/);
  assert.match(renders[2],/Reset…[\s\S]*Finish…/);
- assert.doesNotMatch(renders[2],/Archive…|Restore…/);
+ assert.doesNotMatch(renders[2],/Close…|Archive…|Restore…/);
  for(const rendered of renders)assert.doesNotMatch(rendered,/Whole [Ee]ffort|This [Tt]ab|archived…|⟳/);
  assert.equal(saved.length,2);
  assert.deepEqual(saved[0].changes,{title:'Work (edited)'});
@@ -1658,18 +1658,18 @@ for(const [tab,kind] of [['2','stream'],['3','session']])for(const confirmed of 
  assert.doesNotMatch(confirmations[0].body,/effort/i);
  assert.deepEqual(saved.map(req=>({kind:req.kind,changes:req.changes})),confirmed?[{kind,changes:{status:'done'}}]:[]);
 });
-for(const archived of [true,false])test(`panel ${archived?'Restore':'Archive'} is only on Stream and has one confirmation`,async()=>{
- const catalog=context();catalog.stream.archived=archived;
+for(const closed of [true,false])test(`panel ${closed?'Restore':'Close'} is only on Stream and has one confirmation`,async()=>{
+ const catalog=context();catalog.stream.status=closed?'closed':'active';
  const saved=[];let opened=0,confirmed=0;
  const ctx={sessionManager:{getSessionId:()=> 'native'},ui:{notify:assert.fail,
-  confirm:async title=>{confirmed++;assert.equal(title,archived?'Restore Stream?':'Archive Stream?');return true;},
-  custom:async factory=>new Promise(resolve=>{const component=factory({terminal:{rows:36},requestRender(){}},{fg:(_c,t)=>t,bold:t=>t},{},resolve);if(opened++===0)selectCardRow(component,'2',archived?'Restore…':'Archive…');else component.handleInput('\x1b');}),
+  confirm:async title=>{confirmed++;assert.equal(title,closed?'Restore Stream?':'Close Stream?');return true;},
+  custom:async factory=>new Promise(resolve=>{const component=factory({terminal:{rows:36},requestRender(){}},{fg:(_c,t)=>t,bold:t=>t},{},resolve);if(opened++===0)selectCardRow(component,'2',closed?'Restore…':'Close…');else component.handleInput('\x1b');}),
  }};
  await openCard(ctx,{context:async()=>catalog,apply:async req=>{saved.push(req);return {save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}};}},{discussion:{input:'',messages:[]},edits:new Map()},{receipt:()=>{},discuss:assert.fail,settings:assert.fail,report:assert.fail});
- assert.equal(confirmed,1);assert.deepEqual(saved.map(req=>({kind:req.kind,changes:req.changes})),[{kind:'stream',changes:{archived:!archived}}]);
+ assert.equal(confirmed,1);assert.deepEqual(saved.map(req=>({kind:req.kind,changes:req.changes})),[{kind:'stream',changes:{status:closed?'active':'closed'}}]);
 });
-test('archive failures remain reachable without a duplicate archive field',async()=>{
- const state={discussion:{input:'',messages:[]},edits:new Map()},choices=['Stream · Archive…','Stream · Archive… *','Discard input','Close'];let confirmations=0,writes=0;
+test('close failures remain reachable via retained status edit',async()=>{
+ const state={discussion:{input:'',messages:[]},edits:new Map()},choices=['Stream · Close…','Stream · status… *','Discard input','Close'];let confirmations=0,writes=0;
  const ctx={sessionManager:{getSessionId:()=> 'native'},ui:{notify:()=>{},confirm:async()=>{confirmations++;return true;},select:async(_title,rows)=>{
   assert.ok(rows.every(row=>!row.startsWith('Stream · archived')));
   const choice=choices.shift();assert.ok(rows.includes(choice),choice);return choice;
