@@ -17,28 +17,6 @@ pub fn stream_tokens(catalog_source: &str, host: &str, stream: &str) -> BTreeMap
     ])
 }
 
-/// Publish selectors to an already-observed unmarked workspace; never confirm or retry.
-pub fn associate_workspace(
-    client: &crate::frontend::herdr::HerdrClient,
-    workspace: &str,
-    catalog_source: &str,
-    host: &str,
-    stream: &str,
-    cancelled: &std::sync::atomic::AtomicBool,
-) -> Result<()> {
-    if cancelled.load(std::sync::atomic::Ordering::Acquire) {
-        return Err(invalid("native request cancelled"));
-    }
-    client.card_request(
-        "workspace.report_metadata",
-        serde_json::json!({"workspace_id":workspace,
-        "source":"streams","tokens":stream_tokens(catalog_source, host, stream)}),
-        Some("ok"),
-        true,
-    )?;
-    Ok(())
-}
-
 pub fn selected_stream(
     snapshot: &HerdrNativeSnapshot,
     workspace: &str,

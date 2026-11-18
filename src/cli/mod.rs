@@ -329,6 +329,9 @@ struct HerdrRead {
     client: frontend::herdr::HerdrClient,
     snapshot: Option<frontend::herdr::HerdrNativeSnapshot>,
     owner: Option<runtime::native_cards::PiOwner>,
+    /// The Stream the Pi pane's workspace names: the child's one record of observed
+    /// placement. Layout never changes Session membership, so this only guides
+    /// enrollment and association; a later change could show it to the agent.
     workspace_stream: Option<String>,
 }
 

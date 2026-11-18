@@ -44,7 +44,6 @@ struct Pass {
     newly_bound: bool,
     context: RecordContext,
     config: NativeCardsConfig,
-    workspace_stream: Option<String>,
     transcript: Option<std::path::PathBuf>,
 }
 pub(super) struct Controller {
@@ -312,7 +311,7 @@ impl Controller {
             client,
             snapshot: Some(snapshot),
             owner: Some(owner),
-            workspace_stream: selected.clone(),
+            workspace_stream: selected,
         });
         self.view = UiFacts {
             desired_pi_name: config
@@ -331,7 +330,6 @@ impl Controller {
             newly_bound,
             context,
             config,
-            workspace_stream: selected,
             transcript,
         })
     }
@@ -537,9 +535,11 @@ impl Controller {
                     .as_ref()
                     .map(|session| session.stream_id.clone())
             });
-        if pass
-            .workspace_stream
+        if self
+            .app
+            .herdr
             .as_ref()
+            .and_then(|read| read.workspace_stream.as_ref())
             .is_some_and(|selected| target.as_ref() != Some(selected))
         {
             return Err(crate::cli::CliError::message(

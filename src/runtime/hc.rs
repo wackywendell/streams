@@ -1238,6 +1238,8 @@ impl HcOperation {
             return not_applied("hc presentation is unavailable".into());
         };
         use crate::integration::PresentationSnapshot;
+        // Layout never changes Session membership: an unassociated space takes the
+        // Session's Stream, and an associated one keeps its association.
         if let Some(space) = presentation.caller_space()
             && !presentation.before.rows.contains_key(&space.key)
         {

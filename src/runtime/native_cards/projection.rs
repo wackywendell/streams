@@ -153,6 +153,8 @@ impl NativeCardEngine {
             .snapshot
             .workspace_tokens(&workspace.id)
             .expect("workspace tokens");
+        // Layout never changes Session membership: an unmarked workspace takes the
+        // Session's Stream, and one that names another is reported, not followed.
         if association
             .iter()
             .any(|(key, value)| current.get(key).is_some_and(|current| current != value))

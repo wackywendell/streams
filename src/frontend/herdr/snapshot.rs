@@ -72,27 +72,6 @@ impl HerdrNativeSnapshot {
         self.workspace_tokens.get(workspace_id)
     }
 
-    /// Apply this pass's acknowledged metadata write without taking another snapshot.
-    pub fn apply_workspace_tokens(
-        &mut self,
-        workspace: &str,
-        updates: BTreeMap<String, String>,
-    ) -> Result<(), FrontendError> {
-        let tokens = self
-            .workspace_tokens
-            .get_mut(workspace)
-            .ok_or_else(|| FrontendError::invalid("workspace is absent from the snapshot"))?;
-        tokens.extend(updates);
-        let row = self.raw["workspaces"]
-            .as_array_mut()
-            .unwrap()
-            .iter_mut()
-            .find(|row| row["workspace_id"] == workspace)
-            .expect("validated workspace");
-        row["tokens"] = serde_json::to_value(tokens).expect("string tokens");
-        Ok(())
-    }
-
     pub fn pane_label(&self, pane_id: &str) -> Option<&str> {
         self.pane_labels.get(pane_id).map(String::as_str)
     }
