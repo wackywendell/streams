@@ -42,9 +42,9 @@ export async function runReport(action: ReportAction, environment: ReportEnviron
  const inferAndApply = async (kind: "session" | "stream"): Promise<boolean> => {
   const inferred = await generate({type: kind, catalog: capture.catalog, messages: capture.evidence.messages, instructions, reset});
   if (signal.aborted || !await capture.attached()) return false;
-  // A reset clears what the model left out, wherever the field can be cleared.
-  if (reset) for (const {field, schema} of patchFields(capture.catalog, kind, "automatic")) {
-   if (allowsNull(schema) && (capture.catalog[kind] as Record<string, unknown>)[field] != null && !Object.hasOwn(inferred.changes, field)) inferred.changes[field] = null;
+  // A reset clears the short forms the model left out; an omitted long field is kept.
+  if (reset) for (const {field, schema, short} of patchFields(capture.catalog, kind, "automatic")) {
+   if (short && allowsNull(schema) && (capture.catalog[kind] as Record<string, unknown>)[field] != null && !Object.hasOwn(inferred.changes, field)) inferred.changes[field] = null;
   }
   const recordReceipt = (receipt: Receipt, request?: ApplyRequest): boolean => {
    environment.receipt(receipt);

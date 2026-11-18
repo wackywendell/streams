@@ -109,6 +109,15 @@ pub enum FieldSchema {
     },
 }
 
+impl FieldSchema {
+    /// The schema of a value other than null.
+    pub fn value(self) -> ValueSchema {
+        match self {
+            Self::Value(value) | Self::Nullable { any_of: [value, _] } => value,
+        }
+    }
+}
+
 /// A field's schema is its value's, and also allows null when the field is optional.
 trait Optionality {
     fn schema(value: ValueSchema) -> FieldSchema {
@@ -361,11 +370,13 @@ fn shorten(short: &mut Option<Option<String>>) {
     }
 }
 
-/// One field an agent request may change, and the schema of its value.
+/// One field an agent request may change, and the schema of its value. `short` marks a
+/// short form, the fields cut to `SHORT_TEXT_CHARS`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FieldRow {
     pub field: &'static str,
     pub schema: FieldSchema,
+    pub short: bool,
 }
 
 /// The fields each actor may change in one record, in declaration order. A list keeps the
@@ -395,9 +406,13 @@ impl ActorSchemas {
                 .copied()
                 .filter(|field| field.access().permits(actor, Channel::Agent))
                 .filter(|field| actor != Actor::Automatic || !protected.contains(field))
-                .map(|field| FieldRow {
-                    field: field.name(),
-                    schema: field.schema(),
+                .map(|field| {
+                    let schema = field.schema();
+                    FieldRow {
+                        field: field.name(),
+                        short: schema.value() == ValueSchema::SHORT,
+                        schema,
+                    }
                 })
                 .collect()
         };

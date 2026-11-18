@@ -42,7 +42,9 @@ export type SessionWire = {
 /** The JSON schema of one field's value: a string, a choice, or either of two. */
 export type FieldSchema = {type?: 'string' | 'object' | 'null'; enum?: string[]; minLength?: number; maxLength?: number; anyOf?: FieldSchema[]};
 /** What each actor may change in a captured record, in display order, as Rust reports it. */
-export type PatchSchemas = Partial<Record<'stream' | 'session', Record<'automatic' | 'user', {field: string; schema: FieldSchema}[]>>>;
+/** One field an actor may change; `short` marks a short form. */
+export type FieldRow = {field: string; schema: FieldSchema; short: boolean};
+export type PatchSchemas = Partial<Record<'stream' | 'session', Record<'automatic' | 'user', FieldRow[]>>>;
 export type LocalContext = {
   catalog_source: string; host_id: string; stream: StreamWire | null; session: SessionWire | null;
   sessions: SessionWire[]; title_defaults: TitleDefaults; patch_schemas: PatchSchemas;
@@ -151,7 +153,7 @@ export function isSession(value: unknown): value is SessionWire {
       && (value.checkout.repository_url === undefined || value.checkout.repository_url === null || identity(value.checkout.repository_url)));
 }
 
-const fieldRows = (value: unknown) => Array.isArray(value) && value.every(row => object(row) && typeof row.field === 'string' && object(row.schema));
+const fieldRows = (value: unknown) => Array.isArray(value) && value.every(row => object(row) && typeof row.field === 'string' && object(row.schema) && typeof row.short === 'boolean');
 const actorSchemas = (value: unknown) => object(value) && fieldRows(value.automatic) && fieldRows(value.user);
 /** Schemas for exactly the records the context holds. */
 const patchSchemas = (value: unknown, context: Record<string, unknown>) => object(value)

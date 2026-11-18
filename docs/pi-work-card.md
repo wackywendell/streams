@@ -62,8 +62,8 @@ schemas list the fields that actor may change, in display order, with the JSON
 schema of each value; the automatic lists already omit protected text. Pi builds
 its field menus and the reporting tool schema from them. It reads model output
 through the same schemas: empty text becomes null where a field clears and no
-change where a field needs text, and a reset clears each clearable field the
-model left out. Rust validates the result, cuts short forms to their
+change where a field needs text, and a reset clears each short form the model
+left out, keeping omitted long fields such as the goal. Rust validates the result, cuts short forms to their
 `maxLength`, and Pi shows any refusal Rust returns. Source identity is the
 configured host and canonical catalog path, not an inode or
 directory-replacement generation. An offline reset stops writers; ordinary

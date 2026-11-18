@@ -253,13 +253,21 @@ test('a reset discards an unreadable card before capturing it and enrolls again 
   capture:async()=>{events.push('capture');return {native:'native',cwd:'/repo',evidence:{messages:[],leafId:null},catalog:structuredClone(catalog),valid:()=>true,attached:async()=>true};},
   generate:async request=>{events.push(request.type);return request.type==='enroll'?{meaningful:false,stream:{title:'Work'},session:{title:'Lane'}}:{changes:{}};},
   enroll:async request=>{events.push('enroll');assert.equal(request.harness_session_id,'native');Object.assign(catalog,structuredClone(attached));return {saves:[{target:'session:native',save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}}]};},
-  apply:async request=>{events.push(`apply:${request.kind}`);assert.deepEqual(request.changes,{goal:null});return {save:{local:'persisted',domain:{outcome:'changes'}}};},
-  receipt:()=>{},notice:(text,level)=>notices.push({text,level}),
+  apply:assert.fail,receipt:()=>{},notice:(text,level)=>notices.push({text,level}),
  });
  assert.equal(saved,true);
- // The Stream reset clears the goal the model left out.
- assert.deepEqual(events,['discard','capture','enroll','enroll','capture','session','capture','stream','apply:stream']);
+ assert.deepEqual(events,['discard','capture','enroll','enroll','capture','session','capture','stream']);
  assert.deepEqual(notices,[{text:`${reason}. Reset discarded it.`,level:'warning'}]);
+});
+test('a Stream reset keeps an automatic goal the model omitted and clears its short form',async()=>{
+ const catalog=context();Object.assign(catalog.stream,{goal:'Goal',goal_mode:'automatic',goal_short:'Short'});const writes=[];
+ await runReport({kind:'reset',target:'stream',auto:false},{signal:new AbortController().signal,automaticEnrollment:true,
+  discardUnreadable:async()=>({session:null,stream:null}),
+  capture:async()=>({native:'native',cwd:'/repo',evidence:{messages:[],leafId:null},catalog:structuredClone(catalog),valid:()=>true,attached:async()=>true}),
+  generate:async()=>({changes:{}}),enroll:assert.fail,
+  apply:async request=>{writes.push(request);return {save:{local:'persisted',domain:{outcome:'changes'}}};},receipt:()=>{},notice:()=>{},
+ });
+ assert.deepEqual(writes.map(request=>[request.kind,request.changes]),[['stream',{goal_short:null}]]);
 });
 test('a reset of a readable card discards nothing and says nothing',async()=>{
  const notices=[];let discards=0;

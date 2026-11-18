@@ -1,10 +1,10 @@
 import { isDeepStrictEqual } from "node:util";
 import { receiptCanContinue, receiptHasUnappliedReferences, type ApplyRequest, type LocalContext, type Receipt, type ReferenceValue, type ResourceKey, type StreamCli } from "./streams.ts";
-import { resourceKey, type FieldSchema } from "./wire.ts";
+import { resourceKey, type FieldRow, type FieldSchema } from "./wire.ts";
 type Kind = "stream" | "session";
 export type ReferenceActor = "automatic" | "user";
 /** The fields `actor` may change in the captured record, in display order, as Rust reports them. */
-export function patchFields(context: LocalContext, kind: Kind, actor: ReferenceActor): {field: string; schema: FieldSchema}[] {
+export function patchFields(context: LocalContext, kind: Kind, actor: ReferenceActor): FieldRow[] {
  return context.patch_schemas[kind]?.[actor] ?? [];
 }
 /** The choices a field offers, or undefined for free text. */
