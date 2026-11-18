@@ -50,11 +50,11 @@ fn each_field_names_who_may_set_it() {
         (User, true, true, false),
         (Cli, false, true, false),
     ] {
-        assert_eq!(access.permits(Actor::User, true), user_agent);
-        assert_eq!(access.permits(Actor::User, false), user_cli);
-        assert_eq!(access.permits(Actor::Automatic, true), automatic);
-        assert_eq!(access.permits(Actor::Automatic, false), automatic);
-        assert!(!access.permits(Actor::Native, false));
+        assert_eq!(access.permits(Actor::User, Channel::Agent), user_agent);
+        assert_eq!(access.permits(Actor::User, Channel::Cli), user_cli);
+        assert_eq!(access.permits(Actor::Automatic, Channel::Agent), automatic);
+        assert_eq!(access.permits(Actor::Automatic, Channel::Cli), automatic);
+        assert!(!access.permits(Actor::Native, Channel::Cli));
     }
 }
 

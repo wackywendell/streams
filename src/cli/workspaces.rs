@@ -4,7 +4,7 @@ use std::sync::{Arc, atomic::AtomicBool};
 use streams::{
     frontend::{FrontendId, herdr::HerdrNativeSnapshot},
     model::NamingMode,
-    operations::edits::StreamEdit,
+    operations::{edits::StreamEdit, patches::Channel},
     runtime::{
         conversations::ConversationRoots,
         native_markers::selected_stream,
@@ -339,7 +339,14 @@ impl App {
         let mut stream = Stream::new(uuid::Uuid::new_v4().to_string(), title, None, host)?;
         stream.title_mode = TitleMode::Manual;
         let patch = fields::stream(&stream, intent, &mut |path| self.read_text(path))?;
-        let edit = StreamEdit::new(&stream, patch, Actor::User, None, NamingMode::default())?;
+        let edit = StreamEdit::new(
+            &stream,
+            patch,
+            Actor::User,
+            Channel::Cli,
+            None,
+            NamingMode::default(),
+        )?;
         Ok(edit.after().clone())
     }
 

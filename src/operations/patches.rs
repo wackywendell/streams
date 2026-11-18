@@ -24,15 +24,23 @@ pub enum Access {
     Cli,
 }
 
+/// How an edit reached Streams.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Channel {
+    /// A captured agent request from a frontend.
+    Agent,
+    /// A direct CLI command.
+    Cli,
+}
+
 impl Access {
-    /// Whether `actor` may set a field with this access. `agent` marks a captured agent
-    /// request rather than a direct command.
-    pub fn permits(self, actor: Actor, agent: bool) -> bool {
+    /// Whether `actor` may set a field with this access through `channel`.
+    pub fn permits(self, actor: Actor, channel: Channel) -> bool {
         match (self, actor) {
             (_, Actor::Native) => false,
             (Self::Report, _) => true,
             (Self::User, Actor::User) => true,
-            (Self::Cli, Actor::User) => !agent,
+            (Self::Cli, Actor::User) => channel == Channel::Cli,
             (Self::User | Self::Cli, Actor::Automatic) => false,
         }
     }
@@ -295,7 +303,7 @@ fn agent_schema<F: PatchField>(actor: Actor, protected: &[F]) -> Value {
     F::ALL
         .iter()
         .copied()
-        .filter(|field| field.access().permits(actor, true))
+        .filter(|field| field.access().permits(actor, Channel::Agent))
         .filter(|field| actor != Actor::Automatic || !protected.contains(field))
         .map(|field| json!({"field": field.name(), "schema": field.schema()}))
         .collect()

@@ -7,7 +7,7 @@ use crate::{
     operations::{
         Actor, EditOutcome, Reconciliation,
         edits::{SessionEdit, StreamEdit},
-        patches::{SessionPatch, StreamPatch},
+        patches::{Channel, SessionPatch, StreamPatch},
         references::{ReferenceChange, ReferenceChanges},
     },
     storage::records::{RecordAddress, RecordChange, RecordSave, RecordStore},
@@ -63,7 +63,14 @@ pub fn save_stream_edit(
     patch: StreamPatch,
     defaults: TitleDefaults,
 ) -> Result<RecordSave<EditOutcome>> {
-    let edit = StreamEdit::new(before, patch, Actor::User, None, defaults.stream)?;
+    let edit = StreamEdit::new(
+        before,
+        patch,
+        Actor::User,
+        Channel::Cli,
+        None,
+        defaults.stream,
+    )?;
     save_record_update(
         store,
         &RecordUpdate {
@@ -81,7 +88,7 @@ pub fn save_session_edit(
     patch: SessionPatch,
     defaults: TitleDefaults,
 ) -> Result<RecordSave<EditOutcome>> {
-    let edit = SessionEdit::new(before, patch, Actor::User, defaults.session)?;
+    let edit = SessionEdit::new(before, patch, Actor::User, Channel::Cli, defaults.session)?;
     save_record_update(
         store,
         &RecordUpdate {

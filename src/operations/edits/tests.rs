@@ -82,6 +82,7 @@ fn progress_group_guards_cover_all_long_and_short_fields() {
                 &before,
                 changes(json!({"recap":"Scope", "recap_short":"Scope", "remaining_short":"Next"})),
                 actor,
+                Channel::Agent,
                 NamingMode::Automatic,
             )
             .unwrap();
@@ -113,6 +114,7 @@ fn conversation_report_survives_move_and_return_without_restoring_old_membership
         &before,
         changes(json!({"state":"progress", "remaining":"next"})),
         Actor::Automatic,
+        Channel::Agent,
         NamingMode::Automatic,
     )
     .unwrap();
@@ -141,6 +143,7 @@ fn effort_prose_cannot_cross_a_move_or_reenter_after_a_return() {
         &target,
         changes(json!({"goal":"old effort prose"})),
         Actor::Automatic,
+        Channel::Agent,
         Some(before.clone()),
         NamingMode::Automatic,
     )
@@ -171,6 +174,7 @@ fn local_work_and_stream_input_changes_supersede_old_inference() {
         &before,
         changes(json!({"state":"old generated work"})),
         Actor::Automatic,
+        Channel::Agent,
         NamingMode::Automatic,
     )
     .unwrap();
@@ -185,6 +189,7 @@ fn local_work_and_stream_input_changes_supersede_old_inference() {
         &target,
         changes(json!({"goal":"old goal"})),
         Actor::Automatic,
+        Channel::Agent,
         Some(before.clone()),
         NamingMode::Automatic,
     )
@@ -219,6 +224,7 @@ fn manual_text_and_grouped_conversation_fields_remain_protected() {
         &before,
         changes(json!({"title":"generated"})),
         Actor::Automatic,
+        Channel::Agent,
         NamingMode::Automatic,
     )
     .unwrap();
@@ -233,6 +239,7 @@ fn manual_text_and_grouped_conversation_fields_remain_protected() {
         &before,
         changes(json!({"state":"edited state"})),
         Actor::User,
+        Channel::Agent,
         NamingMode::Automatic,
     )
     .unwrap();
@@ -247,6 +254,7 @@ fn manual_text_and_grouped_conversation_fields_remain_protected() {
         &current,
         changes(json!({"title":"User name"})),
         Actor::User,
+        Channel::Agent,
         NamingMode::Automatic,
     )
     .unwrap();
@@ -268,6 +276,7 @@ fn effective_title_modes_control_generation_without_changing_saved_modes() {
                 &before,
                 changes(json!({"title":"Generated name","state":"progress"})),
                 Actor::Automatic,
+                Channel::Agent,
                 default,
             )
             .unwrap();
@@ -291,6 +300,7 @@ fn effective_title_modes_control_generation_without_changing_saved_modes() {
                 &before,
                 changes(json!({"title":"Generated effort","goal":"Goal"})),
                 Actor::Automatic,
+                Channel::Agent,
                 Some(session()),
                 default,
             )
@@ -321,6 +331,7 @@ fn user_mode_changes_do_not_generate_a_new_title_and_ignore_default_drift() {
             &before,
             changes(json!({"title_mode":mode})),
             Actor::User,
+            Channel::Agent,
             NamingMode::Automatic,
         )
         .unwrap();
@@ -372,6 +383,7 @@ fn constructors_reject_membership_identity_lifecycle_and_unscoped_generated_effo
             &before,
             changes(json!({"title_mode":"manual"})),
             Actor::Automatic,
+            Channel::Agent,
             NamingMode::Automatic
         )
         .is_err()
@@ -381,6 +393,7 @@ fn constructors_reject_membership_identity_lifecycle_and_unscoped_generated_effo
             &before,
             changes(json!({"state":"native"})),
             Actor::Native,
+            Channel::Agent,
             NamingMode::Automatic
         )
         .is_err()
@@ -391,6 +404,7 @@ fn constructors_reject_membership_identity_lifecycle_and_unscoped_generated_effo
             &target,
             changes(json!({"goal":"generated"})),
             Actor::Automatic,
+            Channel::Agent,
             None,
             NamingMode::Automatic
         )
@@ -401,6 +415,7 @@ fn constructors_reject_membership_identity_lifecycle_and_unscoped_generated_effo
             &target,
             changes(json!({"goal":"manual"})),
             Actor::User,
+            Channel::Agent,
             Some(before.clone()),
             NamingMode::Automatic
         )
@@ -413,6 +428,7 @@ fn constructors_reject_membership_identity_lifecycle_and_unscoped_generated_effo
             &foreign,
             changes(json!({"goal":"generated"})),
             Actor::Automatic,
+            Channel::Agent,
             Some(before),
             NamingMode::Automatic
         )
@@ -427,6 +443,7 @@ fn foreign_or_mismatched_current_relationships_never_admit_a_local_edit() {
         &before,
         changes(json!({"status":"waiting"})),
         Actor::User,
+        Channel::Agent,
         NamingMode::Automatic,
     )
     .unwrap();

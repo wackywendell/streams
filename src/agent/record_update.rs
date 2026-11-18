@@ -10,7 +10,7 @@ use crate::{
     operations::{
         Actor,
         edits::{SessionEdit, StreamEdit},
-        patches::{Patch, PatchField},
+        patches::Channel,
         references::{
             AutomaticDocumentTarget, AutomaticReferenceTarget, AutomaticReferenceValue,
             ReferenceChange, ReferenceChanges,
@@ -182,7 +182,7 @@ pub fn parse_record_update(
     }
     let edit = match wire.kind {
         RecordKind::Session => {
-            let patch = agent_patch(wire.changes, wire.actor)?;
+            let patch = agent_patch(wire.changes)?;
             let session = session_from_data(&wire.before)?;
             if !wire.inputs.is_empty() {
                 return Err(ValidationError::new(
@@ -193,6 +193,7 @@ pub fn parse_record_update(
                 &session,
                 patch,
                 wire.actor,
+                Channel::Agent,
                 wire.title_default,
             )?)
         }
@@ -224,8 +225,9 @@ pub fn parse_record_update(
                 )?),
                 None => CapturedEdit::Stream(StreamEdit::new(
                     &stream,
-                    agent_patch(wire.changes, wire.actor)?,
+                    agent_patch(wire.changes)?,
                     wire.actor,
+                    Channel::Agent,
                     captured_session,
                     wire.title_default,
                 )?),
@@ -249,23 +251,7 @@ pub fn parse_record_update(
     })
 }
 
-/// An agent request's field changes, limited to the fields its actor may set through an
-/// agent.
-fn agent_patch<P: Patch + DeserializeOwned>(
-    changes: Value,
-    actor: Actor,
-) -> Result<P, ValidationError> {
-    let patch: P = object(changes)
-        .map_err(|error| ValidationError::new(format!("invalid captured edit: {error}")))?;
-    if let Some(field) = patch
-        .fields()
-        .into_iter()
-        .find(|field| !field.access().permits(actor, true))
-    {
-        return Err(ValidationError::new(format!(
-            "unknown agent update field: {}",
-            field.name()
-        )));
-    }
-    Ok(patch)
+/// An agent request's field changes. The edit checks which of them its actor may set.
+fn agent_patch<P: DeserializeOwned>(changes: Value) -> Result<P, ValidationError> {
+    object(changes).map_err(|error| ValidationError::new(format!("invalid captured edit: {error}")))
 }

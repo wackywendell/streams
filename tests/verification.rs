@@ -13,6 +13,7 @@ use streams::operations::edits::{
     ReportAdmission, SessionEdit, StreamEdit, report_admission_context,
 };
 use streams::operations::membership::{MoveIntent, apply_move};
+use streams::operations::patches::Channel;
 use streams::operations::{Actor, DomainOutcome, Reconciliation};
 use temper_jit::table::{Effect, EvalContext, TransitionTable, effect_args};
 use temper_verify::cascade::{CascadeLevel, VerificationCascade};
@@ -131,6 +132,7 @@ impl ConcreteWorld {
                 "remaining": "Generated remaining work"
             })),
             Actor::Automatic,
+            Channel::Agent,
             NamingMode::Automatic,
         )
         .unwrap();
@@ -142,6 +144,7 @@ impl ConcreteWorld {
                 "goal_short": "Generated goal"
             })),
             Actor::Automatic,
+            Channel::Agent,
             Some(session.clone()),
             NamingMode::Automatic,
         )
@@ -195,6 +198,7 @@ impl ConcreteWorld {
                     &self.session,
                     changes(json!({"remaining": "User updated remaining"})),
                     Actor::User,
+                    Channel::Agent,
                     self.current_defaults.session,
                 )
                 .unwrap();
@@ -217,6 +221,7 @@ impl ConcreteWorld {
                         "goal_mode": self.stream_a.goal_mode
                     })),
                     Actor::User,
+                    Channel::Agent,
                     None,
                     self.current_defaults.stream,
                 )
@@ -236,6 +241,7 @@ impl ConcreteWorld {
                         &self.session,
                         changes(json!({"title_mode": "manual"})),
                         Actor::User,
+                        Channel::Agent,
                         self.current_defaults.session,
                     )
                     .unwrap();
@@ -265,6 +271,7 @@ impl ConcreteWorld {
                         &self.stream_a,
                         changes(patch),
                         Actor::User,
+                        Channel::Agent,
                         None,
                         self.current_defaults.stream,
                     )

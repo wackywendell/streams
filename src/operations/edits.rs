@@ -2,7 +2,7 @@
 
 use serde::Serialize;
 
-use super::patches::{Access, Patch, PatchField, SessionPatch, StreamPatch};
+use super::patches::{Access, Channel, Patch, PatchField, SessionPatch, StreamPatch};
 use super::{Actor, Reconciliation};
 use crate::model::{NamingMode, Session, Stream, TitleDefaults, TitleMode, ValidationError};
 
@@ -80,11 +80,13 @@ impl SessionEdit {
         before: &Session,
         patch: SessionPatch,
         actor: Actor,
+        channel: Channel,
         title_default: NamingMode,
     ) -> Result<Self, ValidationError> {
         let patch = admitted(
             patch,
             actor,
+            channel,
             &SessionPatch::protected(before, title_default),
         )?;
         let after = applied(before, &patch.normalized(before, actor))?;
@@ -177,10 +179,16 @@ impl StreamEdit {
         before: &Stream,
         patch: StreamPatch,
         actor: Actor,
+        channel: Channel,
         captured_session: Option<Session>,
         title_default: NamingMode,
     ) -> Result<Self, ValidationError> {
-        let patch = admitted(patch, actor, &StreamPatch::protected(before, title_default))?;
+        let patch = admitted(
+            patch,
+            actor,
+            channel,
+            &StreamPatch::protected(before, title_default),
+        )?;
         let after = applied(before, &patch.normalized(before, actor))?;
         if actor == Actor::User && captured_session.is_some() {
             return Err(ValidationError::new(
@@ -315,11 +323,12 @@ pub fn report_admission_context(
     }
 }
 
-/// The patch `actor` may submit, without the fields the record protects from automatic
-/// reports.
+/// The patch `actor` may submit through `channel`, without the fields the record protects
+/// from automatic reports.
 fn admitted<P: Patch>(
     mut patch: P,
     actor: Actor,
+    channel: Channel,
     protected: &[P::Field],
 ) -> Result<P, ValidationError> {
     if actor == Actor::Native {
@@ -330,7 +339,7 @@ fn admitted<P: Patch>(
     if let Some(field) = patch
         .fields()
         .into_iter()
-        .find(|field| !field.access().permits(actor, false))
+        .find(|field| !field.access().permits(actor, channel))
     {
         return Err(ValidationError::new(format!(
             "field is not editable by this actor: {}",
