@@ -10,6 +10,7 @@ use std::{
 use streams::{
     config::{Config, Strategy},
     file_store::records::RecordIoEvent,
+    model::Record,
     model::{RecordKind, TitleDefaults},
     operations::membership::MoveIntent,
     runtime::conversations::Harness,

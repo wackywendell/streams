@@ -9,7 +9,10 @@ mod listing;
 pub use create::create_record;
 pub use listing::{StreamFilter, StreamList, list_streams};
 mod enrollment;
-pub use enrollment::{EnrollmentSave, enroll_session, enroll_session_observed, enroll_stream};
+pub use enrollment::{
+    EnrollmentReceipt, EnrollmentSave, enroll, enroll_session, enroll_session_observed,
+    enroll_stream, remember_directory,
+};
 mod record_update;
 mod records;
 pub use record_update::{

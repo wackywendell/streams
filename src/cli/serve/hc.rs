@@ -203,24 +203,17 @@ pub(super) fn resolve_session(
             desired_pi_name: None,
         });
     };
+    // Best effort: a directory that cannot be remembered leaves the Session as it is.
     if remember_directory
         && let Ok(directory) = streams::runtime::checkouts::canonical_directory(&app.cwd)
-        && let Ok(locations) = app.locations(opened.root(), host)
     {
-        let _ = locations.remember(&session.stream_id, &directory, None, true, None, None);
-        if let Ok(binding) = locations.remember(
+        let _ = super::super::application::remember_directory(
+            &app.config,
+            &opened,
             &session.stream_id,
+            &session.id,
             &directory,
-            Some(&session.id),
-            true,
-            None,
-            None,
-        ) && let Some(checkout) = binding.checkout
-            && let Ok(registry) = app.registry(host)
-        {
-            let _ = registry
-                .bind_inferred_repositories(&checkout.id, &streams::process::NativeProcessRunner);
-        }
+        );
     }
     let session_naming = app
         .config
