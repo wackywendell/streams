@@ -62,9 +62,13 @@ then fail with an error that names the record and says to reset. Runtime code
 never converts old records. To reset:
 
 1. Stop Pi Streams children, card viewers and the herdr-app mod.
-2. Move the catalog directory aside, for example
-   `mv ~/.local/share/streams/catalog ~/.local/share/streams/catalog.old`
-   (use `streams config get catalog.root` for its location).
+2. Move the catalog directory aside:
+
+   ```sh
+   root="$(streams config get catalog.root)"
+   mv "$root" "$root.old"
+   ```
+
 3. Initialise an empty catalog with `streams init --sync none` or
    `streams init --sync git` (with a fresh remote branch when sharing).
 4. Restart Pi and re-enroll the wanted work with `/streams attach` or
