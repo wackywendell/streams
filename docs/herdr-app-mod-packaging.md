@@ -78,6 +78,8 @@ herdr-app Layout Tree
     └── status (bottom bar: workspace-status)                 <-- Untouched by streams
 ```
 
+Each refresh of the active tab spawns one `streams integration request`. Its `tab` selection returns the tab's Stream view (from the enrolled Session, the `streams.work` label or the space association) or the host's Streams, and its `frame` selections return each pane's enrolled Session for the pane header.
+
 When a user clicks the `Stream · Session` pill in the 30 px pane header:
 1. If the right-hand `panel` is hidden or showing another stack child (`files` or `changes`), `mods/streams` runs `layout.select({ stack: "panel-body", child: "streams" })` and `layout.show({ id: "panel" })`.
 2. If `panel` is already visible with `panel-body.active === "streams"`, clicking the pill opens the compact `session-popup` overlay (`openOverlay({ mod: "streams", kind: "popup", ... })`) anchored to the pane header.

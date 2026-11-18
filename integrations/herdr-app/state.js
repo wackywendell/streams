@@ -51,7 +51,7 @@ function matchesHostStreamFilter(status, filter) {
 }
 
 /**
- * Filter and sort `host_streams` summaries in the unenrolled sidebar.
+ * Filter and sort host Stream summaries in the unassociated sidebar.
  */
 export function filterHostStreams(
   streams,
@@ -190,38 +190,38 @@ export function buildRequestEnvelope(scope, endpoint, body) {
 }
 
 /**
- * Build the batched `ViewSelection` list for visible terminals in the active tab
- * and optionally the tab's known enrolled Stream.
+ * Order the active tab's local terminals for its tab read: the focused agent first,
+ * then the rest in pane order. Rust takes the Stream of the first enrolled terminal.
+ */
+export function tabTerminals({ visibleTerminals = [], focusedTerminal = null }) {
+  const local = (key) => typeof key === "string" && key.length > 0 && !key.includes("/");
+  const ordered =
+    focusedTerminal && visibleTerminals.includes(focusedTerminal)
+      ? [focusedTerminal, ...visibleTerminals]
+      : visibleTerminals;
+  return [...new Set(ordered.filter(local))];
+}
+
+/**
+ * Build the batched `ViewSelection` list: one `tab` read naming the active tab's Stream
+ * (or the host's Streams), then a `frame` read per local terminal for per-pane context.
  */
 export function buildViewSelections({
   endpoint,
   visibleTerminals = [],
   liveTerminals = [],
-  knownStreamId = null,
+  focusedTerminal = null,
 }) {
   if (!endpoint) return [];
-  const selections = [];
-  if (typeof knownStreamId === "string" && knownStreamId.length > 0) {
-    selections.push({
-      kind: "saved_stream",
-      stream: knownStreamId,
-    });
-  } else {
-    selections.push({ kind: "host_streams" });
-  }
+  const ref = (key) => ({ adapter: "hc", endpoint, key });
+  const tab = tabTerminals({ visibleTerminals, focusedTerminal });
+  const selections = [{ kind: "tab", terminals: tab.map(ref) }];
   const seen = new Set();
-  const terminalBatch =
-    typeof knownStreamId === "string" && knownStreamId.length > 0
-      ? visibleTerminals
-      : [...visibleTerminals, ...liveTerminals];
-  for (const terminalKey of terminalBatch) {
+  for (const terminalKey of [...visibleTerminals, ...liveTerminals]) {
     if (!terminalKey || terminalKey.includes("/") || seen.has(terminalKey)) continue;
     if (selections.length >= MAX_SELECTIONS) break;
     seen.add(terminalKey);
-    selections.push({
-      kind: "frame",
-      terminal: { adapter: "hc", endpoint, key: terminalKey },
-    });
+    selections.push({ kind: "frame", terminal: ref(terminalKey) });
   }
   return selections;
 }
@@ -255,7 +255,7 @@ export function computeObservationKey({
   activeTabId = null,
   visibleTerminals,
   liveTerminals = [],
-  knownStreamId = null,
+  focusedTerminal = null,
   noticeToken,
 }) {
   if (!activeSpace) return "none";
@@ -263,9 +263,8 @@ export function computeObservationKey({
   return JSON.stringify({
     space: activeSpace.id,
     tab: activeTabId,
-    terminals: [...(visibleTerminals ?? [])].sort(),
-    liveTerminals: knownStreamId ? [] : [...(liveTerminals ?? [])].sort(),
-    stream: knownStreamId ?? null,
+    terminals: tabTerminals({ visibleTerminals: visibleTerminals ?? [], focusedTerminal }),
+    liveTerminals: [...(liveTerminals ?? [])].sort(),
     notice: noticeToken ?? "",
   });
 }
@@ -560,13 +559,14 @@ export class StreamsCoordinator {
     this.lastCompletedAt = 0;
 
     this.streams = new Map(); // streamId -> StreamView
-    // Written only by the host_streams read, never cleared elsewhere.
+    // Written only by the tab read: tabId -> the tab's Stream id, or null for the host's Streams.
+    this.tabStreams = new Map();
+    // Written only by the tab read of an unassociated tab, never cleared elsewhere.
     this.hostStreams = []; // StreamSummary[] the listing could read
     this.hostUnreadable = []; // UnreadableRecord[] { kind, path, cause } it could not
     this.hostStreamsError = null; // the listing itself failed
     this.inspectedStreamId = null;
     this.frames = new Map(); // terminalKey -> FrameContext
-    this.streamIdByTerminal = new Map(); // terminalKey -> streamId
     this.pendingViewers = [];
     this.viewerMetaByPane = new Map();
     this.lastError = null;
@@ -642,18 +642,6 @@ export class StreamsCoordinator {
     const cached = this.streams.get(streamId);
     if (cached?.title) return cached.title;
     return streamId;
-  }
-
-  knownStreamForTab({ visibleTerminals = [], focusedTerminal = null } = {}) {
-    if (focusedTerminal && visibleTerminals.includes(focusedTerminal)) {
-      const focusedStream = this.streamIdByTerminal.get(focusedTerminal);
-      if (focusedStream) return focusedStream;
-    }
-    for (const termKey of visibleTerminals) {
-      const streamId = this.streamIdByTerminal.get(termKey);
-      if (streamId) return streamId;
-    }
-    return null;
   }
 
   notifyViews() {
@@ -736,14 +724,13 @@ export class StreamsCoordinator {
       });
     }
 
-    const knownStreamId = this.knownStreamForTab({ visibleTerminals, focusedTerminal });
     const noticeToken = observeNoticeToken(terminalList, this.binding.notification_key);
     const key = computeObservationKey({
       activeSpace,
       activeTabId,
       visibleTerminals,
       liveTerminals,
-      knownStreamId,
+      focusedTerminal,
       noticeToken,
     });
 
@@ -767,7 +754,6 @@ export class StreamsCoordinator {
       visibleTerminals,
       liveTerminals,
       focusedTerminal,
-      knownStreamId,
       key,
       now,
     });
@@ -779,7 +765,6 @@ export class StreamsCoordinator {
     visibleTerminals = [],
     liveTerminals = [],
     focusedTerminal = null,
-    knownStreamId = null,
     key,
     now = Date.now(),
   }) {
@@ -790,7 +775,7 @@ export class StreamsCoordinator {
       endpoint: binding.endpoint,
       visibleTerminals,
       liveTerminals,
-      knownStreamId,
+      focusedTerminal,
     });
     if (selections.length === 0) {
       this.lastCompletedKey = key ?? null;
@@ -832,7 +817,7 @@ export class StreamsCoordinator {
             this.binding = null;
             this.frames.clear();
             this.streams.clear();
-            this.streamIdByTerminal.clear();
+            this.tabStreams.clear();
             this.lastCompletedKey = null;
             this.lastFailedKey = null;
             this.lastError = msg;
@@ -854,42 +839,13 @@ export class StreamsCoordinator {
               this.tabNaming = readRes.herdr_config.tab_naming;
             }
           }
-          const fetchedStreams = new Set();
           selections.forEach((sel, idx) => {
             const item = readRes.values[idx];
-            if (sel.kind === "saved_stream") {
-              if (item?.ok?.kind === "stream") {
-                this.streams.set(item.ok.value.id, item.ok.value);
-                fetchedStreams.add(item.ok.value.id);
-              }
-            } else if (sel.kind === "host_streams") {
-              const value = item?.ok?.kind === "host_streams" ? item.ok.value : undefined;
-              if (Array.isArray(value?.streams) && Array.isArray(value?.unreadable)) {
-                this.hostStreams = value.streams;
-                this.hostUnreadable = value.unreadable;
-                this.hostStreamsError = null;
-              } else if (item?.ok?.kind === "host_streams") {
-                // Any other shape is a version mismatch, never an empty catalog.
-                this.hostStreams = [];
-                this.hostUnreadable = [];
-                this.hostStreamsError =
-                  "unexpected host listing from streams; reinstall the CLI and mod together";
-              } else if (item?.error) {
-                this.hostStreams = [];
-                this.hostUnreadable = [];
-                this.hostStreamsError = item.error.message || "host Streams are unavailable";
-              }
+            if (sel.kind === "tab") {
+              this.applyTab(activeTabId, item);
             } else if (sel.kind === "frame") {
               if (item?.ok?.kind === "frame") {
                 this.frames.set(sel.terminal.key, item.ok.context);
-                if (item.ok.context?.kind === "enrolled" && item.ok.context.session?.stream) {
-                  this.streamIdByTerminal.set(
-                    sel.terminal.key,
-                    item.ok.context.session.stream
-                  );
-                } else {
-                  this.streamIdByTerminal.delete(sel.terminal.key);
-                }
               } else if (item?.error) {
                 this.frames.set(sel.terminal.key, {
                   kind: "unavailable",
@@ -899,49 +855,10 @@ export class StreamsCoordinator {
             }
           });
 
-          const tabSession = activeTabSession({
-            visibleTerminals,
-            focusedTerminal,
-            frames: this.frames,
-          });
-          if (tabSession?.session?.stream && !fetchedStreams.has(tabSession.session.stream)) {
-            if (key !== undefined) {
-              this.inFlightKey = JSON.stringify({
-                ...JSON.parse(key),
-                stream: tabSession.session.stream,
-              });
-            }
-            const streamEnvelope = buildRequestEnvelope(binding.scope, binding.endpoint, {
-              kind: "read",
-              selections: [{ kind: "saved_stream", stream: tabSession.session.stream }],
-            });
-            const streamOut = await this.exec(this.streamsBin, [
-              "integration",
-              "request",
-              "--request-json",
-              JSON.stringify(streamEnvelope),
-            ]);
-            if (gen !== this.readGeneration) return null;
-            if (streamOut.code === 0) {
-              const streamReply = JSON.parse(streamOut.stdout);
-              const streamRead = streamReply?.result?.ok;
-              const streamItem = streamRead?.values?.[0];
-              if (streamItem?.ok?.kind === "stream") {
-                this.streams.set(streamItem.ok.value.id, streamItem.ok.value);
-              }
-            }
-          }
-
           this.lastError = null;
           this.lastFailedKey = null;
           this.lastCompletedAt = now;
-          this.lastCompletedKey =
-            key !== undefined
-              ? JSON.stringify({
-                  ...JSON.parse(key),
-                  stream: this.knownStreamForTab({ visibleTerminals, focusedTerminal }),
-                })
-              : null;
+          this.lastCompletedKey = key ?? null;
         }
         return reply;
       } catch (err) {
@@ -960,6 +877,32 @@ export class StreamsCoordinator {
     })();
     this.inFlightPromise = promise;
     return promise;
+  }
+
+  /**
+   * Record one tab read: the tab's Stream view, or the host's Streams when the tab has none.
+   * A failed read shows its error in the host listing; any other shape is a version mismatch.
+   */
+  applyTab(tabId, item) {
+    const context = item?.ok?.kind === "tab" ? item.ok.context : undefined;
+    if (context?.kind === "stream" && typeof context.stream?.id === "string") {
+      this.streams.set(context.stream.id, context.stream);
+      this.tabStreams.set(tabId, context.stream.id);
+      return;
+    }
+    this.tabStreams.set(tabId, null);
+    const listing = context?.kind === "unassociated" ? context.streams : undefined;
+    if (Array.isArray(listing?.streams) && Array.isArray(listing?.unreadable)) {
+      this.hostStreams = listing.streams;
+      this.hostUnreadable = listing.unreadable;
+      this.hostStreamsError = null;
+      return;
+    }
+    this.hostStreams = [];
+    this.hostUnreadable = [];
+    this.hostStreamsError = item?.error
+      ? item.error.message || "host Streams are unavailable"
+      : "unexpected tab context from streams; reinstall the CLI and mod together";
   }
 
   /**

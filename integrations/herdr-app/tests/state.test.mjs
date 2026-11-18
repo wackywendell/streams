@@ -32,39 +32,27 @@ test("resolveRole selects popup, frame, viewer, and sidebar roles deterministica
   assert.equal(resolveRole(undefined), "sidebar");
 });
 
-test("buildViewSelections batches optional known stream and deduplicates local visible terminals", () => {
+test("buildViewSelections reads the tab, focused agent first, then one frame per local terminal", () => {
+  const ref = (key) => ({ adapter: "hc", endpoint: "core-1", key });
   const selections = buildViewSelections({
     endpoint: "core-1",
-    knownStreamId: "stream-1",
     visibleTerminals: ["t1", "t2", "t1", "remote/t3", ""],
+    liveTerminals: ["t4", "t2"],
+    focusedTerminal: "t2",
   });
   assert.deepEqual(selections, [
-    {
-      kind: "saved_stream",
-      stream: "stream-1",
-    },
-    {
-      kind: "frame",
-      terminal: { adapter: "hc", endpoint: "core-1", key: "t1" },
-    },
-    {
-      kind: "frame",
-      terminal: { adapter: "hc", endpoint: "core-1", key: "t2" },
-    },
+    { kind: "tab", terminals: [ref("t2"), ref("t1")] },
+    { kind: "frame", terminal: ref("t1") },
+    { kind: "frame", terminal: ref("t2") },
+    { kind: "frame", terminal: ref("t4") },
   ]);
 
-  const unenrolledSelections = buildViewSelections({
-    endpoint: "core-1",
-    knownStreamId: null,
-    visibleTerminals: ["t1"],
-  });
-  assert.deepEqual(unenrolledSelections, [
-    { kind: "host_streams" },
-    {
-      kind: "frame",
-      terminal: { adapter: "hc", endpoint: "core-1", key: "t1" },
-    },
-  ]);
+  assert.deepEqual(
+    buildViewSelections({ endpoint: "core-1", visibleTerminals: [], focusedTerminal: "t9" }),
+    [{ kind: "tab", terminals: [] }],
+    "a focused terminal outside the tab is not part of its read"
+  );
+  assert.deepEqual(buildViewSelections({ endpoint: null, visibleTerminals: ["t1"] }), []);
 });
 
 test("observeNoticeToken combines only local terminal notice tokens", () => {
@@ -270,28 +258,32 @@ test("StreamsCoordinator resolves tab-local enrolled session and stream without 
                 viewer_placement: "pane-right",
               },
               values: req.body.selections.map((sel) =>
-                sel.kind === "saved_stream"
+                sel.kind === "tab"
                   ? {
                       ok: {
-                        kind: "stream",
-                        value: {
-                          id: sel.stream,
-                          title: "Stream One",
-                          status: "active",
-                          goal: "Goal",
-                          goal_short: null,
-                          sessions: [
-                            {
-                              id: "sess-1",
-                              title: "Session One",
-                              status: "active",
-                              harness: "pi",
-                              state_short: "Working",
-                            },
-                          ],
-                          documents: [],
-                          artifacts: [],
-                          links: [],
+                        kind: "tab",
+                        context: {
+                          kind: "stream",
+                          stream: {
+                            id: "stream-1",
+                            title: "Stream One",
+                            status: "active",
+                            goal: "Goal",
+                            goal_short: null,
+                            sessions: [
+                              {
+                                id: "sess-1",
+                                title: "Session One",
+                                status: "active",
+                                harness: "pi",
+                                state_short: "Working",
+                              },
+                            ],
+                            documents: [],
+                            artifacts: [],
+                            links: [],
+                            unreadable: [],
+                          },
                         },
                       },
                     }
@@ -332,8 +324,13 @@ test("StreamsCoordinator resolves tab-local enrolled session and stream without 
   };
 
   await coordinator.observe(snap);
-  assert.equal(calls.length, 3, "describe + initial frame read + follow-up saved_stream read");
+  assert.equal(calls.length, 2, "describe + one tab read");
+  assert.deepEqual(
+    JSON.parse(calls[1].args[3]).body.selections.map((sel) => sel.kind),
+    ["tab", "frame"]
+  );
   assert.equal(coordinator.frames.get("t1")?.kind, "enrolled");
+  assert.equal(coordinator.tabStreams.get("tab-1"), "stream-1");
   assert.equal(coordinator.streams.get("stream-1")?.title, "Stream One");
   assert.equal(
     activeTabSession({
@@ -346,15 +343,15 @@ test("StreamsCoordinator resolves tab-local enrolled session and stream without 
 
   // Re-observing identical state makes zero subprocess calls
   await coordinator.observe(snap);
-  assert.equal(calls.length, 3, "cached re-render does not spawn subprocesses");
+  assert.equal(calls.length, 2, "cached re-render does not spawn subprocesses");
 
-  // Changing the save-notice label triggers one batched read (saved_stream + frame together)
+  // Changing the save-notice label triggers one batched read (tab + frame together)
   const snapAfterSave = {
     ...snap,
     terminalList: [{ address: "t1", labels: { "streams.saved.key1": "uuid-2" } }],
   };
   await coordinator.observe(snapAfterSave);
-  assert.equal(calls.length, 4, "save notice triggers one combined batched refresh");
+  assert.equal(calls.length, 3, "save notice triggers one combined batched refresh");
 
   // Stale async read rejection: start a slow read, then trigger a newer read that finishes first
   let resolveSlow;
@@ -392,17 +389,21 @@ test("StreamsCoordinator resolves tab-local enrolled session and stream without 
           values: [
             {
               ok: {
-                kind: "stream",
-                value: {
-                  id: "stream-stale",
-                  title: "Stale Stream",
-                  status: "active",
-                  goal: null,
-                  goal_short: null,
-                  sessions: [],
-                  documents: [],
-                  artifacts: [],
-                  links: [],
+                kind: "tab",
+                context: {
+                  kind: "stream",
+                  stream: {
+                    id: "stream-stale",
+                    title: "Stale Stream",
+                    status: "active",
+                    goal: null,
+                    goal_short: null,
+                    sessions: [],
+                    documents: [],
+                    artifacts: [],
+                    links: [],
+                    unreadable: [],
+                  },
                 },
               },
             },
@@ -434,6 +435,7 @@ test("StreamsCoordinator resolves tab-local enrolled session and stream without 
     "stale slow response must not overwrite newer frame"
   );
   assert.equal(coordinator.tabNaming, true, "stale tabNaming must not overwrite newer read");
+  assert.equal(coordinator.tabStreams.get("tab-1"), "stream-1", "stale tab context is discarded");
 });
 
 test("StreamsCoordinator dispatches ViewerAction items once on fresh action replies", async () => {
@@ -1038,19 +1040,22 @@ test("StreamsCoordinator captures hostStreams on unenrolled tabs, inspects strea
                 values: [
                   {
                     ok: {
-                      kind: "host_streams",
-                      value: {
-                        streams: [
-                          {
-                            id: "st-active",
-                            title: "Active Effort",
-                            goal_short: "Keep going",
-                            status: "active",
-                            active_sessions: 1,
-                            total_sessions: 2,
-                          },
-                        ],
-                        unreadable: [],
+                      kind: "tab",
+                      context: {
+                        kind: "unassociated",
+                        streams: {
+                          streams: [
+                            {
+                              id: "st-active",
+                              title: "Active Effort",
+                              goal_short: "Keep going",
+                              status: "active",
+                              active_sessions: 1,
+                              total_sessions: 2,
+                            },
+                          ],
+                          unreadable: [],
+                        },
                       },
                     },
                   },
@@ -1095,6 +1100,7 @@ test("StreamsCoordinator captures hostStreams on unenrolled tabs, inspects strea
   });
   assert.equal(coordinator.hostStreams.length, 1);
   assert.equal(coordinator.hostStreams[0].id, "st-active");
+  assert.equal(coordinator.tabStreams.get("tab-1"), null);
 
   await coordinator.inspectStream("st-paused");
   assert.equal(coordinator.inspectedStreamId, "st-paused");
@@ -1119,7 +1125,7 @@ test("StreamsCoordinator captures hostStreams on unenrolled tabs, inspects strea
   assert.equal(actions[1].placement, "pane-right");
 });
 
-test("a host Stream listing shows readable Streams, names unreadable records, and keeps a failure after the rest of the read succeeds", async () => {
+test("a tab read shows the tab's Stream, or the host's readable Streams with unreadable records, and keeps a failure after the rest of the read succeeds", async () => {
   const unreadable = {
     kind: "stream",
     host: "h",
@@ -1127,9 +1133,9 @@ test("a host Stream listing shows readable Streams, names unreadable records, an
     cause: "unknown field `archived`",
     repair: "Run /streams reset in a conversation on that Stream, or delete or fix the file.",
   };
-  let hostStreams = {
-    ok: { kind: "host_streams", value: { streams: [{ id: "st", title: "T", status: "active" }], unreadable: [unreadable] } },
-  };
+  const listing = (streams) => ({ ok: { kind: "tab", context: { kind: "unassociated", streams } } });
+  let tab = listing({ streams: [{ id: "st", title: "T", status: "active" }], unreadable: [unreadable] });
+  let spawns = 0;
   const coordinator = new StreamsCoordinator({
     exec: async (_cmd, args) => {
       if (args[1] === "describe") {
@@ -1140,6 +1146,7 @@ test("a host Stream listing shows readable Streams, names unreadable records, an
         };
       }
       const req = JSON.parse(args[3]);
+      spawns += 1;
       return {
         code: 0,
         stdout: JSON.stringify({
@@ -1151,7 +1158,7 @@ test("a host Stream listing shows readable Streams, names unreadable records, an
             ok: {
               kind: "read",
               values: req.body.selections.map((sel) =>
-                sel.kind === "host_streams" ? hostStreams : { ok: { kind: "frame", context: { kind: "unenrolled" } } }
+                sel.kind === "tab" ? tab : { ok: { kind: "frame", context: { kind: "not_applicable" } } }
               ),
             },
           },
@@ -1178,25 +1185,43 @@ test("a host Stream listing shows readable Streams, names unreadable records, an
     records: [{ label: "hosts/h/streams/x.yaml: unknown field `archived`", repair: unreadable.repair }],
   });
 
-  // An old CLI's bare array, or any other shape, is a mismatch and never an empty catalog.
-  for (const value of [[{ id: "st", title: "T", status: "active" }], { streams: [] }, null]) {
-    hostStreams = { ok: { kind: "host_streams", value } };
+  // A shell routed to a Stream (by its work label or space) shows that Stream from the same
+  // spawn, with its unreadable records; the host listing keeps its last value.
+  const view = { id: "st", title: "T", status: "active", sessions: [], unreadable: [unreadable] };
+  tab = { ok: { kind: "tab", context: { kind: "stream", stream: view } } };
+  const before = spawns;
+  await coordinator.observe({ ...snapshot, force: true });
+  assert.equal(spawns - before, 1, "one spawn per tab refresh");
+  assert.equal(coordinator.tabStreams.get("tab-1"), "st");
+  assert.deepEqual(coordinator.streams.get("st"), view);
+  assert.deepEqual(coordinator.hostStreams.map((summary) => summary.id), ["st"]);
+
+  // Any other shape is a mismatch and never an empty catalog.
+  for (const value of [
+    { ok: { kind: "host_streams", value: { streams: [], unreadable: [] } } },
+    listing([{ id: "st", title: "T", status: "active" }]),
+    listing({ streams: [] }),
+    { ok: { kind: "tab", context: { kind: "stream" } } },
+    null,
+  ]) {
+    tab = value;
     await coordinator.observe({ ...snapshot, force: true });
+    assert.equal(coordinator.tabStreams.get("tab-1"), null);
     assert.deepEqual(coordinator.hostStreams, []);
     assert.deepEqual(coordinator.hostUnreadable, []);
     assert.equal(
       coordinator.hostStreamsError,
-      "unexpected host listing from streams; reinstall the CLI and mod together"
+      "unexpected tab context from streams; reinstall the CLI and mod together"
     );
   }
 
-  hostStreams = { error: { kind: "unavailable", message: "catalog is not initialized" } };
+  tab = { error: { kind: "unavailable", message: "catalog is not initialized" } };
   await coordinator.observe({ ...snapshot, force: true });
   assert.deepEqual(coordinator.hostStreams, []);
   assert.deepEqual(coordinator.hostUnreadable, []);
   assert.equal(coordinator.hostStreamsError, "catalog is not initialized");
 
-  hostStreams = { ok: { kind: "host_streams", value: { streams: [], unreadable: [] } } };
+  tab = listing({ streams: [], unreadable: [] });
   await coordinator.observe({ ...snapshot, force: true });
   assert.equal(coordinator.hostStreamsError, null);
   assert.deepEqual(coordinator.hostStreams, []);
@@ -1308,7 +1333,7 @@ test("formatRelativeAge and liveStreamIds format ages and detect live open tabs"
     liveTerminals: ["t1", "t-shell"],
   });
   assert.deepEqual(
-    sels.map((s) => (s.kind === "host_streams" ? "host_streams" : s.terminal.key)),
-    ["host_streams", "t-shell", "t1"]
+    sels.map((s) => (s.kind === "tab" ? "tab" : s.terminal.key)),
+    ["tab", "t-shell", "t1"]
   );
 });

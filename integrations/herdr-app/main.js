@@ -1143,10 +1143,25 @@ export default class StreamsMod extends View {
           )
         );
 
-    if (!tabSession) {
-      const inspectedStream = coordinator.inspectedStreamId
-        ? coordinator.streams.get(coordinator.inspectedStreamId) ?? null
-        : null;
+    if (!coordinator.tabStreams.has(snap.activeTabId) && coordinator.inFlightKey !== null) {
+      return v_flex()
+        .size_full()
+        .bg(t.chrome)
+        .child(header)
+        .child(div().p(12).text_size(12).text_color(t.dim).child("Loading Streams…"));
+    }
+    const tabStreamId = coordinator.tabStreams.get(snap.activeTabId) ?? null;
+    const tabStream = tabStreamId ? coordinator.streams.get(tabStreamId) ?? null : null;
+    if (tabStream) coordinator.inspectedStreamId = null;
+    // The enrolled Session leads the view only when it belongs to the tab's Stream.
+    const viewing = tabStream && tabSession?.session?.stream === tabStream.id ? tabSession : null;
+
+    if (!viewing) {
+      const inspectedStream =
+        tabStream ??
+        (coordinator.inspectedStreamId
+          ? coordinator.streams.get(coordinator.inspectedStreamId) ?? null
+          : null);
       if (inspectedStream) {
         const monoFont = settings()?.font_family ?? "JetBrains Mono";
         const inspectedRefs = buildReferenceItems(inspectedStream, {
@@ -1169,21 +1184,23 @@ export default class StreamsMod extends View {
                 .gap(12)
                 .overflow_y_scrollbar()
                 .track_scroll(this.scroll)
-                .child(
-                  h_flex()
-                    .id("streams-back-list")
-                    .self_start()
-                    .px(6)
-                    .py(3)
-                    .rounded(4)
-                    .text_size(11.5)
-                    .text_color(t.muted)
-                    .hover((s) => s.bg(t.hover).text_color(t.foreground))
-                    .on_click((_e, clickCx) => {
-                      clickCx.stop_propagation();
-                      coordinator.inspectStream(null);
-                    })
-                    .child("← All Streams")
+                .when(!tabStream, (el) =>
+                  el.child(
+                    h_flex()
+                      .id("streams-back-list")
+                      .self_start()
+                      .px(6)
+                      .py(3)
+                      .rounded(4)
+                      .text_size(11.5)
+                      .text_color(t.muted)
+                      .hover((s) => s.bg(t.hover).text_color(t.foreground))
+                      .on_click((_e, clickCx) => {
+                        clickCx.stop_propagation();
+                        coordinator.inspectStream(null);
+                      })
+                      .child("← All Streams")
+                  )
                 )
                 .when(Boolean(inspectedUnreadable), (el) =>
                   el.child(renderUnreadableNotice(inspectedUnreadable))
@@ -1491,22 +1508,12 @@ export default class StreamsMod extends View {
         );
     }
 
-    coordinator.inspectedStreamId = null;
-
-    const enrolled = tabSession.session;
-    const stream = coordinator.streams.get(enrolled.stream) ?? null;
-    if (!stream) {
-      return v_flex()
-        .size_full()
-        .bg(t.chrome)
-        .child(header)
-        .child(div().p(12).text_size(12).text_color(t.dim).child("Loading Stream…"));
-    }
-
-    const tabPane = panes().find((p) => p.terminal === tabSession.terminal) ?? null;
+    const enrolled = viewing.session;
+    const stream = tabStream;
+    const tabPane = panes().find((p) => p.terminal === viewing.terminal) ?? null;
     const termInfo =
-      snap.terminalList.find((item) => (item.address ?? item.id) === tabSession.terminal) ?? null;
-    const liveAgent = agents().find((a) => a.address === tabSession.terminal) ?? null;
+      snap.terminalList.find((item) => (item.address ?? item.id) === viewing.terminal) ?? null;
+    const liveAgent = agents().find((a) => a.address === viewing.terminal) ?? null;
     const effectiveStatus = effectiveSessionStatus(enrolled, {
       pane: tabPane,
       terminal: termInfo,
