@@ -1926,6 +1926,7 @@ fn native_tab_reads_route_a_shell_by_its_space_then_its_work_label() {
         "parent-label",
         "none",
         "missing-parent",
+        "missing-parent-then-later",
         "walk-fails",
         "two-terminals",
         "foreign-terminal",
@@ -1980,6 +1981,23 @@ fn native_tab_reads_route_a_shell_by_its_space_then_its_work_label() {
                     ),
                 ],
                 no_stream.clone(),
+            ),
+            // hc's not_found reply leaves the operation usable for the next terminal's walk.
+            "missing-parent-then-later" => (
+                vec![hc_terminal("t5"), hc_terminal("t7")],
+                vec![
+                    shell("t5", json!({}), Some("gone")),
+                    shell("t7", json!({}), Some("t8")),
+                    associations(None),
+                    layout(),
+                    Step(
+                        "terminal.get",
+                        json!({"terminal":"gone"}),
+                        Reply::Reject("not_found"),
+                    ),
+                    shell("t8", label.clone(), None),
+                ],
+                json!("next"),
             ),
             "walk-fails" => (
                 vec![hc_terminal("t5")],

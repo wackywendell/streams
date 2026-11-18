@@ -211,6 +211,9 @@ impl HcClient {
         let mut frame = Vec::new();
         let mut submitted = false;
         let mut rejection = None;
+        // A well-formed, correlated error reply leaves the stream in step, so the operation
+        // stays usable; every other failure ends it.
+        let mut rejected = false;
         let result = (|| {
             if self.failed {
                 return Err(FrontendError::invalid("hc operation has ended"));
@@ -270,12 +273,13 @@ impl HcClient {
                         .and_then(|data| data.get("kind"))
                         .and_then(Value::as_str)
                         .map(str::to_owned);
+                    rejected = true;
                     Err(FrontendError::invalid("hc request failed"))
                 }
                 _ => Err(FrontendError::invalid("invalid hc result envelope")),
             }
         })();
-        if result.is_err() {
+        if result.is_err() && !rejected {
             self.failed = true;
         }
         let result = result.map_err(|mut error| {
@@ -535,12 +539,14 @@ mod tests {
         }
     }
     #[test]
-    fn correlated_rejections_and_uncertain_socket_evidence_are_retained() {
+    fn correlated_rejections_retain_uncertain_evidence_and_keep_the_operation() {
         let (_directory, socket, task) = serve(|mut reader| {
             let request = read(&mut reader);
             reply(&mut reader, &request, hello());
             let request = read(&mut reader);
             writeln!(reader.get_mut(),"{}",json!({"jsonrpc":"2.0","id":request["id"],"error":{"code":-32000,"message":"owner detail is not the error message","data":{"kind":"conflict"}}})).unwrap();
+            let request = read(&mut reader);
+            reply(&mut reader, &request, json!({"version":3,"value":null}));
         });
         let mut client = HcClient::connect(socket, None, 2.0, None).unwrap();
         let params = json!({"name":"streams","version":3,"value":null});
@@ -558,6 +564,13 @@ mod tests {
                 },
                 outcome: CommandOutcome::Uncertain
             }]
+        );
+        assert_eq!(
+            client
+                .request("doc.get", &json!({"name":"streams"}))
+                .unwrap(),
+            json!({"version":3,"value":null}),
+            "a rejection leaves the operation usable"
         );
         task.join().unwrap();
     }
