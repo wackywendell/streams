@@ -4,11 +4,12 @@ use serde_json::json;
 use std::{
     collections::BTreeMap,
     fs,
+    os::unix::fs::PermissionsExt,
     sync::{Arc, Mutex},
 };
 use streams::{
     config::{Config, Strategy},
-    model::TitleDefaults,
+    model::{RecordKind, TitleDefaults},
     operations::membership::MoveIntent,
     runtime::conversations::Harness,
     storage::{
@@ -199,4 +200,35 @@ fn directory_failure_preserves_accepted_records_without_claiming_local_completio
     assert!(completed.output.value.get("completion_error").is_some());
     assert_eq!(completed.output.value["saves"].as_array().unwrap().len(), 2);
     assert_eq!(f.context().session, completed.session);
+}
+
+#[test]
+fn a_failed_session_save_still_reports_the_stream_it_created() {
+    let f = Fixture::new();
+    let request = f.request(None);
+    let host = f.opened.host().as_str();
+    let session = request.session(host, "unused").unwrap();
+    let address = RecordAddress::new(host, RecordKind::Session, &session.id).unwrap();
+    let conversations = f
+        .opened
+        .root()
+        .join(streams::yaml_store::records::relative_record_path(&address).unwrap())
+        .parent()
+        .unwrap()
+        .to_owned();
+    // The Session save fails after the Stream save landed.
+    fs::create_dir_all(&conversations).unwrap();
+    fs::set_permissions(&conversations, fs::Permissions::from_mode(0o555)).unwrap();
+    let completed = f
+        .app
+        .enroll_records(&f.opened, &request, &f.context())
+        .unwrap();
+    fs::set_permissions(&conversations, fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(completed.output.code, 2, "{}", completed.output.value);
+    assert!(completed.output.accepted_save);
+    assert!(completed.session.is_none());
+    let effort = streams::agent::effort_id_for(host, Harness::Pi, NATIVE);
+    assert_eq!(completed.stream.as_ref().unwrap().id, effort);
+    assert_eq!(completed.output.value["stream"]["id"], json!(effort));
+    assert_eq!(completed.output.value["saves"].as_array().unwrap().len(), 1);
 }

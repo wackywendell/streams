@@ -104,11 +104,15 @@ impl App {
         let completion = (|| -> Result<()> {
             let directory = canonical_directory(&self.path(std::path::Path::new(request.cwd()))?)?;
             if request.stream_proposal().is_some() {
-                receipt.persist(application::enroll_stream(
+                let created = receipt.persist(application::enroll_stream(
                     opened.records(),
                     opened.host().as_str(),
                     request,
                 )?);
+                // Reported even if the Session save below fails; that save replaces it.
+                if let Record::Stream(stream) = created.current.record {
+                    receipt.stream = Some(stream);
+                }
             }
             let enrolled = application::enroll_session_observed(
                 opened.records(),
