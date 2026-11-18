@@ -352,10 +352,11 @@ impl App {
             &roots,
             &self.environment,
         );
-        let command = match frontend.as_mut() {
-            Some(frontend) => frontend.resume(&runtime, &stream, selected, cwd.as_deref())?,
-            None => runtime.resume(&stream, selected, cwd.as_deref(), None)?,
-        };
+        let command = runtime.resume(&stream, selected, cwd.as_deref(), |selected| {
+            frontend
+                .as_mut()
+                .map_or(Ok(false), |frontend| frontend.running(selected))
+        })?;
         match command.exec() {
             Ok(never) => match never {},
             Err(error) => Err(error.into()),

@@ -14,9 +14,8 @@ use serde::Serialize;
 
 use super::{
     Result, RuntimeError,
-    native::BuiltinFrontend,
     native_markers::selected_stream,
-    workspace::{OpenResult, ResumeCommand, SelectedConversation, WorkspaceRuntime},
+    workspace::{OpenResult, SelectedConversation, WorkspaceRuntime, running},
 };
 use crate::{
     cancellation::Cancellation,
@@ -53,14 +52,8 @@ pub trait Frontend {
         sessions: &[Session],
         cwd: Option<&Path>,
     ) -> Result<Opened>;
-    /// Prepare to resume `session` in the calling terminal, unless the frontend sees it running.
-    fn resume(
-        &mut self,
-        runtime: &WorkspaceRuntime<'_>,
-        stream: &Stream,
-        session: SelectedConversation<'_>,
-        cwd: Option<&Path>,
-    ) -> Result<ResumeCommand>;
+    /// Whether the frontend observes `selected` running, so resume leaves it in place.
+    fn running(&mut self, selected: &SelectedConversation<'_>) -> Result<bool>;
 }
 
 /// What one opening did, in the shape each frontend reports it.
@@ -119,11 +112,9 @@ fn effect(result: Effect<()>) -> Result<()> {
 /// Open through a Herdr or cmux workspace, with each Session's saved transcript locator.
 fn open_workspace(
     runtime: &WorkspaceRuntime<'_>,
-    native: &BuiltinFrontend,
     stream: &Stream,
     sessions: &[Session],
-    cwd: Option<&Path>,
-    observed: Option<&HerdrNativeSnapshot>,
+    open: impl FnOnce(&AtomicBool, &[SelectedConversation<'_>]) -> Result<OpenResult>,
 ) -> Result<Opened> {
     let locators = runtime.locators(stream, sessions)?;
     let selected: Vec<_> = sessions
@@ -134,17 +125,14 @@ fn open_workspace(
             locator: locator.as_deref(),
         })
         .collect();
-    runtime
-        .with_frontend(native)
-        .open(&AtomicBool::new(false), stream, &selected, cwd, observed)
-        .map(Opened::Workspace)
+    open(&AtomicBool::new(false), &selected).map(Opened::Workspace)
 }
 
 /// Herdr names a workspace's Stream with metadata tokens. The Pi child's native pass
 /// associates workspaces, and cards watch record files, so neither needs a call here.
 pub struct HerdrFrontend {
     caller: Caller,
-    native: Option<BuiltinFrontend>,
+    native: Option<HerdrClient>,
     snapshot: Option<HerdrNativeSnapshot>,
     workspace_stream: Option<Option<String>>,
 }
@@ -166,20 +154,29 @@ impl HerdrFrontend {
     ) -> Result<Self> {
         let client = client.with_context(caller.environment.clone())?;
         Ok(Self {
-            native: Some(BuiltinFrontend::Herdr(client)),
+            native: Some(client),
             workspace_stream: Some(workspace_stream),
             ..Self::new(caller)
         })
     }
 
-    fn native(&mut self) -> Result<&BuiltinFrontend> {
+    fn native(&mut self) -> Result<&HerdrClient> {
         if self.native.is_none() {
             let client =
                 HerdrClient::connect(self.caller.environment.clone(), self.caller.timeout)?
                     .observing()?;
-            self.native = Some(BuiltinFrontend::Herdr(client));
+            self.native = Some(client);
         }
         Ok(self.native.as_ref().expect("connected"))
+    }
+
+    /// This command's one Herdr snapshot.
+    fn snapshot(&mut self) -> Result<&HerdrNativeSnapshot> {
+        if self.snapshot.is_none() {
+            let snapshot = HerdrNativeSnapshot::parse(&self.native()?.session_snapshot()?)?;
+            self.snapshot = Some(snapshot);
+        }
+        Ok(self.snapshot.as_ref().expect("observed"))
     }
 }
 impl Frontend for HerdrFrontend {
@@ -194,16 +191,19 @@ impl Frontend for HerdrFrontend {
         if let Some(stream) = &self.workspace_stream {
             return Ok(stream.clone());
         }
-        let client = self.native()?.herdr().expect("Herdr").clone();
-        let snapshot = HerdrNativeSnapshot::parse(&client.session_snapshot()?)?;
-        let caller = client.current_pane_from(snapshot.raw())?;
+        self.snapshot()?;
+        let snapshot = self.snapshot.as_ref().expect("observed");
+        let caller = self
+            .native
+            .as_ref()
+            .expect("connected")
+            .current_pane_from(snapshot.raw())?;
         let stream = selected_stream(
-            &snapshot,
+            snapshot,
             &caller.workspace_id,
             &self.caller.scope.catalog,
             &self.caller.scope.host,
         )?;
-        self.snapshot = Some(snapshot);
         self.workspace_stream = Some(stream.clone());
         Ok(stream)
     }
@@ -222,34 +222,20 @@ impl Frontend for HerdrFrontend {
     ) -> Result<Opened> {
         self.native()?;
         let native = self.native.as_ref().expect("connected");
-        open_workspace(
-            runtime,
-            native,
-            stream,
-            sessions,
-            cwd,
-            self.snapshot.as_ref(),
-        )
+        let observed = self.snapshot.as_ref();
+        open_workspace(runtime, stream, sessions, |cancelled, selected| {
+            runtime.open_herdr(native, cancelled, stream, selected, cwd, observed)
+        })
     }
-    fn resume(
-        &mut self,
-        runtime: &WorkspaceRuntime<'_>,
-        stream: &Stream,
-        session: SelectedConversation<'_>,
-        cwd: Option<&Path>,
-    ) -> Result<ResumeCommand> {
-        self.native()?;
-        let native = self.native.as_ref().expect("connected");
-        runtime
-            .with_frontend(native)
-            .resume(stream, session, cwd, self.snapshot.as_ref())
+    fn running(&mut self, selected: &SelectedConversation<'_>) -> Result<bool> {
+        Ok(!running(self.snapshot()?, selected).is_empty())
     }
 }
 
 /// cmux workspaces carry no Stream association, and cmux has no saved-record views.
 pub struct CmuxFrontend {
     caller: Caller,
-    native: Option<BuiltinFrontend>,
+    native: Option<CmuxClient>,
 }
 impl Frontend for CmuxFrontend {
     fn caller_stream(&mut self) -> Result<Option<String>> {
@@ -277,23 +263,20 @@ impl Frontend for CmuxFrontend {
         cwd: Option<&Path>,
     ) -> Result<Opened> {
         if self.native.is_none() {
-            self.native = Some(BuiltinFrontend::Cmux(CmuxClient::connect(
+            self.native = Some(CmuxClient::connect(
                 Arc::new(NativeProcessRunner),
                 self.caller.environment.clone(),
                 self.caller.timeout,
-            )?));
+            )?);
         }
         let native = self.native.as_ref().expect("connected");
-        open_workspace(runtime, native, stream, sessions, cwd, None)
+        open_workspace(runtime, stream, sessions, |cancelled, selected| {
+            runtime.open_cmux(native, cancelled, stream, selected, cwd)
+        })
     }
-    fn resume(
-        &mut self,
-        runtime: &WorkspaceRuntime<'_>,
-        stream: &Stream,
-        session: SelectedConversation<'_>,
-        cwd: Option<&Path>,
-    ) -> Result<ResumeCommand> {
-        runtime.resume(stream, session, cwd, None)
+    /// cmux cannot observe a running conversation.
+    fn running(&mut self, _: &SelectedConversation<'_>) -> Result<bool> {
+        Ok(false)
     }
 }
 
@@ -428,36 +411,27 @@ impl Frontend for HcFrontend {
             report,
         })
     }
-    fn resume(
-        &mut self,
-        runtime: &WorkspaceRuntime<'_>,
-        stream: &Stream,
-        session: SelectedConversation<'_>,
-        cwd: Option<&Path>,
-    ) -> Result<ResumeCommand> {
-        if session.session.harness == "pi" {
-            let presence = (|| {
-                let observer = OwnerProcesses::new().ok()?;
-                let sources = self
-                    .connection()
-                    .ok()?
-                    .1
-                    .registered_sources(&observer)
-                    .ok()?;
-                Some(sources.presence(&ConversationId::from(session.session)))
-            })();
-            match presence {
-                Some(Presence::Absent) => {}
-                Some(Presence::Running { .. }) => {
-                    return Err(unavailable(
-                        "conversation is already observed running; left in place",
-                    ));
-                }
-                Some(Presence::Unknown { .. }) | None => {
-                    return Err(unavailable("hc Pi presence is unavailable"));
-                }
+    /// hc observes only Pi conversations, through their registered sources.
+    fn running(&mut self, selected: &SelectedConversation<'_>) -> Result<bool> {
+        if selected.session.harness != "pi" {
+            return Ok(false);
+        }
+        let presence = (|| {
+            let observer = OwnerProcesses::new().ok()?;
+            let sources = self
+                .connection()
+                .ok()?
+                .1
+                .registered_sources(&observer)
+                .ok()?;
+            Some(sources.presence(&ConversationId::from(selected.session)))
+        })();
+        match presence {
+            Some(Presence::Absent) => Ok(false),
+            Some(Presence::Running { .. }) => Ok(true),
+            Some(Presence::Unknown { .. }) | None => {
+                Err(unavailable("hc Pi presence is unavailable"))
             }
         }
-        runtime.resume(stream, session, cwd, None)
     }
 }

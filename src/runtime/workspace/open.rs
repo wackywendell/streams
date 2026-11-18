@@ -3,14 +3,13 @@ use std::collections::BTreeSet;
 
 impl WorkspaceRuntime<'_> {
     /// Requested current Sessions, not a remembered layout or native address.
-    pub fn open(
+    fn check_open(
         &self,
         cancelled: &AtomicBool,
         stream: &Stream,
         sessions: &[SelectedConversation<'_>],
         cwd: Option<&Path>,
-        observed: Option<&HerdrNativeSnapshot>,
-    ) -> Result<OpenResult> {
+    ) -> Result<()> {
         self.check_stream(stream)?;
         check_cancelled(cancelled)?;
         let mut seen = BTreeSet::new();
@@ -25,28 +24,21 @@ impl WorkspaceRuntime<'_> {
                 "--cwd requires a single selected Session or an empty Stream",
             ));
         }
-        match self.frontend()? {
-            BuiltinFrontend::Herdr(_) => {
-                self.open_herdr(cancelled, stream, sessions, cwd, observed)
-            }
-            BuiltinFrontend::Cmux(_) => {
-                if observed.is_some() {
-                    return Err(invalid("CMUX cannot consume a Herdr observation"));
-                }
-                self.open_cmux(cancelled, stream, sessions, cwd)
-            }
-        }
+        Ok(())
     }
 
-    fn open_herdr(
+    /// Open `stream` in Herdr, reusing the workspace its markers name. `observed` is a
+    /// snapshot the caller already took through `base`.
+    pub fn open_herdr(
         &self,
+        base: &HerdrClient,
         cancelled: &AtomicBool,
         stream: &Stream,
         sessions: &[SelectedConversation<'_>],
         cwd: Option<&Path>,
         observed: Option<&HerdrNativeSnapshot>,
     ) -> Result<OpenResult> {
-        let base = self.frontend()?.herdr().expect("selected Herdr");
+        self.check_open(cancelled, stream, sessions, cwd)?;
         let client = if observed.is_none() {
             base.observing()?
         } else {
@@ -212,7 +204,7 @@ impl WorkspaceRuntime<'_> {
         }
         let space = match existing {
             Some(workspace) => SpaceDecision::Reuse {
-                space: self.reference(&workspace.id)?,
+                space: self.reference(&client, &workspace.id),
             },
             None => SpaceDecision::Create {
                 title: stream.title.clone(),
@@ -234,28 +226,28 @@ impl WorkspaceRuntime<'_> {
         let SpaceEvidence::Known { value: workspace } = report.presentation.space else {
             return Err(invalid("Herdr did not confirm a workspace"));
         };
-        let mut result = self.result(stream, &workspace.key, None, reused)?;
+        let mut result = self.result(&client, stream, &workspace.key, None, reused);
         result.restored = restored;
         result.unavailable = skipped.clone();
         result.skipped = skipped;
         Ok(result)
     }
 
-    fn open_cmux(
+    /// Open one Session, or a shell, in a new cmux workspace.
+    pub fn open_cmux(
         &self,
+        client: &CmuxClient,
         cancelled: &AtomicBool,
         stream: &Stream,
         sessions: &[SelectedConversation<'_>],
         cwd: Option<&Path>,
     ) -> Result<OpenResult> {
+        self.check_open(cancelled, stream, sessions, cwd)?;
         if sessions.len() > 1 {
             return Err(invalid(
                 "CMUX supports one selected Session; use Herdr for Stream reopen",
             ));
         }
-        let BuiltinFrontend::Cmux(client) = self.frontend()? else {
-            unreachable!("selected CMUX")
-        };
         let requested: Vec<_> = sessions
             .iter()
             .map(|selected| {
@@ -330,11 +322,12 @@ impl WorkspaceRuntime<'_> {
             return Err(invalid("CMUX did not confirm a workspace"));
         };
         let mut result = self.result(
+            client,
             stream,
             &workspace.key,
             selected.map(|selected| selected.session.id.as_str()),
             false,
-        )?;
+        );
         result.restored = selected
             .map(|selected| vec![selected.session.id.clone()])
             .unwrap_or_default();

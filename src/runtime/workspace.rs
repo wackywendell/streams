@@ -14,13 +14,13 @@ pub use resume::ResumeCommand;
 
 use super::{
     Result, checkouts::canonical_directory, conversations::ConversationRoots, invalid,
-    launch::SessionCommand, locations::DirectoryBindings, native::BuiltinFrontend,
-    native_markers::stream_tokens,
+    launch::SessionCommand, locations::DirectoryBindings, native_markers::stream_tokens,
 };
 use crate::{
     frontend::{
-        FrontendId, NativeRef,
-        herdr::{HerdrAgent, HerdrNativeSnapshot},
+        FrontendId, NativeRef, WorkspaceFrontend,
+        cmux::CmuxClient,
+        herdr::{HerdrAgent, HerdrClient, HerdrNativeSnapshot},
     },
     model::{Session, Stream},
 };
@@ -54,7 +54,6 @@ pub struct OpenResult {
 pub struct WorkspaceRuntime<'a> {
     host_id: &'a str,
     locations: &'a DirectoryBindings,
-    frontend: Option<&'a BuiltinFrontend>,
     catalog_source: &'a str,
     roots: &'a ConversationRoots,
     environment: &'a BTreeMap<String, String>,
@@ -71,21 +70,9 @@ impl<'a> WorkspaceRuntime<'a> {
         Self {
             host_id,
             locations,
-            frontend: None,
             catalog_source,
             roots,
             environment,
-        }
-    }
-
-    /// The same runtime acting through `frontend`'s workspaces.
-    pub fn with_frontend<'b>(&self, frontend: &'b BuiltinFrontend) -> WorkspaceRuntime<'b>
-    where
-        'a: 'b,
-    {
-        WorkspaceRuntime {
-            frontend: Some(frontend),
-            ..*self
         }
     }
 
@@ -113,9 +100,6 @@ impl<'a> WorkspaceRuntime<'a> {
         Ok(())
     }
 
-    fn frontend(&self) -> Result<&BuiltinFrontend> {
-        self.frontend.ok_or_else(|| invalid("no native frontend selected; pass --frontend herdr or --frontend cmux (or use resume)"))
-    }
     fn directory(
         &self,
         stream: &Stream,
@@ -164,25 +148,25 @@ impl<'a> WorkspaceRuntime<'a> {
             .map(|session| self.locations.transcript_file(&stream.id, &session.id))
             .collect()
     }
-    fn reference(&self, workspace: &str) -> Result<NativeRef> {
-        let adapter = self.frontend()?.adapter();
-        Ok(NativeRef {
+    fn reference(&self, adapter: &dyn WorkspaceFrontend, workspace: &str) -> NativeRef {
+        NativeRef {
             adapter: adapter.frontend_id(),
             endpoint: adapter.endpoint_id(),
             key: workspace.into(),
-        })
+        }
     }
     fn result(
         &self,
+        adapter: &dyn WorkspaceFrontend,
         stream: &Stream,
         workspace: &str,
         session: Option<&str>,
         reused: bool,
-    ) -> Result<OpenResult> {
-        Ok(OpenResult {
+    ) -> OpenResult {
+        OpenResult {
             stream_id: stream.id.clone(),
             session_id: session.map(str::to_owned),
-            frontend: self.frontend()?.adapter().frontend_id(),
+            frontend: adapter.frontend_id(),
             workspace_id: workspace.into(),
             reused,
             restored: vec![],
@@ -190,11 +174,11 @@ impl<'a> WorkspaceRuntime<'a> {
             unavailable: vec![],
             needs_attention: vec![],
             arrangement_support: None,
-        })
+        }
     }
 }
 
-fn running<'a>(
+pub(super) fn running<'a>(
     snapshot: &'a HerdrNativeSnapshot,
     selected: &SelectedConversation<'_>,
 ) -> Vec<&'a HerdrAgent> {

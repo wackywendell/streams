@@ -14,7 +14,7 @@ struct Fixture {
     temp: tempfile::TempDir,
     runtime_root: PathBuf,
     locations: DirectoryBindings,
-    frontend: BuiltinFrontend,
+    client: HerdrClient,
     server: FakeHerdr,
     environment: BTreeMap<String, String>,
     roots: ConversationRoots,
@@ -50,7 +50,7 @@ impl Fixture {
             temp,
             runtime_root,
             locations,
-            frontend: BuiltinFrontend::Herdr(client),
+            client,
             server,
             environment,
             roots: ConversationRoots::default(),
@@ -66,7 +66,6 @@ impl Fixture {
             &self.roots,
             &self.environment,
         )
-        .with_frontend(&self.frontend)
     }
     fn session(&self, id: &str) -> (Session, PathBuf) {
         let path = self.temp.path().join(format!("{id}.jsonl"));
@@ -157,13 +156,13 @@ fn foreign_or_cancelled_open_never_observes_or_saves_native_state() {
     let foreign = Stream::new("stream", "Work", None, "foreign").unwrap();
     assert!(
         f.runtime()
-            .open(&f.cancelled, &foreign, &[], None, None)
+            .open_herdr(&f.client, &f.cancelled, &foreign, &[], None, None)
             .is_err()
     );
     f.cancelled.store(true, Ordering::Release);
     assert!(
         f.runtime()
-            .open(&f.cancelled, &f.stream, &[], None, None)
+            .open_herdr(&f.client, &f.cancelled, &f.stream, &[], None, None)
             .is_err()
     );
     assert!(!f.runtime_root.exists());
@@ -198,7 +197,14 @@ fn lost_launch_or_metadata_reply_stops_once_without_a_journal_or_automatic_retry
         });
         assert!(
             f.runtime()
-                .open(&f.cancelled, &f.stream, &[], Some(f.temp.path()), None)
+                .open_herdr(
+                    &f.client,
+                    &f.cancelled,
+                    &f.stream,
+                    &[],
+                    Some(f.temp.path()),
+                    None
+                )
                 .is_err()
         );
         assert_eq!(actual_creations.load(Ordering::Relaxed), 1);
@@ -214,7 +220,14 @@ fn lost_launch_or_metadata_reply_stops_once_without_a_journal_or_automatic_retry
         // A later explicit request is allowed to observe and try again.
         assert!(
             f.runtime()
-                .open(&f.cancelled, &f.stream, &[], Some(f.temp.path()), None)
+                .open_herdr(
+                    &f.client,
+                    &f.cancelled,
+                    &f.stream,
+                    &[],
+                    Some(f.temp.path()),
+                    None
+                )
                 .is_err()
         );
         assert_eq!(actual_creations.load(Ordering::Relaxed), 2);
@@ -243,7 +256,8 @@ fn current_selector_snapshot_is_reused_and_running_elsewhere_is_only_reported() 
     let snapshot = HerdrNativeSnapshot::parse(&value).unwrap();
     let result = f
         .runtime()
-        .open(
+        .open_herdr(
+            &f.client,
             &f.cancelled,
             &f.stream,
             &[SelectedConversation {
@@ -295,7 +309,8 @@ fn reopen_launches_one_tab_per_requested_session_without_saved_addresses() {
         .collect();
     let result = f
         .runtime()
-        .open(
+        .open_herdr(
+            &f.client,
             &f.cancelled,
             &f.stream,
             &[
@@ -377,7 +392,7 @@ fn resume_prepares_only_the_exact_locator_without_a_native_guard() {
                     locator: None
                 },
                 None,
-                None
+                |_| Ok(false)
             )
             .is_err()
     );
@@ -389,7 +404,7 @@ fn resume_prepares_only_the_exact_locator_without_a_native_guard() {
                 locator: Some(&file),
             },
             None,
-            None,
+            |_| Ok(false),
         )
         .unwrap();
     assert_eq!(command.command().locator(), file.canonicalize().unwrap());

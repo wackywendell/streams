@@ -1,31 +1,21 @@
 use super::*;
 
 impl WorkspaceRuntime<'_> {
+    /// Prepare to resume `selected` in the calling terminal. `running` says whether a
+    /// frontend observes the conversation running; a running conversation is left in place.
     pub fn resume(
         &self,
         stream: &Stream,
         selected: SelectedConversation<'_>,
         cwd: Option<&Path>,
-        observed: Option<&HerdrNativeSnapshot>,
+        running: impl FnOnce(&SelectedConversation<'_>) -> Result<bool>,
     ) -> Result<ResumeCommand> {
         self.check_stream(stream)?;
         self.check_session(stream, selected.session)?;
-        if let Some(client) = self.frontend.and_then(BuiltinFrontend::herdr) {
-            let collected;
-            let snapshot = match observed {
-                Some(snapshot) => snapshot,
-                None => {
-                    collected = HerdrNativeSnapshot::parse(&client.session_snapshot()?)?;
-                    &collected
-                }
-            };
-            if !running(snapshot, &selected).is_empty() {
-                return Err(invalid(
-                    "conversation is already observed running; left in place",
-                ));
-            }
-        } else if observed.is_some() {
-            return Err(invalid("resume observation has no matching Herdr frontend"));
+        if running(&selected)? {
+            return Err(invalid(
+                "conversation is already observed running; left in place",
+            ));
         }
         let locator = selected.locator.ok_or_else(|| {
             invalid("selected conversation has no retained locator; refusing transcript discovery")
