@@ -1,11 +1,9 @@
 //! Pure captured edits. Conversation work and effort prose have different input guards.
 
 use std::collections::BTreeSet;
-use std::sync::OnceLock;
 
 use serde::Serialize;
 use serde_json::{Map, Value};
-use temper_jit::table::{EvalContext, TransitionTable};
 
 use super::{
     Actor, Reconciliation, agent_field_allowed, apply_changes, copy_field, field_eq, field_policy,
@@ -15,14 +13,53 @@ use crate::model::{
     NamingMode, Record, Session, Stream, TitleDefaults, TitleMode, ValidationError, check_text,
 };
 
-pub const REPORT_ADMISSION_IOA: &str = include_str!("../../specs/report_admission.ioa.toml");
+/// What a captured automatic report observes about its target when it is applied.
+/// `specs/report_admission.ioa.toml` models the same predicate; `tests/verification.rs`
+/// checks that the two agree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReportAdmission {
+    pub in_captured_stream: bool,
+    pub membership_unchanged: bool,
+    pub session_inputs_clean: bool,
+    pub stream_inputs_clean: bool,
+    pub session_protected: bool,
+    pub stream_protected: bool,
+}
 
-pub fn report_admission_table() -> &'static TransitionTable {
-    static TABLE: OnceLock<TransitionTable> = OnceLock::new();
-    TABLE.get_or_init(|| {
-        TransitionTable::try_from_ioa_source(REPORT_ADMISSION_IOA)
-            .expect("valid report-admission IOA specification")
-    })
+impl Default for ReportAdmission {
+    fn default() -> Self {
+        Self {
+            in_captured_stream: true,
+            membership_unchanged: true,
+            session_inputs_clean: true,
+            stream_inputs_clean: true,
+            session_protected: false,
+            stream_protected: false,
+        }
+    }
+}
+
+impl ReportAdmission {
+    pub fn admits_session(self) -> bool {
+        self.session_inputs_clean && !self.session_protected
+    }
+
+    pub fn admits_stream(self) -> bool {
+        self.membership_unchanged && self.stream_inputs_clean && !self.stream_protected
+    }
+
+    fn admits(self, target: AdmissionTarget) -> bool {
+        match target {
+            AdmissionTarget::Session => self.admits_session(),
+            AdmissionTarget::Stream => self.admits_stream(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AdmissionTarget {
+    Session,
+    Stream,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -124,8 +161,8 @@ impl SessionEdit {
                 &after,
                 &current_record,
                 &changed,
-                "AdmitSessionReport",
-                &admission,
+                AdmissionTarget::Session,
+                admission,
                 protection,
             )
         } else {
@@ -139,7 +176,11 @@ impl SessionEdit {
         }
     }
 
-    pub fn admission_context(&self, current: &Session, current_default: NamingMode) -> EvalContext {
+    pub fn admission_context(
+        &self,
+        current: &Session,
+        current_default: NamingMode,
+    ) -> ReportAdmission {
         let before = Record::Session(self.before.clone());
         let after = Record::Session(self.after.clone());
         let current_record = Record::Session(current.clone());
@@ -155,7 +196,10 @@ impl SessionEdit {
         current: &Session,
         changed: &BTreeSet<&'static str>,
         current_default: NamingMode,
-    ) -> (EvalContext, Option<(&'static str, &'static [&'static str])>) {
+    ) -> (
+        ReportAdmission,
+        Option<(&'static str, &'static [&'static str])>,
+    ) {
         let protection = automatic_protection_conflict(
             before,
             current_record,
@@ -163,15 +207,14 @@ impl SessionEdit {
             self.title_default,
             current_default,
         );
-        let ctx = build_admission_context(
-            same_captured_stream(&self.before, Some(current)),
-            same_membership_period(&self.before, Some(current)),
-            prose_inputs_clean(before, current_record, changed),
-            true,
-            protection.is_some(),
-            false,
-        );
-        (ctx, protection)
+        let admission = ReportAdmission {
+            in_captured_stream: same_captured_stream(&self.before, Some(current)),
+            membership_unchanged: same_membership_period(&self.before, Some(current)),
+            session_inputs_clean: prose_inputs_clean(before, current_record, changed),
+            session_protected: protection.is_some(),
+            ..ReportAdmission::default()
+        };
+        (admission, protection)
     }
 }
 
@@ -265,8 +308,8 @@ impl StreamEdit {
                 &after,
                 &current_record,
                 &changed,
-                "AdmitStreamReport",
-                &admission,
+                AdmissionTarget::Stream,
+                admission,
                 protection,
             )
         } else {
@@ -285,7 +328,7 @@ impl StreamEdit {
         current: &Stream,
         session: Option<&Session>,
         current_default: NamingMode,
-    ) -> EvalContext {
+    ) -> ReportAdmission {
         let before = Record::Stream(self.before.clone());
         let after = Record::Stream(self.after.clone());
         let current_record = Record::Stream(current.clone());
@@ -301,7 +344,10 @@ impl StreamEdit {
         session: Option<&Session>,
         changed: &BTreeSet<&'static str>,
         current_default: NamingMode,
-    ) -> (EvalContext, Option<(&'static str, &'static [&'static str])>) {
+    ) -> (
+        ReportAdmission,
+        Option<(&'static str, &'static [&'static str])>,
+    ) {
         let protection = automatic_protection_conflict(
             before,
             current_record,
@@ -310,15 +356,16 @@ impl StreamEdit {
             current_default,
         );
         let captured = self.captured_session.as_ref();
-        let ctx = build_admission_context(
-            captured.is_some_and(|captured| same_captured_stream(captured, session)),
-            captured.is_some_and(|captured| same_membership_period(captured, session)),
-            true,
-            prose_inputs_clean(before, current_record, changed),
-            false,
-            protection.is_some(),
-        );
-        (ctx, protection)
+        let admission = ReportAdmission {
+            in_captured_stream: captured
+                .is_some_and(|captured| same_captured_stream(captured, session)),
+            membership_unchanged: captured
+                .is_some_and(|captured| same_membership_period(captured, session)),
+            stream_inputs_clean: prose_inputs_clean(before, current_record, changed),
+            stream_protected: protection.is_some(),
+            ..ReportAdmission::default()
+        };
+        (admission, protection)
     }
 }
 
@@ -329,21 +376,18 @@ pub fn report_admission_context(
     current_session: &Session,
     current_stream: &Stream,
     current_defaults: TitleDefaults,
-) -> EvalContext {
-    let session_ctx = session_edit.admission_context(current_session, current_defaults.session);
-    let stream_ctx = stream_edit.admission_context(
+) -> ReportAdmission {
+    let session = session_edit.admission_context(current_session, current_defaults.session);
+    let stream = stream_edit.admission_context(
         current_stream,
         Some(current_session),
         current_defaults.stream,
     );
-    build_admission_context(
-        stream_ctx.booleans["in_captured_stream"],
-        stream_ctx.booleans["membership_unchanged"],
-        session_ctx.booleans["session_inputs_clean"],
-        stream_ctx.booleans["stream_inputs_clean"],
-        session_ctx.booleans["session_protected"],
-        stream_ctx.booleans["stream_protected"],
-    )
+    ReportAdmission {
+        session_inputs_clean: session.session_inputs_clean,
+        session_protected: session.session_protected,
+        ..stream
+    }
 }
 
 fn prepare(
@@ -461,42 +505,6 @@ fn automatic_protection_conflict(
     None
 }
 
-fn build_admission_context(
-    in_captured_stream: bool,
-    membership_unchanged: bool,
-    session_inputs_clean: bool,
-    stream_inputs_clean: bool,
-    session_protected: bool,
-    stream_protected: bool,
-) -> EvalContext {
-    let mut ctx = EvalContext::default();
-    for (name, value) in [
-        ("in_captured_stream", in_captured_stream),
-        ("membership_unchanged", membership_unchanged),
-        ("session_inputs_clean", session_inputs_clean),
-        ("stream_inputs_clean", stream_inputs_clean),
-        ("session_protected", session_protected),
-        ("stream_protected", stream_protected),
-    ] {
-        ctx.booleans.insert(name.into(), value);
-    }
-    debug_assert!(
-        report_admission_table()
-            .initial_values
-            .booleans
-            .keys()
-            .all(|key| ctx.booleans.contains_key(key))
-    );
-    ctx
-}
-
-pub fn report_admission_allows(action: &str, ctx: &EvalContext) -> bool {
-    let table = report_admission_table();
-    table
-        .evaluate_ctx(&table.initial_state, ctx, action)
-        .is_some_and(|result| result.success)
-}
-
 #[allow(clippy::too_many_arguments)]
 fn apply_automatic(
     id: &str,
@@ -504,8 +512,8 @@ fn apply_automatic(
     after: &Record,
     current: &Record,
     changed: &BTreeSet<&'static str>,
-    admission_action: &str,
-    admission_ctx: &EvalContext,
+    target: AdmissionTarget,
+    admission: ReportAdmission,
     protection: Option<(&'static str, &'static [&'static str])>,
 ) -> Reconciliation {
     if let Err(error) = current.validate_portable() {
@@ -517,8 +525,7 @@ fn apply_automatic(
             false,
         );
     }
-    if admission_action == "AdmitStreamReport" && !admission_ctx.booleans["membership_unchanged"] {
-        debug_assert!(!report_admission_allows(admission_action, admission_ctx));
+    if target == AdmissionTarget::Stream && !admission.membership_unchanged {
         return refuse(
             id,
             Actor::Automatic,
@@ -528,7 +535,6 @@ fn apply_automatic(
         );
     }
     if let Some((reason, fields)) = protection {
-        debug_assert!(!report_admission_allows(admission_action, admission_ctx));
         return refuse(id, Actor::Automatic, reason, fields, true);
     }
     if changed
@@ -537,7 +543,7 @@ fn apply_automatic(
     {
         return Reconciliation::no_change(id, "");
     }
-    if !report_admission_allows(admission_action, admission_ctx) {
+    if !admission.admits(target) {
         return refuse(
             id,
             Actor::Automatic,

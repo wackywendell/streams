@@ -1,6 +1,8 @@
-//! Bounded Temper formal verification and production conformance for report admission.
+//! Bounded Temper formal verification of the report-admission model, and conformance of the
+//! production `ReportAdmission` predicate and concrete edits with it.
 
 use std::collections::{BTreeSet, VecDeque};
+use std::sync::OnceLock;
 
 use serde_json::{Map, Value, json};
 use streams::model::{
@@ -8,13 +10,73 @@ use streams::model::{
     Session, Status, Stream, TitleDefaults, TitleMode,
 };
 use streams::operations::edits::{
-    REPORT_ADMISSION_IOA, SessionEdit, StreamEdit, report_admission_allows,
-    report_admission_context, report_admission_table,
+    ReportAdmission, SessionEdit, StreamEdit, report_admission_context,
 };
 use streams::operations::membership::{MoveIntent, apply_move};
 use streams::operations::{Actor, DomainOutcome, Reconciliation};
 use temper_jit::table::{Effect, EvalContext, TransitionTable, effect_args};
 use temper_verify::cascade::{CascadeLevel, VerificationCascade};
+
+const REPORT_ADMISSION_IOA: &str = include_str!("../specs/report_admission.ioa.toml");
+
+fn report_admission_table() -> &'static TransitionTable {
+    static TABLE: OnceLock<TransitionTable> = OnceLock::new();
+    TABLE.get_or_init(|| {
+        TransitionTable::try_from_ioa_source(REPORT_ADMISSION_IOA)
+            .expect("valid report-admission IOA specification")
+    })
+}
+
+fn report_admission_allows(action: &str, ctx: &EvalContext) -> bool {
+    let table = report_admission_table();
+    table
+        .evaluate_ctx(&table.initial_state, ctx, action)
+        .is_some_and(|result| result.success)
+}
+
+fn eval_context(admission: ReportAdmission) -> EvalContext {
+    let mut ctx = EvalContext::default();
+    for (name, value) in [
+        ("in_captured_stream", admission.in_captured_stream),
+        ("membership_unchanged", admission.membership_unchanged),
+        ("session_inputs_clean", admission.session_inputs_clean),
+        ("stream_inputs_clean", admission.stream_inputs_clean),
+        ("session_protected", admission.session_protected),
+        ("stream_protected", admission.stream_protected),
+    ] {
+        ctx.booleans.insert(name.into(), value);
+    }
+    ctx
+}
+
+#[test]
+fn production_admission_predicate_matches_ioa_guards_for_every_combination() {
+    for bits in 0u8..64 {
+        let admission = ReportAdmission {
+            in_captured_stream: bits & 1 != 0,
+            membership_unchanged: bits & 2 != 0,
+            session_inputs_clean: bits & 4 != 0,
+            stream_inputs_clean: bits & 8 != 0,
+            session_protected: bits & 16 != 0,
+            stream_protected: bits & 32 != 0,
+        };
+        let ctx = eval_context(admission);
+        assert_eq!(
+            admission.admits_session(),
+            report_admission_allows("AdmitSessionReport", &ctx),
+            "{admission:?}"
+        );
+        assert_eq!(
+            admission.admits_stream(),
+            report_admission_allows("AdmitStreamReport", &ctx),
+            "{admission:?}"
+        );
+    }
+    assert_eq!(
+        eval_context(ReportAdmission::default()).booleans,
+        report_admission_table().initial_values.booleans
+    );
+}
 
 fn changes(value: Value) -> Map<String, Value> {
     value.as_object().expect("json object").clone()
@@ -107,13 +169,13 @@ impl ConcreteWorld {
     }
 
     fn project(&self) -> EvalContext {
-        report_admission_context(
+        eval_context(report_admission_context(
             &self.session_report,
             &self.stream_report,
             &self.session,
             &self.stream_a,
             self.current_defaults,
-        )
+        ))
     }
 
     fn apply_env_action(&mut self, action: &str) {

@@ -1,6 +1,6 @@
 # Report-admission contract for one captured generated report across
 # conversation membership moves, concurrent prose edits and manual text protection.
-# Evaluated at runtime by src/operations/edits.rs and verified against concrete
+# Mirrored by ReportAdmission in src/operations/edits.rs and verified against concrete
 # Session/Stream operations in tests/verification.rs.
 [automaton]
 name = "ReportAdmission"
