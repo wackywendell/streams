@@ -1,10 +1,16 @@
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { resolveStreamsBin } from "../../integrations/herdr-work-cards/src/streams-bin.ts";
-import { decodeServerFrame, hcLifecycle, type ChildOutcome, type ChildView, type PiRequestContext, type Runner } from "./child-protocol.ts";
+import { checkoutRoot, checkoutSource, resolveStreamsBin } from "../../integrations/herdr-work-cards/src/streams-bin.ts";
+import { decodeServerFrame, hcLifecycle, type ChildOutcome, type ChildView, type PiRequestContext, type Runner, type ServerFrame } from "./child-protocol.ts";
 
 type Pending = {resolve: (value: ChildOutcome) => void; reject: (error: Error) => void};
 const pluginRoot = fileURLToPath(new URL("../../integrations/herdr-work-cards", import.meta.url));
+const short = (digest: string) => digest.slice(0, 12);
+/** A binary built from other sources would fail on every request in its own way; refuse it once, plainly. */
+function foreignBinary(binary: string, expected: string | null, reported?: string): Error {
+ const found = reported === undefined ? "it reports no source digest" : `its sources are ${short(reported)}`;
+ return Error(`Streams binary ${binary} was not built from this extension's checkout ${checkoutRoot} (${found}; the checkout's are ${expected ? short(expected) : "unknown"}). Run "just build" in ${checkoutRoot}, or point STREAMS_BIN_PATH at a build of these sources, then reload Pi.`);
+}
 
 /** One transport per Pi session. Restart reattaches enabled native work, never requests. */
 export class StreamsChild {
@@ -18,11 +24,12 @@ export class StreamsChild {
  private listeners = new Set<(view: ChildView) => void>();
  private closing?: Promise<void>;
  private closed?: Promise<void>;
+ private refused?: Error;
  constructor(private readonly options: {sessionId: string; cwd: string; env?: NodeJS.ProcessEnv; piContext?: () => PiRequestContext; warning: (message: string) => void; spawn?: typeof spawn}) {}
  subscribe(listener: (view: ChildView) => void): () => void {this.listeners.add(listener);return () => {this.listeners.delete(listener);};}
  private restart(error: Error): void {
   this.ready = undefined;
-  if (this.stopped) return;
+  if (this.stopped || this.refused) return;
   if (!this.restarted) {
    this.restarted = true;this.options.warning(`Streams child failed: ${error.message}. Restarting once.`);
    void this.start().catch(() => {});
@@ -31,15 +38,17 @@ export class StreamsChild {
   }
  }
  start(): Promise<void> {
+  if (this.refused) return Promise.reject(this.refused);
   if (this.stopped) return Promise.reject(Error("Streams stopped for this Pi session; reload required"));
   if (this.ready) return this.ready;
   let resolve!: () => void, reject!: (error: Error) => void;
   this.ready = new Promise<void>((yes, no) => {resolve = yes;reject = no;});
   void this.ready.catch(() => {});
   const result = this.ready, attaching = this.restarted && this.nativeEnabled;
-  let child: ReturnType<typeof spawn>;
+  let child: ReturnType<typeof spawn>, binary: string, source: string | null;
   try {
-   const env = this.options.env ?? process.env, binary = resolveStreamsBin(env);
+   const env = this.options.env ?? process.env;
+   binary = resolveStreamsBin(env);source = checkoutSource();
    child = (this.options.spawn ?? spawn)(binary, ["serve", "--session-id", this.options.sessionId, "--sdk-pid", String(process.pid), "--plugin-root", pluginRoot],
     {cwd:this.options.cwd, env:{...env, STREAMS_BIN_PATH:binary}, stdio:["pipe", "pipe", "pipe"]});
   } catch (error) {
@@ -58,9 +67,13 @@ export class StreamsChild {
   };
   const timer = setTimeout(() => fail(Error("Streams child ready handshake timed out")), 10_000);
   const message = (line: string) => {
-   const value = decodeServerFrame(line);
    if (first) {
-    if (value.type !== "ready") throw Error("Unsupported Streams child handshake (expected protocol 2)");
+    let ready: ServerFrame | undefined;
+    try {ready = decodeServerFrame(line);} catch {}
+    if (ready?.type !== "ready" || source !== null && ready.source !== source) {
+     this.refused = foreignBinary(binary, source, ready?.type === "ready" ? ready.source : undefined);
+     fail(this.refused);return;
+    }
     first = false;clearTimeout(timer);
     if (attaching) {
      // Dispatch attachment first; its native outcome must not gate catalog work.
@@ -83,6 +96,7 @@ export class StreamsChild {
     }
     resolve();return;
    }
+   const value = decodeServerFrame(line);
    if (value.type === "response") {
     const request = this.pending.get(value.id);this.pending.delete(value.id);request?.resolve(value.outcome);return;
    }
@@ -101,7 +115,7 @@ export class StreamsChild {
      const line = buffer.slice(0, end);buffer = buffer.slice(end + 1);message(line);
      if (failed) break;
     }
-   } catch (error) {fail(first ? Error(`Unsupported Streams child handshake (expected protocol 2): ${String(error)}`) : error as Error);}
+   } catch (error) {fail(error as Error);}
   });
   child.stderr!.resume();
   child.stdin!.on("error", fail);child.on("error", fail);

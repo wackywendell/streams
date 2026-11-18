@@ -134,9 +134,20 @@ without a separate automatic control loop or caller-proof protocol.
 
 The extension should still start one child per Pi session with the selected
 binary, environment, working directory and plugin root. A session switch ends
-the old child. The first line should be `{"type":"ready","protocol":2}`.
+the old child. The first line should be
+`{"type":"ready","protocol":2,"source":"<digest>"}`, where `source` is the
+digest of the Rust sources the binary was built from (see `build.rs`).
 Readiness means the transport can accept requests; it should not itself trigger
 native observation, projection or opening.
+
+An extension loaded from a checkout computes the same digest over its own
+sources. Any other first line, or a different digest, means the binary was not
+built from this checkout. The extension then refuses that binary with one
+error naming the binary, the checkout and both digests, does not restart it,
+and rejects every later request with the same error until Pi reloads. A binary
+built from other sources would otherwise fail later in its own way, for example
+by rejecting a record field it does not know. A packaged extension has no
+sources to compare and skips the check.
 
 An eligible interactive Pi session should send `session_started` before startup
 sync. That lifecycle input considers configured automatic opening. A binding change in an already-observing child can also open automatically, as defined by the [card preference decision](card-preferences-and-control.md).
@@ -151,7 +162,7 @@ and follows an existing separated card; it keeps no movement baseline. Catalog r
 Lifecycle errors should warn without disabling catalog operations.
 
 The extension should retain the existing limit of one automatic child restart
-per Pi session. It should reject requests whose child died without replaying
+per Pi session; a refused binary is never restarted. It should reject requests whose child died without replaying
 them. A second transport failure stops Streams until reload. Closing stdin
 should end the child and its subscriptions after bounded shutdown. A restarted
 child locates its bound Session from current reported identity. Stale inherited

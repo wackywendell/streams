@@ -1,8 +1,33 @@
-import { accessSync, constants, realpathSync, statSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { accessSync, constants, existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const packageRoot = fileURLToPath(new URL('../../..', import.meta.url));
+export const checkoutRoot = resolve(packageRoot);
+
+/**
+ * Digest of this checkout's Rust sources, exactly as build.rs embeds it in the binary;
+ * null for a packaged extension, which ships no sources to compare.
+ */
+export function checkoutSource(): string | null {
+  if (!existsSync(join(packageRoot, 'build.rs'))) return null;
+  const paths = ['Cargo.toml', 'Cargo.lock', 'build.rs'];
+  const walk = (relative: string) => {
+    for (const entry of readdirSync(join(packageRoot, relative), {withFileTypes: true})) {
+      const path = `${relative}/${entry.name}`;
+      if (entry.isDirectory()) walk(path); else paths.push(path);
+    }
+  };
+  walk('src');
+  paths.sort();
+  const hash = createHash('sha256');
+  for (const path of paths) {
+    const bytes = readFileSync(join(packageRoot, path));
+    hash.update(`${path}\0${bytes.length}\0`);hash.update(bytes);
+  }
+  return hash.digest('hex');
+}
 
 function executable(path: string, selector: string): string {
   if (!isAbsolute(path)) throw Error(`${selector} must name an absolute executable path`);

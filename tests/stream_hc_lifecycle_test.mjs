@@ -7,6 +7,7 @@ const jiti=createJiti(import.meta.url,{interopDefault:true});
 const {default:register}=await jiti.import('../extensions/stream-checkpoint/index.ts');
 const {StreamsChild}=await jiti.import('../extensions/stream-checkpoint/child.ts');
 const {defaults}=await jiti.import('../extensions/stream-checkpoint/settings.ts');
+const {checkoutSource}=await jiti.import('../integrations/herdr-work-cards/src/streams-bin.ts');
 const turn=()=>new Promise(resolve=>setImmediate(resolve));
 const deferred=()=>{let resolve;const promise=new Promise(yes=>{resolve=yes;});return {promise,resolve};};
 function fixture(contextState={generation:0}) {
@@ -87,16 +88,16 @@ function processFixture() {
  return {manager,children,warnings};
 }
 test('a failed helper remains retained until actual close, before replacement',async()=>{
- const f=processFixture(),started=f.manager.start(),failure=assert.rejects(started,/handshake/);
- f.children[0].stdout.write('not json\n');await failure;
+ const f=processFixture(),started=f.manager.start(),ready=JSON.stringify({type:'ready',protocol:2,source:checkoutSource()});
+ f.children[0].stdout.write(ready+'\nnot json\n');await started;await turn();
  assert.equal(f.children.length,1,'kill is not close');
  f.children[0].emit('close',1);await turn();assert.equal(f.children.length,2);
- f.children[1].stdout.write('{"type":"ready","protocol":2}\n');await f.manager.start();
+ f.children[1].stdout.write(ready+'\n');await f.manager.start();
  const stopped=f.manager.stop();f.children[1].emit('close',0);await stopped;
 });
 test('stop waits for a dying helper and suppresses its scheduled replacement',async()=>{
- const f=processFixture(),started=f.manager.start(),failure=assert.rejects(started,/handshake/);
- f.children[0].stdout.write('not json\n');await failure;
+ const f=processFixture(),started=f.manager.start();
+ f.children[0].stdout.write(JSON.stringify({type:'ready',protocol:2,source:checkoutSource()})+'\nnot json\n');await started;await turn();
  let done=false;const stopped=f.manager.stop().then(()=>{done=true;});await turn();
  assert.equal(done,false);assert.equal(f.children.length,1);
  f.children[0].emit('close',1);await stopped;await turn();assert.equal(f.children.length,1);

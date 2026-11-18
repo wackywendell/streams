@@ -15,7 +15,7 @@ just build
 
 The examples below use `streams`; from this checkout, substitute `./target/debug/streams`. If `CARGO_TARGET_DIR` is set, use its `debug/streams` instead. Use isolated XDG directories when testing; commands otherwise use your normal configuration and catalog.
 
-The Pi extension selects this checkout's debug Rust build by default. `STREAMS_BIN_PATH` can select another absolute Rust executable. There is no Python or `PATH` fallback. Loading this checkout does not update installed tools or reload running processes.
+The Pi extension selects this checkout's debug Rust build by default. `STREAMS_BIN_PATH` can select another absolute Rust executable. There is no Python or `PATH` fallback. Loading this checkout does not update installed tools or reload running processes. The extension refuses a binary that was not built from this checkout's current Rust sources: every build embeds a digest of `Cargo.toml`, `Cargo.lock`, `build.rs` and `src/`, and the extension compares it with the same digest of its checkout when the binary starts. A stale or foreign binary stops Streams for that Pi session with one error naming the binary, the checkout and both digests. Run `just build` and reload Pi.
 
 ## Initialise a catalog
 

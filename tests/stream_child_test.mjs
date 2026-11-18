@@ -9,6 +9,8 @@ const {StreamsChild}=await jiti.import('../extensions/stream-checkpoint/child.ts
 const {decodeServerFrame}=await jiti.import('../extensions/stream-checkpoint/child-protocol.ts');
 const {default:register}=await jiti.import('../extensions/stream-checkpoint/index.ts');
 const {defaults}=await jiti.import('../extensions/stream-checkpoint/settings.ts');
+const {checkoutSource}=await jiti.import('../integrations/herdr-work-cards/src/streams-bin.ts');
+const source=checkoutSource();
 const wire=JSON.parse(readFileSync(new URL('./fixtures/pi-child-v2.json',import.meta.url),'utf8'));
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 function respond(child,id,result={},warnings) {child.emitMessage({type:'response',id,outcome:warnings?{status:'saved_with_warnings',result,warnings}:{status:'success',result}});}
@@ -27,7 +29,7 @@ function fixture(t, sessionId='pi-session', env={}, piContext) {
  const ready=async()=>{
   const started=manager.start(),child=children.at(-1);
   child.on('message',message=>{if(message.request?.kind==='attach')respond(child,message.id,{native:'active'});});
-  child.emitMessage({type:'ready',protocol:2});await started;return child;
+  child.emitMessage({type:'ready',protocol:2,source});await started;return child;
  };
  return {manager,children,launches,warnings,ready};
 }
@@ -53,7 +55,7 @@ test('one launch, exact envelope, ready gating and out-of-order typed outcomes',
  await tick();assert.deepEqual(child.messages,[]);
  assert.deepEqual(f.launches[0].argv.slice(0,5),['serve','--session-id','pi-session','--sdk-pid',String(process.pid)]);assert.equal(f.launches[0].options.cwd,'/tmp');
  assert.equal(f.launches[0].options.env.STREAMS_BIN_PATH,f.launches[0].binary);
- child.emitMessage({type:'ready',protocol:2});await tick();
+ child.emitMessage({type:'ready',protocol:2,source});await tick();
  const second=f.manager.run({kind:'apply',request:{captured:true}});await tick();
  respond(child,child.messages[1].id,{receipt:true},['offline','retained']);
  assert.deepEqual(await second,{status:'saved_with_warnings',result:{receipt:true},warnings:['offline','retained']});
@@ -106,7 +108,7 @@ test('restart rejects in-flight work, attaches before new requests and never rep
  const f=fixture(t),first=await f.ready(),startup=f.manager.run({kind:'session_started'});await tick();
  respond(first,first.messages[0].id,{native:'active',display:'opened'});await startup;
  const pending=f.manager.run({kind:'open_card'});await tick();first.emit('close',1);await assert.rejects(pending,/exited/);
- const second=f.children[1],next=f.manager.run({kind:'context'});second.emitMessage({type:'ready',protocol:2});await tick();
+ const second=f.children[1],next=f.manager.run({kind:'context'});second.emitMessage({type:'ready',protocol:2,source});await tick();
  assert.deepEqual(second.messages.map(frame=>frame.request),[{kind:'attach'},{kind:'context'}]);
  respond(second,second.messages[1].id,{catalog:true});await next;respond(second,second.messages[0].id,{native:'active'});
  assert.equal(f.launches.length,2);assert.match(f.warnings[0],/Restarting once/);
@@ -114,7 +116,7 @@ test('restart rejects in-flight work, attaches before new requests and never rep
 });
 for(const outcome of [{status:'error',error:{kind:'runtime',message:'origin not proved'}},{status:'success',result:{}}])test('native attach failure warns but leaves catalog requests available',async t=>{
  const f=fixture(t),first=await f.ready(),startup=f.manager.run({kind:'session_started'});await tick();respond(first,first.messages[0].id,{native:'inactive',reason:'not_enrolled'});await startup;first.emit('close',1);
- const second=f.children[1],next=f.manager.run({kind:'context'});second.emitMessage({type:'ready',protocol:2});await tick();
+ const second=f.children[1],next=f.manager.run({kind:'context'});second.emitMessage({type:'ready',protocol:2,source});await tick();
  second.emitMessage({type:'response',id:second.messages[0].id,outcome});respond(second,second.messages[1].id,{catalog:true});assert.deepEqual(await next,{status:'success',result:{catalog:true}});
  assert.equal(f.launches.length,2);assert.equal(second.killed,undefined);assert.equal(f.warnings.length,2);assert.match(f.warnings[1],/origin not proved|attach acknowledgement/);
 });
@@ -128,12 +130,22 @@ test('a crash before native startup readiness cannot replay session_started into
 });
 test('native attach timeout cancels only attachment and does not stop catalog transport',async t=>{
  t.mock.timers.enable({apis:['setTimeout']});const f=fixture(t),first=await f.ready(),startup=f.manager.run({kind:'session_started'});await tick();respond(first,first.messages[0].id,{native:'active',display:'suppressed'});await startup;first.emit('close',1);
- const second=f.children[1],ready=f.manager.start();second.emitMessage({type:'ready',protocol:2});await ready;t.mock.timers.tick(120000);
+ const second=f.children[1],ready=f.manager.start();second.emitMessage({type:'ready',protocol:2,source});await ready;t.mock.timers.tick(120000);
  assert.deepEqual(second.messages.at(-1),{type:'cancel',id:second.messages[0].id});assert.match(f.warnings.at(-1),/attach timed out/);assert.equal(second.killed,undefined);
  const next=f.manager.run({kind:'context'});await tick();respond(second,second.messages.at(-1).id,{catalog:true});await next;
 });
-for(const message of [{type:'ready',protocol:1},{type:'response',id:1,outcome:{status:'success',result:{}}}])test('unsupported first frame fails without a v1 fallback',async t=>{
- const f=fixture(t),started=f.manager.start();f.children[0].emitMessage(message);await assert.rejects(started,/handshake/);assert.equal(f.children[0].killed,true);assert.equal(f.launches.length,2);await f.ready();
+for(const [message,found] of [
+ [{type:'ready',protocol:2},/it reports no source digest/],
+ [{type:'ready',protocol:2,source:'0123456789abcdef'},/its sources are 0123456789ab/],
+ [{type:'ready',protocol:1},/no source digest/],
+ [{type:'response',id:1,outcome:{status:'success',result:{}}},/no source digest/],
+])test(`a binary built from other sources is refused once, naming both sides: ${JSON.stringify(message)}`,async t=>{
+ const refusal=new RegExp(`^Error: Streams binary ${process.execPath.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')} was not built from this extension's checkout .*${source.slice(0,12)}.*just build`);
+ const f=fixture(t),started=f.manager.start(),pending=assert.rejects(f.manager.run({kind:'context'}),refusal);f.children[0].emitMessage(message);
+ await assert.rejects(started,refusal);await assert.rejects(started,found);await pending;assert.equal(f.children[0].killed,true);
+ f.children[0].emit('close',null,'SIGKILL');await tick();
+ assert.equal(f.launches.length,1,'a refused binary is never restarted');assert.deepEqual(f.warnings,[]);
+ await assert.rejects(f.manager.run({kind:'context'}),refusal);assert.equal(f.launches.length,1);
 });
 for(const message of [
  'not JSON', '{"type":"warning","message":"one","message":"two"}', '{"type":"view","view":{"desired_pi_name":null,"desired_pi_\\u006eame":"duplicate"}}',
@@ -141,14 +153,14 @@ for(const message of [
  {type:'response',id:0,outcome:{status:'success',result:{}}}, {type:'response',id:1,outcome:{status:'success',result:[]}},
  {type:'response',id:1,outcome:{status:'saved_with_warnings',result:{},warnings:[]}},
  {type:'response',id:1,outcome:{status:'error',error:{kind:'runtime',message:'bad',scope:{}}}},
- {type:'response',id:1,code:0,value:{},notices:[]}, {type:'ready',protocol:2},
+ {type:'response',id:1,code:0,value:{},notices:[]}, {type:'ready',protocol:2,source},
 ])test(`malformed protocol terminates the child: ${JSON.stringify(message)}`,async t=>{
  const f=fixture(t),child=await f.ready();if(typeof message==='string')child.stdout.write(message+'\n');else child.emitMessage(message);
  assert.equal(child.killed,true);assert.equal(f.launches.length,1,'replacement waits for actual close');await tick();assert.equal(f.launches.length,2);await f.ready();
 });
 test('ready then malformed framing cannot dispatch a stale write into the replacement',async t=>{
  const f=fixture(t),request=f.manager.run({kind:'apply',request:{}});
- f.children[0].stdout.write('{"type":"ready","protocol":2}\nnot-json\n');
+ f.children[0].stdout.write(JSON.stringify({type:'ready',protocol:2,source})+'\nnot-json\n');
  await assert.rejects(request,/lifetime ended/);assert.equal(f.launches.length,2);assert.deepEqual(f.children[1].messages,[]);await f.ready();
 });
 test('aborting a draining request writes no cancel after EOF and never kills the child',async t=>{
@@ -159,7 +171,7 @@ test('aborting a draining request writes no cancel after EOF and never kills the
 });
 test('attach warnings are not emitted after shutdown starts, but its accepted reply still drains',async t=>{
  const f=fixture(t),first=await f.ready(),startup=f.manager.run({kind:'session_started'});await tick();respond(first,first.messages[0].id,{native:'active',display:'suppressed'});await startup;first.emit('close',1);
- const second=f.children[1],attached=f.manager.start();second.emitMessage({type:'ready',protocol:2});await tick();
+ const second=f.children[1],attached=f.manager.start();second.emitMessage({type:'ready',protocol:2,source});await tick();
  const stopped=f.manager.stop();respond(second,second.messages[0].id,{native:'active'},['Retired attach warning']);await attached;second.emit('close',0);await stopped;
  assert.equal(f.warnings.length,1);assert.match(f.warnings[0],/Restarting once/);
 });

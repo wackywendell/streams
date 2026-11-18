@@ -18,7 +18,10 @@ The split removes the Python CLI and Node-to-Python advisory-lock helper without
 keeping a fallback runtime. Reporting and native requests share one executable:
 an explicit absolute `STREAMS_BIN_PATH`, or this checkout's debug Cargo target.
 A packaged extension needs an explicit matching executable. Missing or invalid
-builds fail rather than selecting an installed command from `PATH`.
+builds fail rather than selecting an installed command from `PATH`. From a
+checkout, the child's ready frame carries the digest of the sources it was built
+from, and the extension refuses a child whose digest differs from its checkout's
+without restarting it.
 
 A Rust child cannot observe a branch switch while inference is running inside Pi.
 TypeScript therefore retains conversation lifetime, cancellation and active-branch

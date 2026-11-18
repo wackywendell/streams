@@ -303,7 +303,10 @@ impl NativeFixture {
     }
     fn begin(&self) -> Transport {
         let child = Transport::start(self.command(), &self.id);
-        assert_eq!(child.next(), json!({"type":"ready","protocol":2}));
+        assert_eq!(
+            child.next(),
+            json!({"type":"ready","protocol":2,"source":streams::child_protocol::SOURCE_DIGEST})
+        );
         child
     }
     fn start(&self) -> (Transport, Value) {
@@ -577,7 +580,10 @@ fn external_attach_into_an_unmarked_workspace_does_not_create_or_move_work() {
     }
     let streams = f.fixture.ok(&["list"], None);
     let mut child = Transport::start(f.command(), &id);
-    assert_eq!(child.next(), json!({"type":"ready","protocol":2}));
+    assert_eq!(
+        child.next(),
+        json!({"type":"ready","protocol":2,"source":streams::child_protocol::SOURCE_DIGEST})
+    );
     child.request(1, json!({"kind":"session_started"}));
     assert_eq!(
         child.response(1)["outcome"]["result"]["reason"],
@@ -658,7 +664,10 @@ fn automatic_cards_open_on_startup_or_outside_attach_and_not_again_on_refresh() 
             }
         }
         let mut child = Transport::start(f.command(), &id);
-        assert_eq!(child.next(), json!({"type":"ready","protocol":2}));
+        assert_eq!(
+            child.next(),
+            json!({"type":"ready","protocol":2,"source":streams::child_protocol::SOURCE_DIGEST})
+        );
         child.request(1, json!({"kind":"session_started"}));
         let started = child.response(1);
         assert_eq!(started["outcome"]["status"], "success", "{started}");
@@ -804,7 +813,10 @@ fn outside_attach_opens_after_delayed_pi_transcript_detection() {
             owner
         };
         let mut child = Transport::start(f.command(), &id);
-        assert_eq!(child.next(), json!({"type":"ready","protocol":2}));
+        assert_eq!(
+            child.next(),
+            json!({"type":"ready","protocol":2,"source":streams::child_protocol::SOURCE_DIGEST})
+        );
         child.request(1, json!({"kind":"session_started"}));
         let started = child.response(1);
         if detected_at_startup {
@@ -1234,7 +1246,10 @@ fn workspace_markers_select_the_existing_stream_for_unenrolled_lifecycle_and_enr
         let stream_id = f.session["stream_id"].as_str().unwrap();
         let before = f.fixture.ok(&["show", stream_id], None)["stream"].clone();
         let mut child = Transport::start(f.command(), &id);
-        assert_eq!(child.next(), json!({"type":"ready","protocol":2}));
+        assert_eq!(
+            child.next(),
+            json!({"type":"ready","protocol":2,"source":streams::child_protocol::SOURCE_DIGEST})
+        );
         child.request(1, json!({"kind":lifecycle}));
         let started = child.response(1);
         assert_eq!(started["outcome"]["status"], "success", "{started}");
@@ -1277,7 +1292,10 @@ fn fresh_pi_defers_observation_until_its_transcript_exists_and_keeps_the_workspa
                 json!({"agent":"pi","kind":"path","value":transcript});
         }
         let mut child = Transport::start(f.command(), &id);
-        assert_eq!(child.next(), json!({"type":"ready","protocol":2}));
+        assert_eq!(
+            child.next(),
+            json!({"type":"ready","protocol":2,"source":streams::child_protocol::SOURCE_DIGEST})
+        );
         if early_startup {
             child.request(1, json!({"kind":"session_started"}));
             let failed = child.response(1);

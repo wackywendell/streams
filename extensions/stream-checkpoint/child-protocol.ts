@@ -52,7 +52,7 @@ export type ChildOutcome =
  | {status: "error"; error: {kind: string; message: string}};
 export type ChildView = {desired_pi_name: string | null};
 export type ServerFrame =
- | {type: "ready"; protocol: 2}
+ | {type: "ready"; protocol: 2; source: string}
  | {type: "response"; id: number; outcome: ChildOutcome}
  | {type: "view"; view: ChildView}
  | {type: "warning"; message: string};
@@ -95,7 +95,7 @@ function parse(line: string): unknown {
 export function decodeServerFrame(line: string): ServerFrame {
  const value = parse(line);
  if (object(value)) {
-  if (value.type === "ready" && fields(value, ["type", "protocol"]) && value.protocol === 2) return value as ServerFrame;
+  if (value.type === "ready" && fields(value, ["type", "protocol", "source"]) && value.protocol === 2 && typeof value.source === "string") return value as ServerFrame;
   if (value.type === "warning" && fields(value, ["type", "message"]) && typeof value.message === "string") return value as ServerFrame;
   if (value.type === "view" && fields(value, ["type", "view"]) && fields(value.view, ["desired_pi_name"]) && (value.view.desired_pi_name === null || typeof value.view.desired_pi_name === "string")) return value as ServerFrame;
   if (value.type === "response" && fields(value, ["type", "id", "outcome"]) && Number.isSafeInteger(value.id) && (value.id as number) > 0 && object(value.outcome)) {

@@ -85,7 +85,10 @@ impl Fixture {
     }
     fn start(&self) -> Transport {
         let transport = Transport::start(self.command(), "pi-session");
-        assert_eq!(transport.next(), json!({"type":"ready","protocol":2}));
+        assert_eq!(
+            transport.next(),
+            json!({"type":"ready","protocol":2,"source":streams::child_protocol::SOURCE_DIGEST})
+        );
         transport
     }
     fn capture(&self) -> (Value, Value) {
@@ -224,7 +227,10 @@ fn typed_handshake_catalog_results_and_eof_drain() {
 fn pi_context_is_bound_to_the_helper_and_does_not_retarget_requests() {
     let f = Fixture::new();
     let mut child = Transport::start_with_sdk(f.command(), "pi-session", Some(std::process::id()));
-    assert_eq!(child.next(), json!({"type":"ready","protocol":2}));
+    assert_eq!(
+        child.next(),
+        json!({"type":"ready","protocol":2,"source":streams::child_protocol::SOURCE_DIGEST})
+    );
     let context = |id| json!({"conversation":{"harness":"pi","native_id":id},"session_file":null});
     child.send(json!({"type":"request","id":1,"request":{"kind":"list_streams"},"pi_context":context("other")}));
     assert_eq!(child.response(1)["outcome"]["status"], "error");
@@ -289,7 +295,10 @@ fn preview_and_ready_never_load_poisoned_configuration() {
     let mut command = f.command();
     command.env("HOME", "not-an-absolute-home");
     let mut child = Transport::start(command, "pi-session");
-    assert_eq!(child.next(), json!({"type":"ready","protocol":2}));
+    assert_eq!(
+        child.next(),
+        json!({"type":"ready","protocol":2,"source":streams::child_protocol::SOURCE_DIGEST})
+    );
     assert!(
         child
             .frames

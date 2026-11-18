@@ -43,6 +43,9 @@ toml = "=0.8.23"
 uuid = { version = "1", features = ["v4", "v5", "serde"] }
 strum = { version = "0.28.0", features = ["derive"] }
 
+[build-dependencies]
+sha2 = "0.10"
+
 [dev-dependencies]
 temper-jit = { git = "https://github.com/nerdsane/temper.git", rev = "6255ac3b43028105b8c0a2cee773f01aed2480a2" }
 vt100 = "0.15"

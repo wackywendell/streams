@@ -29,7 +29,7 @@
     {"type":"cancel","id":9007199254740991}
   ],
   "server": [
-    {"type":"ready","protocol":2},
+    {"type":"ready","protocol":2,"source":"5f1d0c6a2b3e4f5061728394a5b6c7d8e9f00112233445566778899aabbccdde"},
     {"type":"response","id":2,"outcome":{"status":"success","result":{"native":"active"}}},
     {"type":"response","id":1,"outcome":{"status":"success","result":{"native":"active","display":"opened"}}},
     {"type":"response","id":1,"outcome":{"status":"success","result":{"native":"active","display":"existing"}}},

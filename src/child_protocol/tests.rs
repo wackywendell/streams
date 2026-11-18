@@ -146,6 +146,8 @@ fn unsupported_frames_fields_and_positional_structs_fail() {
         json!({"type":"ready","protocol":1}),
         json!({"type":"ready","protocol":"2"}),
         json!({"type":"ready","protocol":2,"scope":null}),
+        json!({"type":"ready","protocol":2}),
+        json!({"type":"ready","protocol":2,"source":null}),
         json!({"type":"scope","scope":{"pane_id":"w:p1"}}),
         json!({"type":"view","view":["Name"]}),
         json!({"type":"view","view":{}}),

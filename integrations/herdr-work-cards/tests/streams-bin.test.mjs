@@ -13,13 +13,13 @@ async function fixture(t) {
   const module = join(root, 'integrations/herdr-work-cards/src/streams-bin.ts');
   mkdirSync(dirname(module), { recursive: true });
   writeFileSync(module, source);
-  const { resolveStreamsBin } = await jiti.import(module);
+  const { resolveStreamsBin, checkoutSource } = await jiti.import(module);
   const executable = path => {
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, '#!/bin/sh\nexit 99\n', { mode: 0o700 });
     return realpathSync(path);
   };
-  return { root, select: resolveStreamsBin, executable };
+  return { root, select: resolveStreamsBin, source: checkoutSource, executable };
 }
 
 test('selector import is inert; default ignores .venv, PATH and stale release binaries', async t => {
@@ -64,4 +64,17 @@ test('invalid explicit selectors fail without trying Cargo, .venv or PATH', asyn
   for (const value of ['', 'streams', resolve(f.root, 'missing'), f.root, nonExecutable]) {
       assert.throws(() => f.select({ STREAMS_BIN_PATH: value, PATH: dirname(binary) }), /STREAMS_BIN_PATH/);
   }
+});
+
+test('a packaged extension has no checkout source; a checkout digest follows every Rust source', async t => {
+  const f = await fixture(t);
+  assert.equal(f.source(), null);
+  for (const path of ['Cargo.toml', 'Cargo.lock', 'build.rs', 'src/main.rs']) {
+    mkdirSync(dirname(join(f.root, path)), { recursive: true });writeFileSync(join(f.root, path), path);
+  }
+  const before = f.source();
+  assert.match(before, /^[0-9a-f]{64}$/);
+  assert.equal(f.source(), before);
+  writeFileSync(join(f.root, 'src/main.rs'), 'changed');
+  assert.notEqual(f.source(), before);
 });

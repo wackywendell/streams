@@ -71,7 +71,10 @@ fn start(f: &Fixture, socket: &std::path::Path) -> Transport {
     let mut command = f.command();
     command.env("HC_SOCKET", socket).env("HC_TERMINAL_ID", "t1");
     let child = Transport::start_with_sdk(command, "pi-session", Some(std::process::id()));
-    assert_eq!(child.next(), json!({"type":"ready","protocol":2}));
+    assert_eq!(
+        child.next(),
+        json!({"type":"ready","protocol":2,"source":streams::child_protocol::SOURCE_DIGEST})
+    );
     child
 }
 
@@ -89,7 +92,10 @@ fn sdk_locator_is_verified_after_enrollment_and_on_a_later_read() {
     let mut pi = context();
     pi["session_file"] = json!(file);
     let mut child = Transport::start_with_sdk(f.command(), "pi-session", Some(std::process::id()));
-    assert_eq!(child.next(), json!({"type":"ready","protocol":2}));
+    assert_eq!(
+        child.next(),
+        json!({"type":"ready","protocol":2,"source":streams::child_protocol::SOURCE_DIGEST})
+    );
     child.send(json!({"type":"request","id":1,"request":{"kind":"enroll","request":enrollment},"pi_context":pi}));
     let first = child.response(1);
     assert_eq!(first["outcome"]["status"], "success", "{first}");

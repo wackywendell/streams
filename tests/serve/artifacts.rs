@@ -207,7 +207,10 @@ fn child_artifact_requests_bind_writes_but_allow_cross_session_reads() {
         .as_str()
         .unwrap();
     let mut other = Transport::start(f.command(), "other-session");
-    assert_eq!(other.next(), json!({"type":"ready","protocol":2}));
+    assert_eq!(
+        other.next(),
+        json!({"type":"ready","protocol":2,"source":streams::child_protocol::SOURCE_DIGEST})
+    );
     other.request(
         1,
         json!({"kind":"artifact","request":{"action":"read","reference":reference}}),

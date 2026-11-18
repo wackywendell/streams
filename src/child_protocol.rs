@@ -221,11 +221,16 @@ pub struct UiFacts {
     pub desired_pi_name: Option<String>,
 }
 
+/// Digest of the sources this binary was built from, computed by `build.rs`.
+pub const SOURCE_DIGEST: &str = env!("STREAMS_SOURCE_DIGEST");
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ServerFrame {
+    /// `source` lets the Pi extension refuse a binary built from other sources.
     Ready {
         protocol: Version2,
+        source: String,
     },
     Response {
         id: RequestId,

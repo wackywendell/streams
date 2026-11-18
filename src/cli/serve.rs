@@ -661,7 +661,13 @@ fn native_worker(
 
 pub(super) fn run(session_id: String, sdk_pid: Option<u32>, plugin_root: PathBuf) -> Result<()> {
     let output = Arc::new(Mutex::new(Some(std::io::stdout())));
-    send(&output, &ServerFrame::Ready { protocol: Version2 })?;
+    send(
+        &output,
+        &ServerFrame::Ready {
+            protocol: Version2,
+            source: streams::child_protocol::SOURCE_DIGEST.into(),
+        },
+    )?;
     let (sender, receiver) = mpsc::channel();
     let server = Arc::new(Server {
         session_id,

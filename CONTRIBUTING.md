@@ -62,8 +62,12 @@ first.
 
 Use `target/debug/streams`, or `$CARGO_TARGET_DIR/debug/streams` when configured.
 The Pi package resolves the same debug target by default. An absolute
-`STREAMS_BIN_PATH` overrides it. Packaged users must select a matching Rust
-executable explicitly. There is no Python or `PATH` fallback.
+`STREAMS_BIN_PATH` overrides it. Either way, the binary must be built from this
+checkout's current Rust sources: `build.rs` embeds a source digest that the
+binary reports in its ready frame, and the extension refuses a binary whose
+digest differs from its checkout's, so edit, `just build`, then reload Pi.
+Packaged users, whose extension has no sources to compare, must select a
+matching Rust executable explicitly. There is no Python or `PATH` fallback.
 
 Load only one checkout's Pi extension. Building and testing do not replace
 installed tools or reload running processes. Use isolated homes and fake native
