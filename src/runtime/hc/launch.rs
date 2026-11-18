@@ -132,51 +132,6 @@ impl PreparedTerminal {
     pub fn tab(&self) -> &str {
         &self.tab
     }
-
-    pub fn prepare_viewer(
-        argv: Vec<String>,
-        cwd: &std::path::Path,
-        environment: BTreeMap<String, String>,
-        space: &NativeRef,
-        socket: &HcEndpoint,
-    ) -> Result<Self> {
-        space
-            .validate()
-            .map_err(|error| crate::runtime::invalid(error.to_string()))?;
-        if space.adapter != FrontendId::Hc || space.key.contains('/') {
-            return Err(crate::runtime::invalid("invalid hc placement reference"));
-        }
-        if argv.is_empty()
-            || argv[0].is_empty()
-            || !std::path::Path::new(&argv[0]).is_absolute()
-            || !cwd.is_absolute()
-            || cwd.to_str().is_none()
-            || environment.iter().any(|(key, value)| {
-                key.is_empty() || key.contains(['=', '\0']) || value.contains('\0')
-            })
-        {
-            return Err(crate::runtime::invalid("invalid hc viewer inputs"));
-        }
-        let tab = uuid::Uuid::new_v4().to_string();
-        let params = json!({
-            "argv": argv,
-            "cwd": cwd,
-            "env": environment,
-            "labels": {
-                "herdr.space": space.key,
-                "herdr.tab": tab,
-            },
-            "no_parent": true,
-            "rm": true,
-            "wait": false,
-        });
-        Ok(Self {
-            endpoint: space.endpoint.clone(),
-            socket: socket.socket().to_path_buf(),
-            tab,
-            params,
-        })
-    }
 }
 
 /// One selected, verified and unplaced terminal with fixed placement labels.

@@ -1,10 +1,9 @@
 use std::{collections::BTreeMap, fs};
 use streams::{
-    model::{Session, Status, Stream},
+    model::Session,
     runtime::{
-        RuntimeError,
         conversations::{ConversationRoots, Harness},
-        launch::{SessionCommand, select_session},
+        launch::SessionCommand,
         workspace::native_environment,
     },
 };
@@ -124,61 +123,7 @@ fn commands_keep_harness_specific_resume_arguments_and_exact_verified_locator() 
     }
 }
 #[test]
-fn selection_is_host_local_casefolded_and_explicit_about_inactive_sessions() {
-    let stream = Stream::new("stream", "Work", None, "host").unwrap();
-    let active = session("chosen", "host", "pi", "native", "Straße");
-    let foreign = session("foreign", "other-host", "pi", "other", "Straße");
-    let mut done = session("inactive", "host", "pi", "done", "chosen");
-    done.status = Status::Done;
-    let sessions = vec![active, foreign, done];
-    assert_eq!(
-        select_session(&stream, &sessions, "host", None)
-            .unwrap()
-            .unwrap()
-            .id,
-        "chosen"
-    );
-    assert_eq!(
-        select_session(&stream, &sessions, "host", Some("STRASSE"))
-            .unwrap()
-            .unwrap()
-            .id,
-        "chosen"
-    );
-    assert_eq!(
-        select_session(&stream, &sessions, "host", Some("chosen"))
-            .unwrap()
-            .unwrap()
-            .id,
-        "chosen"
-    );
-    assert_eq!(
-        select_session(&stream, &sessions, "host", Some("inactive"))
-            .unwrap()
-            .unwrap()
-            .id,
-        "inactive"
-    );
-    assert!(matches!(
-        select_session(&stream, &sessions, "host", Some("foreign")),
-        Err(RuntimeError::NotFound(_))
-    ));
-}
-#[test]
-fn ambiguity_never_picks_one_conversation_and_unknown_harness_never_launches() {
-    let stream = Stream::new("stream", "Work", None, "host").unwrap();
-    let sessions = vec![
-        session("a", "host", "pi", "native-a", "Same"),
-        session("b", "host", "pi", "native-b", "same"),
-    ];
-    assert!(matches!(
-        select_session(&stream, &sessions, "host", None),
-        Err(RuntimeError::Ambiguous { .. })
-    ));
-    assert!(matches!(
-        select_session(&stream, &sessions, "host", Some("SAME")),
-        Err(RuntimeError::Ambiguous { .. })
-    ));
+fn unknown_harness_never_launches() {
     assert!(
         SessionCommand::verified(
             &session("future", "host", "future-harness", "native", "Future"),

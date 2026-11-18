@@ -2,9 +2,7 @@
 
 use super::{OpenedRecords, Result};
 use crate::{
-    integration::{
-        ConversationId, LinkKind, ReadReply, Reference, ResolvedTarget, SessionView, WorkScope,
-    },
+    integration::{ConversationId, LinkKind, Reference, ResolvedTarget, SessionView, WorkScope},
     model::{Record, RecordKind, Session, Stream, ValidationError},
     operations::{decay_cutoff_ms, derived_stream_status, stream_activity_ms},
     storage::records::{RecordAddress, RecordRead, RecordReader, RecordStore, UnreadableRecord},
@@ -122,34 +120,6 @@ impl<'a> Streams<'a> {
             &self.scope.host,
             conversation,
         )?)
-    }
-
-    pub fn read_session(&self, session: &str) -> Result<ReadReply<SessionView>> {
-        self.records.records().with_reader(|reader| {
-            let session = self.session(reader, session)?.ok_or_else(|| {
-                crate::runtime::RuntimeError::NotFound(
-                    "saved Session is unavailable on this host".into(),
-                )
-            })?;
-            Ok(ReadReply {
-                view: SessionView::from(&session),
-                viewer_actions: Vec::new(),
-                warnings: Vec::new(),
-            })
-        })
-    }
-
-    pub fn read_stream(&self, stream: &str) -> Result<ReadReply<crate::integration::StreamView>> {
-        use crate::artifacts::ArtifactStore;
-        let sessions = self.records.host_sessions()?;
-        let members = sessions_by_id(sessions.records);
-        self.records.artifacts().with_artifacts(|reader| {
-            Ok(ReadReply {
-                view: self.stream_view(reader, stream, &members, &sessions.unreadable)?,
-                viewer_actions: vec![],
-                warnings: vec![],
-            })
-        })
     }
 
     /// A batch shares one host inspection and one producer listing per distinct Stream.
@@ -469,9 +439,7 @@ impl<'a> Streams<'a> {
                     {
                         Ok(Some(session)) => Enrollment::Enrolled(Box::new(session)),
                         Ok(None) => Enrollment::Unenrolled,
-                        Err(_) => {
-                            Enrollment::Unavailable("saved Session view is unavailable".into())
-                        }
+                        Err(error) => Enrollment::Unavailable(error.to_string()),
                     }
                 }
                 ForegroundConversation::NotApplicable => Enrollment::NotApplicable,
@@ -759,4 +727,96 @@ fn sessions_by_id(reads: Vec<RecordRead>) -> std::collections::BTreeMap<String, 
             (session.id.clone(), session)
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        application::initialize_records,
+        config::{Config, Strategy},
+        frontend::{EndpointId, FrontendId},
+        integration::{
+            Access, ForegroundConversation, FrameContext, ModReadValue, NativeRef,
+            TerminalObservation, ViewSelection, WireResult,
+        },
+    };
+    use std::{collections::BTreeMap, fs};
+    use tempfile::tempdir;
+
+    struct FixedConversation(ConversationId);
+
+    impl TerminalObservation for FixedConversation {
+        fn routed_stream(&mut self, _: &NativeRef) -> Access<Option<String>> {
+            Access::Available { value: None }
+        }
+        fn foreground_conversation(&mut self, _: &NativeRef) -> ForegroundConversation {
+            ForegroundConversation::Current(self.0.clone())
+        }
+    }
+
+    #[test]
+    fn enrolled_session_preserves_unreadable_record_error_details() {
+        let dir = tempdir().unwrap();
+        let env = BTreeMap::from([
+            ("HOME".to_string(), dir.path().display().to_string()),
+            (
+                "XDG_CONFIG_HOME".to_string(),
+                dir.path().join("cfg").display().to_string(),
+            ),
+            (
+                "XDG_DATA_HOME".to_string(),
+                dir.path().join("data").display().to_string(),
+            ),
+        ]);
+        let config = Config::new(&env, dir.path()).unwrap();
+        let records = initialize_records(&config, Strategy::None, None, "main").unwrap();
+        let host = records.host().as_str();
+        let session_id = Session::id_for(host, "pi", "corrupt-native");
+        let partition = records
+            .root()
+            .join("hosts")
+            .join(crate::file_store::encode_component(host))
+            .join("conversations");
+        fs::create_dir_all(&partition).unwrap();
+        let file = partition.join(format!(
+            "{}.json",
+            crate::file_store::encode_component(&session_id)
+        ));
+        fs::write(&file, "{not valid json").unwrap();
+
+        let facade = Streams::new(&records);
+        let terminal = NativeRef {
+            adapter: FrontendId::Hc,
+            endpoint: EndpointId("core".into()),
+            key: "t1".into(),
+        };
+        let mut native = FixedConversation(ConversationId {
+            harness: "pi".into(),
+            native_id: "corrupt-native".into(),
+        });
+        let values = facade
+            .read_views(
+                &[ViewSelection::Frame { terminal }],
+                Access::Available { value: &mut native },
+            )
+            .unwrap();
+        let WireResult::Ok(ModReadValue::Frame {
+            context: FrameContext::Unavailable { reason },
+        }) = &values[0]
+        else {
+            panic!("expected FrameContext::Unavailable, got {:?}", values[0]);
+        };
+        assert!(
+            reason.contains(&format!(
+                "{}.json",
+                crate::file_store::encode_component(&session_id)
+            )),
+            "missing record path in error: {reason}"
+        );
+        assert!(
+            reason.contains("invalid JSON"),
+            "missing decode cause in error: {reason}"
+        );
+    }
 }

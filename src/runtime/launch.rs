@@ -3,11 +3,11 @@
 use std::path::{Path, PathBuf};
 
 use super::{
-    Result, RuntimeError,
+    Result,
     conversations::{ConversationRoots, Harness, conversation_file},
     invalid, text,
 };
-use crate::model::{Session, Stream};
+use crate::model::Session;
 
 /// Resolve on the owner before hc can interpret argv[0] as a template name.
 pub fn resolve_executable(
@@ -127,63 +127,5 @@ fn shell_quote(value: &str) -> String {
         value.into()
     } else {
         format!("'{}'", value.replace('\'', "'\"'\"'"))
-    }
-}
-
-/// Explicit references may select done/closed sessions; implicit selection picks open sessions.
-pub fn select_session<'a>(
-    stream: &Stream,
-    sessions: &'a [Session],
-    host: &str,
-    reference: Option<&str>,
-) -> Result<Option<&'a Session>> {
-    let eligible: Vec<_> = sessions
-        .iter()
-        .filter(|s| s.stream_id == stream.id && s.host_id == host)
-        .collect();
-    let matches: Vec<_> = if let Some(reference) = reference {
-        let folded = icu_casemap::CaseMapper::new().fold_string(reference);
-        let ids: Vec<_> = eligible
-            .iter()
-            .copied()
-            .filter(|s| s.id == reference)
-            .collect();
-        let exact: Vec<_> = eligible
-            .iter()
-            .copied()
-            .filter(|s| icu_casemap::CaseMapper::new().fold_string(&s.title) == folded)
-            .collect();
-        if !ids.is_empty() {
-            ids
-        } else if !exact.is_empty() {
-            exact
-        } else {
-            eligible
-                .iter()
-                .copied()
-                .filter(|s| {
-                    !reference.trim().is_empty()
-                        && icu_casemap::CaseMapper::new()
-                            .fold_string(&s.title)
-                            .contains(folded.as_ref())
-                })
-                .collect()
-        }
-    } else {
-        eligible
-            .into_iter()
-            .filter(|s| s.status.is_open())
-            .collect()
-    };
-    match (matches.as_slice(), reference) {
-        ([], Some(reference)) => Err(RuntimeError::NotFound(format!(
-            "no eligible local session matches {reference:?}"
-        ))),
-        ([], None) => Ok(None),
-        ([session], _) => Ok(Some(*session)),
-        _ => Err(RuntimeError::Ambiguous {
-            message: "ambiguous local sessions; choose --session".into(),
-            candidates: matches.iter().map(|s| s.id.clone()).collect(),
-        }),
     }
 }

@@ -832,10 +832,22 @@ fn saved_batch_distinguishes_empty_unavailable_and_a_broken_host_partition() {
     use streams::application::integration::Streams;
     let fixture = SavedFixture::new();
     let facade = Streams::new(&fixture.records);
-    let empty = facade.read_stream("empty").unwrap();
-    assert!(empty.view.sessions.is_empty());
-    assert!(empty.view.artifacts.is_empty());
-    assert!(facade.read_stream("missing").is_err());
+    let initial = facade
+        .read_saved_views(&[
+            ViewSelection::SavedStream {
+                stream: "empty".into(),
+            },
+            ViewSelection::SavedStream {
+                stream: "missing".into(),
+            },
+        ])
+        .unwrap();
+    let WireResult::Ok(ModReadValue::Stream { value: empty }) = &initial[0] else {
+        panic!("expected empty Stream view, got {:?}", initial[0]);
+    };
+    assert!(empty.sessions.is_empty());
+    assert!(empty.artifacts.is_empty());
+    assert!(matches!(initial[1], WireResult::Error(_)));
     let partition = fixture
         .records
         .root()
@@ -883,7 +895,7 @@ fn saved_batch_distinguishes_empty_unavailable_and_a_broken_host_partition() {
         "and the Sessions it cannot show are named as in the listing"
     );
     assert!(
-        empty.view.unreadable.is_empty(),
+        empty.unreadable.is_empty(),
         "a clean partition names nothing"
     );
     assert!(
@@ -2363,10 +2375,12 @@ fn an_unreadable_producer_directory_is_unavailable_not_empty() {
         .join("streams/work/artifacts");
     std::fs::create_dir_all(&directory).unwrap();
     std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o0)).unwrap();
-    let result =
-        streams::application::integration::Streams::new(&fixture.records).read_stream("work");
+    let result = streams::application::integration::Streams::new(&fixture.records)
+        .read_saved_views(&[ViewSelection::SavedStream {
+            stream: "work".into(),
+        }]);
     std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700)).unwrap();
-    assert!(result.is_err());
+    assert!(matches!(result, Ok(values) if matches!(values.as_slice(), [WireResult::Error(_)])));
 }
 
 #[test]

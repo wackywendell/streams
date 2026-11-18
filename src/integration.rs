@@ -279,13 +279,6 @@ pub enum ViewerAction {
     RenameTab { tab: NativeRef, name: String },
     OpenUrl { url: SafeHttpUrl },
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ReadReply<T> {
-    pub view: T,
-    pub viewer_actions: Vec<ViewerAction>,
-    pub warnings: Vec<String>,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -668,17 +661,10 @@ pub struct LifecycleReport {
     pub projection: ProjectionResult,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NativeChangeKind {
-    PlacementChanged,
-    DisplayChanged,
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LifecycleEvent {
     Started,
     NewlyBound,
     Reattached,
-    Stopping,
-    NativeChanged { kind: NativeChangeKind },
 }
 
 impl LifecycleEvent {

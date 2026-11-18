@@ -733,10 +733,15 @@ fn admitted_session_reads_are_saved_only_and_scope_is_not_a_catalog_selector() {
         events.lock().unwrap().is_empty(),
         "preferences do not read or mutate catalog records"
     );
-    let reply = facade.read_session(&session.id).unwrap();
-    assert_eq!(reply.view, SessionView::from(&session));
-    assert!(reply.viewer_actions.is_empty());
-    assert!(reply.warnings.is_empty());
+    let values = facade
+        .read_saved_views(&[ViewSelection::SavedSession {
+            session: session.id.clone(),
+        }])
+        .unwrap();
+    let [WireResult::Ok(ModReadValue::Session { value })] = values.as_slice() else {
+        panic!("expected saved Session view, got {values:?}");
+    };
+    assert_eq!(value, &SessionView::from(&session));
     let events = events.lock().unwrap();
     assert!(
         !events

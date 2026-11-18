@@ -46,21 +46,9 @@ impl NativeCardEngine {
         event: crate::integration::LifecycleEvent,
     ) -> Result<crate::integration::LifecycleReport> {
         use crate::integration::{
-            CompanionDisposition, CompanionIntent, InactiveReason, LifecycleEvent, LifecycleReport,
-            NativeStatus, ProjectionResult,
+            CompanionDisposition, CompanionIntent, LifecycleEvent, LifecycleReport, NativeStatus,
+            ProjectionResult,
         };
-        if event == LifecycleEvent::Stopping {
-            return Ok(LifecycleReport {
-                native: NativeStatus::Inactive {
-                    reason: InactiveReason::Stopped,
-                },
-                projection: ProjectionResult {
-                    companion: None,
-                    desired_pi_name: None,
-                    warnings: vec![],
-                },
-            });
-        }
         let intent = event.companion_intent(self.config.startup_automatic());
         let desired = self.desired_projection(intent);
         let plan = self.prepare_projection(&desired)?;

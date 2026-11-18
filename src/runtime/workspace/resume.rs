@@ -47,9 +47,6 @@ impl ResumeCommand {
     pub fn cwd(&self) -> &Path {
         self.launch.cwd()
     }
-    pub fn into_verified(self) -> crate::integration::VerifiedLaunch {
-        self.launch
-    }
     pub fn exec(self) -> Result<std::convert::Infallible> {
         use std::os::unix::process::CommandExt;
         let error = std::process::Command::new(&self.launch.command().argv()[0])
