@@ -179,11 +179,7 @@ impl CmuxClient {
                         effects.launches[0] = failed_launch(error);
                     }
                 })?;
-            let location = NativeRef {
-                adapter: self.frontend_id(),
-                endpoint: self.endpoint_id(),
-                key: workspace.reference.native_id,
-            };
+            let location = workspace.reference;
             effects.presentation = PresentationResult {
                 space: SpaceEvidence::Known {
                     value: location.clone(),
@@ -206,11 +202,11 @@ impl CmuxClient {
         }
     }
 
-    fn reference(&self, id: String) -> WorkspaceRef {
-        WorkspaceRef {
-            frontend: self.frontend_id(),
+    fn reference(&self, id: String) -> NativeRef {
+        NativeRef {
+            adapter: self.frontend_id(),
             endpoint: self.endpoint_id(),
-            native_id: id,
+            key: id,
         }
     }
 
@@ -281,7 +277,7 @@ impl CmuxClient {
     fn target(
         &self,
         op: &mut Operation,
-        reference: &WorkspaceRef,
+        reference: &NativeRef,
     ) -> Result<NativeWorkspace, FrontendError> {
         op.capture(check_ref(self, reference))?;
         self.inventory(op)?
@@ -309,7 +305,7 @@ impl WorkspaceFrontend for CmuxClient {
         let (text, exact) = match selector {
             WorkspaceSelector::Caller => (self.context.get("CMUX_WORKSPACE_ID").ok_or_else(|| FrontendError::invalid("current CMUX targeting requires exact caller context; no focused-workspace fallback"))?.as_str(), true),
             WorkspaceSelector::Explicit(text) => (text, false),
-            WorkspaceSelector::Exact(reference) => { check_ref(self, reference)?; (reference.native_id.as_str(), true) }
+            WorkspaceSelector::Exact(reference) => { check_ref(self, reference)?; (reference.key.as_str(), true) }
         };
         nonempty(text, "CMUX workspace selector")?;
         let mut op = Operation::default();
@@ -317,7 +313,7 @@ impl WorkspaceFrontend for CmuxClient {
             .inventory(&mut op)?
             .into_iter()
             .filter(|v| {
-                v.workspace.reference.native_id == text
+                v.workspace.reference.key == text
                     || (!exact && (v.display_ref == text || v.workspace.title == text))
             })
             .collect();
@@ -329,18 +325,18 @@ impl WorkspaceFrontend for CmuxClient {
     fn create(&self, request: &CreateWorkspace) -> Result<Workspace, FrontendError> {
         self.create_session(request, None)
     }
-    fn focus(&self, reference: &WorkspaceRef) -> Result<(), FrontendError> {
+    fn focus(&self, reference: &NativeRef) -> Result<(), FrontendError> {
         let mut op = Operation::default();
         self.target(&mut op, reference)?;
         op.run(
             &self.transport,
-            &args(&["select-workspace", "--workspace", &reference.native_id]),
+            &args(&["select-workspace", "--workspace", &reference.key]),
             true,
         )?;
         op.acknowledge();
         Ok(())
     }
-    fn rename(&self, reference: &WorkspaceRef, title: &str) -> Result<(), FrontendError> {
+    fn rename(&self, reference: &NativeRef, title: &str) -> Result<(), FrontendError> {
         nonempty(title, "workspace title")?;
         let mut op = Operation::default();
         let target = self.target(&mut op, reference)?;

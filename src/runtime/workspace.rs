@@ -19,7 +19,7 @@ use super::{
 };
 use crate::{
     frontend::{
-        FrontendId, WorkspaceRef,
+        FrontendId, NativeRef,
         herdr::{HerdrAgent, HerdrNativeSnapshot},
     },
     model::{Session, Stream},
@@ -147,12 +147,12 @@ impl<'a> WorkspaceRuntime<'a> {
         )?;
         Ok(())
     }
-    fn reference(&self, workspace: &str) -> Result<WorkspaceRef> {
+    fn reference(&self, workspace: &str) -> Result<NativeRef> {
         let adapter = self.frontend()?.adapter();
-        Ok(WorkspaceRef {
-            frontend: adapter.frontend_id(),
+        Ok(NativeRef {
+            adapter: adapter.frontend_id(),
             endpoint: adapter.endpoint_id(),
-            native_id: workspace.into(),
+            key: workspace.into(),
         })
     }
     fn result(

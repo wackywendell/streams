@@ -17,7 +17,7 @@ pub struct HerdrStartedAgent {
 impl HerdrClient {
     pub fn create_tab(
         &self,
-        workspace: &WorkspaceRef,
+        workspace: &NativeRef,
         cwd: &Path,
         environment: &BTreeMap<String, String>,
         label: Option<&str>,
@@ -27,14 +27,14 @@ impl HerdrClient {
         if let Some(label) = label {
             nonempty(label, "Herdr tab label")?;
         }
-        let params = json!({"workspace_id":workspace.native_id,"cwd":cwd,"env":environment,
+        let params = json!({"workspace_id":workspace.key,"cwd":cwd,"env":environment,
             "focus":false,"label":label});
         let mut op = Operation::default();
         let result = self.result(&mut op, "tab.create", params, "tab_created", true)?;
         let tab = op.capture(HerdrTab::parse(&result["tab"]))?;
         let pane = op.capture(HerdrPane::parse(&result["root_pane"]))?;
-        if tab.workspace_id != workspace.native_id
-            || pane.workspace_id != workspace.native_id
+        if tab.workspace_id != workspace.key
+            || pane.workspace_id != workspace.key
             || pane.tab_id != tab.id
         {
             return Err(op.error("Herdr created tab/pane/workspace ID mismatch"));

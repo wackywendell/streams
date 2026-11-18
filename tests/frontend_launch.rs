@@ -6,13 +6,13 @@ use std::path::Path;
 use streams::frontend::herdr::{HerdrClient, HerdrPane};
 use streams::frontend::*;
 
-fn client() -> (Scripted, HerdrClient, WorkspaceRef) {
+fn client() -> (Scripted, HerdrClient, NativeRef) {
     let fake = Scripted::new();
     let client = HerdrClient::connect(fake.environment(), 0.5).unwrap();
-    let workspace = WorkspaceRef {
-        frontend: client.frontend_id(),
+    let workspace = NativeRef {
+        adapter: client.frontend_id(),
         endpoint: client.endpoint_id(),
-        native_id: "w1".into(),
+        key: "w1".into(),
     };
     (fake, client, workspace)
 }
@@ -232,12 +232,12 @@ fn invalid_arguments_never_dispatch_effects() {
             .is_err()
     );
     for reference in [
-        WorkspaceRef {
+        NativeRef {
             endpoint: EndpointId("other".into()),
             ..workspace.clone()
         },
-        WorkspaceRef {
-            frontend: FrontendId::Cmux,
+        NativeRef {
+            adapter: FrontendId::Cmux,
             ..workspace.clone()
         },
     ] {

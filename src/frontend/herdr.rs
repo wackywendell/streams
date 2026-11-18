@@ -183,11 +183,7 @@ impl HerdrClient {
             let mut root = None;
             let workspace = match &plan.space {
                 SpaceDecision::Reuse { space } => {
-                    let workspace = WorkspaceRef {
-                        frontend: space.adapter,
-                        endpoint: space.endpoint.clone(),
-                        native_id: space.key.clone(),
-                    };
+                    let workspace = space.clone();
                     super::check_ref(self, &workspace)?;
                     effects.presentation.space = SpaceEvidence::Known {
                         value: space.clone(),
@@ -222,7 +218,7 @@ impl HerdrClient {
                         })?;
                     let workspace = created.workspace.reference;
                     effects.presentation.space = SpaceEvidence::Known {
-                        value: reference(&workspace.native_id),
+                        value: reference(&workspace.key),
                     };
                     if matches!(plan.launches.first(), Some(LaunchItem::Shell { .. })) {
                         effects.launches[0] = Effect::Applied {
@@ -231,7 +227,7 @@ impl HerdrClient {
                     }
                     root = Some(created.root_pane);
                     check()?;
-                    self.card_request("workspace.report_metadata", json!({"workspace_id":workspace.native_id,
+                    self.card_request("workspace.report_metadata", json!({"workspace_id":workspace.key,
                         "source":"streams", "tokens":crate::runtime::native_markers::stream_tokens(&scope.catalog, &scope.host, &plan.stream)}),
                         Some("ok"), true).inspect_err(|error| effects.presentation.state = failed_presentation(error))?;
                     workspace
@@ -596,11 +592,11 @@ impl HerdrClient {
         Ok(pane)
     }
 
-    fn reference(&self, id: String) -> WorkspaceRef {
-        WorkspaceRef {
-            frontend: self.frontend_id(),
+    fn reference(&self, id: String) -> NativeRef {
+        NativeRef {
+            adapter: self.frontend_id(),
             endpoint: self.endpoint_id(),
-            native_id: id,
+            key: id,
         }
     }
 
@@ -749,18 +745,18 @@ impl HerdrClient {
     fn rename_native(
         &self,
         op: &mut Operation,
-        reference: &WorkspaceRef,
+        reference: &NativeRef,
         title: &str,
     ) -> Result<(), FrontendError> {
         let result = self.result(
             op,
             "workspace.rename",
-            json!({"workspace_id":reference.native_id,"label":title}),
+            json!({"workspace_id":reference.key,"label":title}),
             "workspace_info",
             true,
         )?;
         let renamed = op.capture(HerdrWorkspace::parse(&result["workspace"]))?;
-        if renamed.id != reference.native_id {
+        if renamed.id != reference.key {
             return Err(op.error("Herdr renamed workspace ID mismatch"));
         }
         op.acknowledge();
@@ -796,7 +792,7 @@ impl WorkspaceFrontend for HerdrClient {
                 (pane.workspace_id, pane.cwd)
             }
             WorkspaceSelector::Explicit(id) => (id.into(), String::new()),
-            WorkspaceSelector::Exact(reference) => (reference.native_id.clone(), String::new()),
+            WorkspaceSelector::Exact(reference) => (reference.key.clone(), String::new()),
         };
         let result = self.result(
             &mut op,
@@ -815,19 +811,19 @@ impl WorkspaceFrontend for HerdrClient {
     fn create(&self, request: &CreateWorkspace) -> Result<Workspace, FrontendError> {
         Ok(self.create_native(request)?.workspace)
     }
-    fn focus(&self, reference: &WorkspaceRef) -> Result<(), FrontendError> {
+    fn focus(&self, reference: &NativeRef) -> Result<(), FrontendError> {
         check_ref(self, reference)?;
         let mut op = Operation::default();
         self.call(
             &mut op,
             "workspace.focus",
-            json!({"workspace_id":reference.native_id}),
+            json!({"workspace_id":reference.key}),
             true,
         )?;
         op.acknowledge();
         Ok(())
     }
-    fn rename(&self, reference: &WorkspaceRef, title: &str) -> Result<(), FrontendError> {
+    fn rename(&self, reference: &NativeRef, title: &str) -> Result<(), FrontendError> {
         check_ref(self, reference)?;
         nonempty(title, "workspace title")?;
         self.rename_native(&mut Operation::default(), reference, title)

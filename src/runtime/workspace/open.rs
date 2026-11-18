@@ -188,8 +188,7 @@ impl WorkspaceRuntime<'_> {
             self.remember(stream, None, &directory, cwd.is_none())?;
         }
         use crate::integration::{
-            LaunchItem, NativeRef, PreparedOpen, SpaceDecision, SpaceEvidence, VerifiedLaunch,
-            complete_open,
+            LaunchItem, PreparedOpen, SpaceDecision, SpaceEvidence, VerifiedLaunch, complete_open,
         };
         let restored = launches
             .iter()
@@ -212,16 +211,9 @@ impl WorkspaceRuntime<'_> {
             });
         }
         let space = match existing {
-            Some(workspace) => {
-                let reference = self.reference(&workspace.id)?;
-                SpaceDecision::Reuse {
-                    space: NativeRef {
-                        adapter: reference.frontend,
-                        endpoint: reference.endpoint,
-                        key: reference.native_id,
-                    },
-                }
-            }
+            Some(workspace) => SpaceDecision::Reuse {
+                space: self.reference(&workspace.id)?,
+            },
             None => SpaceDecision::Create {
                 title: stream.title.clone(),
                 cwd: directory,

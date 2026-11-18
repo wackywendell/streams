@@ -13,6 +13,7 @@ mod transport;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+pub use crate::integration::NativeRef;
 pub use transport::{CommandEvidence, CommandOutcome, FrontendError, NativeRequest};
 
 /// The built-in frontends. The identity only selects an implementation.
@@ -44,18 +45,10 @@ pub enum FrontendId {
 #[serde(transparent)]
 pub struct EndpointId(pub String);
 
-/// A host-native workspace identity, valid only at the recorded endpoint.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct WorkspaceRef {
-    pub frontend: FrontendId,
-    pub endpoint: EndpointId,
-    pub native_id: String,
-}
-
 /// Workspace display information, not evidence of catalog association.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Workspace {
-    pub reference: WorkspaceRef,
+    pub reference: NativeRef,
     pub title: String,
     pub cwd: String,
 }
@@ -139,7 +132,7 @@ pub struct CreateWorkspace {
 pub enum WorkspaceSelector<'a> {
     Caller,
     Explicit(&'a str),
-    Exact(&'a WorkspaceRef),
+    Exact(&'a NativeRef),
 }
 
 /// Implementable, object-safe boundary for common native workspace effects.
@@ -153,8 +146,8 @@ pub trait WorkspaceFrontend {
     fn workspaces(&self) -> Result<Vec<Workspace>, FrontendError>;
     fn resolve(&self, selector: WorkspaceSelector<'_>) -> Result<Workspace, FrontendError>;
     fn create(&self, request: &CreateWorkspace) -> Result<Workspace, FrontendError>;
-    fn focus(&self, reference: &WorkspaceRef) -> Result<(), FrontendError>;
-    fn rename(&self, reference: &WorkspaceRef, title: &str) -> Result<(), FrontendError>;
+    fn focus(&self, reference: &NativeRef) -> Result<(), FrontendError>;
+    fn rename(&self, reference: &NativeRef, title: &str) -> Result<(), FrontendError>;
 }
 
 /// Configured frontend policy.
@@ -260,11 +253,10 @@ pub(crate) fn nonempty(value: &str, name: &str) -> Result<(), FrontendError> {
 
 pub(crate) fn check_ref(
     frontend: &dyn WorkspaceFrontend,
-    reference: &WorkspaceRef,
+    reference: &NativeRef,
 ) -> Result<(), FrontendError> {
-    nonempty(&reference.native_id, "workspace ID")?;
-    if reference.frontend != frontend.frontend_id() || reference.endpoint != frontend.endpoint_id()
-    {
+    nonempty(&reference.key, "workspace ID")?;
+    if reference.adapter != frontend.frontend_id() || reference.endpoint != frontend.endpoint_id() {
         return Err(FrontendError::invalid(
             "workspace frontend/endpoint mismatch",
         ));

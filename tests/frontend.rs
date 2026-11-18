@@ -120,11 +120,11 @@ fn snapshot() -> Value {
         "layouts":[{"tab_id":"w1:t1","workspace_id":"w1","panes":[{"pane_id":"w1:p1"}]}],
         "agents":[{"pane_id":"w1:p1","tab_id":"w1:t1","workspace_id":"w1","terminal_id":"term-1","agent":"pi","agent_session":{"id":"native-session"}}]})
 }
-fn reference(frontend: &dyn WorkspaceFrontend, id: &str) -> WorkspaceRef {
-    WorkspaceRef {
-        frontend: frontend.frontend_id(),
+fn reference(frontend: &dyn WorkspaceFrontend, id: &str) -> NativeRef {
+    NativeRef {
+        adapter: frontend.frontend_id(),
         endpoint: frontend.endpoint_id(),
-        native_id: id.into(),
+        key: id.into(),
     }
 }
 fn expected(values: &[&str]) -> Vec<String> {
@@ -239,7 +239,7 @@ fn cmux_inventory_banner_lookup_and_exact_caller_commands() {
             .resolve(WorkspaceSelector::Caller)
             .unwrap()
             .reference
-            .native_id,
+            .key,
         "uuid-1"
     );
     for selector in ["workspace:1", "uuid-1", "One"] {
@@ -314,7 +314,7 @@ fn cmux_create_focus_and_rename_follow_native_contracts() {
     let client = cmux(&fake, &[]);
     fake.json(json!({"workspace_id":"new-id","surface_id":"surface-1"}));
     let created = client.create(&request()).unwrap();
-    assert_eq!(created.reference.native_id, "new-id");
+    assert_eq!(created.reference.key, "new-id");
     assert_eq!(
         fake.commands()[0],
         expected(&[
@@ -364,11 +364,11 @@ fn wrong_frontend_endpoint_or_empty_ref_never_dispatches() {
     let fake = Arc::new(FakeRunner::default());
     let client = cmux(&fake, &[]);
     for target in [
-        WorkspaceRef {
-            frontend: FrontendId::Herdr,
+        NativeRef {
+            adapter: FrontendId::Herdr,
             ..reference(&client, "w1")
         },
-        WorkspaceRef {
+        NativeRef {
             endpoint: EndpointId("other".into()),
             ..reference(&client, "w1")
         },
@@ -617,11 +617,11 @@ fn herdr_missing_caller_mismatched_pane_and_workspace_fail_closed() {
     ));
     assert!(client.resolve(WorkspaceSelector::Explicit("w1")).is_err());
     for target in [
-        WorkspaceRef {
-            frontend: FrontendId::Cmux,
+        NativeRef {
+            adapter: FrontendId::Cmux,
             ..reference(&client, "w1")
         },
-        WorkspaceRef {
+        NativeRef {
             endpoint: EndpointId("other".into()),
             ..reference(&client, "w1")
         },
@@ -648,7 +648,7 @@ fn herdr_creation_retains_native_root_tuple_without_installing_or_launching() {
     let receipt = client.create_native(&request()).unwrap();
     assert_eq!(receipt.root_pane.id, "w1:p1");
     assert_eq!(receipt.tab.id, "w1:t1");
-    assert_eq!(receipt.workspace.reference.native_id, "w1");
+    assert_eq!(receipt.workspace.reference.key, "w1");
     assert_eq!(
         fake.server.requests()[1..],
         [(
@@ -821,10 +821,10 @@ fn frontend_trait_is_object_safe() {
         fn create(&self, _: &CreateWorkspace) -> Result<Workspace, FrontendError> {
             Err(FrontendError::invalid("unsupported"))
         }
-        fn focus(&self, _: &WorkspaceRef) -> Result<(), FrontendError> {
+        fn focus(&self, _: &NativeRef) -> Result<(), FrontendError> {
             Err(FrontendError::invalid("unsupported"))
         }
-        fn rename(&self, _: &WorkspaceRef, _: &str) -> Result<(), FrontendError> {
+        fn rename(&self, _: &NativeRef, _: &str) -> Result<(), FrontendError> {
             Err(FrontendError::invalid("unsupported"))
         }
     }
