@@ -197,7 +197,8 @@ pub trait RecordStore {
     /// Read the target once, then admit and atomically replace it. The callback is the
     /// shell: read explicit dependencies, then call pure apply. A change that leaves the
     /// record as it is writes nothing; otherwise the store advances the record's revision
-    /// and update time, which no other code sets.
+    /// and update time. Only the store sets them: here, and when a repair replaces an
+    /// unreadable file with a first revision.
     fn save<T, E: From<StorageError>>(
         &self,
         target: &RecordAddress,

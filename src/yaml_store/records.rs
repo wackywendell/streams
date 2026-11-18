@@ -288,7 +288,8 @@ impl RecordStore for YamlRecordStore {
 }
 
 impl YamlRecordStore {
-    /// The single place that sets a record's revision and update time.
+    /// Sets a record's revision and update time on every save. The only other place is
+    /// `discard_unreadable`, which starts a replacement at revision 1.
     fn save_scoped<T, E: From<StorageError>>(
         &self,
         scope: &Reader<'_>,
