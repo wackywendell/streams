@@ -417,10 +417,11 @@ impl App {
         )?)
     }
     fn locations(&self, root: &Path, host: &str) -> Result<DirectoryBindings> {
-        Ok(DirectoryBindings::new(
-            self.state(root, host)?.root(),
-            self.registry(host)?,
-        ))
+        Ok(application::OpenedRecords::locations(
+            &self.config,
+            root,
+            host,
+        )?)
     }
     /// The selected frontend, serving the caller of this command on `opened`'s records.
     fn frontend(

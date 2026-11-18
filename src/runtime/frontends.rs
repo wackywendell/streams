@@ -65,10 +65,21 @@ pub trait Frontend {
 pub enum Opened {
     Workspace(OpenResult),
     Hc {
-        backend: &'static str,
+        backend: HcBackend,
         report: OpenReport,
         needs_attention: Vec<String>,
     },
+}
+/// The `backend` an hc opening reports, which is always `"hc"`.
+#[derive(Debug)]
+pub struct HcBackend;
+impl Serialize for HcBackend {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        serializer.serialize_str("hc")
+    }
 }
 impl Opened {
     pub fn needs_attention(&self) -> &[String] {
@@ -415,7 +426,7 @@ impl Frontend for HcFrontend {
         let (socket, operation) = self.connection()?;
         let report = runtime.open_hc(operation, socket, stream, sessions, cwd, presentation)?;
         Ok(Opened::Hc {
-            backend: "hc",
+            backend: HcBackend,
             needs_attention: hc_needs_attention(&scope, &report),
             report,
         })
@@ -444,3 +455,6 @@ impl Frontend for HcFrontend {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
