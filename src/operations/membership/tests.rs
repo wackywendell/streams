@@ -132,3 +132,10 @@ fn intent_constructor_rejects_invalid_fields() {
         assert!(MoveIntent::new(fields.0, fields.1, fields.2, fields.3).is_err());
     }
 }
+
+#[test]
+fn layout_associates_an_unnamed_workspace_and_never_follows_another_stream() {
+    assert_eq!(placement("a", None), Placement::Associate);
+    assert_eq!(placement("a", Some("a")), Placement::Keep);
+    assert_eq!(placement("a", Some("b")), Placement::Conflict);
+}

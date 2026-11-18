@@ -1217,7 +1217,9 @@ impl HcOperation {
         presentation.routed_stream(caller_terminal, |key| self.terminal_get(key))
     }
 
-    /// Bind an unassociated published caller space to `stream` and write `streams.work` on `caller_terminal`.
+    /// Bind an unassociated published caller space to `stream` and write `streams.work` on
+    /// `caller_terminal`. A space associated with another Stream is left unchanged and
+    /// reported as not applied, after the terminal label is written.
     pub fn bind_caller_terminal(
         &mut self,
         scope: &WorkScope,
@@ -1237,27 +1239,48 @@ impl HcOperation {
         let Ok(presentation) = self.presentation_for_caller(scope, Some(caller_terminal)) else {
             return not_applied("hc presentation is unavailable".into());
         };
-        use crate::integration::PresentationSnapshot;
-        // Layout never changes Session membership: an unassociated space takes the
-        // Session's Stream, and an associated one keeps its association.
-        if let Some(space) = presentation.caller_space()
-            && !presentation.before.rows.contains_key(&space.key)
-        {
-            let wanted = SpaceAssociation {
-                space,
-                scope: scope.clone(),
-                stream: stream.into(),
-            };
-            match self.finish_associations(
-                &presentation.before,
-                &presentation.published,
-                Some(&wanted),
-            ) {
-                Effect::Applied { value: () } => {}
-                other => return other,
+        use crate::{
+            integration::PresentationSnapshot,
+            operations::membership::{Placement, placement},
+        };
+        let mut conflict = None;
+        if let Some(space) = presentation.caller_space() {
+            let observed = presentation
+                .before
+                .rows
+                .get(&space.key)
+                .map(|row| (&row.scope, row.stream.as_str()));
+            match placement(&(scope, stream), observed.as_ref()) {
+                Placement::Associate => {
+                    let wanted = SpaceAssociation {
+                        space,
+                        scope: scope.clone(),
+                        stream: stream.into(),
+                    };
+                    match self.finish_associations(
+                        &presentation.before,
+                        &presentation.published,
+                        Some(&wanted),
+                    ) {
+                        Effect::Applied { value: () } => {}
+                        other => return other,
+                    }
+                }
+                Placement::Keep => {}
+                Placement::Conflict => {
+                    conflict =
+                        Some("calling space is associated with another Stream; left unchanged");
+                }
             }
         }
-        self.set_terminal_label(caller_terminal, "streams.work", &work)
+        // The terminal routes to its Session's Stream even where its space names another.
+        match (
+            self.set_terminal_label(caller_terminal, "streams.work", &work),
+            conflict,
+        ) {
+            (Effect::Applied { .. }, Some(reason)) => not_applied(reason.into()),
+            (effect, _) => effect,
+        }
     }
 
     /// Emit a scoped save notice on `caller_terminal` so reactive views refresh.

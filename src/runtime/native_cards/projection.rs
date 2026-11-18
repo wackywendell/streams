@@ -153,11 +153,17 @@ impl NativeCardEngine {
             .snapshot
             .workspace_tokens(&workspace.id)
             .expect("workspace tokens");
-        // Layout never changes Session membership: an unmarked workspace takes the
-        // Session's Stream, and one that names another is reported, not followed.
-        if association
+        // Markers present on the workspace, with any missing one taken as the Session's.
+        let named: BTreeMap<_, _> = association
             .iter()
-            .any(|(key, value)| current.get(key).is_some_and(|current| current != value))
+            .map(|(key, value)| (key.clone(), current.get(key).unwrap_or(value).clone()))
+            .collect();
+        let observed = association
+            .keys()
+            .any(|key| current.contains_key(key))
+            .then_some(&named);
+        if crate::operations::membership::placement(&association, observed)
+            == crate::operations::membership::Placement::Conflict
         {
             return Err(invalid(
                 "workspace markers name another Stream, catalog or host",

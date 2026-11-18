@@ -372,6 +372,56 @@ fn identical_bindings_are_noops_and_occupied_or_unpublished_spaces_are_not_chang
     }
 }
 #[test]
+fn caller_association_never_follows_a_space_that_names_another_stream() {
+    let layout = json!({"spaces":[{"id":"target","tabs":[{"id":"tab","root":{"id":"p","type":"block","content":{"terminal":"t1"}}}]}]});
+    let work = streams::runtime::hc::labels::work_value(&scope(), "work").unwrap();
+    let label = || {
+        Step(
+            "terminal.label",
+            json!({"terminal":"t1","labels":{"streams.work":work}}),
+            Reply::Value(json!({"address":"t1","state":"live","labels":{"streams.work":work}})),
+        )
+    };
+    for case in ["unassociated", "same", "other-stream", "other-scope"] {
+        let mut current = row("target");
+        match case {
+            "other-stream" => current.stream = "other".into(),
+            "other-scope" => current.scope.catalog = "other".into(),
+            _ => {}
+        }
+        let associations = if case == "unassociated" {
+            Value::Null
+        } else {
+            document(vec![current])
+        };
+        let mut steps = read_steps(5, associations, layout.clone());
+        if case == "unassociated" {
+            steps.push(Step(
+                "doc.set",
+                json!({"name":"streams","version":5,"value":document(vec![row("target")])}),
+                Reply::Value(json!({"version":6})),
+            ));
+        }
+        steps.push(label());
+        let core = FakeCore::new(steps);
+        let mut operation = core.operation();
+        let effect = operation.bind_caller_terminal(&scope(), "t1", "work");
+        if case.starts_with("other") {
+            assert!(
+                matches!(&effect, Effect::NotApplied { reason } if reason.contains("another Stream")),
+                "{case}: {effect:?}"
+            );
+        } else {
+            assert!(
+                matches!(effect, Effect::Applied { .. }),
+                "{case}: {effect:?}"
+            );
+        }
+        drop(operation);
+        core.finish();
+    }
+}
+#[test]
 fn conflicts_are_not_applied_and_lost_or_unconfirmed_writes_are_uncertain_without_retry() {
     for case in [
         "conflict",

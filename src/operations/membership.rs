@@ -4,7 +4,32 @@ use serde::Serialize;
 
 use crate::model::{Session, Stream, ValidationError, check_text};
 
+/// What a frontend does with the workspace or space around a Session's conversation.
+///
+/// Layout never changes Session membership, in any frontend: moving a pane only changes
+/// where the conversation is shown, and membership changes only through an explicit move.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Placement {
+    /// The workspace names no Stream; associate it with the Session's.
+    Associate,
+    /// The workspace already names the Session's Stream.
+    Keep,
+    /// The workspace names another Stream. Leave it unchanged and report it.
+    Conflict,
+}
+
+/// Compare the Stream a Session belongs to, `saved`, with the one its workspace or space
+/// names, `observed`. Each frontend supplies both in its own scope-qualified form.
+pub fn placement<T: PartialEq + ?Sized>(saved: &T, observed: Option<&T>) -> Placement {
+    match observed {
+        None => Placement::Associate,
+        Some(observed) if observed == saved => Placement::Keep,
+        Some(_) => Placement::Conflict,
+    }
+}
+
 /// A destination for one verified native conversation, never a model-generated update.
+/// The planned Session move command uses it.
 /// The native adapter verifies the live destination before calling this domain boundary.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MoveIntent {
