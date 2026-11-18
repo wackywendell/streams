@@ -620,7 +620,6 @@ pub struct Session {
     pub stream_id: String,
     /// Counts membership moves, so a captured report can tell an A → B → A return
     /// from an unbroken membership.
-    #[serde(default)]
     pub membership_epoch: u64,
     /// Attachment metadata grouped by the Stream where each output was produced.
     #[serde(

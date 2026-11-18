@@ -86,8 +86,10 @@ fn selected_session_key_reads_only_its_record_without_catalog_discovery() {
             [
                 opened.root().join(".catalog-local/records.json"),
                 opened.root().join(
-                    relative_record_path(&RecordAddress::for_record(&Record::Session(member)))
-                        .unwrap()
+                    relative_record_path(&streams::storage::records::RecordAddress::session(
+                        &member
+                    ))
+                    .unwrap()
                 )
             ]
         );

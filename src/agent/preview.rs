@@ -4,8 +4,11 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use crate::{
-    codec::{ascii_json, load_json, object, record_from_data, require_object, required_nullable},
-    model::{Record, RecordKind, Session, Stream, TitleDefaults, ValidationError, check_text},
+    codec::{
+        ascii_json, load_json, object, require_object, required_nullable, session_from_data,
+        stream_from_data,
+    },
+    model::{Record, Session, Stream, TitleDefaults, ValidationError, check_text},
     operations::Reconciliation,
 };
 
@@ -63,34 +66,22 @@ impl Snapshot {
             .map_err(|error| ValidationError::new(format!("invalid catalog context: {error}")))?;
         check_text(&wire.catalog_source, "catalog_source", false)?;
         check_text(&wire.host_id, "host_id", false)?;
-        let stream = wire
-            .stream
-            .as_ref()
-            .map(|value| match record_from_data(RecordKind::Stream, value)? {
-                Record::Stream(stream) => Ok(stream),
-                _ => unreachable!(),
-            })
-            .transpose()?;
+        let stream = wire.stream.as_ref().map(stream_from_data).transpose()?;
         let session = wire
             .session
             .as_ref()
-            .map(
-                |value| match record_from_data(RecordKind::Session, value)? {
-                    Record::Session(session) => {
-                        session.validate_portable()?;
-                        Ok(session)
-                    }
-                    _ => unreachable!(),
-                },
-            )
+            .map(|value| {
+                let session = session_from_data(value)?;
+                session.validate_portable()?;
+                Ok::<_, ValidationError>(session)
+            })
             .transpose()?;
         let sessions = wire
             .sessions
             .iter()
-            .map(|value| record_from_data(RecordKind::Session, value))
+            .map(session_from_data)
             .collect::<Result<Vec<_>, _>>()?;
-        let expected: Vec<_> = session.iter().cloned().map(Record::Session).collect();
-        if sessions != expected {
+        if sessions.as_slice() != session.as_slice() {
             return Err(ValidationError::new(
                 "catalog.sessions must contain only the exact addressed Session",
             ));

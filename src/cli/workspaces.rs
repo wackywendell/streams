@@ -3,14 +3,14 @@ use args::{SessionSelection, StreamFields};
 use std::sync::{Arc, atomic::AtomicBool};
 use streams::{
     frontend::{FrontendId, herdr::HerdrNativeSnapshot},
-    model::{NamingMode, RecordKind},
+    model::NamingMode,
     operations::edits::StreamEdit,
     runtime::{
         conversations::ConversationRoots,
         native_markers::selected_stream,
         workspace::{SelectedConversation, WorkspaceRuntime},
     },
-    storage::records::{RecordAddress, RecordRead, RecordStore},
+    storage::records::{RecordRead, RecordStore},
 };
 
 pub(super) enum Creation {
@@ -33,18 +33,12 @@ fn require_local(opened: &application::OpenedRecords, stream: &Stream) -> Result
 }
 
 fn exact_stream(opened: &application::OpenedRecords, id: &str) -> Result<Stream> {
-    let address = RecordAddress::new(opened.host().as_str(), RecordKind::Stream, id)
-        .map_err(application::ApplicationError::from)?;
     Ok(opened
         .records()
         .with_reader(|reader| -> application::Result<Stream> {
-            let read = reader
-                .read(&address)?
-                .ok_or_else(|| ValidationError::new("addressed Stream is missing"))?;
-            let Record::Stream(stream) = read.record else {
-                unreachable!("addressed Stream codec")
-            };
-            Ok(stream)
+            Ok(reader
+                .read_stream(opened.host().as_str(), id)?
+                .ok_or_else(|| ValidationError::new("addressed Stream is missing"))?)
         })?)
 }
 
@@ -94,17 +88,12 @@ fn selected_sessions(
                 "Session key must name the selected Stream's local writer".into(),
             ));
         }
-        let address = RecordAddress::new(host, RecordKind::Session, id)
-            .map_err(application::ApplicationError::from)?;
         let session = opened
             .records()
             .with_reader(|reader| -> application::Result<Session> {
-                let read = reader
-                    .read(&address)?
+                let session = reader
+                    .read_session(host, id)?
                     .ok_or_else(|| ValidationError::new("addressed Session is missing"))?;
-                let Record::Session(session) = read.record else {
-                    unreachable!("addressed Session codec")
-                };
                 if session.stream_id != stream.id {
                     return Err(ValidationError::new(
                         "addressed Session is not a member of the selected Stream",

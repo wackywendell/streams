@@ -10,18 +10,22 @@ fn stream() -> Value {
 }
 
 fn session() -> Value {
-    json!({"id": "session", "host_id": "host", "stream_id": "work", "harness": "pi",
-        "harness_session_id": "native", "title": "Session", "revision": 1, "updated_at_ms": 0})
+    json!({"id": "session", "host_id": "host", "stream_id": "work", "membership_epoch": 0,
+        "harness": "pi", "harness_session_id": "native", "title": "Session", "revision": 1,
+        "updated_at_ms": 0})
 }
 
 #[test]
-fn records_without_their_stamps_are_refused() {
+fn records_without_their_stamps_or_membership_epoch_are_refused() {
     for (kind, record) in [
         (RecordKind::Stream, stream()),
         (RecordKind::Session, session()),
     ] {
         record_from_data(kind, &record).unwrap();
-        for field in ["revision", "updated_at_ms"] {
+        for field in ["revision", "updated_at_ms", "membership_epoch"] {
+            if kind == RecordKind::Stream && field == "membership_epoch" {
+                continue;
+            }
             let mut missing = record.clone();
             missing.as_object_mut().unwrap().remove(field);
             let error = record_from_data(kind, &missing).unwrap_err();

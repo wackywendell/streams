@@ -4,9 +4,9 @@ use super::{
     App, CliError, Output, Result, application, binding_data, catalog, fields, json, resolve,
 };
 use streams::{
-    model::{Checkout, Record, RecordKind, Session, Stream, TitleMode, ValidationError},
+    model::{Checkout, Record, Session, Stream, TitleMode, ValidationError},
     operations::patches::Patch,
-    storage::records::{RecordAddress, RecordStore},
+    storage::records::RecordStore,
 };
 
 fn select_session(
@@ -190,21 +190,13 @@ impl App {
                         .as_ref()
                         .and_then(|checkout| checkout.repository_url.as_deref());
                     let selected_url = if let Some(alias) = repository.as_deref() {
-                        let address = RecordAddress::new(
-                            &session.host_id,
-                            RecordKind::Stream,
-                            &session.stream_id,
-                        )
-                        .map_err(application::ApplicationError::from)?;
                         let stream = opened.records().with_reader(
                             |reader| -> application::Result<Stream> {
-                                let dependency = reader.read(&address)?.ok_or_else(|| {
-                                    ValidationError::new("Session Stream is missing")
-                                })?;
-                                let Record::Stream(stream) = dependency.record else {
-                                    unreachable!("addressed Stream codec")
-                                };
-                                Ok(stream)
+                                Ok(reader
+                                    .read_stream(&session.host_id, &session.stream_id)?
+                                    .ok_or_else(|| {
+                                        ValidationError::new("Session Stream is missing")
+                                    })?)
                             },
                         )?;
                         Some(

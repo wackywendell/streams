@@ -4,12 +4,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Value, json};
 
-use crate::storage::records::{RecordAddress, RecordStore};
+use crate::storage::records::RecordStore;
 use crate::{
     application::OpenedRecords,
     codec::{object, record_to_data},
     frontend::herdr::{HerdrAgent, HerdrNativeSnapshot, HerdrTopology},
-    model::{Record, RecordKind, Session, Stream, TitleDefaults, ValidationError, check_text},
+    model::{Record, Session, Stream, TitleDefaults, ValidationError, check_text},
     runtime::{
         DirectoryBindings,
         conversations::{
@@ -124,18 +124,12 @@ fn topology_error(errors: &[String]) -> Option<String> {
 }
 
 fn read_stream(opened: &OpenedRecords, id: &str) -> Result<Stream, ValidationError> {
-    let address = RecordAddress::new(opened.host().as_str(), RecordKind::Stream, id)
-        .map_err(|error| ValidationError::new(error.to_string()))?;
     opened
         .records()
         .with_reader::<_, super::RecordContextError>(|reader| {
-            let read = reader
-                .read(&address)?
-                .ok_or_else(|| ValidationError::new("addressed Stream is missing"))?;
-            let Record::Stream(stream) = read.record else {
-                unreachable!("addressed Stream codec")
-            };
-            Ok(stream)
+            Ok(reader
+                .read_stream(opened.host().as_str(), id)?
+                .ok_or_else(|| ValidationError::new("addressed Stream is missing"))?)
         })
         .map_err(|error| ValidationError::new(error.to_string()))
 }
@@ -147,34 +141,22 @@ fn sample_context(
     defaults: TitleDefaults,
 ) -> Result<super::RecordContext, ValidationError> {
     let host = opened.host().as_str();
-    let address = RecordAddress::new(host, RecordKind::Session, key)
-        .map_err(|error| ValidationError::new(error.to_string()))?;
     opened
         .records()
         .with_reader::<_, super::RecordContextError>(|reader| {
-            let read = reader.read(&address)?;
-            let session = read.map(|read| match read.record {
-                Record::Session(session) => session,
-                _ => unreachable!("addressed Session codec"),
-            });
+            let session = reader.read_session(host, key)?;
             let stream = match session.as_ref() {
                 Some(session) if fallback.is_some_and(|stream| stream.id == session.stream_id) => {
                     fallback.cloned()
                 }
-                Some(session) => {
-                    let address = RecordAddress::new(host, RecordKind::Stream, &session.stream_id)
-                        .map_err(|error| ValidationError::new(error.to_string()))?;
-                    let read = reader
-                        .read(&address)
+                Some(session) => Some(
+                    reader
+                        .read_stream(host, &session.stream_id)
                         .map_err(|error| ValidationError::new(error.to_string()))?
                         .ok_or_else(|| {
                             ValidationError::new("Session's current Stream is missing")
-                        })?;
-                    let Record::Stream(stream) = read.record else {
-                        unreachable!("addressed Stream codec")
-                    };
-                    Some(stream)
-                }
+                        })?,
+                ),
                 None => fallback.cloned(),
             };
             Ok(super::RecordContext {

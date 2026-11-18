@@ -619,10 +619,7 @@ impl App {
         opened: &application::OpenedRecords,
         target: &Target,
     ) -> Result<Stream> {
-        use streams::{
-            model::RecordKind,
-            storage::records::{RecordAddress, RecordStore},
-        };
+        use streams::storage::records::RecordStore;
         if target.current {
             if target.reference.is_some() {
                 return Err(CliError::message(
@@ -634,18 +631,12 @@ impl App {
                 opened.source_id(),
                 target.frontend.clone(),
             )?;
-            let address = RecordAddress::new(opened.host().as_str(), RecordKind::Stream, &id)
-                .map_err(application::ApplicationError::from)?;
             return Ok(opened
                 .records()
                 .with_reader(|reader| -> application::Result<Stream> {
-                    let read = reader
-                        .read(&address)?
-                        .ok_or_else(|| ValidationError::new("current Stream is missing"))?;
-                    let Record::Stream(stream) = read.record else {
-                        unreachable!("addressed Stream codec")
-                    };
-                    Ok(stream)
+                    Ok(reader
+                        .read_stream(opened.host().as_str(), &id)?
+                        .ok_or_else(|| ValidationError::new("current Stream is missing"))?)
                 })?);
         }
         let reference = target
