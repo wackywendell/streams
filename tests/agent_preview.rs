@@ -176,6 +176,11 @@ fn reference_preview_session_revisit_and_automatic_restoration_are_receipted() {
         result["receipt"]["save"]["domain"]["reference_results"][0]["action"],
         "restore"
     );
+    // A refused row still reports the value it would save, for a user to adopt.
+    assert_eq!(
+        result["receipt"]["save"]["domain"]["reference_results"][0]["desired"],
+        desired
+    );
     assert_eq!(records(&result["catalog"]), captured);
     let mut revisited = captured.clone();
     revisited["session"]["membership_epoch"] = json!(2);
@@ -644,14 +649,12 @@ fn malformed_objects_unknown_fields_enum_maps_and_duplicate_json_are_rejected() 
 fn projected_catalog_carries_patch_schemas_for_its_new_records() {
     let captured = context();
     let automatic = |catalog: &Value| {
-        let mut fields: Vec<_> = catalog["patch_schemas"]["stream"]["automatic"]["properties"]
-            .as_object()
+        catalog["patch_schemas"]["stream"]["automatic"]
+            .as_array()
             .unwrap()
-            .keys()
-            .cloned()
-            .collect();
-        fields.sort();
-        fields
+            .iter()
+            .map(|row| row["field"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
     };
     let request = update(
         &captured,
@@ -673,6 +676,6 @@ fn projected_catalog_carries_patch_schemas_for_its_new_records() {
     );
     assert_eq!(
         automatic(&unchanged["catalog"]),
-        ["goal", "goal_short", "title"]
+        ["title", "goal", "goal_short"]
     );
 }

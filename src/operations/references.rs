@@ -136,6 +136,10 @@ crate::codec::deserialize_string_enum!(ReferenceAction);
 #[serde(deny_unknown_fields)]
 pub struct ReferenceResult {
     pub key: ResourceKey,
+    /// The value this row saves, or would save if refused, with runtime-owned recovery
+    /// hints filled in; null for a deletion. A frontend adopts an automatic proposal as a
+    /// user edit from this value.
+    pub desired: Option<ReferenceValue>,
     pub action: ReferenceAction,
     pub outcome: DomainOutcome,
     pub reason: String,
@@ -341,9 +345,9 @@ impl ReferenceChanges {
                     .references
                     .iter()
                     .position(|reference| reference.target.key() == *key);
-                match desired {
+                match &desired {
                     Some(desired) => {
-                        let reference = Reference::new(desired)?;
+                        let reference = Reference::new(desired.clone())?;
                         if let Some(index) = index {
                             next.references[index] = reference;
                         } else {
@@ -359,6 +363,7 @@ impl ReferenceChanges {
             };
             results.push(ReferenceResult {
                 key: key.clone(),
+                desired,
                 action,
                 outcome,
                 reason: reason.unwrap_or("").into(),

@@ -288,17 +288,17 @@ impl SessionPatch {
     }
 }
 
-/// The patch schema an agent request for `actor` must match, without the fields the record
-/// protects from automatic reports.
+/// The fields an agent request for `actor` may change, in declaration order, each with the
+/// JSON schema of its value, without the fields the record protects from automatic reports.
+/// A list keeps the order a frontend shows them in.
 fn agent_schema<F: PatchField>(actor: Actor, protected: &[F]) -> Value {
-    let properties: Map<String, Value> = F::ALL
+    F::ALL
         .iter()
         .copied()
         .filter(|field| field.access().permits(actor, true))
         .filter(|field| actor != Actor::Automatic || !protected.contains(field))
-        .map(|field| (field.name().to_owned(), field.schema()))
-        .collect();
-    json!({"type": "object", "additionalProperties": false, "properties": properties})
+        .map(|field| json!({"field": field.name(), "schema": field.schema()}))
+        .collect()
 }
 
 fn actor_schemas<F: PatchField>(protected: &[F]) -> Value {

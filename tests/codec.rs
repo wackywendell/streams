@@ -582,7 +582,7 @@ fn reference_result_wire_has_strict_action_outcome_and_property_shapes() {
     use streams::operations::references::ReferenceResult;
     for action in ["add", "update", "drop", "restore", "delete"] {
         for outcome in ["changes", "no-change", "superseded", "conflict"] {
-            let wire = json!({"key":{"kind":"url","url":"https://example.test/item"},"action":action,"outcome":outcome,"reason":""});
+            let wire = json!({"key":{"kind":"url","url":"https://example.test/item"},"desired":null,"action":action,"outcome":outcome,"reason":""});
             let result: ReferenceResult = serde_json::from_value(wire.clone()).unwrap();
             assert_eq!(serde_json::to_value(result).unwrap(), wire);
             for field in ["key", "action", "outcome", "reason"] {

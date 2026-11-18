@@ -125,10 +125,7 @@ fn schemas_match_the_shared_fixture_and_omit_protected_text() {
     manual.goal_mode = NamingMode::Manual;
     manual.title_mode = TitleMode::Manual;
     let schemas = agent_patch_schemas(Some(&manual), None, TitleDefaults::default());
-    assert_eq!(schemas["stream"]["automatic"]["properties"], json!({}));
-    assert_eq!(
-        schemas["stream"]["user"]["properties"],
-        fixture["stream"]["user"]["properties"]
-    );
+    assert_eq!(schemas["stream"]["automatic"], json!([]));
+    assert_eq!(schemas["stream"]["user"], fixture["stream"]["user"]);
     assert!(schemas.get("session").is_none());
 }
