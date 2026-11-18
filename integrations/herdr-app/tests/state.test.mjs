@@ -8,6 +8,9 @@ import {
   resolveTabRenameTarget,
   effectiveSessionStatus,
   buildReferenceItems,
+  filterHostStreams,
+  formatRelativeAge,
+  liveStreamIds,
   dispatchViewerActions,
   dispatchReferencePresentation,
   StreamsCoordinator,
@@ -1109,4 +1112,88 @@ test("StreamsCoordinator captures hostStreams on unenrolled tabs, inspects strea
   });
   assert.equal(actions[1].mode, "editor");
   assert.equal(actions[1].placement, "pane-right");
+});
+
+test("filterHostStreams supports 5 status tabs, recent/alpha sorting, and text search", () => {
+  const streams = [
+    { id: "1", title: "Zebra", goal_short: "Alpha task", status: "active", last_updated_ms: 1000 },
+    { id: "2", title: "Beta", goal_short: "Wait review", status: "waiting", last_updated_ms: 3000 },
+    { id: "3", title: "Alpha", goal_short: "Stuck CI", status: "blocked", last_updated_ms: 2000 },
+    { id: "4", title: "Later", goal_short: "Hold", status: "parked", last_updated_ms: 4000 },
+    { id: "5", title: "Shipped", goal_short: "Finished", status: "done", last_updated_ms: 5000 },
+    { id: "6", title: "Dropped", goal_short: "Abandoned", status: "closed", last_updated_ms: 6000 },
+  ];
+
+  assert.deepEqual(
+    filterHostStreams(streams, { filter: "in_progress", sort: "recent" }).map((s) => s.id),
+    ["2", "3", "1"]
+  );
+  assert.deepEqual(
+    filterHostStreams(streams, { filter: "in_progress", sort: "alpha" }).map((s) => s.id),
+    ["3", "2", "1"]
+  );
+  assert.deepEqual(
+    filterHostStreams(streams, { filter: "parked" }).map((s) => s.id),
+    ["4"]
+  );
+  assert.deepEqual(
+    filterHostStreams(streams, { filter: "done" }).map((s) => s.id),
+    ["5"]
+  );
+  assert.deepEqual(
+    filterHostStreams(streams, { filter: "closed" }).map((s) => s.id),
+    ["6"]
+  );
+  assert.deepEqual(
+    filterHostStreams(streams, { filter: "all", sort: "recent" }).map((s) => s.id),
+    ["6", "5", "4", "2", "3", "1"]
+  );
+  assert.deepEqual(
+    filterHostStreams(streams, { filter: "all", query: "review" }).map((s) => s.id),
+    ["2"]
+  );
+  assert.deepEqual(
+    filterHostStreams(streams, { filter: "in_progress", query: "alpha" }).map((s) => s.id),
+    ["3", "1"]
+  );
+});
+
+test("formatRelativeAge and liveStreamIds format ages and detect live open tabs", () => {
+  const now = Date.UTC(2026, 10, 17, 12, 0, 0);
+  assert.equal(formatRelativeAge(0, now), "");
+  assert.equal(formatRelativeAge(now - 20_000, now), "now");
+  assert.equal(formatRelativeAge(now - 12 * 60_000, now), "12m");
+  assert.equal(formatRelativeAge(now - 3 * 3_600_000, now), "3h");
+  assert.equal(formatRelativeAge(now - 5 * 86_400_000, now), "5d");
+  assert.equal(formatRelativeAge(Date.UTC(2026, 9, 10, 12, 0, 0), now), "Oct 10");
+
+  const frames = new Map([
+    ["t1", { kind: "enrolled", session: { stream: "st-live" } }],
+    ["t2", { kind: "enrolled", session: { stream: "st-exited" } }],
+    ["t3", { kind: "unenrolled" }],
+  ]);
+  const live = liveStreamIds({
+    panes: [
+      { terminal: "t1", program: { agent: true } },
+      { terminal: "t2", program: { agent: true } },
+      { terminal: "t3", program: { agent: true } },
+    ],
+    terminalList: [
+      { address: "t1", state: "live" },
+      { address: "t2", state: "exited" },
+    ],
+    frames,
+  });
+  assert.deepEqual([...live], ["st-live"]);
+  assert.equal(effectiveSessionStatus({ status: "closed" }, { terminal: { state: "exited" } }), "closed");
+
+  const sels = buildViewSelections({
+    endpoint: "core-1",
+    visibleTerminals: ["t-shell"],
+    liveTerminals: ["t1", "t-shell"],
+  });
+  assert.deepEqual(
+    sels.map((s) => (s.kind === "host_streams" ? "host_streams" : s.terminal.key)),
+    ["host_streams", "t-shell", "t1"]
+  );
 });

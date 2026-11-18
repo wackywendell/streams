@@ -2,7 +2,7 @@
 // Preserves the single 30 px pane header, explicit pane controls, and Files/Changes panels.
 
 import { View, div, svg, image } from "gpui-kit";
-import { h_flex, v_flex, ScrollHandle, Editor, EditorState, TextView } from "gpui-base";
+import { h_flex, v_flex, ScrollHandle, Editor, EditorState, TextView, Input, InputState } from "gpui-base";
 import {
   spaces,
   panes,
@@ -24,12 +24,17 @@ import {
 } from "herdr";
 import {
   STALE_FALLBACK_MS,
+  HOST_STREAM_FILTERS,
+  HOST_STREAM_SORTS,
   resolveRole,
   observeNoticeToken,
   activeTabSession,
   effectiveSessionStatus,
   resolveTabRenameTarget,
   buildReferenceItems,
+  filterHostStreams,
+  formatRelativeAge,
+  liveStreamIds,
   StreamsCoordinator,
 } from "./state.js";
 
@@ -102,6 +107,8 @@ function statusStyle(status, t) {
       return { color: t.done, symbol: "✓", label: "done" };
     case "parked":
       return { color: t.dim, symbol: "○", label: "parked" };
+    case "closed":
+      return { color: t.dim, symbol: "×", label: "closed" };
     case "offline":
       return { color: t.dim, symbol: "○", label: "offline" };
     default:
@@ -152,6 +159,9 @@ function collectSnapshot() {
         .filter((p) => p.tab === activeTab.id && p.terminal)
         .map((p) => p.terminal)
     : [];
+  const liveTerminals = allPanes
+    .filter((p) => p.terminal && !p.terminal.includes("/") && p.program?.agent)
+    .map((p) => p.terminal);
   const focus = focused();
   const focusedPane = focus?.pane ? allPanes.find((p) => p.pane === focus.pane) : null;
   const focusedTerminal =
@@ -163,6 +173,7 @@ function collectSnapshot() {
     activeTab,
     activeTabId: activeTab?.id ?? null,
     visibleTerminals,
+    liveTerminals,
     terminalList: terminals(),
     focusedTerminal,
   };
@@ -192,6 +203,7 @@ function snapshotSignature(snap) {
     tab: snap.activeTabId,
     tabName: snap.activeTab?.name ?? null,
     terminals: snap.visibleTerminals,
+    liveTerminals: snap.liveTerminals,
     focused: snap.focusedTerminal,
     notice: observeNoticeToken(
       snap.terminalList,
@@ -227,6 +239,9 @@ export default class StreamsMod extends View {
   init(initialProps, cx) {
     this.hovered = false;
     this.otherSessionsOpen = true;
+    this.streamFilter = "in_progress";
+    this.streamSort = "recent";
+    this.streamQuery = "";
     this.scroll = ScrollHandle.new();
     this._sub = null;
     this._lastSig = null;
@@ -234,8 +249,16 @@ export default class StreamsMod extends View {
     this._timerTask = null;
     this._editorState = null;
     this._viewerKey = null;
+    this.searchInput = null;
     const role = resolveRole(initialProps);
     this._role = role;
+    if (role === "sidebar") {
+      this.searchInput = InputState.new({ placeholder: "Filter streams…" });
+      this.searchInput.on("change", (_e, changeCx) => {
+        this.streamQuery = this.searchInput.value();
+        changeCx.notify();
+      });
+    }
     if (role === "viewer") {
       this.syncViewerState(initialProps);
       return;
@@ -266,6 +289,8 @@ export default class StreamsMod extends View {
       fallbackTimerOwner = null;
     }
     this._timerTask = null;
+    this.searchInput?.release?.();
+    this.searchInput = null;
     this._editorState?.release?.();
     this._editorState = null;
     this._viewerKey = null;
@@ -1180,12 +1205,138 @@ export default class StreamsMod extends View {
       }
 
       const streamList = coordinator.hostStreams ?? [];
+      const liveSet = liveStreamIds({
+        panes: panes(),
+        terminalList: snap.terminalList,
+        frames: coordinator.frames,
+      });
+      const filteredStreams = filterHostStreams(streamList, {
+        filter: this.streamFilter,
+        sort: this.streamSort,
+        query: this.streamQuery,
+      });
+      const toolbar = v_flex()
+        .px(12)
+        .py(8)
+        .gap(6)
+        .border_b(1)
+        .border_color(t.border)
+        .when(Boolean(this.searchInput), (el) =>
+          el.child(
+            h_flex()
+              .h(28)
+              .px(8)
+              .gap(4)
+              .items_center()
+              .rounded(5)
+              .border(1)
+              .border_color(t.border)
+              .bg(t.background)
+              .child(
+                Input.new(this.searchInput)
+                  .flex_1()
+                  .h_full()
+                  .text_size(12)
+                  .text_color(t.foreground)
+              )
+              .when(Boolean(this.streamQuery), (bar) =>
+                bar.child(
+                  div()
+                    .id("streams-search-clear")
+                    .flex_none()
+                    .px(4)
+                    .py(1)
+                    .rounded(3)
+                    .text_size(11)
+                    .text_color(t.muted)
+                    .hover((s) => s.bg(t.hover).text_color(t.foreground))
+                    .on_click((_e, clickCx) => {
+                      clickCx.stop_propagation();
+                      this.streamQuery = "";
+                      this.searchInput?.set_value?.("");
+                      clickCx.notify();
+                    })
+                    .child("×")
+                )
+              )
+          )
+        )
+        .child(
+          h_flex()
+            .gap(4)
+            .items_center()
+            .flex_wrap()
+            .children(
+              HOST_STREAM_FILTERS.map((opt) => {
+                const selected = this.streamFilter === opt.id;
+                return div()
+                  .id(`streams-filter-${opt.id}`)
+                  .px(6)
+                  .py(2)
+                  .rounded(4)
+                  .text_size(11)
+                  .when(selected, (el) =>
+                    el.bg(t.raised).font_medium().text_color(t.foreground)
+                  )
+                  .when(!selected, (el) =>
+                    el.text_color(t.muted).hover((s) => s.bg(t.hover).text_color(t.foreground))
+                  )
+                  .on_click((_e, clickCx) => {
+                    clickCx.stop_propagation();
+                    this.streamFilter = opt.id;
+                    clickCx.notify();
+                  })
+                  .child(opt.label);
+              })
+            )
+        )
+        .child(
+          h_flex()
+            .justify_between()
+            .items_center()
+            .text_size(11)
+            .child(
+              div()
+                .text_color(t.dim)
+                .child(
+                  `${filteredStreams.length} stream${filteredStreams.length === 1 ? "" : "s"}`
+                )
+            )
+            .child(
+              h_flex()
+                .gap(4)
+                .items_center()
+                .children(
+                  HOST_STREAM_SORTS.map((opt) => {
+                    const selected = this.streamSort === opt.id;
+                    return div()
+                      .id(`streams-sort-${opt.id}`)
+                      .px(5)
+                      .py(1)
+                      .rounded(4)
+                      .when(selected, (el) =>
+                        el.bg(t.raised).font_medium().text_color(t.foreground)
+                      )
+                      .when(!selected, (el) =>
+                        el.text_color(t.dim).hover((s) => s.bg(t.hover).text_color(t.foreground))
+                      )
+                      .on_click((_e, clickCx) => {
+                        clickCx.stop_propagation();
+                        this.streamSort = opt.id;
+                        clickCx.notify();
+                      })
+                      .child(opt.label);
+                  })
+                )
+            )
+        );
       return v_flex()
         .size_full()
         .bg(t.chrome)
         .text_size(12)
         .text_color(t.foreground)
         .child(header)
+        .child(toolbar)
         .child(
           renderErrorBanner(
             v_flex()
@@ -1196,15 +1347,19 @@ export default class StreamsMod extends View {
               .overflow_y_scrollbar()
               .track_scroll(this.scroll)
           )
-            .when(streamList.length === 0, (el) =>
+            .when(filteredStreams.length === 0, (el) =>
               el.child(
                 div()
                   .text_size(12)
                   .text_color(t.dim)
-                  .child("No active Streams on this host.")
+                  .child(
+                    streamList.length === 0
+                      ? "No Streams on this host."
+                      : "No matching Streams."
+                  )
               )
             )
-            .when(streamList.length > 0, (el) =>
+            .when(filteredStreams.length > 0, (el) =>
               el.child(
                 v_flex()
                   .rounded(6)
@@ -1212,8 +1367,14 @@ export default class StreamsMod extends View {
                   .border(1)
                   .border_color(t.border)
                   .children(
-                    streamList.map((summary, idx) =>
-                      v_flex()
+                    filteredStreams.map((summary, idx) => {
+                      const isLive = liveSet.has(summary.id);
+                      const age = formatRelativeAge(summary.last_updated_ms);
+                      const sessionCountText =
+                        summary.active_sessions > 0
+                          ? `${summary.active_sessions} active`
+                          : `${summary.total_sessions} session${summary.total_sessions === 1 ? "" : "s"}`;
+                      return v_flex()
                         .id(`host-stream-${summary.id}`)
                         .px(9)
                         .py(8)
@@ -1222,7 +1383,7 @@ export default class StreamsMod extends View {
                         .hover((s) => s.bg(t.hover))
                         .on_click((_e, clickCx) => {
                           clickCx.spawn(async (asyncCx) => {
-                            if (summary.active_sessions > 0) {
+                            if (isLive || summary.active_sessions > 0) {
                               await coordinator.openWork(
                                 {
                                   stream: summary.id,
@@ -1259,7 +1420,31 @@ export default class StreamsMod extends View {
                                 .text_size(12)
                                 .child(summary.title)
                             )
-                            .child(statusBadge(summary.status, t))
+                            .when(isLive, (row) =>
+                              row.child(
+                                h_flex()
+                                  .flex_none()
+                                  .gap(3)
+                                  .items_center()
+                                  .text_size(10.5)
+                                  .font_medium()
+                                  .text_color(t.ansi2)
+                                  .child(div().text_size(8).child("●"))
+                                  .child("live")
+                              )
+                            )
+                            .when(summary.status !== "active", (row) =>
+                              row.child(statusBadge(summary.status, t))
+                            )
+                            .when(Boolean(age), (row) =>
+                              row.child(
+                                div()
+                                  .flex_none()
+                                  .text_size(10.5)
+                                  .text_color(t.dim)
+                                  .child(age)
+                              )
+                            )
                         )
                         .child(
                           h_flex()
@@ -1267,18 +1452,14 @@ export default class StreamsMod extends View {
                             .items_center()
                             .text_size(11)
                             .text_color(t.dim)
-                            .child(
-                              summary.active_sessions > 0
-                                ? `${summary.active_sessions} active`
-                                : `${summary.total_sessions} session${summary.total_sessions === 1 ? "" : "s"}`
-                            )
+                            .child(sessionCountText)
                             .when(Boolean(summary.goal_short), (row) =>
                               row
                                 .child("·")
                                 .child(div().flex_1().min_w(0).truncate().child(summary.goal_short))
                             )
-                        )
-                    )
+                        );
+                    })
                   )
               )
             )

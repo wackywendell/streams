@@ -14,10 +14,116 @@ export const STALE_FALLBACK_MS = 5 * 60 * 1000;
 export function effectiveSessionStatus(session, { pane = null, terminal = null, agent = null } = {}) {
   if (!session) return "unknown";
   const status = session.status;
-  if (status === "done" || status === "parked") return status;
+  if (status === "done" || status === "parked" || status === "closed") return status;
   if (terminal?.state && terminal.state !== "live") return "offline";
   if (pane?.program && !pane.program.agent && !agent) return "offline";
   return status;
+}
+
+export const HOST_STREAM_FILTERS = [
+  { id: "in_progress", label: "In Progress" },
+  { id: "parked", label: "Parked" },
+  { id: "done", label: "Done" },
+  { id: "closed", label: "Closed" },
+  { id: "all", label: "All" },
+];
+
+export const HOST_STREAM_SORTS = [
+  { id: "recent", label: "Recent" },
+  { id: "alpha", label: "A–Z" },
+];
+
+function matchesHostStreamFilter(status, filter) {
+  switch (filter) {
+    case "in_progress":
+      return status === "active" || status === "waiting" || status === "blocked";
+    case "parked":
+      return status === "parked";
+    case "done":
+      return status === "done";
+    case "closed":
+      return status === "closed";
+    case "all":
+      return true;
+    default:
+      return true;
+  }
+}
+
+/**
+ * Filter and sort `host_streams` summaries in the unenrolled sidebar.
+ */
+export function filterHostStreams(
+  streams,
+  { filter = "in_progress", sort = "recent", query = "" } = {}
+) {
+  if (!Array.isArray(streams)) return [];
+  const q = typeof query === "string" ? query.trim().toLowerCase() : "";
+  const filtered = streams.filter((summary) => {
+    if (!summary || !matchesHostStreamFilter(summary.status, filter)) return false;
+    if (!q) return true;
+    const title = (summary.title ?? "").toLowerCase();
+    const goalShort = (summary.goal_short ?? "").toLowerCase();
+    return title.includes(q) || goalShort.includes(q);
+  });
+  filtered.sort((a, b) => {
+    if (sort === "alpha") {
+      const cmp = (a.title ?? "").localeCompare(b.title ?? "", undefined, {
+        sensitivity: "base",
+      });
+      if (cmp !== 0) return cmp;
+      return (a.id ?? "").localeCompare(b.id ?? "");
+    }
+    const tsDiff = (b.last_updated_ms ?? 0) - (a.last_updated_ms ?? 0);
+    if (tsDiff !== 0) return tsDiff;
+    const cmp = (a.title ?? "").localeCompare(b.title ?? "", undefined, {
+      sensitivity: "base",
+    });
+    if (cmp !== 0) return cmp;
+    return (a.id ?? "").localeCompare(b.id ?? "");
+  });
+  return filtered;
+}
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/**
+ * Format a compact relative age ("now", "12m", "3h", "2d", or "Nov 16").
+ */
+export function formatRelativeAge(ms, now = Date.now()) {
+  if (typeof ms !== "number" || !Number.isFinite(ms) || ms <= 0) return "";
+  const diff = Math.max(0, now - ms);
+  if (diff < 60_000) return "now";
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h`;
+  if (diff < 30 * 86_400_000) return `${Math.floor(diff / 86_400_000)}d`;
+  const d = new Date(ms);
+  return `${MONTHS[d.getMonth()]} ${d.getDate()}`;
+}
+
+/**
+ * Identify Stream IDs that currently have a live enrolled agent pane in Herdr.
+ */
+export function liveStreamIds({ panes = [], terminalList = [], frames } = {}) {
+  const live = new Set();
+  if (!frames) return live;
+  const termById = new Map();
+  for (const term of terminalList ?? []) {
+    const addr = term?.address ?? term?.id;
+    if (addr) termById.set(addr, term);
+  }
+  for (const pane of panes ?? []) {
+    const key = pane?.terminal;
+    if (!key || key.includes("/")) continue;
+    const term = termById.get(key) ?? null;
+    if (term?.state && term.state !== "live") continue;
+    if (!term?.state && !pane?.program?.agent) continue;
+    const frame = frames.get(key);
+    if (frame?.kind === "enrolled" && frame.session?.stream) {
+      live.add(frame.session.stream);
+    }
+  }
+  return live;
 }
 
 /**
@@ -61,6 +167,7 @@ export function buildRequestEnvelope(scope, endpoint, body) {
 export function buildViewSelections({
   endpoint,
   visibleTerminals = [],
+  liveTerminals = [],
   knownStreamId = null,
 }) {
   if (!endpoint) return [];
@@ -74,7 +181,11 @@ export function buildViewSelections({
     selections.push({ kind: "host_streams" });
   }
   const seen = new Set();
-  for (const terminalKey of visibleTerminals) {
+  const terminalBatch =
+    typeof knownStreamId === "string" && knownStreamId.length > 0
+      ? visibleTerminals
+      : [...visibleTerminals, ...liveTerminals];
+  for (const terminalKey of terminalBatch) {
     if (!terminalKey || terminalKey.includes("/") || seen.has(terminalKey)) continue;
     if (selections.length >= MAX_SELECTIONS) break;
     seen.add(terminalKey);
@@ -114,6 +225,7 @@ export function computeObservationKey({
   activeSpace,
   activeTabId = null,
   visibleTerminals,
+  liveTerminals = [],
   knownStreamId = null,
   noticeToken,
 }) {
@@ -123,6 +235,7 @@ export function computeObservationKey({
     space: activeSpace.id,
     tab: activeTabId,
     terminals: [...(visibleTerminals ?? [])].sort(),
+    liveTerminals: knownStreamId ? [] : [...(liveTerminals ?? [])].sort(),
     stream: knownStreamId ?? null,
     notice: noticeToken ?? "",
   });
@@ -564,6 +677,7 @@ export class StreamsCoordinator {
     activeSpace,
     activeTabId = null,
     visibleTerminals = [],
+    liveTerminals = [],
     terminalList = [],
     focusedTerminal = null,
     force = false,
@@ -579,6 +693,7 @@ export class StreamsCoordinator {
             activeSpace,
             activeTabId,
             visibleTerminals,
+            liveTerminals,
             terminalList,
             focusedTerminal,
             force,
@@ -595,6 +710,7 @@ export class StreamsCoordinator {
       activeSpace,
       activeTabId,
       visibleTerminals,
+      liveTerminals,
       knownStreamId,
       noticeToken,
     });
@@ -617,6 +733,7 @@ export class StreamsCoordinator {
       activeSpace,
       activeTabId,
       visibleTerminals,
+      liveTerminals,
       focusedTerminal,
       knownStreamId,
       key,
@@ -628,6 +745,7 @@ export class StreamsCoordinator {
     activeSpace,
     activeTabId = null,
     visibleTerminals = [],
+    liveTerminals = [],
     focusedTerminal = null,
     knownStreamId = null,
     key,
@@ -639,6 +757,7 @@ export class StreamsCoordinator {
     const selections = buildViewSelections({
       endpoint: binding.endpoint,
       visibleTerminals,
+      liveTerminals,
       knownStreamId,
     });
     if (selections.length === 0) {
