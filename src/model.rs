@@ -904,6 +904,11 @@ impl Record {
         }
     }
 
+    /// The optimistic-concurrency token every captured edit compares. A Host record has none.
+    pub fn revision(&self) -> Option<u64> {
+        self.stamps().map(|stamps| stamps.revision)
+    }
+
     /// Only the record store calls this, as part of a save that changes the record.
     pub fn set_stamps(&mut self, stamps: Stamps) {
         let (revision, updated_at_ms) = match self {

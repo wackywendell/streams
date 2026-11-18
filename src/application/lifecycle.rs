@@ -128,7 +128,7 @@ fn save_record_status(
             };
             let revision_ok = guard
                 .revision
-                .is_none_or(|revision| Some(revision) == record.stamps().map(|s| s.revision));
+                .is_none_or(|revision| Some(revision) == record.revision());
             let admitted = revision_ok && stream_ok && allowed(current_status);
             if admitted {
                 match &mut record {
@@ -458,9 +458,10 @@ pub(crate) fn apply_decay_plan(opened: &OpenedRecords, plan: &DecayPlan) -> Deca
             session_id,
             Status::Closed,
             Status::is_open,
+            // The revision covers membership: a move always advances it.
             SessionGuard {
                 revision: Some(*revision),
-                stream_id: Some(stream_id),
+                stream_id: None,
             },
         ) {
             Ok((_, Some(_))) => summary.closed_sessions += 1,

@@ -546,7 +546,7 @@ fn apply_user_fields(
     {
         return Reconciliation::no_change("");
     }
-    if current.stamps() != before.stamps() {
+    if current.revision() != before.revision() {
         let conflicts: Vec<&str> = record_field_names(before)
             .iter()
             .copied()
