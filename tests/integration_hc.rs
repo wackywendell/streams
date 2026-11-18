@@ -9,12 +9,15 @@ use std::{
 use streams::{
     frontend::{
         CommandOutcome, EndpointId, FrontendId, NativeRequest,
-        hc::{HcClient, HcEndpoint},
+        hc::{
+            HcClient, HcEndpoint,
+            processes::{ProcessKey, ProcessObserver},
+        },
     },
     integration::{Effect, NativeRef, WorkScope},
     runtime::hc::{
-        AssociationDocument, AssociationSnapshot, HcOperation, PublishedLayout, PublishedPane,
-        SpaceAssociation, prepare_associations,
+        AssociationDocument, AssociationSnapshot, HcOperation, PiSourceClaim, PublishedLayout,
+        PublishedPane, SpaceAssociation, prepare_associations,
     },
 };
 
@@ -125,6 +128,61 @@ fn document(rows: Vec<SpaceAssociation>) -> Value {
             .collect(),
     })
     .unwrap()
+}
+/// A fake process table: `live` PIDs run with the key `process(pid)`, `gaps` cannot be
+/// observed, and every other process has exited.
+struct Processes {
+    live: BTreeSet<u32>,
+    gaps: BTreeSet<u32>,
+    calls: std::cell::Cell<usize>,
+}
+impl Processes {
+    fn live(pids: impl IntoIterator<Item = u32>) -> Self {
+        Self {
+            live: pids.into_iter().collect(),
+            gaps: BTreeSet::new(),
+            calls: std::cell::Cell::new(0),
+        }
+    }
+}
+impl ProcessObserver for Processes {
+    fn alive(&self, key: &ProcessKey) -> std::io::Result<bool> {
+        self.calls.set(self.calls.get() + 1);
+        if self.gaps.contains(&key.pid) {
+            return Err(std::io::Error::other("observation unavailable"));
+        }
+        Ok(self.live.contains(&key.pid) && *key == process(key.pid))
+    }
+}
+fn process(pid: u32) -> ProcessKey {
+    ProcessKey {
+        boot: "08f95cf6-6657-40c4-b5b9-6ee493d934ab".into(),
+        pid,
+        started: u64::from(pid),
+    }
+}
+fn pi_claim(native_id: &str, helper: u32) -> PiSourceClaim {
+    PiSourceClaim {
+        version: PiSourceClaim::VERSION,
+        conversation: streams::integration::ConversationId {
+            harness: "pi".into(),
+            native_id: native_id.into(),
+        },
+        helper: process(helper),
+    }
+}
+/// Terminal labels publishing `claims`, each under its helper's key.
+fn claim_labels(claims: &[&PiSourceClaim]) -> Value {
+    claims
+        .iter()
+        .map(|claim| {
+            (
+                streams::runtime::hc::labels::source_key(&claim.helper),
+                Value::String(serde_json::to_string(claim).unwrap()),
+            )
+        })
+        .collect::<serde_json::Map<_, _>>()
+        .into()
 }
 fn read_steps(version: u64, associations: Value, layout: Value) -> Vec<Step> {
     vec![
@@ -460,275 +518,80 @@ fn malformed_or_conflicting_layouts_are_unavailable_and_wrong_endpoint_cannot_bi
 }
 
 #[test]
-fn source_route_requires_stable_exact_process_keys_and_terminal_ancestry() {
-    use std::{cell::RefCell, io};
-    use streams::{
-        frontend::hc::processes::{ProcessKey, ProcessObservation, ProcessObserver},
-        integration::{ConversationId, ForegroundConversation},
-        runtime::hc::{
-            PiSourceClaim, labels::source_key, registered_foreground, verify_claim_route,
-        },
-    };
-    struct FakeProcesses {
-        rows: BTreeMap<u32, ProcessObservation>,
-        counts: RefCell<BTreeMap<u32, usize>>,
-        changed: Option<u32>,
-    }
-    impl ProcessObserver for FakeProcesses {
-        fn observe(&self, pid: u32) -> io::Result<ProcessObservation> {
-            let mut row = self
-                .rows
-                .get(&pid)
-                .cloned()
-                .ok_or_else(|| io::Error::other("missing"))?;
-            let mut counts = self.counts.borrow_mut();
-            let count = counts.entry(pid).or_default();
-            *count += 1;
-            if self.changed == Some(pid) && *count > 1 {
-                row.key.started = "linux:999".into();
-            }
-            Ok(row)
-        }
-    }
-    let key = |pid| ProcessKey {
-        boot: "08f95cf6-6657-40c4-b5b9-6ee493d934ab".into(),
-        pid,
-        started: format!("linux:{pid}"),
-    };
-    let endpoint = EndpointId("core".into());
-    let claim = PiSourceClaim {
-        version: 1,
-        endpoint: endpoint.clone(),
-        conversation: ConversationId {
-            harness: "pi".into(),
-            native_id: "selected".into(),
-        },
-        terminal_root: key(10),
-        sdk: key(30),
-        helper: key(40),
-    };
-    let mut rows = BTreeMap::new();
-    for (pid, parent) in [(10, 1), (20, 10), (30, 20), (40, 30)] {
-        rows.insert(
-            pid,
-            ProcessObservation {
-                key: key(pid),
-                parent_pid: parent,
-                process_group: 10,
-                stopped: pid == 30,
-            },
-        );
-    }
-    let fake = |rows: BTreeMap<_, _>, changed| FakeProcesses {
-        rows,
-        counts: RefCell::new(BTreeMap::new()),
-        changed,
-    };
-    let label = source_key(&claim.helper).unwrap();
-    let value = serde_json::to_string(&claim).unwrap();
-    let verify =
-        |observer: &FakeProcesses| verify_claim_route(&label, &value, &endpoint, 10, observer);
-    assert_eq!(verify(&fake(rows.clone(), None)).unwrap(), claim);
-    for pid in [10, 20, 30, 40] {
-        assert!(
-            verify(&fake(rows.clone(), Some(pid))).is_err(),
-            "changing pid {pid}"
-        );
-        let mut missing = rows.clone();
-        missing.remove(&pid);
-        assert!(verify(&fake(missing, None)).is_err(), "missing pid {pid}");
-    }
-    let mut reused = rows.clone();
-    reused.get_mut(&30).unwrap().key.started = "linux:999".into();
-    assert!(verify(&fake(reused, None)).is_err());
-    let mut wrong_parent = rows.clone();
-    wrong_parent.get_mut(&40).unwrap().parent_pid = 20;
-    assert!(verify(&fake(wrong_parent, None)).is_err());
-    let mut cycle = rows.clone();
-    cycle.get_mut(&20).unwrap().parent_pid = 30;
-    assert!(verify(&fake(cycle, None)).is_err());
-    assert!(
-        verify_claim_route(
-            "streams.pi.wrong",
-            &value,
-            &endpoint,
-            10,
-            &fake(rows.clone(), None)
-        )
-        .is_err()
-    );
-    assert!(
-        verify_claim_route(
-            &label,
-            &value,
-            &EndpointId("other".into()),
-            10,
-            &fake(rows.clone(), None)
-        )
-        .is_err()
-    );
-    assert!(verify_claim_route(&label, &value, &endpoint, 20, &fake(rows.clone(), None)).is_err());
-    let duplicate = value.replacen("{", "{\"version\":1,", 1);
-    assert!(
-        verify_claim_route(&label, &duplicate, &endpoint, 10, &fake(rows.clone(), None)).is_err()
-    );
-
-    let terminal = NativeRef {
-        adapter: FrontendId::hc(),
-        endpoint: endpoint.clone(),
-        key: "t1".into(),
-    };
+fn pi_source_claims_are_current_only_while_their_helper_runs() {
+    use streams::{integration::ForegroundConversation, runtime::hc::registered_foreground};
+    let terminal = reference("t1");
     let native = |labels: Value| json!({"address":"t1","state":"live","pid":10,"labels":labels});
-    let labels = json!({label.clone():value});
-    let foreground = |rows: BTreeMap<_, _>, native: Value| {
-        registered_foreground(&terminal, native, &fake(rows, None))
+    let foreground = |labels: Value, processes: &Processes| {
+        registered_foreground(&terminal, native(labels), processes)
     };
+    let selected = pi_claim("selected", 40);
+    let running = Processes::live([40]);
     assert_eq!(
-        foreground(rows.clone(), native(labels.clone())),
-        ForegroundConversation::Current(claim.conversation.clone())
+        foreground(claim_labels(&[&selected]), &running),
+        ForegroundConversation::Current(selected.conversation.clone())
     );
     assert_eq!(
-        foreground(rows.clone(), native(json!({}))),
+        foreground(json!({}), &running),
         ForegroundConversation::NotApplicable
     );
-    assert!(matches!(
-        foreground(rows.clone(), native(json!({"streams.pi.bad":"not-json"}))),
-        ForegroundConversation::Unknown { .. }
-    ));
-}
-
-#[test]
-fn stale_source_requires_positive_helper_exit_evidence() {
-    use std::io;
-    use streams::{
-        frontend::hc::processes::{ProcessKey, ProcessObservation, ProcessObserver},
-        integration::{ConversationId, ForegroundConversation},
-        runtime::hc::{PiSourceClaim, labels::source_key, registered_foreground},
-    };
-    struct Processes {
-        rows: BTreeMap<u32, ProcessObservation>,
-        exited: Option<bool>,
-    }
-    impl ProcessObserver for Processes {
-        fn observe(&self, pid: u32) -> io::Result<ProcessObservation> {
-            self.rows
-                .get(&pid)
-                .cloned()
-                .ok_or_else(|| io::Error::other("unavailable"))
-        }
-        fn exited(&self, key: &ProcessKey) -> io::Result<bool> {
-            if key.pid == 40 {
-                self.exited.ok_or_else(|| io::Error::other("unavailable"))
-            } else {
-                Ok(self.observe(key.pid)?.key != *key)
-            }
-        }
-    }
-    let key = |pid| ProcessKey {
-        boot: "08f95cf6-6657-40c4-b5b9-6ee493d934ab".into(),
-        pid,
-        started: format!("linux:{pid}"),
-    };
-    let endpoint = EndpointId("core".into());
-    let terminal = NativeRef {
-        adapter: FrontendId::hc(),
-        endpoint: endpoint.clone(),
-        key: "t1".into(),
-    };
-    let claim = PiSourceClaim {
-        version: 1,
-        endpoint,
-        conversation: ConversationId {
-            harness: "pi".into(),
-            native_id: "old".into(),
-        },
-        terminal_root: key(10),
-        sdk: key(30),
-        helper: key(40),
-    };
-    let replacement = PiSourceClaim {
-        conversation: ConversationId {
-            harness: "pi".into(),
-            native_id: "new".into(),
-        },
-        helper: key(41),
-        ..claim.clone()
-    };
-    let rows: BTreeMap<_, _> = [(10, 1), (30, 10), (41, 30)]
-        .into_iter()
-        .map(|(pid, parent_pid)| {
-            (
-                pid,
-                ProcessObservation {
-                    key: key(pid),
-                    parent_pid,
-                    process_group: 10,
-                    stopped: false,
-                },
-            )
-        })
-        .collect();
-    let labels = json!({source_key(&claim.helper).unwrap():serde_json::to_string(&claim).unwrap(), source_key(&replacement.helper).unwrap():serde_json::to_string(&replacement).unwrap()});
-    let native = |labels| json!({"address":"t1","state":"live","pid":10,"labels":labels,"foreground":{"pid":10}});
+    // A dead helper or a reused PID with another start time leaves a stale label.
     assert_eq!(
-        registered_foreground(
-            &terminal,
-            native(labels.clone()),
-            &Processes {
-                rows: rows.clone(),
-                exited: Some(true)
-            }
-        ),
-        ForegroundConversation::Current(replacement.conversation)
+        foreground(claim_labels(&[&selected]), &Processes::live([])),
+        ForegroundConversation::NotApplicable
     );
+    let mut reused = selected.clone();
+    reused.helper.started += 1;
+    assert_eq!(
+        foreground(claim_labels(&[&reused]), &running),
+        ForegroundConversation::NotApplicable
+    );
+    let replacement = pi_claim("replacement", 41);
+    assert_eq!(
+        foreground(
+            claim_labels(&[&selected, &replacement]),
+            &Processes::live([41])
+        ),
+        ForegroundConversation::Current(replacement.conversation.clone())
+    );
+    // Two current claims on one terminal are for the user to resolve.
     assert!(matches!(
-        registered_foreground(
-            &terminal,
-            native(labels.clone()),
-            &Processes {
-                rows: rows.clone(),
-                exited: None
-            }
+        foreground(
+            claim_labels(&[&selected, &replacement]),
+            &Processes::live([40, 41])
         ),
         ForegroundConversation::Unknown { .. }
     ));
-    assert!(matches!(
-        registered_foreground(
-            &terminal,
-            native(labels),
-            &Processes {
-                rows: rows.clone(),
-                exited: Some(false)
-            }
-        ),
-        ForegroundConversation::Unknown { .. }
-    ));
-    let malformed = json!({source_key(&claim.helper).unwrap():"not-json"});
-    assert!(matches!(
-        registered_foreground(
-            &terminal,
-            native(malformed),
-            &Processes {
-                rows: rows.clone(),
-                exited: Some(true)
-            }
-        ),
-        ForegroundConversation::Unknown { .. }
-    ));
-    let impossible = PiSourceClaim {
-        sdk: claim.helper.clone(),
-        ..claim.clone()
+    let gap = Processes {
+        gaps: BTreeSet::from([40]),
+        ..Processes::live([])
     };
-    let malformed =
-        json!({source_key(&claim.helper).unwrap():serde_json::to_string(&impossible).unwrap()});
+    assert!(matches!(
+        foreground(claim_labels(&[&selected]), &gap),
+        ForegroundConversation::Unknown { .. }
+    ));
+    let key = streams::runtime::hc::labels::source_key(&selected.helper);
+    let older = json!({"version":1,"conversation":selected.conversation,"helper":selected.helper});
+    let mut extra = serde_json::to_value(&selected).unwrap();
+    extra["sdk"] = json!(selected.helper);
+    let mut wrong_harness = selected.clone();
+    wrong_harness.conversation.harness = "claude".into();
+    for unreadable in [
+        "not-json".to_string(),
+        older.to_string(),
+        extra.to_string(),
+        serde_json::to_string(&wrong_harness).unwrap(),
+    ] {
+        assert!(matches!(
+            foreground(json!({key.clone():unreadable}), &running),
+            ForegroundConversation::Unknown { .. }
+        ));
+    }
     assert!(matches!(
         registered_foreground(
             &terminal,
-            native(malformed),
-            &Processes {
-                rows,
-                exited: Some(true)
-            }
+            json!({"address":"t1","state":"exited","pid":null,"labels":claim_labels(&[&selected])}),
+            &running
         ),
         ForegroundConversation::Unknown { .. }
     ));
@@ -736,186 +599,65 @@ fn stale_source_requires_positive_helper_exit_evidence() {
 
 #[test]
 fn source_registration_and_retirement_touch_only_the_helper_key() {
-    use streams::{
-        frontend::hc::processes::{ProcessKey, ProcessObservation, ProcessObserver},
-        integration::ConversationId,
-        runtime::hc::{PiSourceClaim, labels::source_key, sources::SourceRegistration},
-    };
-    #[derive(Clone)]
-    struct Processes(BTreeMap<u32, ProcessObservation>);
-    impl ProcessObserver for Processes {
-        fn observe(&self, pid: u32) -> std::io::Result<ProcessObservation> {
-            self.0
-                .get(&pid)
-                .cloned()
-                .ok_or_else(|| std::io::Error::other("unavailable"))
-        }
-        fn exited(&self, key: &ProcessKey) -> std::io::Result<bool> {
-            if key.pid == 42 {
-                return Ok(true);
-            }
-            Ok(self.observe(key.pid)?.key != *key)
-        }
-    }
-    let key = |pid| ProcessKey {
-        boot: "08f95cf6-6657-40c4-b5b9-6ee493d934ab".into(),
-        pid,
-        started: format!("linux:{pid}"),
-    };
-    let processes = Processes(
-        [(10, 1), (30, 10), (31, 10), (40, 30), (41, 30), (44, 31)]
-            .into_iter()
-            .map(|(pid, parent_pid)| {
-                (
-                    pid,
-                    ProcessObservation {
-                        key: key(pid),
-                        parent_pid,
-                        process_group: 10,
-                        stopped: false,
-                    },
-                )
-            })
-            .collect(),
-    );
-    let conversation = ConversationId {
-        harness: "pi".into(),
-        native_id: "session".into(),
-    };
-    let claim = PiSourceClaim {
-        version: 1,
-        endpoint: EndpointId("core".into()),
-        conversation: conversation.clone(),
-        terminal_root: key(10),
-        sdk: key(30),
-        helper: key(40),
-    };
-    let label = source_key(&claim.helper).unwrap();
-    let value = serde_json::to_string(&claim).unwrap();
+    use streams::runtime::hc::{labels::source_key, sources::SourceRegistration};
+    let ours = pi_claim("session", 40);
+    let label = source_key(&ours.helper);
+    let value = serde_json::to_string(&ours).unwrap();
     let terminal = |labels| json!({"address":"t1","state":"live","pid":10,"labels":labels});
-    let core = FakeCore::new(vec![
-        Step(
-            "terminal.get",
-            json!({"terminal":"hint"}),
-            Reply::Value(terminal(json!({"other":"preserved"}))),
-        ),
-        Step(
-            "terminal.label",
-            json!({"terminal":"t1","labels":{label.clone():value.clone()}}),
-            Reply::Value(terminal(
-                json!({"other":"preserved",label.clone():value.clone()}),
-            )),
-        ),
-        Step(
-            "terminal.label",
-            json!({"terminal":"t1","labels":{label.clone():""}}),
-            Reply::Value(terminal(
-                json!({"other":"preserved","streams.pi.replacement":"replacement"}),
-            )),
-        ),
-    ]);
-    let socket = HcEndpoint::resolve(
-        &BTreeMap::from([("HC_SOCKET".into(), core.socket.display().to_string())]),
-        core.socket.parent().unwrap(),
-    )
-    .unwrap();
-    let mut client =
-        HcClient::connect(socket, Some(&EndpointId("core".into())), 5.0, None).unwrap();
-    let Effect::Applied { value: source } = SourceRegistration::register(
-        &mut client,
-        "hint",
-        conversation.clone(),
-        30,
-        40,
-        &processes,
-        &std::sync::atomic::AtomicBool::new(false),
-    ) else {
-        panic!("registration failed")
-    };
-    assert!(matches!(source.retire(&mut client), Effect::Applied { .. }));
-    drop(client);
-    assert_eq!(core.finish().len(), 4);
-
-    for (pid, malformed, accepted) in [
-        (41, false, false),
-        (42, false, true),
-        (43, false, false),
-        (42, true, false),
-        (44, false, true),
-    ] {
-        let previous = PiSourceClaim {
-            sdk: if pid == 44 { key(31) } else { key(30) },
-            helper: key(pid),
-            ..claim.clone()
-        };
-        let previous_key = source_key(&previous.helper).unwrap();
-        let previous_value = if malformed {
-            "invalid".into()
-        } else {
-            serde_json::to_string(&previous).unwrap()
-        };
-        let mut steps = vec![Step(
-            "terminal.get",
-            json!({"terminal":"hint"}),
-            Reply::Value(terminal(
-                json!({previous_key.clone():previous_value.clone()}),
-            )),
-        )];
-        if accepted {
-            steps.push(Step(
-                "terminal.label",
-                json!({"terminal":"t1","labels":{label.clone():value.clone()}}),
-                Reply::Value(terminal(
-                    json!({previous_key:previous_value,label.clone():value.clone()}),
-                )),
-            ));
-        }
-        let core = FakeCore::new(steps);
+    let connect = |core: &FakeCore| {
         let socket = HcEndpoint::resolve(
             &BTreeMap::from([("HC_SOCKET".into(), core.socket.display().to_string())]),
             core.socket.parent().unwrap(),
         )
         .unwrap();
-        let mut client = HcClient::connect(socket, None, 5.0, None).unwrap();
-        let result = SourceRegistration::register(
-            &mut client,
+        HcClient::connect(socket, Some(&EndpointId("core".into())), 5.0, None).unwrap()
+    };
+    let register = |client: &mut HcClient| {
+        SourceRegistration::register(
+            client,
             "hint",
-            conversation.clone(),
-            30,
-            40,
-            &processes,
+            ours.conversation.clone(),
+            ours.helper.clone(),
             &std::sync::atomic::AtomicBool::new(false),
-        );
-        assert_eq!(matches!(result, Effect::Applied { .. }), accepted);
-        drop(client);
-        assert_eq!(core.finish().len(), if accepted { 3 } else { 2 });
-    }
+        )
+    };
+    // Another helper's label stays; competing claims are for readers to report.
+    let other = claim_labels(&[&pi_claim("other", 41)]);
+    let mut saved = other.clone();
+    saved[&label] = json!(value);
+    let core = FakeCore::new(vec![
+        Step(
+            "terminal.get",
+            json!({"terminal":"hint"}),
+            Reply::Value(terminal(other.clone())),
+        ),
+        Step(
+            "terminal.label",
+            json!({"terminal":"t1","labels":{label.clone():value.clone()}}),
+            Reply::Value(terminal(saved)),
+        ),
+        Step(
+            "terminal.label",
+            json!({"terminal":"t1","labels":{label.clone():""}}),
+            Reply::Value(terminal(other)),
+        ),
+    ]);
+    let mut client = connect(&core);
+    let Effect::Applied { value: source } = register(&mut client) else {
+        panic!("registration failed")
+    };
+    assert_eq!(source.terminal(), "t1");
+    assert!(matches!(source.retire(&mut client), Effect::Applied { .. }));
+    drop(client);
+    assert_eq!(core.finish().len(), 4);
 
-    let mut wrong = processes.clone();
-    wrong.0.get_mut(&40).unwrap().parent_pid = 10;
     let core = FakeCore::new(vec![Step(
         "terminal.get",
         json!({"terminal":"hint"}),
-        Reply::Value(terminal(json!({}))),
+        Reply::Value(json!({"address":"t1","state":"exited","pid":null,"labels":{}})),
     )]);
-    let socket = HcEndpoint::resolve(
-        &BTreeMap::from([("HC_SOCKET".into(), core.socket.display().to_string())]),
-        core.socket.parent().unwrap(),
-    )
-    .unwrap();
-    let mut client = HcClient::connect(socket, None, 5.0, None).unwrap();
-    assert!(matches!(
-        SourceRegistration::register(
-            &mut client,
-            "hint",
-            conversation.clone(),
-            30,
-            40,
-            &wrong,
-            &std::sync::atomic::AtomicBool::new(false)
-        ),
-        Effect::NotApplied { .. }
-    ));
+    let mut client = connect(&core);
+    assert!(matches!(register(&mut client), Effect::NotApplied { .. }));
     drop(client);
     assert_eq!(core.finish().len(), 2);
 
@@ -931,97 +673,26 @@ fn source_registration_and_retirement_touch_only_the_helper_key() {
             Reply::Lost,
         ),
     ]);
-    let socket = HcEndpoint::resolve(
-        &BTreeMap::from([("HC_SOCKET".into(), core.socket.display().to_string())]),
-        core.socket.parent().unwrap(),
-    )
-    .unwrap();
-    let mut client = HcClient::connect(socket, None, 5.0, None).unwrap();
-    assert!(matches!(
-        SourceRegistration::register(
-            &mut client,
-            "hint",
-            conversation,
-            30,
-            40,
-            &processes,
-            &std::sync::atomic::AtomicBool::new(false)
-        ),
-        Effect::Uncertain { .. }
-    ));
+    let mut client = connect(&core);
+    assert!(matches!(register(&mut client), Effect::Uncertain { .. }));
     drop(client);
     assert_eq!(core.finish().len(), 3);
 }
 
 #[test]
 fn execution_inspects_only_registered_sources_on_the_selected_core() {
-    use std::{cell::Cell, io};
     use streams::{
-        frontend::hc::processes::{ProcessKey, ProcessObservation, ProcessObserver},
         integration::{
             Access, ConversationId, ExecutionSnapshot, Presence, SessionOpenResult, classify_open,
         },
-        runtime::hc::{PiSourceClaim, RegisteredSources, labels::source_key},
+        runtime::hc::RegisteredSources,
     };
-    struct Processes {
-        rows: BTreeMap<u32, ProcessObservation>,
-        calls: Cell<usize>,
-    }
-    impl ProcessObserver for Processes {
-        fn observe(&self, pid: u32) -> io::Result<ProcessObservation> {
-            self.calls.set(self.calls.get() + 1);
-            self.rows
-                .get(&pid)
-                .cloned()
-                .ok_or_else(|| io::Error::other("observation unavailable"))
-        }
-        fn exited(&self, key: &ProcessKey) -> io::Result<bool> {
-            if key.pid == 41 {
-                return Ok(true);
-            }
-            Ok(self.observe(key.pid)?.key != *key)
-        }
-    }
-    let key = |pid| ProcessKey {
-        boot: "08f95cf6-6657-40c4-b5b9-6ee493d934ab".into(),
-        pid,
-        started: format!("linux:{pid}"),
-    };
-    let processes = Processes {
-        rows: [(10, 1), (30, 10), (40, 30)]
-            .into_iter()
-            .map(|(pid, parent_pid)| {
-                (
-                    pid,
-                    ProcessObservation {
-                        key: key(pid),
-                        parent_pid,
-                        process_group: 10,
-                        stopped: pid == 30,
-                    },
-                )
-            })
-            .collect(),
-        calls: Cell::new(0),
-    };
-    let conversation = ConversationId {
-        harness: "pi".into(),
-        native_id: "saved".into(),
-    };
+    let processes = Processes::live([40]);
+    let claim = pi_claim("saved", 40);
+    let conversation = claim.conversation.clone();
     let endpoint = EndpointId("core".into());
-    let claim = PiSourceClaim {
-        version: 1,
-        endpoint: endpoint.clone(),
-        conversation: conversation.clone(),
-        terminal_root: key(10),
-        sdk: key(30),
-        helper: key(40),
-    };
-    let stale = PiSourceClaim {
-        helper: key(41),
-        ..claim.clone()
-    };
-    let labels = json!({source_key(&claim.helper).unwrap():serde_json::to_string(&claim).unwrap(), source_key(&stale.helper).unwrap():serde_json::to_string(&stale).unwrap()});
+    let stale = pi_claim("saved", 41);
+    let labels = claim_labels(&[&claim, &stale]);
     let unregistered = json!({"address":"t2","state":"live","pid":99,"labels":{}});
     let remote = json!({"address":"other/t7","state":"live","pid":99,"labels":{"streams.pi.invalid":"broken"}});
     let local = json!({"address":"t1","state":"live","pid":10,"labels":labels});
@@ -1151,53 +822,32 @@ fn execution_inspects_only_registered_sources_on_the_selected_core() {
             )
             .is_err()
     );
-    let second = PiSourceClaim {
-        conversation: ConversationId {
-            harness: "pi".into(),
-            native_id: "unselected".into(),
-        },
-        sdk: key(31),
-        helper: key(43),
-        ..claim.clone()
-    };
-    let mut rows = processes.rows.clone();
-    for (pid, parent_pid) in [(31, 10), (43, 31)] {
-        rows.insert(
-            pid,
-            ProcessObservation {
-                key: key(pid),
-                parent_pid,
-                process_group: 10,
-                stopped: false,
-            },
-        );
-    }
-    let mixed = json!({"address":"t1","state":"live","pid":10,"labels":{source_key(&claim.helper).unwrap():serde_json::to_string(&claim).unwrap(),source_key(&second.helper).unwrap():serde_json::to_string(&second).unwrap()}});
+    // Two current claims on one terminal leave both conversations unknown and unplaced.
+    let second = pi_claim("unselected", 43);
+    let mixed =
+        json!({"address":"t1","state":"live","pid":10,"labels":claim_labels(&[&claim, &second])});
     let shared = RegisteredSources::decode(
         &endpoint,
         json!({"terminals":[mixed]}),
-        &Processes {
-            rows,
-            calls: Cell::new(0),
-        },
+        &Processes::live([40, 43]),
     )
-    .unwrap()
-    .for_scope(scope())
     .unwrap();
+    for conversation in [&conversation, &second.conversation] {
+        assert!(matches!(
+            shared.presence(conversation),
+            Presence::Unknown { .. }
+        ));
+    }
     assert!(
         shared
-            .unplaced_selected(std::slice::from_ref(&conversation), &empty_layout)
+            .for_scope(scope())
             .unwrap()
-            .is_empty()
-    );
-    assert_eq!(
-        shared
             .unplaced_selected(
                 &[conversation.clone(), second.conversation.clone()],
                 &empty_layout
             )
-            .unwrap(),
-        vec![reference("t1")]
+            .unwrap()
+            .is_empty()
     );
     let mut pending = local.clone();
     pending["labels"]["herdr.space"] = json!("pending-space");
@@ -1236,21 +886,6 @@ fn execution_inspects_only_registered_sources_on_the_selected_core() {
         duplicated.presence(&conversation),
         Presence::Unknown { .. }
     ));
-    let competing = PiSourceClaim {
-        helper: key(42),
-        ..claim.clone()
-    };
-    let mut rows = processes.rows.clone();
-    rows.insert(
-        42,
-        ProcessObservation {
-            key: key(42),
-            parent_pid: 30,
-            process_group: 10,
-            stopped: false,
-        },
-    );
-    let same_sdk = json!({source_key(&claim.helper).unwrap():serde_json::to_string(&claim).unwrap(), source_key(&competing.helper).unwrap():serde_json::to_string(&competing).unwrap()});
     let mut other_terminal = local.clone();
     other_terminal["address"] = json!("t4");
     let duplicate_route = RegisteredSources::decode(
@@ -1261,21 +896,12 @@ fn execution_inspects_only_registered_sources_on_the_selected_core() {
     .unwrap();
     assert!(matches!(
         duplicate_route.presence(&conversation),
-        Presence::Unknown { .. }
+        Presence::Running { .. }
     ));
-    let competing = RegisteredSources::decode(
-        &endpoint,
-        json!({"terminals":[{"address":"t1","state":"live","pid":10,"labels":same_sdk}]}),
-        &Processes {
-            rows,
-            calls: Cell::new(0),
-        },
-    )
-    .unwrap();
-    assert!(matches!(
-        competing.presence(&conversation),
-        Presence::Unknown { .. }
-    ));
+    assert_eq!(
+        duplicate_route.verified_terminals(&conversation),
+        vec![reference("t1"), reference("t4")]
+    );
     let broken =
         json!({"address":"t3","state":"live","pid":10,"labels":{"streams.pi.bad":"broken"}});
     let partial = RegisteredSources::decode(
@@ -1323,7 +949,16 @@ fn execution_inspects_only_registered_sources_on_the_selected_core() {
         Presence::Unknown { .. }
     ));
     assert!(mixed.verified_terminals(&conversation).is_empty());
-    let unobserved=RegisteredSources::decode(&endpoint,json!({"terminals":[{"address":"t3","state":"live","pid":10,"labels":{source_key(&claim.helper).unwrap():serde_json::to_string(&claim).unwrap()}}]}),&Processes {rows:BTreeMap::new(),calls:Cell::new(0)}).unwrap();
+    let gap = Processes {
+        gaps: BTreeSet::from([40]),
+        ..Processes::live([])
+    };
+    let unobserved = RegisteredSources::decode(
+        &endpoint,
+        json!({"terminals":[{"address":"t3","state":"live","pid":10,"labels":claim_labels(&[&claim])}]}),
+        &gap,
+    )
+    .unwrap();
     assert!(matches!(
         unobserved.presence(&conversation),
         Presence::Unknown { .. }
@@ -1333,13 +968,12 @@ fn execution_inspects_only_registered_sources_on_the_selected_core() {
 #[test]
 fn work_routing_is_scoped_and_separately_unavailable_from_presence() {
     use streams::{
-        frontend::hc::processes::{ProcessObservation, ProcessObserver},
         integration::{Access, ConversationId, ExecutionSnapshot, Presence},
         runtime::hc::RegisteredSources,
     };
     struct NoProcesses;
     impl ProcessObserver for NoProcesses {
-        fn observe(&self, _: u32) -> std::io::Result<ProcessObservation> {
+        fn alive(&self, _: &ProcessKey) -> std::io::Result<bool> {
             panic!("work labels are routing hints, not process identities")
         }
     }
@@ -1421,7 +1055,6 @@ fn work_routing_is_scoped_and_separately_unavailable_from_presence() {
 fn hc_open_plan_uses_only_selected_work_and_positive_observations() {
     use std::{fs, sync::atomic::AtomicBool};
     use streams::{
-        frontend::hc::processes::{ProcessKey, ProcessObservation, ProcessObserver},
         integration::{
             Access, ConversationId, ExecutionSnapshot, LaunchItem, SessionOpenResult, SpaceDecision,
         },
@@ -1429,22 +1062,10 @@ fn hc_open_plan_uses_only_selected_work_and_positive_observations() {
         runtime::{
             CheckoutRegistry, DirectoryBindings,
             conversations::ConversationRoots,
-            hc::{HcPresentation, PiSourceClaim, RegisteredSources, labels::source_key},
+            hc::{HcPresentation, RegisteredSources},
             workspace::{SelectedConversation, WorkspaceRuntime},
         },
     };
-    struct Processes(BTreeMap<u32, ProcessObservation>);
-    impl ProcessObserver for Processes {
-        fn observe(&self, pid: u32) -> std::io::Result<ProcessObservation> {
-            self.0
-                .get(&pid)
-                .cloned()
-                .ok_or_else(|| std::io::Error::other("unavailable"))
-        }
-        fn exited(&self, key: &ProcessKey) -> std::io::Result<bool> {
-            Ok(self.observe(key.pid)?.key != *key)
-        }
-    }
     let dir = tempfile::tempdir().unwrap();
     let cwd = dir.path().canonicalize().unwrap();
     let registry = CheckoutRegistry::new(cwd.join("checkouts"), "host").unwrap();
@@ -1474,37 +1095,13 @@ fn hc_open_plan_uses_only_selected_work_and_positive_observations() {
         ("PATH".into(), "/bin:/usr/bin".into()),
     ]);
     let runtime = WorkspaceRuntime::new("host", &locations, None, "catalog", &roots, &environment);
-    let key = |pid| ProcessKey {
-        boot: "08f95cf6-6657-40c4-b5b9-6ee493d934ab".into(),
-        pid,
-        started: format!("linux:{pid}"),
-    };
-    let processes = Processes(
-        [(10, 1), (30, 10), (40, 30)]
-            .into_iter()
-            .map(|(pid, parent_pid)| {
-                (
-                    pid,
-                    ProcessObservation {
-                        key: key(pid),
-                        parent_pid,
-                        process_group: 10,
-                        stopped: false,
-                    },
-                )
-            })
-            .collect(),
-    );
+    let processes = Processes::live([40]);
     let endpoint = EndpointId("core".into());
     let claim = PiSourceClaim {
-        version: 1,
-        endpoint: endpoint.clone(),
         conversation: (&running).into(),
-        terminal_root: key(10),
-        sdk: key(30),
-        helper: key(40),
+        ..pi_claim("", 40)
     };
-    let labels = json!({source_key(&claim.helper).unwrap():serde_json::to_string(&claim).unwrap()});
+    let labels = claim_labels(&[&claim]);
     let source = json!({"address":"t1","state":"live","pid":10,"labels":labels});
     let work =
         RegisteredSources::decode(&endpoint, json!({"terminals":[source.clone()]}), &processes)
@@ -2159,57 +1756,20 @@ fn hc_open_effects_keep_execution_and_placement_outcomes_independent() {
 #[test]
 fn hc_adoption_writes_only_placement_labels_once() {
     use streams::{
-        frontend::hc::processes::{ProcessKey, ProcessObservation, ProcessObserver},
         integration::ConversationId,
-        runtime::hc::{HcPresentation, PiSourceClaim, RegisteredSources, labels::source_key},
+        runtime::hc::{HcPresentation, RegisteredSources},
     };
-    struct Processes(BTreeMap<u32, ProcessObservation>);
-    impl ProcessObserver for Processes {
-        fn observe(&self, pid: u32) -> std::io::Result<ProcessObservation> {
-            self.0
-                .get(&pid)
-                .cloned()
-                .ok_or_else(|| std::io::Error::other("unavailable"))
-        }
-        fn exited(&self, key: &ProcessKey) -> std::io::Result<bool> {
-            Ok(self.observe(key.pid)?.key != *key)
-        }
-    }
-    let key = |pid| ProcessKey {
-        boot: "08f95cf6-6657-40c4-b5b9-6ee493d934ab".into(),
-        pid,
-        started: format!("linux:{pid}"),
-    };
-    let processes = Processes(
-        [(10, 1), (30, 10), (40, 30)]
-            .into_iter()
-            .map(|(pid, parent_pid)| {
-                (
-                    pid,
-                    ProcessObservation {
-                        key: key(pid),
-                        parent_pid,
-                        process_group: 10,
-                        stopped: false,
-                    },
-                )
-            })
-            .collect(),
-    );
+    let processes = Processes::live([40]);
     let conversation = ConversationId {
         harness: "pi".into(),
         native_id: "saved".into(),
     };
     let endpoint_id = EndpointId("core".into());
     let claim = PiSourceClaim {
-        version: 1,
-        endpoint: endpoint_id.clone(),
         conversation: conversation.clone(),
-        terminal_root: key(10),
-        sdk: key(30),
-        helper: key(40),
+        ..pi_claim("", 40)
     };
-    let labels = json!({source_key(&claim.helper).unwrap():serde_json::to_string(&claim).unwrap()});
+    let labels = claim_labels(&[&claim]);
     let work = RegisteredSources::decode(
         &endpoint_id,
         json!({"terminals":[{"address":"t1","state":"live","pid":10,"labels":labels}]}),
@@ -2513,13 +2073,10 @@ fn prepared_hc_terminal_start_keeps_exact_inputs_and_never_replays() {
 
 #[test]
 fn registered_foreground_reads_only_the_requested_terminal() {
-    use streams::{
-        frontend::hc::processes::{ProcessObservation, ProcessObserver},
-        integration::ForegroundConversation,
-    };
+    use streams::integration::ForegroundConversation;
     struct NoProcesses;
     impl ProcessObserver for NoProcesses {
-        fn observe(&self, _: u32) -> std::io::Result<ProcessObservation> {
+        fn alive(&self, _: &ProcessKey) -> std::io::Result<bool> {
             panic!("an unregistered terminal needs no process inspection")
         }
     }

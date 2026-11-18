@@ -1,9 +1,9 @@
 //! One helper-owned source label. No discovery, retries or I/O in Drop.
-use super::{PiSourceClaim, decode_claim, labels, verify_claim_route};
+use super::{PiSourceClaim, labels};
 use crate::{
     frontend::{
         EndpointId,
-        hc::{HcClient, processes::ProcessObserver},
+        hc::{HcClient, processes::ProcessKey},
     },
     integration::{ConversationId, Effect},
 };
@@ -18,7 +18,6 @@ use std::{
 struct Terminal {
     address: String,
     state: String,
-    pid: Option<u32>,
     labels: BTreeMap<String, String>,
 }
 
@@ -34,14 +33,13 @@ impl SourceRegistration {
         &self.terminal
     }
 
-    /// Read the hinted terminal and verify the published SDK-to-helper route before writing.
+    /// Publish `conversation` and the helper's own process on the hinted terminal.
+    /// Other claims on the terminal are left alone; readers treat competing claims as unknown.
     pub fn register(
         client: &mut HcClient,
         terminal: &str,
         conversation: ConversationId,
-        sdk_pid: u32,
-        helper_pid: u32,
-        observer: &dyn ProcessObserver,
+        helper: ProcessKey,
         cancelled: &AtomicBool,
     ) -> Effect<Self> {
         let unavailable = || Effect::NotApplied {
@@ -51,8 +49,6 @@ impl SourceRegistration {
             || terminal.is_empty()
             || terminal.contains('/')
             || conversation.harness != "pi"
-            || sdk_pid == 0
-            || helper_pid == 0
             || crate::model::check_text(&conversation.native_id, "conversation", false).is_err()
         {
             return unavailable();
@@ -63,69 +59,18 @@ impl SourceRegistration {
         let Ok(found) = serde_json::from_value::<Terminal>(value) else {
             return unavailable();
         };
-        let Some(root_pid) = found.pid.filter(|pid| *pid != 0) else {
-            return unavailable();
-        };
         if found.state != "live" || found.address.is_empty() || found.address.contains('/') {
             return unavailable();
         }
-        let (Ok(root), Ok(sdk), Ok(helper)) = (
-            observer.observe(root_pid),
-            observer.observe(sdk_pid),
-            observer.observe(helper_pid),
-        ) else {
-            return unavailable();
-        };
-        if root.key.pid != root_pid || sdk.key.pid != sdk_pid || helper.key.pid != helper_pid {
-            return unavailable();
-        }
         let claim = PiSourceClaim {
-            version: 1,
-            endpoint: client.endpoint().clone(),
+            version: PiSourceClaim::VERSION,
             conversation,
-            terminal_root: root.key,
-            sdk: sdk.key,
-            helper: helper.key,
+            helper,
         };
-        let Ok(key) = labels::source_key(&claim.helper) else {
-            return unavailable();
-        };
+        let key = labels::source_key(&claim.helper);
         let Ok(value) = serde_json::to_string(&claim) else {
             return unavailable();
         };
-        if found.labels.contains_key(&key)
-            || verify_claim_route(&key, &value, client.endpoint(), root_pid, observer).is_err()
-        {
-            return unavailable();
-        }
-        for (existing_key, existing_value) in found
-            .labels
-            .iter()
-            .filter(|(key, _)| key.starts_with("streams.pi."))
-        {
-            let Ok(existing) =
-                decode_claim(existing_key, existing_value, client.endpoint(), root_pid)
-            else {
-                return unavailable();
-            };
-            match observer.exited(&existing.helper) {
-                Ok(true) => continue,
-                Ok(false) => {}
-                Err(_) => return unavailable(),
-            }
-            if existing.sdk == claim.sdk
-                || verify_claim_route(
-                    existing_key,
-                    existing_value,
-                    client.endpoint(),
-                    root_pid,
-                    observer,
-                )
-                .is_err()
-            {
-                return unavailable();
-            }
-        }
         if cancelled.load(Ordering::Acquire) {
             return unavailable();
         }

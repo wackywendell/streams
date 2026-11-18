@@ -14,97 +14,58 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// The SDK's published selection. Process facts validate its route, not its contents.
+/// The label a Pi helper publishes on its terminal: the conversation it serves and the
+/// helper's own process. The label is current while that process runs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PiSourceClaim {
     pub version: u32,
-    pub endpoint: EndpointId,
     pub conversation: crate::integration::ConversationId,
-    pub terminal_root: crate::frontend::hc::processes::ProcessKey,
-    pub sdk: crate::frontend::hc::processes::ProcessKey,
     pub helper: crate::frontend::hc::processes::ProcessKey,
 }
 
-fn decode_claim(
-    label_key: &str,
-    label_value: &str,
-    endpoint: &EndpointId,
-    terminal_root_pid: u32,
-) -> Result<PiSourceClaim, FrontendError> {
-    let unavailable = || invalid("Pi source route is unavailable");
-    let value = crate::codec::load_json(label_value).map_err(|_| unavailable())?;
-    let claim: PiSourceClaim = serde_json::from_value(value).map_err(|_| unavailable())?;
-    if claim.version != 1
-        || claim.endpoint != *endpoint
-        || claim.conversation.harness != "pi"
-        || crate::model::check_text(&claim.conversation.native_id, "conversation", false).is_err()
-        || claim.terminal_root.pid != terminal_root_pid
-        || claim.helper.pid == claim.sdk.pid
-        || claim.helper.pid == claim.terminal_root.pid
-        || labels::source_key(&claim.helper).map_err(|_| unavailable())? != label_key
-    {
-        return Err(unavailable());
-    }
-    for key in [&claim.terminal_root, &claim.sdk, &claim.helper] {
-        key.validate().map_err(|_| unavailable())?;
-        if key.boot != claim.terminal_root.boot {
-            return Err(unavailable());
-        }
-    }
-    Ok(claim)
-}
+impl PiSourceClaim {
+    pub const VERSION: u32 = 2;
 
-/// Validate a single claim against the retained terminal root and fresh owner facts.
-/// This does not classify the SDK launcher, establish claim uniqueness or prove absence.
-pub fn verify_claim_route(
-    label_key: &str,
-    label_value: &str,
-    endpoint: &EndpointId,
-    terminal_root_pid: u32,
-    observer: &dyn crate::frontend::hc::processes::ProcessObserver,
-) -> Result<PiSourceClaim, FrontendError> {
-    let unavailable = || invalid("Pi source route is unavailable");
-    let claim = decode_claim(label_key, label_value, endpoint, terminal_root_pid)?;
-    let mut observed = BTreeMap::new();
-    let helper = observer
-        .observe(claim.helper.pid)
-        .map_err(|_| unavailable())?;
-    if helper.key != claim.helper || helper.parent_pid != claim.sdk.pid {
-        return Err(unavailable());
-    }
-    observed.insert(helper.key.pid, helper);
-    let mut pid = claim.sdk.pid;
-    loop {
-        if observed.len() >= 65_536 || observed.contains_key(&pid) {
-            return Err(unavailable());
-        }
-        let process = observer.observe(pid).map_err(|_| unavailable())?;
-        if process.key.pid != pid
-            || process.key.validate().is_err()
-            || process.key.boot != claim.terminal_root.boot
-            || (pid == claim.sdk.pid && process.key != claim.sdk)
-            || (pid == terminal_root_pid && process.key != claim.terminal_root)
+    /// The conversation of a label whose helper still runs, or `None` once it has exited.
+    /// Unreadable labels, including older formats, and observation gaps are errors.
+    fn current(
+        label: &str,
+        observer: &dyn crate::frontend::hc::processes::ProcessObserver,
+    ) -> Result<Option<crate::integration::ConversationId>, FrontendError> {
+        let unavailable = || invalid("Pi source label is unavailable");
+        let value = crate::codec::load_json(label).map_err(|_| unavailable())?;
+        let claim: Self = serde_json::from_value(value).map_err(|_| unavailable())?;
+        if claim.version != Self::VERSION
+            || claim.conversation.harness != "pi"
+            || crate::model::check_text(&claim.conversation.native_id, "conversation", false)
+                .is_err()
         {
             return Err(unavailable());
         }
-        let parent = process.parent_pid;
-        observed.insert(pid, process);
-        if pid == terminal_root_pid {
-            break;
-        }
-        if parent == 0 {
-            return Err(unavailable());
-        }
-        pid = parent;
+        let alive = observer.alive(&claim.helper).map_err(|_| unavailable())?;
+        Ok(alive.then_some(claim.conversation))
     }
-    for (pid, expected) in observed {
-        let current = observer.observe(pid).map_err(|_| unavailable())?;
-        if current.key != expected.key || current.parent_pid != expected.parent_pid {
-            return Err(unavailable());
+
+    /// The one conversation currently claiming a terminal. Two current claims, an
+    /// unreadable label or an observation gap leave it unknown.
+    fn on_terminal<'a>(
+        labels: impl IntoIterator<Item = (&'a String, &'a String)>,
+        observer: &dyn crate::frontend::hc::processes::ProcessObserver,
+    ) -> Result<Option<crate::integration::ConversationId>, FrontendError> {
+        let mut current = None;
+        for (_, label) in labels
+            .into_iter()
+            .filter(|(key, _)| key.starts_with("streams.pi."))
+        {
+            if let Some(conversation) = Self::current(label, observer)?
+                && current.replace(conversation).is_some()
+            {
+                return Err(invalid("several Pi sources claim this terminal"));
+            }
         }
+        Ok(current)
     }
-    Ok(claim)
 }
 
 /// Resolve only identities published on this terminal. Unregistered processes are outside this check.
@@ -121,8 +82,6 @@ pub fn registered_foreground(
     struct Terminal {
         address: String,
         state: String,
-        #[serde(deserialize_with = "crate::codec::required_nullable")]
-        pid: Option<u32>,
         labels: BTreeMap<String, String>,
     }
     let Ok(native) = serde_json::from_value::<Terminal>(value) else {
@@ -134,41 +93,10 @@ pub fn registered_foreground(
     {
         return unknown();
     }
-    let claims: Vec<_> = native
-        .labels
-        .iter()
-        .filter(|(key, _)| key.starts_with("streams.pi."))
-        .collect();
-    if claims.is_empty() {
-        return ForegroundConversation::NotApplicable;
-    }
-    let Some(root) = native.pid.filter(|pid| *pid != 0) else {
-        return unknown();
-    };
-    let mut sdk_keys = BTreeSet::new();
-    let mut current = None;
-    for (key, value) in claims {
-        let Ok(candidate) = decode_claim(key, value, &terminal.endpoint, root) else {
-            return unknown();
-        };
-        match observer.exited(&candidate.helper) {
-            Ok(true) => continue,
-            Ok(false) => {}
-            Err(_) => return unknown(),
-        }
-        let Ok(claim) = verify_claim_route(key, value, &terminal.endpoint, root, observer) else {
-            return unknown();
-        };
-        if !sdk_keys.insert(claim.sdk.clone()) {
-            return unknown();
-        }
-        if current.replace(claim.conversation).is_some() {
-            return unknown();
-        }
-    }
-    match current {
-        Some(conversation) => ForegroundConversation::Current(conversation),
-        None => ForegroundConversation::NotApplicable,
+    match PiSourceClaim::on_terminal(&native.labels, observer) {
+        Ok(Some(conversation)) => ForegroundConversation::Current(conversation),
+        Ok(None) => ForegroundConversation::NotApplicable,
+        Err(_) => unknown(),
     }
 }
 
@@ -224,7 +152,6 @@ impl RegisteredSources {
             .and_then(Value::as_array)
             .ok_or_else(unavailable)?;
         let mut seen_terminals = BTreeSet::new();
-        let mut seen_sdks = BTreeMap::new();
         let mut blocked_terminals = BTreeSet::new();
         let mut claims = Vec::new();
         let mut complete = true;
@@ -253,7 +180,6 @@ impl RegisteredSources {
             #[derive(Deserialize)]
             struct Terminal {
                 state: String,
-                pid: Option<u32>,
                 labels: BTreeMap<String, String>,
             }
             if !seen_terminals.insert(address.to_owned()) {
@@ -291,43 +217,12 @@ impl RegisteredSources {
                     None => routing_available = false,
                 }
             }
-            for (key, label) in terminal
-                .labels
-                .iter()
-                .filter(|(key, _)| key.starts_with("streams.pi."))
-            {
-                let claim = (|| -> Result<Option<PiSourceClaim>, FrontendError> {
-                    let root = terminal
-                        .pid
-                        .filter(|pid| *pid != 0)
-                        .ok_or_else(unavailable)?;
-                    let candidate = decode_claim(key, label, endpoint, root)?;
-                    if observer
-                        .exited(&candidate.helper)
-                        .map_err(|_| unavailable())?
-                    {
-                        return Ok(None);
-                    }
-                    Ok(Some(verify_claim_route(
-                        key, label, endpoint, root, observer,
-                    )?))
-                })();
-                match claim {
-                    Ok(None) => {}
-                    Ok(Some(claim)) => {
-                        if let Some(previous) =
-                            seen_sdks.insert(claim.sdk.clone(), address.to_owned())
-                        {
-                            blocked_terminals.insert(previous);
-                            blocked_terminals.insert(address.to_owned());
-                            complete = false;
-                        }
-                        claims.push((address.to_owned(), claim.conversation));
-                    }
-                    Err(_) => {
-                        blocked_terminals.insert(address.to_owned());
-                        complete = false;
-                    }
+            match PiSourceClaim::on_terminal(&terminal.labels, observer) {
+                Ok(Some(conversation)) => claims.push((address.to_owned(), conversation)),
+                Ok(None) => {}
+                Err(_) => {
+                    blocked_terminals.insert(address.to_owned());
+                    complete = false;
                 }
             }
         }
@@ -341,10 +236,7 @@ impl RegisteredSources {
                 endpoint: endpoint.clone(),
                 key: address,
             };
-            let locations = running.entry(conversation).or_default();
-            if !locations.contains(&terminal) {
-                locations.push(terminal);
-            }
+            running.entry(conversation).or_default().push(terminal);
         }
         let routing = if routing_available {
             crate::integration::Access::Available { value: routes }
@@ -440,21 +332,12 @@ impl HcWorkExecution {
         {
             return Err(invalid("work and presentation observations do not match"));
         }
-        let requested: BTreeSet<_> = conversations.iter().collect();
-        let shared: BTreeSet<_> = self
-            .sources
-            .running
-            .iter()
-            .filter(|(conversation, _)| !requested.contains(conversation))
-            .flat_map(|(_, terminals)| terminals.iter().map(|terminal| terminal.key.as_str()))
-            .collect();
         let mut seen = BTreeSet::new();
         let mut selected = Vec::new();
         for conversation in conversations {
             if let Presence::Running { locations } = self.sources.presence(conversation) {
                 for terminal in locations.into_vec() {
                     if !self.sources.placement_hints.contains(&terminal.key)
-                        && !shared.contains(terminal.key.as_str())
                         && presentation.space_for_terminal(&terminal).is_none()
                         && seen.insert(terminal.key.clone())
                     {

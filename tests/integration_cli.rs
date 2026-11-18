@@ -1054,10 +1054,7 @@ fn hc_resume_checks_registered_presence_before_replacing_the_process() {
         thread,
     };
     use streams::{
-        frontend::{
-            EndpointId,
-            hc::processes::{OwnerProcesses, ProcessObserver},
-        },
+        frontend::hc::processes::OwnerProcesses,
         integration::ConversationId,
         runtime::{
             CheckoutRegistry, DirectoryBindings,
@@ -1093,17 +1090,12 @@ fn hc_resume_checks_registered_presence_before_replacing_the_process() {
         .remember_transcript("work", &session.id, &transcript)
         .unwrap();
     let observer = OwnerProcesses::new().unwrap();
-    let helper = observer.observe(std::process::id()).unwrap();
-    let sdk = observer.observe(helper.parent_pid).unwrap();
     let claim = PiSourceClaim {
-        version: 1,
-        endpoint: EndpointId("core".into()),
+        version: PiSourceClaim::VERSION,
         conversation: ConversationId::from(session),
-        terminal_root: sdk.key.clone(),
-        sdk: sdk.key,
-        helper: helper.key,
+        helper: observer.observe(std::process::id()).unwrap(),
     };
-    let label = source_key(&claim.helper).unwrap();
+    let label = source_key(&claim.helper);
     let other_claim = PiSourceClaim {
         conversation: ConversationId {
             harness: "pi".into(),
@@ -1135,7 +1127,6 @@ fn hc_resume_checks_registered_presence_before_replacing_the_process() {
             .unwrap();
         let socket = directory.path().join("s");
         let listener = UnixListener::bind(&socket).unwrap();
-        let root_pid = claim.terminal_root.pid;
         let server = thread::spawn(move || {
             use std::os::fd::AsRawFd;
             let mut fd = libc::pollfd {
@@ -1160,7 +1151,7 @@ fn hc_resume_checks_registered_presence_before_replacing_the_process() {
                 ),
                 (
                     "terminal.list",
-                    json!({"terminals":[{"address":"t1","state":"live","pid":root_pid,"labels":labels}]}),
+                    json!({"terminals":[{"address":"t1","state":"live","pid":10,"labels":labels}]}),
                 ),
             ] {
                 let mut line = String::new();
@@ -1848,10 +1839,7 @@ fn native_sidebar_reads_use_one_context_snapshot_and_keep_saved_data_when_follow
 fn native_sidebar_follows_a_registered_foreground_conversation_without_a_process_census() {
     use crate::integration_hc::{FakeCore, Reply, Step};
     use streams::{
-        frontend::{
-            EndpointId, FrontendId,
-            hc::processes::{OwnerProcesses, ProcessObserver},
-        },
+        frontend::{EndpointId, FrontendId, hc::processes::OwnerProcesses},
         runtime::hc::{PiSourceClaim, labels::source_key},
     };
     struct Child(std::process::Child);
@@ -1869,7 +1857,6 @@ fn native_sidebar_follows_a_registered_foreground_conversation_without_a_process
             .unwrap(),
     );
     let observer = OwnerProcesses::new().unwrap();
-    let sdk = observer.observe(std::process::id()).unwrap();
     let helper = observer.observe(child.0.id()).unwrap();
     let endpoint = EndpointId("core".into());
     let scope = streams::application::integration::Streams::new(&fixture.records)
@@ -1881,17 +1868,14 @@ fn native_sidebar_follows_a_registered_foreground_conversation_without_a_process
         key: key.into(),
     };
     let claim = PiSourceClaim {
-        version: 1,
-        endpoint: endpoint.clone(),
+        version: PiSourceClaim::VERSION,
         conversation: ConversationId {
             harness: "pi".into(),
             native_id: fixture.sessions[0].harness_session_id.clone(),
         },
-        terminal_root: sdk.key.clone(),
-        sdk: sdk.key.clone(),
-        helper: helper.key,
+        helper: helper.clone(),
     };
-    let label = source_key(&claim.helper).unwrap();
+    let label = source_key(&claim.helper);
     let association = streams::runtime::hc::SpaceAssociation {
         scope: scope.clone(),
         stream: "work".into(),
@@ -1916,7 +1900,7 @@ fn native_sidebar_follows_a_registered_foreground_conversation_without_a_process
             "terminal.get",
             json!({"terminal":"t1"}),
             Reply::Value(
-                json!({"address":"t1","state":"live","pid":sdk.key.pid,"labels":{label:serde_json::to_string(&claim).unwrap()},"foreground":{"pid":sdk.process_group}}),
+                json!({"address":"t1","state":"live","pid":10,"labels":{label:serde_json::to_string(&claim).unwrap()}}),
             ),
         ),
     ]);
@@ -2419,10 +2403,7 @@ fn request_and_reply_byte_limits_fail_without_partial_output() {
 fn frame_reads_and_reference_opening_resolve_enrolled_sessions_and_viewer_terminals() {
     use crate::integration_hc::{FakeCore, Reply, Step};
     use streams::{
-        frontend::{
-            EndpointId, FrontendId,
-            hc::processes::{OwnerProcesses, ProcessObserver},
-        },
+        frontend::{EndpointId, FrontendId, hc::processes::OwnerProcesses},
         runtime::hc::{PiSourceClaim, labels::source_key},
     };
     struct Child(std::process::Child);
@@ -2440,7 +2421,6 @@ fn frame_reads_and_reference_opening_resolve_enrolled_sessions_and_viewer_termin
             .unwrap(),
     );
     let observer = OwnerProcesses::new().unwrap();
-    let sdk = observer.observe(std::process::id()).unwrap();
     let helper = observer.observe(child.0.id()).unwrap();
     let endpoint = EndpointId("core".into());
     let scope = streams::application::integration::Streams::new(&fixture.records)
@@ -2452,15 +2432,12 @@ fn frame_reads_and_reference_opening_resolve_enrolled_sessions_and_viewer_termin
         key: key.into(),
     };
     let enrolled_claim = PiSourceClaim {
-        version: 1,
-        endpoint: endpoint.clone(),
+        version: PiSourceClaim::VERSION,
         conversation: ConversationId {
             harness: "pi".into(),
             native_id: fixture.sessions[0].harness_session_id.clone(),
         },
-        terminal_root: sdk.key.clone(),
-        sdk: sdk.key.clone(),
-        helper: helper.key.clone(),
+        helper: helper.clone(),
     };
     let unenrolled_claim = PiSourceClaim {
         conversation: ConversationId {
@@ -2469,7 +2446,7 @@ fn frame_reads_and_reference_opening_resolve_enrolled_sessions_and_viewer_termin
         },
         ..enrolled_claim.clone()
     };
-    let label = source_key(&enrolled_claim.helper).unwrap();
+    let label = source_key(&enrolled_claim.helper);
     let core = FakeCore::new(vec![
         Step(
             "terminal.get",
@@ -2477,7 +2454,7 @@ fn frame_reads_and_reference_opening_resolve_enrolled_sessions_and_viewer_termin
             Reply::Value(json!({
                 "address":"t1",
                 "state":"live",
-                "pid":sdk.key.pid,
+                "pid":10,
                 "labels":{label.clone():serde_json::to_string(&enrolled_claim).unwrap()}
             })),
         ),
@@ -2487,7 +2464,7 @@ fn frame_reads_and_reference_opening_resolve_enrolled_sessions_and_viewer_termin
             Reply::Value(json!({
                 "address":"t2",
                 "state":"live",
-                "pid":sdk.key.pid,
+                "pid":10,
                 "labels":{label:serde_json::to_string(&unenrolled_claim).unwrap()}
             })),
         ),
@@ -2497,7 +2474,7 @@ fn frame_reads_and_reference_opening_resolve_enrolled_sessions_and_viewer_termin
             Reply::Value(json!({
                 "address":"t3",
                 "state":"live",
-                "pid":sdk.key.pid,
+                "pid":10,
                 "labels":{}
             })),
         ),
@@ -2569,8 +2546,8 @@ fn frame_reads_and_reference_opening_resolve_enrolled_sessions_and_viewer_termin
         Reply::Value(json!({
             "address":"t1",
             "state":"live",
-            "pid":sdk.key.pid,
-            "labels":{(source_key(&helper.key).unwrap()):serde_json::to_string(&enrolled_claim).unwrap()}
+            "pid":10,
+            "labels":{(source_key(&helper)):serde_json::to_string(&enrolled_claim).unwrap()}
         })),
     )]);
     let mut corrupt_req = fixture.envelope(json!({

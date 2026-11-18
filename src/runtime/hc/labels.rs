@@ -5,17 +5,16 @@ use crate::{
     model::{ValidationError, check_text},
 };
 use sha2::{Digest, Sha256};
-use std::io;
 
-pub fn source_key(helper: &ProcessKey) -> io::Result<String> {
-    helper.validate()?;
+/// One label key per helper process, so each helper writes and removes only its own label.
+pub fn source_key(helper: &ProcessKey) -> String {
     let bytes = format!(
         "[{},{},{}]",
         crate::codec::ascii_json(&helper.boot),
         helper.pid,
-        crate::codec::ascii_json(&helper.started)
+        helper.started
     );
-    Ok(format!("streams.pi.{:x}", Sha256::digest(bytes.as_bytes())))
+    format!("streams.pi.{:x}", Sha256::digest(bytes.as_bytes()))
 }
 
 pub fn scope_key(scope: &WorkScope) -> Result<String, ValidationError> {
@@ -43,13 +42,13 @@ mod tests {
         let helper = ProcessKey {
             boot: "08f95cf6-6657-40c4-b5b9-6ee493d934ab".into(),
             pid: 42,
-            started: "linux:123".into(),
+            started: 123,
         };
+        let preimage = r#"["08f95cf6-6657-40c4-b5b9-6ee493d934ab",42,123]"#;
         assert_eq!(
-            source_key(&helper).unwrap(),
-            "streams.pi.1b0fc3ebc218ef8530f852ee3c22d1b482933b84a9922619c0f8d71619716db9"
+            source_key(&helper),
+            format!("streams.pi.{:x}", Sha256::digest(preimage.as_bytes()))
         );
-        assert!(source_key(&ProcessKey { pid: 0, ..helper }).is_err());
     }
 
     #[test]

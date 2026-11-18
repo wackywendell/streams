@@ -4,8 +4,8 @@ use std::{
     os::unix::net::{UnixListener, UnixStream},
 };
 use streams::{
-    frontend::{EndpointId, hc::processes::OwnerProcesses},
-    runtime::hc::{PiSourceClaim, labels::source_key, verify_claim_route},
+    frontend::hc::processes::{OwnerProcesses, ProcessObserver},
+    runtime::hc::{PiSourceClaim, labels::source_key},
 };
 
 fn request(reader: &mut BufReader<UnixStream>, method: &str) -> Value {
@@ -52,15 +52,8 @@ fn register_source(reader: &mut BufReader<UnixStream>) -> String {
     let (key, value) = labels.iter().next().unwrap();
     let claim: PiSourceClaim = serde_json::from_str(value.as_str().unwrap()).unwrap();
     assert_eq!(claim.conversation.native_id, "pi-session");
-    assert_eq!(source_key(&claim.helper).unwrap(), *key);
-    verify_claim_route(
-        key,
-        value.as_str().unwrap(),
-        &EndpointId("core".into()),
-        std::process::id(),
-        &OwnerProcesses::new().unwrap(),
-    )
-    .unwrap();
+    assert_eq!(source_key(&claim.helper), *key);
+    assert!(OwnerProcesses::new().unwrap().alive(&claim.helper).unwrap());
     let mut saved = BTreeMap::from([("other".to_string(), "keep".to_string())]);
     saved.insert(key.clone(), value.as_str().unwrap().to_string());
     reply(reader, &write, terminal(json!(saved)));
@@ -70,7 +63,7 @@ fn start(f: &Fixture, socket: &std::path::Path) -> Transport {
     f.ok(&["config", "set", "frontend.mode", "auto"], None);
     let mut command = f.command();
     command.env("HC_SOCKET", socket).env("HC_TERMINAL_ID", "t1");
-    let child = Transport::start_with_sdk(command, "pi-session", Some(std::process::id()));
+    let child = Transport::start(command, "pi-session");
     assert_eq!(
         child.next(),
         json!({"type":"ready","protocol":2,"source":streams::child_protocol::SOURCE_DIGEST})
@@ -91,7 +84,7 @@ fn sdk_locator_is_verified_after_enrollment_and_on_a_later_read() {
     let file = f.directory.path().join("session.jsonl");
     let mut pi = context();
     pi["session_file"] = json!(file);
-    let mut child = Transport::start_with_sdk(f.command(), "pi-session", Some(std::process::id()));
+    let mut child = Transport::start(f.command(), "pi-session");
     assert_eq!(
         child.next(),
         json!({"type":"ready","protocol":2,"source":streams::child_protocol::SOURCE_DIGEST})

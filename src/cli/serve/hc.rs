@@ -80,7 +80,6 @@ impl Source {
     pub fn register(
         app: &App,
         session_id: &str,
-        sdk_pid: u32,
         stopping: Cancellation,
         cancelled: &AtomicBool,
     ) -> Result<Self> {
@@ -93,7 +92,8 @@ impl Source {
             .map_err(|_| CliError::message("hc source endpoint is unavailable"))?;
         let mut client = HcClient::connect(socket.clone(), None, 5.0, Some(stopping))
             .map_err(|_| CliError::message("hc source connection is unavailable"))?;
-        let observer = OwnerProcesses::new()
+        let helper = OwnerProcesses::new()
+            .and_then(|observer| observer.observe(std::process::id()))
             .map_err(|_| CliError::message("hc source process facts are unavailable"))?;
         let conversation = ConversationId {
             harness: "pi".into(),
@@ -103,9 +103,7 @@ impl Source {
             &mut client,
             terminal,
             conversation,
-            sdk_pid,
-            std::process::id(),
-            &observer,
+            helper,
             cancelled,
         ) {
             Effect::Applied { value } => value,

@@ -53,7 +53,7 @@ test('failed shutdown warns that native source cleanup may be incomplete',async 
 test('one launch, exact envelope, ready gating and out-of-order typed outcomes',async t=>{
  const f=fixture(t),first=f.manager.run({kind:'context'}),child=f.children[0];
  await tick();assert.deepEqual(child.messages,[]);
- assert.deepEqual(f.launches[0].argv.slice(0,5),['serve','--session-id','pi-session','--sdk-pid',String(process.pid)]);assert.equal(f.launches[0].options.cwd,'/tmp');
+ assert.deepEqual(f.launches[0].argv.slice(0,4),['serve','--session-id','pi-session','--plugin-root']);assert.equal(f.launches[0].options.cwd,'/tmp');
  assert.equal(f.launches[0].options.env.STREAMS_BIN_PATH,f.launches[0].binary);
  child.emitMessage({type:'ready',protocol:2,source});await tick();
  const second=f.manager.run({kind:'apply',request:{captured:true}});await tick();

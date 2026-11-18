@@ -76,14 +76,9 @@ impl HcSource {
         }
         if matches!(self, Self::Unattempted) {
             *self = Self::Failed;
-            let pid = server
-                .sdk_pid
-                .filter(|pid| *pid != 0)
-                .ok_or_else(|| CliError::message("Pi SDK process is unavailable"))?;
             *self = Self::Registered(hc::Source::register(
                 app,
                 &server.session_id,
-                pid,
                 stopping.clone(),
                 cancelled,
             )?);
@@ -196,7 +191,6 @@ impl HcSource {
 
 struct Server {
     session_id: String,
-    sdk_pid: Option<u32>,
     output: SharedOutput,
     app: Mutex<Option<App>>,
     active: Mutex<BTreeMap<u64, Arc<AtomicBool>>>,
@@ -527,8 +521,7 @@ fn read_input(server: Arc<Server>) {
                         .map_err(|error| CliError::message(error.to_string()))?
                         .insert(id.get(), Arc::new(AtomicBool::new(false)));
                     if let Some(context) = &pi_context
-                        && (server.sdk_pid.is_none_or(|pid| pid == 0)
-                            || context.conversation.harness != "pi"
+                        && (context.conversation.harness != "pi"
                             || context.conversation.native_id != server.session_id)
                     {
                         server.respond(
@@ -660,7 +653,7 @@ fn native_worker(
     Ok(())
 }
 
-pub(super) fn run(session_id: String, sdk_pid: Option<u32>, plugin_root: PathBuf) -> Result<()> {
+pub(super) fn run(session_id: String, plugin_root: PathBuf) -> Result<()> {
     let output = Arc::new(Mutex::new(Some(std::io::stdout())));
     send(
         &output,
@@ -672,7 +665,6 @@ pub(super) fn run(session_id: String, sdk_pid: Option<u32>, plugin_root: PathBuf
     let (sender, receiver) = mpsc::channel();
     let server = Arc::new(Server {
         session_id,
-        sdk_pid,
         output,
         app: Mutex::new(None),
         active: Mutex::new(BTreeMap::new()),
