@@ -6,6 +6,7 @@ use super::{
     outcomes::{LocalStatus, Result as SyncResult, SharingStatus},
 };
 use crate::{
+    codec::RESET_HINT,
     config::Strategy,
     file_io::{
         atomic_write, decode_json, ensure_directory, existing_write_lock, read_bytes,
@@ -65,7 +66,7 @@ impl RecordSync {
     pub fn open(root: &Path, host: &str) -> Result<Self, StorageError> {
         YamlRecordStore::new(root, host)?.with_reader::<_, StorageError>(|_| Ok(()))?;
         let bytes = read_bytes(&root.join(CONFIG))?
-            .ok_or_else(|| invalid("transport is not initialized; run offline catalog cutover"))?;
+            .ok_or_else(|| invalid(format!("transport is not initialized; {RESET_HINT}")))?;
         let selection: Selection = decode_json(&bytes)?;
         if selection.version != 2 {
             return Err(invalid("unsupported record transport version"));
@@ -85,7 +86,7 @@ impl RecordSync {
         })
     }
 
-    /// Explicit setup after format initialization or in the private offline cutover candidate.
+    /// Explicit setup after format initialization.
     pub fn initialize(
         root: &Path,
         host: &str,

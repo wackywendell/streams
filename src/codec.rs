@@ -10,6 +10,10 @@ use serde_json::{Map, Value};
 
 use crate::model::{Host, Record, RecordKind, Session, Stream, ValidationError};
 
+/// What a user with a catalog from an older format does. The README documents it.
+pub(crate) const RESET_HINT: &str =
+    "move the catalog directory aside and re-enroll (README: \"Resetting the catalog\")";
+
 // Unit enums must use strings, not Serde's alternative single-key map representation.
 macro_rules! deserialize_string_enum {
     ($($ty:ty),+ $(,)?) => {

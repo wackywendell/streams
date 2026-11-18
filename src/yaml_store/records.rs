@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    codec::{load_json, record_from_data, record_to_data},
+    codec::{RESET_HINT, load_json, record_from_data, record_to_data},
     file_io::{
         atomic_write, decode_json, ensure_directory, existing_write_lock, inspection_lock, lock,
         read_bytes, write_json,
@@ -31,9 +31,6 @@ use super::encode_component;
 const FORMAT: &str = ".catalog-local/records.json";
 /// Bumped whenever record files change shape. Older catalogs are reset, never read.
 const FORMAT_VERSION: u32 = 3;
-/// What a user with a catalog from an older format does. The README documents it.
-pub(crate) const RESET_HINT: &str =
-    "move the catalog directory aside and re-enroll (README: \"Resetting the catalog\")";
 
 /// Canonical relative paths for the new format; callers never probe legacy locations.
 pub fn relative_record_path(address: &RecordAddress) -> Result<PathBuf, StorageError> {

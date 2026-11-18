@@ -142,9 +142,10 @@ impl DirectoryBindings {
                 None => selection.stream_id.as_deref() != Some(stream_id),
             }
         {
-            return Err(invalid(
-                "directory binding identity or format mismatch; run offline catalog cutover",
-            ));
+            return Err(invalid(format!(
+                "directory binding identity or format mismatch; {}",
+                crate::codec::RESET_HINT
+            )));
         }
         Ok(Some(selection))
     }

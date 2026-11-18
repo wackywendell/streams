@@ -11,7 +11,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use strum::{AsRefStr, Display, EnumString, VariantNames};
 use unicode_general_category::{GeneralCategory, get_general_category};
 
-use crate::codec::{object, object_map, objects, optional_object, required_nullable};
+use crate::codec::{RESET_HINT, object, object_map, objects, optional_object, required_nullable};
 
 /// Personal lifecycle of a stream or contribution; completion does not close its workspace.
 #[derive(
@@ -672,18 +672,18 @@ impl Session {
     pub fn validate_portable(&self) -> Result<(), ValidationError> {
         self.validate()?;
         if self.id != Self::id_for(&self.host_id, &self.harness, &self.harness_session_id) {
-            return Err(ValidationError::new(
-                "session ID does not match its native identity; run offline catalog cutover",
-            ));
+            return Err(ValidationError::new(format!(
+                "session ID does not match its native identity; {RESET_HINT}"
+            )));
         }
         if self
             .checkout
             .as_ref()
             .is_some_and(|checkout| checkout.repository_url.is_none())
         {
-            return Err(ValidationError::new(
-                "session checkout must contain its portable repository URL; run offline catalog cutover",
-            ));
+            return Err(ValidationError::new(format!(
+                "session checkout must contain its portable repository URL; {RESET_HINT}"
+            )));
         }
         Ok(())
     }
