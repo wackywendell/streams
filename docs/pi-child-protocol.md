@@ -62,6 +62,11 @@ Capture-input selectors explicitly distinguish inventory, Stream and workspace.
 Preview carries its catalog, action and request as separate fields. Enrollment
 and apply carry their domain request object, not serialized stdin.
 Sync is simply `{"kind":"sync"}`, without an event or scheduling policy.
+`lifecycle` takes `"action": "resume" | "park"` and transitions the addressed Pi
+Session between `parked`/`closed` and `active` (reopening a `closed` Stream when
+`resume` activates the Session), returning `{"session_changed": bool,
+"stream_changed": bool, "saves": [...], "session": ..., "completion_error"?: ...}`
+and emitting save notifications when records change.
 `set_title_default` accepts only a `stream` or `session` target and an
 `automatic` or `manual` mode. It saves the corresponding global naming setting
 and returns `{"title_defaults":{"stream":"...","session":"..."}}`.

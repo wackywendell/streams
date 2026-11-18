@@ -38,9 +38,9 @@ streams config set catalog.root ~/work-catalog
 streams config set frontend.mode auto
 ```
 
-The supported settings are `catalog.root`, `frontend.mode`, `naming.stream` and `naming.session`. Defaults are `$XDG_DATA_HOME/streams/catalog`, `auto` and automatic title generation for both record types. Sync runs explicitly or at Pi startup/shutdown, not on a timer.
+The supported core settings include `catalog.root`, `frontend.mode`, `naming.stream`, `naming.session`, and `lifecycle.decay_days` (default `14`, `0` disables), alongside `herdr.*` and `pi.*` namespaces. Defaults are `$XDG_DATA_HOME/streams/catalog`, `auto`, automatic title generation for both record types, and 14-day inactivity decay. Sync runs explicitly or at Pi startup/shutdown, not on a timer.
 
-Configuration is host-local at `$XDG_CONFIG_HOME/streams/config.json`; each CLI process reads it anew. Unset XDG variables use `~/.local/share` and `~/.config`. Sync strategy, remote and branch belong to catalog setup, not these settings. Changing `catalog.root` selects another catalog; initialise it before use.
+Configuration is host-local at `$XDG_CONFIG_HOME/streams/config.toml`; each CLI process reads it anew. Unset XDG variables use `~/.local/share` and `~/.config`. Sync strategy, remote and branch belong to catalog setup, not these settings. Changing `catalog.root` selects another catalog; initialise it before use.
 
 Catalog records use host-partitioned addresses:
 `hosts/<host>/streams/<id>.yaml` and `hosts/<host>/conversations/<id>.yaml`.
@@ -70,7 +70,7 @@ streams check
 
 `create` saves a stream without launching a workspace. A missing goal is `null`, not placeholder text. Creation reports the stable ID.
 
-Search is a case-insensitive literal substring of the title or goal. It has no operators or query language. Repeat `--status` to select several statuses. `list` excludes archived streams unless you use `--archived` or `--all`.
+Search is a case-insensitive literal substring of the title or goal. It has no operators or query language. Repeat `--status` to select several statuses. `list` projects live Session activity for `active`/`parked` Streams and excludes `closed` streams unless you use `--closed` or `--all`. Run `streams tidy [--days N]` to persist `closed` on inactive Sessions and Streams untouched past `lifecycle.decay_days`.
 
 Stream selectors accept an exact ID, an exact title or a unique title substring. IDs take precedence; UUID prefixes are not supported. Ambiguous references fail and report candidate IDs; they never select the first result.
 
@@ -84,11 +84,12 @@ streams update STREAM_ID --goal-file ./goal.txt
 streams update STREAM_ID --clear-goal
 streams update STREAM_ID --status parked
 streams update STREAM_ID --add-repository streams https://github.com/wackywendell/streams
-streams archive STREAM_ID
+streams close STREAM_ID
 streams restore STREAM_ID
+streams tidy
 ```
 
-Statuses are `active`, `waiting`, `blocked`, `parked` and `done`. Archive controls visibility independently of status. Neither archiving nor marking work done closes its runtime.
+Statuses are `active`, `waiting`, `blocked`, `parked`, `done`, and `closed`. Closing a Stream closes its non-done child Sessions; restoring reopens the Stream to `active`. Marking work `done` does not close its runtime.
 
 Setting a title or goal makes that field manual. Use `--title-mode automatic` or `--goal-mode automatic` to allow future automatic refinement. Compact summaries clear when their source text changes.
 
@@ -127,7 +128,10 @@ streams session update SESSION_RECORD_ID --recap "Added search filters" --state 
 streams session update SESSION_RECORD_ID --recap-file ./recap.txt --state-file ./state.txt --remaining-file ./remaining.txt
 streams session update SESSION_RECORD_ID --recap-short "Search" --state-short "Review" --remaining-short "Land"
 streams session update SESSION_RECORD_ID --status done
+streams session lifecycle park --harness pi --session-id NATIVE_ID
 ```
+
+Interactive Pi TUI sessions park active Sessions on shutdown and reactivate `parked` or `closed` Sessions on resume (`session_started`); non-interactive (`print`, `json`) and ephemeral (`--no-session`) Pi runs skip Streams startup and reporting.
 
 Attaching records an existing conversation; it does not start it. A session has one concise title, a lifecycle status, a cumulative `recap`, current `state` (labelled Status) and `remaining` work. Each text has a matching `_short` form. Reports prefer 1–2 words and fewer than 20 characters, with a 24-character maximum. Session text stays report-writable; only titles have automatic/manual/inherit modes. All 6 text fields accept `--FIELD`, `--FIELD-file` and `--clear-FIELD` (use hyphens in flag names). Clearing full text saves an empty string; clearing a short form saves null. Its native identity belongs to one host. The owning host must authorise attachments and session updates. Finishing a session does not finish the stream.
 
@@ -170,15 +174,11 @@ The checkout's Pi extension maintains catalog records instead of generating scra
 - `/streams pane` opens the native Herdr card; `/streams pane close` closes only its display. An enrolled conversation opens without reporting. An unenrolled conversation with automatic enrollment reports once before opening; manual enrollment requires `/streams attach`.
 - Tab completes `card`, `report`, `name`, `title-mode`, `reset`, `settings`, `attach` and `pane`. Unknown subcommands or invalid management arguments show usage without reporting or saving. Free-text instructions must follow `report`.
 
-Settings live in `$PI_CODING_AGENT_DIR/stream-reporting.json`, defaulting to `~/.pi/agent/stream-reporting.json`. The defaults are:
+Settings live in `$XDG_CONFIG_HOME/streams/config.toml` under `pi.*` and `naming.*` (managed through `streams config` or `/streams settings`). Legacy JSON config files are ignored. The defaults for Pi reporting are `pi.reporting.mode = "automatic"`, `pi.reporting.enrollment = "automatic"`, `pi.reporting.frequency = 1`, `pi.reporting.context = "trimmed"`, and `pi.naming.import_edits = true`.
 
-```json
-{"reporting": "automatic", "enrollment": "automatic", "frequency": 1, "context": "trimmed", "pi_name_edits": true}
-```
+Set `pi.reporting.model` (`provider/id`) to select a helper model; unset it to use the current Pi model. Unavailable models fail visibly without fallback. Trimmed context excludes tool calls/results and thinking; full context preserves the active projected conversation, excluding incomplete tool batches. Oversized input fails rather than silently dropping history.
 
-Add `"model": {"provider": "PROVIDER", "id": "MODEL_ID"}` to select a helper model; omit it to use the current Pi model. Unavailable models fail visibly without fallback. Trimmed context excludes tool calls/results and thinking; full context preserves the active projected conversation, excluding incomplete tool batches. Oversized input fails rather than silently dropping history.
-
-The Naming submenu saves Stream and Session title-generation defaults through the Rust configuration API (`naming.stream` and `naming.session`). They live in `$XDG_CONFIG_HOME/streams/config.json`, normally `~/.config/streams/config.json`, not `stream-reporting.json`. Defaults affect records in `inherit` mode, not explicit automatic or manual modes. Enrollment may still create an initial title under a manual default. Changing a default does not run inference or rename a frontend.
+The Naming submenu saves Stream and Session title-generation defaults through the Rust configuration API (`naming.stream` and `naming.session`). Defaults affect records in `inherit` mode, not explicit automatic or manual modes. Enrollment may still create an initial title under a manual default. Changing a default does not run inference or rename a frontend.
 
 Pi's built-in `/name` imports a different name as a manual Session title when Pi name edits are enabled. Matching names are ignored; use `/streams name session <name>` to pin one. Unbound conversations stay native-only. Incoming edits and outgoing Pi synchronization are independent: disable both to keep the names separate. A rare late projection echo can be imported as manual; see the [name-ownership decision](docs/name-ownership.md#native-pi-name).
 

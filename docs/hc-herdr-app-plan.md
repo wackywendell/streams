@@ -60,16 +60,22 @@ The checked-in [integration design](hc-herdr-app-design.md) remains byte-for-byt
 
 ## Detailed Implementation Plan
 
-### 1. Pi enrollment follow-on and save notices (`src/runtime/hc.rs`, `src/cli/mod.rs`, `src/cli/serve.rs`, `src/cli/serve/hc.rs`, `src/cli/catalog.rs`, `tests/serve/hc.rs`, `tests/integration_cli.rs`)
+### 1. Pi enrollment follow-on and save notices (`src/runtime/hc.rs`, `src/cli/mod.rs`, `src/cli/serve.rs`, `src/cli/serve/hc.rs`, `src/cli/serve/native.rs`, `src/cli/catalog.rs`, `src/application/lifecycle.rs`, `tests/serve/hc.rs`, `tests/integration_cli.rs`)
+- In `HcOperation::caller_stream_id` (`src/runtime/hc.rs`):
+  - Check the caller terminal's own space association first, then walk up to 8 parent terminals via `terminal.get` checking `streams.work` labels and ancestor space associations so child terminals inherit their parent terminal's Stream.
 - In `HcOperation::bind_caller_terminal` (`src/runtime/hc.rs`):
   - Inspect `presentation_for_caller(scope, Some(caller_terminal))`.
-  - If the caller terminal sits in an unassociated published space and the Stream has no associated space yet, bind that space via `finish_associations`. If the space is already associated with this Stream, keep it without rewriting; if associated with another Stream or unpublished, leave space associations untouched.
+  - If the caller terminal sits in an unassociated published space, bind that space via `finish_associations`. If the space is already associated with this Stream, keep it without rewriting; if associated with another Stream or unpublished, leave space associations untouched.
   - Write `"streams.work"` (`labels::work_value(scope, stream)`) on `caller_terminal` via `terminal.label`.
-- In `src/cli/serve/hc.rs` and `src/cli/serve.rs`:
+- In `src/cli/serve/hc.rs`, `src/cli/serve/native.rs`, and `src/cli/serve.rs`:
   - Read `session_naming` via `NativeCardsConfig::load(&app.environment, &app.cwd, plugin_root)?.session_naming()`.
-  - On `SessionStarted` and `Attach` in `hc`, record missing Session cwd (`locations.remember`), emit `ServerFrame::View { view: UiFacts { desired_pi_name } }`, call `bind_caller_terminal` when enrolled, and return `{"backend":"hc","report":<LifecycleReport>}` (`native.kind = "active"` when enrolled, `native.kind = "inactive", reason = "not_enrolled"` when unenrolled).
+  - On `SessionStarted`, reactivate `parked` or `closed` enrolled Sessions (reopening a `closed` Stream only if the Session transitions) and emit a save notice when records change.
+  - In `hc`, `SessionStarted` and `Attach` also record missing Session cwd (`locations.remember`), emit `ServerFrame::View { view: UiFacts { desired_pi_name } }`, call `bind_caller_terminal` when enrolled, and return `{"backend":"hc","report":<LifecycleReport>}` (`native.kind = "active"` when enrolled, `native.kind = "inactive", reason = "not_enrolled"` when unenrolled).
   - On `Enroll` and `Apply` in `hc`, preserve their existing catalog response shapes, run `HcSource::after_save` to project `desired_pi_name`, bind/route the caller terminal, and emit the save notice (`notify_saved`), sending any native follow-on failure through `Server::warning` so accepted saves never turn into `SavedWithWarnings` or errors.
-  - In `src/cli/mod.rs`, populate `workspace_stream_id` in `agent_observation` from the caller space's `hc` association when present, and emit `notify_hc_save` on one-shot CLI saves (including `streams sync` in `src/cli/catalog.rs`) when `HC_TERMINAL_ID` is set.
+  - On `Request::Lifecycle { action: "resume" | "park" }` (`src/cli/serve.rs`, `src/cli/serve/dispatch.rs`), run `resume_session` or `park_session` with revision guards, preserve partial saves and `completion_error`, and emit `after_save(..., bind_space = false)` / `controller.saved` notices when records change.
+  - In `extensions/stream-checkpoint/index.ts`, interactive TUI Sessions call `lifecycle("park")` on `session_shutdown`, while non-interactive (`print`, `json`) and ephemeral (`--no-session`) Pi runs skip Streams startup and reporting.
+  - Read paths (`HostStreams`, `StreamView`, `streams list`) remain read-only observational and project live Session activity plus `lifecycle.decay_days` via `effective_stream_status`; `streams tidy [--days N]` persists `closed` on disk with revision and membership guards.
+  - In `src/cli/mod.rs`, populate `workspace_stream_id` in `agent_observation` via `HcOperation::caller_stream_id`, and emit `notify_hc_save` on one-shot CLI saves (including `streams sync`, `streams tidy`, and `streams session lifecycle`) when `HC_TERMINAL_ID` is set.
 
 ### 2. Thin `herdr-app` JavaScript mod (`integrations/herdr-app/mod.json`, `integrations/herdr-app/package.json`, `integrations/herdr-app/state.js`, `integrations/herdr-app/main.js`, `integrations/herdr-app/icons/*.svg`, `integrations/herdr-app/layouts/streams.json`, `integrations/herdr-app/tests/state.test.mjs`, `Justfile`)
 - `integrations/herdr-app/state.js` implements `resolveRole` (honoring explicit `role`, then `kind === "reference-viewer"` → `"viewer"`, `kind === "session-popup"` or `"stream-menu"` → `"popup"`, `pane`/`terminal` → `"frame"`, otherwise `"sidebar"`) and the portable `StreamsCoordinator`:

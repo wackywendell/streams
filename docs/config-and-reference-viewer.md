@@ -65,6 +65,7 @@ Under the repository's alpha policy, runtime code reads and writes only `$XDG_CO
 | `frontend.mode` | `auto`, `none`, `herdr`, `hc`, `cmux`, or adapter ID | `auto` | Active workspace frontend policy |
 | `naming.stream` | `automatic`, `manual` | `automatic` | Default Stream title generation policy |
 | `naming.session` | `automatic`, `manual` | `automatic` | Default Session title generation policy |
+| `lifecycle.decay_days` | non-negative integer | `14` | Days before inactive work projects and tidies to `closed` (`0` disables) |
 | `herdr.viewer.mode` | `editor`, `less`, `hunk`, `native` | `editor` | Viewer for documents and artifacts |
 | `herdr.viewer.placement` | `pane-right`, `pane-down`, `tab`, `floating` | `pane-right` | Where `herdr-app` places the opened viewer |
 | `herdr.naming.tab` | boolean | `true` | Mirror enrolled Session title onto `herdr-app` tab |
