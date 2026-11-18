@@ -532,6 +532,7 @@ export class StreamsCoordinator {
 
     this.streams = new Map(); // streamId -> StreamView
     this.hostStreams = []; // StreamSummary[]
+    this.hostStreamsError = null; // written only by the host_streams read, never cleared elsewhere
     this.inspectedStreamId = null;
     this.frames = new Map(); // terminalKey -> FrameContext
     this.streamIdByTerminal = new Map(); // terminalKey -> streamId
@@ -833,9 +834,10 @@ export class StreamsCoordinator {
             } else if (sel.kind === "host_streams") {
               if (item?.ok?.kind === "host_streams") {
                 this.hostStreams = item.ok.value ?? [];
+                this.hostStreamsError = null;
               } else if (item?.error) {
                 this.hostStreams = [];
-                this.lastError = item.error.message || "host Streams are unavailable";
+                this.hostStreamsError = item.error.message || "host Streams are unavailable";
               }
             } else if (sel.kind === "frame") {
               if (item?.ok?.kind === "frame") {

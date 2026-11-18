@@ -1353,9 +1353,11 @@ export default class StreamsMod extends View {
                   .text_size(12)
                   .text_color(t.dim)
                   .child(
-                    streamList.length === 0
-                      ? "No Streams on this host."
-                      : "No matching Streams."
+                    coordinator.hostStreamsError
+                      ? `Streams are unavailable: ${coordinator.hostStreamsError}`
+                      : streamList.length === 0
+                        ? "No Streams on this host."
+                        : "No matching Streams."
                   )
               )
             )

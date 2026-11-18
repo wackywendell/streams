@@ -170,17 +170,20 @@ impl<'a> Streams<'a> {
         let needs_host_streams = selections
             .iter()
             .any(|selection| matches!(selection, ViewSelection::HostStreams));
+        // A failed read is reported with its own error, never as an empty or generic view.
+        let unavailable =
+            |error: super::ApplicationError| WireError::unavailable(error.to_string());
         let sessions = if streams.is_empty() && !needs_host_streams {
             None
         } else {
-            self.sessions_by_id().ok()
+            Some(self.sessions_by_id().map_err(unavailable))
         };
-        let host_streams_result = if needs_host_streams {
-            sessions
-                .as_ref()
-                .map(|sessions| self.host_stream_summaries(sessions))
-        } else {
-            None
+        let host_streams_result = match &sessions {
+            Some(Ok(sessions)) if needs_host_streams => {
+                Some(self.host_stream_summaries(sessions).map_err(unavailable))
+            }
+            Some(Err(error)) if needs_host_streams => Some(Err(error.clone())),
+            _ => None,
         };
         let read = |reader: &dyn RecordReader,
                     artifacts: Option<&dyn ArtifactReader>|
@@ -188,14 +191,11 @@ impl<'a> Streams<'a> {
             let mut stream_views = BTreeMap::new();
             for stream in &streams {
                 let result = match (&sessions, artifacts) {
-                    (Some(sessions), Some(artifacts)) => self
+                    (Some(Ok(sessions)), Some(artifacts)) => self
                         .stream_view(artifacts, stream, sessions)
                         .map(|value| WireResult::Ok(ModReadValue::Stream { value }))
-                        .unwrap_or_else(|_| {
-                            WireResult::Error(WireError::unavailable(
-                                "saved Stream view is unavailable",
-                            ))
-                        }),
+                        .unwrap_or_else(|error| WireResult::Error(unavailable(error))),
+                    (Some(Err(error)), _) => WireResult::Error(error.clone()),
                     _ => WireResult::Error(WireError::unavailable(
                         "saved Stream view is unavailable",
                     )),
@@ -211,16 +211,18 @@ impl<'a> Streams<'a> {
                         .entry(session.as_str())
                         .or_insert_with(|| {
                             let value = match &sessions {
-                                Some(sessions) => Ok(sessions.get(session).cloned()),
-                                None => self.session(reader, session),
+                                Some(Ok(sessions)) => Ok(sessions.get(session).cloned()),
+                                // An addressed read stays independent of unrelated Sessions.
+                                _ => self.session(reader, session).map_err(unavailable),
                             };
                             match value {
                                 Ok(Some(session)) => WireResult::Ok(ModReadValue::Session {
                                     value: SessionView::from(&session),
                                 }),
-                                _ => WireResult::Error(WireError::unavailable(
+                                Ok(None) => WireResult::Error(WireError::unavailable(
                                     "saved Session view is unavailable",
                                 )),
+                                Err(error) => WireResult::Error(error),
                             }
                         })
                         .clone(),
@@ -228,9 +230,8 @@ impl<'a> Streams<'a> {
                         Some(Ok(value)) => WireResult::Ok(ModReadValue::HostStreams {
                             value: value.clone(),
                         }),
-                        _ => WireResult::Error(WireError::unavailable(
-                            "host Streams are unavailable",
-                        )),
+                        Some(Err(error)) => WireResult::Error(error.clone()),
+                        None => unreachable!("HostStreams selections read host Streams"),
                     },
                     _ => WireResult::Error(WireError::unavailable(
                         "native integration is not enabled",

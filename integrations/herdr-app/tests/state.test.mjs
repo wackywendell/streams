@@ -1114,6 +1114,57 @@ test("StreamsCoordinator captures hostStreams on unenrolled tabs, inspects strea
   assert.equal(actions[1].placement, "pane-right");
 });
 
+test("a failed host Stream listing keeps its error after the rest of the read succeeds", async () => {
+  let hostStreams = { error: { kind: "unavailable", message: "Stream record hosts/h/streams/x.yaml is unreadable: bad" } };
+  const coordinator = new StreamsCoordinator({
+    exec: async (_cmd, args) => {
+      if (args[1] === "describe") {
+        return {
+          code: 0,
+          stdout: JSON.stringify({ version: 1, scope: { catalog: "cat-1", host: "host-1" }, endpoint: "core-1" }),
+          stderr: "",
+        };
+      }
+      const req = JSON.parse(args[3]);
+      return {
+        code: 0,
+        stdout: JSON.stringify({
+          version: 1,
+          scope: req.scope,
+          endpoint: "core-1",
+          verified_endpoint: "core-1",
+          result: {
+            ok: {
+              kind: "read",
+              values: req.body.selections.map((sel) =>
+                sel.kind === "host_streams" ? hostStreams : { ok: { kind: "frame", context: { kind: "unenrolled" } } }
+              ),
+            },
+          },
+          viewer_projection: [],
+          warnings: [],
+        }),
+        stderr: "",
+      };
+    },
+  });
+  const snapshot = {
+    activeSpace: { id: "sp-1", machine: null },
+    activeTabId: "tab-1",
+    visibleTerminals: ["t1"],
+    terminalList: [],
+    focusedTerminal: "t1",
+  };
+  await coordinator.observe(snapshot);
+  assert.deepEqual(coordinator.hostStreams, []);
+  assert.equal(coordinator.hostStreamsError, "Stream record hosts/h/streams/x.yaml is unreadable: bad");
+
+  hostStreams = { ok: { kind: "host_streams", value: [{ id: "st", title: "T", status: "active" }] } };
+  await coordinator.observe({ ...snapshot, force: true });
+  assert.equal(coordinator.hostStreamsError, null);
+  assert.equal(coordinator.hostStreams[0].id, "st");
+});
+
 test("filterHostStreams supports 5 status tabs, recent/alpha sorting, and text search", () => {
   const streams = [
     { id: "1", title: "Zebra", goal_short: "Alpha task", status: "active", last_updated_ms: 1000 },

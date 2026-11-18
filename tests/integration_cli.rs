@@ -3153,3 +3153,71 @@ fn host_streams_lists_all_streams_with_active_session_counts_and_recency() {
     );
     assert_eq!(decayed_view.status, Status::Closed);
 }
+
+#[test]
+fn unreadable_records_fail_host_listings_with_the_record_named() {
+    use streams::application;
+
+    let fixture = SavedFixture::new();
+    let host = streams::yaml_store::encode_component(fixture.records.host().as_str());
+    let corrupt = |relative: &str| {
+        let path = fixture.records.root().join(relative);
+        let mut value: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        value["record"]["archived"] = json!(false);
+        std::fs::write(&path, value.to_string()).unwrap();
+    };
+    let read = || {
+        application::integration::Streams::new(&fixture.records)
+            .read_views(
+                &[
+                    ViewSelection::HostStreams {},
+                    ViewSelection::SavedStream {
+                        stream: "work".into(),
+                    },
+                ],
+                Access::Unavailable {
+                    reason: "none".into(),
+                },
+                Access::Unavailable {
+                    reason: "none".into(),
+                },
+            )
+            .unwrap()
+    };
+    let error = |value: &WireResult<ModReadValue>| match value {
+        WireResult::Error(error) => error.message.clone(),
+        WireResult::Ok(value) => panic!("expected an unavailable view, got {value:?}"),
+    };
+
+    let stream = format!("hosts/{host}/streams/next.yaml");
+    corrupt(&stream);
+    let views = read();
+    let message = error(&views[0]);
+    assert!(
+        message.starts_with(&format!("Stream record {stream} is unreadable: ")),
+        "{message}"
+    );
+    assert!(message.contains("unknown field `archived`"), "{message}");
+    assert!(matches!(
+        views[1],
+        WireResult::Ok(ModReadValue::Stream { .. })
+    ));
+    let list = fixture.command().args(["list", "--json"]).output().unwrap();
+    assert!(!list.status.success());
+    let list: Value = serde_json::from_slice(&list.stdout).unwrap();
+    assert_eq!(list["error"]["message"], message.as_str());
+
+    let session = format!(
+        "hosts/{host}/conversations/{}.yaml",
+        streams::yaml_store::encode_component(&fixture.sessions[0].id)
+    );
+    corrupt(&session);
+    let views = read();
+    for value in &views {
+        let message = error(value);
+        assert!(
+            message.starts_with(&format!("Session record {session} is unreadable: ")),
+            "{message}"
+        );
+    }
+}
