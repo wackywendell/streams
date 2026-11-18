@@ -5,6 +5,7 @@ import {
   buildViewSelections,
   observeNoticeToken,
   activeTabSession,
+  tabSidebarView,
   resolveTabRenameTarget,
   effectiveSessionStatus,
   buildReferenceItems,
@@ -32,26 +33,23 @@ test("resolveRole selects popup, frame, viewer, and sidebar roles deterministica
   assert.equal(resolveRole(undefined), "sidebar");
 });
 
-test("buildViewSelections reads the tab, focused agent first, then one frame per local terminal", () => {
+test("buildViewSelections reads the tab's local terminals in pane order, then one frame per local terminal", () => {
   const ref = (key) => ({ adapter: "hc", endpoint: "core-1", key });
   const selections = buildViewSelections({
     endpoint: "core-1",
     visibleTerminals: ["t1", "t2", "t1", "remote/t3", ""],
     liveTerminals: ["t4", "t2"],
-    focusedTerminal: "t2",
   });
   assert.deepEqual(selections, [
-    { kind: "tab", terminals: [ref("t2"), ref("t1")] },
+    { kind: "tab", terminals: [ref("t1"), ref("t2")] },
     { kind: "frame", terminal: ref("t1") },
     { kind: "frame", terminal: ref("t2") },
     { kind: "frame", terminal: ref("t4") },
   ]);
 
-  assert.deepEqual(
-    buildViewSelections({ endpoint: "core-1", visibleTerminals: [], focusedTerminal: "t9" }),
-    [{ kind: "tab", terminals: [] }],
-    "a focused terminal outside the tab is not part of its read"
-  );
+  assert.deepEqual(buildViewSelections({ endpoint: "core-1", visibleTerminals: [] }), [
+    { kind: "tab", terminals: [] },
+  ]);
   assert.deepEqual(buildViewSelections({ endpoint: null, visibleTerminals: ["t1"] }), []);
 });
 
@@ -792,6 +790,9 @@ test("StreamsCoordinator clears stale binding once on scope mismatch and recover
     },
   });
 
+  coordinator.hostStreams = [{ id: "old", title: "Old", status: "active" }];
+  coordinator.hostUnreadable = [{ kind: "stream", path: "old.yaml", cause: "bad" }];
+  coordinator.hostStreamsError = "old error";
   await coordinator.observe({
     activeSpace: { id: "sp-1", machine: null },
     activeTabId: "tab-1",
@@ -802,6 +803,9 @@ test("StreamsCoordinator clears stale binding once on scope mismatch and recover
   assert.equal(describeCalls, 1);
   assert.equal(readCalls, 1);
   assert.equal(coordinator.binding, null);
+  assert.deepEqual(coordinator.hostStreams, [], "the other catalog's listing is dropped");
+  assert.deepEqual(coordinator.hostUnreadable, []);
+  assert.equal(coordinator.hostStreamsError, null);
   assert.equal(coordinator.lastError, "configured catalog and host do not match the requested scope");
 
   await coordinator.observe({
@@ -1336,4 +1340,129 @@ test("formatRelativeAge and liveStreamIds format ages and detect live open tabs"
     sels.map((s) => (s.kind === "tab" ? "tab" : s.terminal.key)),
     ["tab", "t-shell", "t1"]
   );
+});
+
+test("an associated tab reads only its own panes, and focus moves or other agents start no read", async () => {
+  const reads = [];
+  const coordinator = new StreamsCoordinator({
+    exec: async (_cmd, args) => {
+      if (args[1] === "describe") {
+        return {
+          code: 0,
+          stdout: JSON.stringify({ version: 1, scope: { catalog: "cat-1", host: "host-1" }, endpoint: "core-1" }),
+          stderr: "",
+        };
+      }
+      const req = JSON.parse(args[3]);
+      reads.push(req.body.selections);
+      const tab = req.body.selections[0].terminals.some((ref) => ref.key === "t1")
+        ? { kind: "stream", stream: { id: "st", title: "T", status: "active", sessions: [], unreadable: [] } }
+        : { kind: "unassociated", streams: { streams: [], unreadable: [] } };
+      return {
+        code: 0,
+        stdout: JSON.stringify({
+          version: 1,
+          scope: req.scope,
+          endpoint: "core-1",
+          verified_endpoint: "core-1",
+          result: {
+            ok: {
+              kind: "read",
+              values: req.body.selections.map((sel) =>
+                sel.kind === "tab"
+                  ? { ok: { kind: "tab", context: tab } }
+                  : { ok: { kind: "frame", context: { kind: "unenrolled" } } }
+              ),
+            },
+          },
+          viewer_projection: [],
+          warnings: [],
+        }),
+        stderr: "",
+      };
+    },
+  });
+  const framed = (selections) =>
+    selections.filter((sel) => sel.kind === "frame").map((sel) => sel.terminal.key);
+  const snapshot = {
+    activeSpace: { id: "sp-1", machine: null },
+    activeTabId: "tab-1",
+    tabIds: ["tab-1", "tab-2"],
+    visibleTerminals: ["t1", "t2"],
+    liveTerminals: ["t1", "t8"],
+    terminalList: [],
+    focusedTerminal: "t1",
+  };
+
+  // A first sight of a tab sends every live agent, in case it shows the host listing.
+  await coordinator.observe(snapshot);
+  assert.equal(reads.length, 1);
+  assert.deepEqual(framed(reads[0]), ["t1", "t2", "t8"]);
+  assert.equal(coordinator.tabStreams.get("tab-1"), "st");
+
+  // Learning the tab's Stream, moving focus within the tab and agents elsewhere start no read.
+  await coordinator.observe(snapshot);
+  await coordinator.observe({ ...snapshot, focusedTerminal: "t2" });
+  await coordinator.observe({ ...snapshot, liveTerminals: ["t1", "t8", "t9"] });
+  assert.equal(reads.length, 1);
+  await coordinator.observe({ ...snapshot, force: true });
+  assert.deepEqual(framed(reads[1]), ["t1", "t2"], "a known Stream tab reads only its panes");
+
+  // A tab without a Stream keeps every live agent in its read and its key.
+  const listingTab = { ...snapshot, activeTabId: "tab-2", visibleTerminals: ["t5"] };
+  await coordinator.observe(listingTab);
+  assert.deepEqual(framed(reads[2]), ["t5", "t1", "t8"]);
+  assert.equal(coordinator.tabStreams.get("tab-2"), null);
+  await coordinator.observe({ ...listingTab, liveTerminals: ["t1", "t8", "t9"] });
+  assert.equal(reads.length, 4, "an agent starting elsewhere refreshes the host listing");
+
+  // A refresh drops the remembered Streams of closed tabs.
+  await coordinator.observe({ ...listingTab, tabIds: ["tab-2"], force: true });
+  assert.deepEqual([...coordinator.tabStreams.keys()], ["tab-2"]);
+});
+
+test("tabSidebarView shows the tab's Stream and its visible Session, or the host listing", () => {
+  const work = { id: "work", title: "Work", status: "active", sessions: [] };
+  const other = { id: "other", title: "Other", status: "active", sessions: [] };
+  const enrolled = (id, stream) => ({ kind: "enrolled", session: { id, stream } });
+  const base = {
+    tabId: "tab-1",
+    tabStreams: new Map([["tab-1", "work"]]),
+    streams: new Map([
+      ["work", work],
+      ["other", other],
+    ]),
+    frames: new Map([
+      ["t1", enrolled("s-other", "other")],
+      ["t2", enrolled("s-work", "work")],
+      ["t3", enrolled("s-work-2", "work")],
+      ["t4", { kind: "unenrolled" }],
+    ]),
+    visibleTerminals: ["t1", "t2", "t3", "t4"],
+    focusedTerminal: null,
+    inspectedStreamId: "other",
+    inFlight: false,
+  };
+  const view = (overrides) => tabSidebarView({ ...base, ...overrides });
+
+  assert.deepEqual(view({ tabStreams: new Map(), inFlight: true }), { kind: "loading" });
+  assert.equal(view({ inFlight: true }).kind, "session", "a known tab never shows loading");
+
+  // A Session of another Stream in the tab never leads the view.
+  assert.deepEqual(view({}), {
+    kind: "session",
+    stream: work,
+    terminal: "t2",
+    session: { id: "s-work", stream: "work" },
+  });
+  assert.equal(view({ focusedTerminal: "t3" }).terminal, "t3", "the focused Session leads");
+  assert.equal(view({ focusedTerminal: "t1" }).terminal, "t2");
+
+  assert.deepEqual(view({ visibleTerminals: ["t1", "t4"] }), { kind: "stream", stream: work });
+
+  const unassociated = { tabStreams: new Map([["tab-1", null]]) };
+  assert.deepEqual(view(unassociated), { kind: "inspected", stream: other });
+  assert.deepEqual(view({ ...unassociated, inspectedStreamId: null }), { kind: "listing" });
+  assert.deepEqual(view({ ...unassociated, inspectedStreamId: "gone" }), { kind: "listing" });
+  assert.deepEqual(view({ tabStreams: new Map(), inspectedStreamId: null }), { kind: "listing" });
 });

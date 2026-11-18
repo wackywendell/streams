@@ -190,31 +190,23 @@ export function buildRequestEnvelope(scope, endpoint, body) {
 }
 
 /**
- * Order the active tab's local terminals for its tab read: the focused agent first,
- * then the rest in pane order. Rust takes the Stream of the first enrolled terminal.
+ * The active tab's local terminals for its tab read, in pane order. Rust takes the Stream of
+ * the first enrolled terminal, so moving focus within a tab never changes the tab's Stream.
  */
-export function tabTerminals({ visibleTerminals = [], focusedTerminal = null }) {
+export function tabTerminals(visibleTerminals = []) {
   const local = (key) => typeof key === "string" && key.length > 0 && !key.includes("/");
-  const ordered =
-    focusedTerminal && visibleTerminals.includes(focusedTerminal)
-      ? [focusedTerminal, ...visibleTerminals]
-      : visibleTerminals;
-  return [...new Set(ordered.filter(local))];
+  return [...new Set(visibleTerminals.filter(local))];
 }
 
 /**
  * Build the batched `ViewSelection` list: one `tab` read naming the active tab's Stream
  * (or the host's Streams), then a `frame` read per local terminal for per-pane context.
+ * Pass `liveTerminals` only while the tab may show the host listing, which marks live Streams.
  */
-export function buildViewSelections({
-  endpoint,
-  visibleTerminals = [],
-  liveTerminals = [],
-  focusedTerminal = null,
-}) {
+export function buildViewSelections({ endpoint, visibleTerminals = [], liveTerminals = [] }) {
   if (!endpoint) return [];
   const ref = (key) => ({ adapter: "hc", endpoint, key });
-  const tab = tabTerminals({ visibleTerminals, focusedTerminal });
+  const tab = tabTerminals(visibleTerminals);
   const selections = [{ kind: "tab", terminals: tab.map(ref) }];
   const seen = new Set();
   for (const terminalKey of [...visibleTerminals, ...liveTerminals]) {
@@ -255,7 +247,6 @@ export function computeObservationKey({
   activeTabId = null,
   visibleTerminals,
   liveTerminals = [],
-  focusedTerminal = null,
   noticeToken,
 }) {
   if (!activeSpace) return "none";
@@ -263,34 +254,75 @@ export function computeObservationKey({
   return JSON.stringify({
     space: activeSpace.id,
     tab: activeTabId,
-    terminals: tabTerminals({ visibleTerminals: visibleTerminals ?? [], focusedTerminal }),
+    terminals: tabTerminals(visibleTerminals ?? []),
     liveTerminals: [...(liveTerminals ?? [])].sort(),
     notice: noticeToken ?? "",
   });
 }
 
 /**
- * Resolve the primary enrolled session for the active tab (preferring the focused terminal).
+ * Resolve the primary enrolled session for the active tab (preferring the focused terminal),
+ * counting only Sessions of `stream` when it is given.
  */
 export function activeTabSession({
   visibleTerminals = [],
   focusedTerminal = null,
   frames,
+  stream = null,
 }) {
   if (!frames) return null;
+  const enrolled = (terminalKey) => {
+    const frame = frames.get(terminalKey);
+    return frame?.kind === "enrolled" &&
+      frame.session &&
+      (stream === null || frame.session.stream === stream)
+      ? { terminal: terminalKey, session: frame.session }
+      : null;
+  };
   if (focusedTerminal && visibleTerminals.includes(focusedTerminal)) {
-    const focusedFrame = frames.get(focusedTerminal);
-    if (focusedFrame?.kind === "enrolled" && focusedFrame.session) {
-      return { terminal: focusedTerminal, session: focusedFrame.session };
-    }
+    const focused = enrolled(focusedTerminal);
+    if (focused) return focused;
   }
   for (const terminalKey of visibleTerminals) {
-    const frame = frames.get(terminalKey);
-    if (frame?.kind === "enrolled" && frame.session) {
-      return { terminal: terminalKey, session: frame.session };
-    }
+    const found = enrolled(terminalKey);
+    if (found) return found;
   }
   return null;
+}
+
+/**
+ * Choose what the sidebar shows for the active tab:
+ * - `loading`: the tab has not been read yet and a read is in flight.
+ * - `session`: the tab's Stream with one of its enrolled Sessions, the focused one first.
+ * - `stream`: the tab's Stream when none of its Sessions is visible in the tab.
+ * - `inspected`: a tab without a Stream, showing the Stream picked from the host listing.
+ * - `listing`: a tab without a Stream, showing the host's Streams.
+ */
+export function tabSidebarView({
+  tabId,
+  tabStreams,
+  streams,
+  frames,
+  visibleTerminals = [],
+  focusedTerminal = null,
+  inspectedStreamId = null,
+  inFlight = false,
+}) {
+  if (!tabStreams.has(tabId) && inFlight) return { kind: "loading" };
+  const tabStream = streams.get(tabStreams.get(tabId) ?? "") ?? null;
+  if (tabStream) {
+    const viewing = activeTabSession({
+      visibleTerminals,
+      focusedTerminal,
+      frames,
+      stream: tabStream.id,
+    });
+    return viewing
+      ? { kind: "session", stream: tabStream, ...viewing }
+      : { kind: "stream", stream: tabStream };
+  }
+  const inspected = inspectedStreamId ? streams.get(inspectedStreamId) ?? null : null;
+  return inspected ? { kind: "inspected", stream: inspected } : { kind: "listing" };
 }
 
 /**
@@ -561,7 +593,7 @@ export class StreamsCoordinator {
     this.streams = new Map(); // streamId -> StreamView
     // Written only by the tab read: tabId -> the tab's Stream id, or null for the host's Streams.
     this.tabStreams = new Map();
-    // Written only by the tab read of an unassociated tab, never cleared elsewhere.
+    // Written only by applyTab.
     this.hostStreams = []; // StreamSummary[] the listing could read
     this.hostUnreadable = []; // UnreadableRecord[] { kind, path, cause } it could not
     this.hostStreamsError = null; // the listing itself failed
@@ -699,7 +731,7 @@ export class StreamsCoordinator {
     visibleTerminals = [],
     liveTerminals = [],
     terminalList = [],
-    focusedTerminal = null,
+    tabIds,
     force = false,
     now = Date.now(),
   }) {
@@ -715,7 +747,7 @@ export class StreamsCoordinator {
             visibleTerminals,
             liveTerminals,
             terminalList,
-            focusedTerminal,
+            tabIds,
             force,
             now,
           });
@@ -725,14 +757,8 @@ export class StreamsCoordinator {
     }
 
     const noticeToken = observeNoticeToken(terminalList, this.binding.notification_key);
-    const key = computeObservationKey({
-      activeSpace,
-      activeTabId,
-      visibleTerminals,
-      liveTerminals,
-      focusedTerminal,
-      noticeToken,
-    });
+    const observation = { activeSpace, activeTabId, visibleTerminals, liveTerminals, noticeToken };
+    const key = this.observationKey(observation);
 
     const stale =
       this.staleFallbackMs > 0 &&
@@ -748,34 +774,42 @@ export class StreamsCoordinator {
     ) {
       return this.inFlightPromise ?? null;
     }
-    return this.refresh({
-      activeSpace,
-      activeTabId,
-      visibleTerminals,
-      liveTerminals,
-      focusedTerminal,
-      key,
-      now,
+    return this.refresh({ observation, tabIds, key, now });
+  }
+
+  /**
+   * The live agent panes a read of `tabId` needs: all of them while the tab may show the host
+   * listing, none once the tab is known to have a Stream.
+   */
+  liveTerminalsFor(tabId, liveTerminals) {
+    return typeof this.tabStreams.get(tabId) === "string" ? [] : liveTerminals;
+  }
+
+  observationKey(observation) {
+    return computeObservationKey({
+      ...observation,
+      liveTerminals: this.liveTerminalsFor(observation.activeTabId, observation.liveTerminals),
     });
   }
 
-  async refresh({
-    activeSpace,
-    activeTabId = null,
-    visibleTerminals = [],
-    liveTerminals = [],
-    focusedTerminal = null,
-    key,
-    now = Date.now(),
-  }) {
+  /**
+   * Read the views for one `observation`. `tabIds`, when given, lists the tabs that still exist;
+   * the remembered Streams of all other tabs are dropped.
+   */
+  async refresh({ observation, tabIds, key, now = Date.now() }) {
     const binding = await this.ensureDescribed();
     if (!binding) return null;
 
+    if (Array.isArray(tabIds)) {
+      for (const tabId of this.tabStreams.keys()) {
+        if (!tabIds.includes(tabId)) this.tabStreams.delete(tabId);
+      }
+    }
+    const { activeTabId = null, visibleTerminals = [], liveTerminals = [] } = observation;
     const selections = buildViewSelections({
       endpoint: binding.endpoint,
       visibleTerminals,
-      liveTerminals,
-      focusedTerminal,
+      liveTerminals: this.liveTerminalsFor(activeTabId, liveTerminals),
     });
     if (selections.length === 0) {
       this.lastCompletedKey = key ?? null;
@@ -818,6 +852,9 @@ export class StreamsCoordinator {
             this.frames.clear();
             this.streams.clear();
             this.tabStreams.clear();
+            this.hostStreams = [];
+            this.hostUnreadable = [];
+            this.hostStreamsError = null;
             this.lastCompletedKey = null;
             this.lastFailedKey = null;
             this.lastError = msg;
@@ -858,7 +895,8 @@ export class StreamsCoordinator {
           this.lastError = null;
           this.lastFailedKey = null;
           this.lastCompletedAt = now;
-          this.lastCompletedKey = key ?? null;
+          // Key by what the read revealed, so learning the tab's Stream starts no second read.
+          this.lastCompletedKey = key === undefined ? null : this.observationKey(observation);
         }
         return reply;
       } catch (err) {
@@ -888,6 +926,8 @@ export class StreamsCoordinator {
     if (context?.kind === "stream" && typeof context.stream?.id === "string") {
       this.streams.set(context.stream.id, context.stream);
       this.tabStreams.set(tabId, context.stream.id);
+      // A Stream picked from the listing is forgotten once the sidebar shows a tab's own Stream.
+      this.inspectedStreamId = null;
       return;
     }
     this.tabStreams.set(tabId, null);

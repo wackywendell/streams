@@ -28,7 +28,7 @@ import {
   HOST_STREAM_SORTS,
   resolveRole,
   observeNoticeToken,
-  activeTabSession,
+  tabSidebarView,
   effectiveSessionStatus,
   resolveTabRenameTarget,
   buildReferenceItems,
@@ -174,6 +174,7 @@ function collectSnapshot() {
     activeSpace,
     activeTab,
     activeTabId: activeTab?.id ?? null,
+    tabIds: allSpaces.flatMap((space) => (space.tabs ?? []).map((tab) => tab.id)),
     visibleTerminals,
     liveTerminals,
     terminalList: terminals(),
@@ -888,11 +889,6 @@ export default class StreamsMod extends View {
         .child(div().p(12).text_size(12).text_color(t.dim).child("Loading Streams…"));
     }
 
-    const tabSession = activeTabSession({
-      visibleTerminals: snap.visibleTerminals,
-      focusedTerminal: snap.focusedTerminal,
-      frames: coordinator.frames,
-    });
     const renderErrorBanner = (parent) =>
       parent.when(Boolean(coordinator.lastError), (el) =>
         el.child(
@@ -1143,25 +1139,26 @@ export default class StreamsMod extends View {
           )
         );
 
-    if (!coordinator.tabStreams.has(snap.activeTabId) && coordinator.inFlightKey !== null) {
+    const view = tabSidebarView({
+      tabId: snap.activeTabId,
+      tabStreams: coordinator.tabStreams,
+      streams: coordinator.streams,
+      frames: coordinator.frames,
+      visibleTerminals: snap.visibleTerminals,
+      focusedTerminal: snap.focusedTerminal,
+      inspectedStreamId: coordinator.inspectedStreamId,
+      inFlight: coordinator.inFlightKey !== null,
+    });
+    if (view.kind === "loading") {
       return v_flex()
         .size_full()
         .bg(t.chrome)
         .child(header)
         .child(div().p(12).text_size(12).text_color(t.dim).child("Loading Streams…"));
     }
-    const tabStreamId = coordinator.tabStreams.get(snap.activeTabId) ?? null;
-    const tabStream = tabStreamId ? coordinator.streams.get(tabStreamId) ?? null : null;
-    if (tabStream) coordinator.inspectedStreamId = null;
-    // The enrolled Session leads the view only when it belongs to the tab's Stream.
-    const viewing = tabStream && tabSession?.session?.stream === tabStream.id ? tabSession : null;
 
-    if (!viewing) {
-      const inspectedStream =
-        tabStream ??
-        (coordinator.inspectedStreamId
-          ? coordinator.streams.get(coordinator.inspectedStreamId) ?? null
-          : null);
+    if (view.kind !== "session") {
+      const inspectedStream = view.stream ?? null;
       if (inspectedStream) {
         const monoFont = settings()?.font_family ?? "JetBrains Mono";
         const inspectedRefs = buildReferenceItems(inspectedStream, {
@@ -1184,7 +1181,7 @@ export default class StreamsMod extends View {
                 .gap(12)
                 .overflow_y_scrollbar()
                 .track_scroll(this.scroll)
-                .when(!tabStream, (el) =>
+                .when(view.kind === "inspected", (el) =>
                   el.child(
                     h_flex()
                       .id("streams-back-list")
@@ -1508,8 +1505,9 @@ export default class StreamsMod extends View {
         );
     }
 
+    const viewing = view;
     const enrolled = viewing.session;
-    const stream = tabStream;
+    const stream = view.stream;
     const tabPane = panes().find((p) => p.terminal === viewing.terminal) ?? null;
     const termInfo =
       snap.terminalList.find((item) => (item.address ?? item.id) === viewing.terminal) ?? null;

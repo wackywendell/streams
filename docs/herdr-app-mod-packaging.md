@@ -78,7 +78,7 @@ herdr-app Layout Tree
     └── status (bottom bar: workspace-status)                 <-- Untouched by streams
 ```
 
-Each refresh of the active tab spawns one `streams integration request`. Its `tab` selection returns the tab's Stream view (from the enrolled Session, the `streams.work` label or the space association) or the host's Streams, and its `frame` selections return each pane's enrolled Session for the pane header.
+Each refresh of the active tab spawns one `streams integration request`. Its `tab` selection returns the tab's Stream view (from the first enrolled Session in pane order, else the space association, else the `streams.work` label) or the host's Streams, and its `frame` selections return each pane's enrolled Session for the pane header. Until a read shows that the tab has a Stream, the request also carries a `frame` for every live agent pane in the window, which the host listing uses to mark live Streams; once the tab's Stream is known it reads only the tab's own panes, so agents starting elsewhere and focus moves within the tab start no spawn.
 
 When a user clicks the `Stream · Session` pill in the 30 px pane header:
 1. If the right-hand `panel` is hidden or showing another stack child (`files` or `changes`), `mods/streams` runs `layout.select({ stack: "panel-body", child: "streams" })` and `layout.show({ id: "panel" })`.
