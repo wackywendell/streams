@@ -116,6 +116,33 @@ impl HcSource {
             })));
         };
         let mut warnings = Vec::new();
+        if matches!(request, Request::SessionStarted {})
+            && matches!(
+                session.status,
+                streams::model::Status::Parked | streams::model::Status::Closed
+            )
+            && let Ok(opened) = streams::application::open_records(&app.config)
+        {
+            let op = format!("hc-session-resume:{}", uuid::Uuid::new_v4());
+            match streams::application::lifecycle::resume_session(
+                &opened,
+                streams::runtime::conversations::Harness::Pi,
+                &server.session_id,
+                &op,
+            ) {
+                Ok(update) => {
+                    if let Some(error) = update.completion_error {
+                        warnings.push(error);
+                    }
+                    if !update.saves.is_empty()
+                        && let Err(error) = source.notify_saved(&resolved.scope, stopping.clone())
+                    {
+                        warnings.push(error.to_string());
+                    }
+                }
+                Err(error) => warnings.push(error.to_string()),
+            }
+        }
         if let Err(error) =
             source.bind_session(&resolved.scope, &session.stream_id, stopping.clone())
         {
@@ -151,6 +178,12 @@ impl HcSource {
             },
         )?;
         let Self::Registered(source) = self else {
+            if bind_space
+                && let Some(session) = &resolved.session
+                && let Err(error) = app.bind_hc_caller_terminal(&session.stream_id)
+            {
+                return Err(error);
+            }
             return app.notify_hc_save();
         };
         let mut first_error = None;
@@ -356,7 +389,8 @@ impl Server {
                     Ok(output)
                 }
                 request => {
-                    let saved = matches!(request, Request::Apply { .. });
+                    let is_apply = matches!(request, Request::Apply { .. });
+                    let is_lifecycle = matches!(request, Request::Lifecycle { .. });
                     let config_change = matches!(
                         request,
                         Request::SetConfig { .. } | Request::UnsetConfig { .. }
@@ -368,7 +402,9 @@ impl Server {
                             .unwrap_or(&app);
                         dispatch::execute(current_app, &self.session_id, request)?
                     };
-                    if saved && (output.code == 0 || output.accepted_save) {
+                    if (is_apply && (output.code == 0 || output.accepted_save))
+                        || (is_lifecycle && output.accepted_save)
+                    {
                         output.accepted_save = true;
                         if let Some(controller) = controller
                             && let Err(error) = controller.saved(cancelled.clone())
@@ -376,10 +412,13 @@ impl Server {
                             output.notices.push(error.to_string());
                         }
                         if hc_selected
-                            && let Err(error) =
-                                controllers
-                                    .hc
-                                    .after_save(self, &app, true, stopping, plugin_root)
+                            && let Err(error) = controllers.hc.after_save(
+                                self,
+                                &app,
+                                is_apply,
+                                stopping,
+                                plugin_root,
+                            )
                         {
                             self.warning(&error)?;
                         }
@@ -444,6 +483,7 @@ fn native_queue(request: &Request) -> bool {
             | Request::OpenCard {}
             | Request::CloseCard {}
             | Request::Apply { .. }
+            | Request::Lifecycle { .. }
             | Request::Enroll { .. }
             | Request::SetCardMode { .. }
             | Request::SetConfig { .. }

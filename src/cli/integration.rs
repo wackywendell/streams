@@ -172,12 +172,18 @@ impl App {
         let result = (|| {
             let records = application::open_records(&self.config)
                 .map_err(|_| WireError::unavailable("configured catalog is unavailable"))?;
+            let decay_days = self
+                .config
+                .load()
+                .map(|settings| settings.lifecycle.decay_days)
+                .unwrap_or(0);
             let facade = application::integration::Streams::admit(&records, &request.scope)
                 .map_err(|_| {
                     WireError::unavailable(
                         "configured catalog and host do not match the requested scope",
                     )
-                })?;
+                })?
+                .with_lifecycle(decay_days, now_ms());
             match &request.body {
                 ModBody::Read { selections } => {
                     use streams::integration::{

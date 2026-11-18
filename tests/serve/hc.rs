@@ -419,7 +419,7 @@ fn hc_enrollment_and_apply_bind_space_route_terminal_project_name_and_emit_save_
         let source_label_key = register_source(&mut conn);
         drop(conn);
 
-        // 2. Context read: checks caller space association (unassociated)
+        // 2. Context read: checks caller space association (unassociated) and walks parent chain
         let mut conn = BufReader::new(listener.accept().unwrap().0);
         respond_hello(&mut conn);
         let doc_streams = request(&mut conn, "doc.get");
@@ -432,6 +432,9 @@ fn hc_enrollment_and_apply_bind_space_route_terminal_project_name_and_emit_save_
         let doc_layout = request(&mut conn, "doc.get");
         assert_eq!(doc_layout["params"], json!({"name":"herdr-app"}));
         reply(&mut conn, &doc_layout, layout_doc());
+        let get_caller = request(&mut conn, "terminal.get");
+        assert_eq!(get_caller["params"], json!({"terminal":"t1"}));
+        reply(&mut conn, &get_caller, terminal(json!({})));
         drop(conn);
 
         // 3. Enroll follow-on: bind_session (binds unassociated space s1 + writes streams.work)
@@ -612,6 +615,262 @@ fn hc_enrollment_and_apply_bind_space_route_terminal_project_name_and_emit_save_
     let resp4 = child.next();
     assert_eq!(resp4["id"], 4);
     assert_eq!(resp4["outcome"]["status"], "success", "{resp4}");
+
+    assert_eq!(child.finish(), (0, String::new()));
+    server.join().unwrap();
+}
+
+#[test]
+fn hc_caller_stream_inherits_from_parent_terminal() {
+    use streams::integration::WorkScope;
+    let f = Fixture::new();
+    let (saved, _) = f.capture();
+    let stream_id = saved["stream"]["id"].as_str().unwrap().to_string();
+    let catalog_source = saved["catalog_source"].as_str().unwrap().to_string();
+    let host_id = saved["host_id"].as_str().unwrap().to_string();
+    let scope = WorkScope {
+        catalog: catalog_source,
+        host: host_id,
+    };
+    let work = streams::runtime::hc::labels::work_value(&scope, &stream_id).unwrap();
+
+    let directory = tempfile::Builder::new()
+        .prefix("hc-parent-")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let socket = directory.path().join("s");
+    let listener = UnixListener::bind(&socket).unwrap();
+
+    let server = thread::spawn(move || {
+        let respond_hello = |reader: &mut BufReader<UnixStream>| {
+            let frame = request(reader, "hello");
+            reply(
+                reader,
+                &frame,
+                json!({
+                    "generation": 1,
+                    "framed": false,
+                    "core": { "id": "core" },
+                    "methods": ["hello", "terminal.get", "terminal.label", "doc.get", "doc.set"]
+                }),
+            );
+        };
+
+        // Context read: t1 is in unassociated space s2, parent t_parent has streams.work.
+        let mut conn = BufReader::new(listener.accept().unwrap().0);
+        respond_hello(&mut conn);
+        let doc_streams = request(&mut conn, "doc.get");
+        reply(
+            &mut conn,
+            &doc_streams,
+            json!({"name":"streams","version":0,"updated_at":0,"value":null}),
+        );
+        let doc_layout = request(&mut conn, "doc.get");
+        reply(
+            &mut conn,
+            &doc_layout,
+            json!({
+                "name": "herdr-app",
+                "version": 1,
+                "updated_at": 1,
+                "value": {
+                    "spaces": [{
+                        "id": "s2",
+                        "name": "Space 2",
+                        "tabs": [{
+                            "id": "tab2",
+                            "name": "Tab 2",
+                            "root": { "id": "p2", "type": "block", "content": { "terminal": "t1" } }
+                        }]
+                    }]
+                }
+            }),
+        );
+        let get_child = request(&mut conn, "terminal.get");
+        assert_eq!(get_child["params"], json!({"terminal":"t1"}));
+        reply(
+            &mut conn,
+            &get_child,
+            json!({"address":"t1","state":"live","pid":std::process::id(),"parent":"t_parent","labels":{}}),
+        );
+        let get_parent = request(&mut conn, "terminal.get");
+        assert_eq!(get_parent["params"], json!({"terminal":"t_parent"}));
+        reply(
+            &mut conn,
+            &get_parent,
+            json!({"address":"t_parent","state":"live","pid":std::process::id(),"labels":{"streams.work":work}}),
+        );
+        drop(conn);
+    });
+
+    let mut child = start(&f, &socket);
+    child
+        .send(json!({"type":"request","id":1,"request":{"kind":"context"},"pi_context":context()}));
+    let resp = child.response(1);
+    assert_eq!(resp["outcome"]["status"], "success", "{resp}");
+    assert_eq!(resp["outcome"]["result"]["stream"]["id"], stream_id);
+
+    assert_eq!(child.finish(), (0, String::new()));
+    server.join().unwrap();
+}
+
+#[test]
+fn hc_lifecycle_emits_save_notice_when_changed_and_none_on_noop() {
+    use streams::integration::WorkScope;
+    let f = Fixture::new();
+    let (saved, _) = f.capture();
+    let stream_id = saved["stream"]["id"].as_str().unwrap().to_string();
+    let catalog_source = saved["catalog_source"].as_str().unwrap().to_string();
+    let host_id = saved["host_id"].as_str().unwrap().to_string();
+    let scope = WorkScope {
+        catalog: catalog_source.clone(),
+        host: host_id,
+    };
+    let expected_work = streams::runtime::hc::labels::work_value(&scope, &stream_id).unwrap();
+    let expected_notice_key = scope.notification_key();
+
+    let directory = tempfile::Builder::new()
+        .prefix("hc-life-")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let socket = directory.path().join("s");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let work_for_server = expected_work;
+    let notice_key_for_server = expected_notice_key.clone();
+
+    let server = thread::spawn(move || {
+        let respond_hello = |reader: &mut BufReader<UnixStream>| {
+            let frame = request(reader, "hello");
+            reply(
+                reader,
+                &frame,
+                json!({
+                    "generation": 1,
+                    "framed": false,
+                    "core": { "id": "core" },
+                    "methods": ["hello", "terminal.get", "terminal.label", "doc.get", "doc.set"]
+                }),
+            );
+        };
+
+        // 1. SessionStarted (before enrollment): registers source only
+        let mut conn = BufReader::new(listener.accept().unwrap().0);
+        let source_label_key = register_source(&mut conn);
+        drop(conn);
+
+        // 2. Enroll follow-on: bind_session + notify_saved
+        let mut conn = BufReader::new(listener.accept().unwrap().0);
+        respond_hello(&mut conn);
+        let doc_streams = request(&mut conn, "doc.get");
+        reply(
+            &mut conn,
+            &doc_streams,
+            json!({"name":"streams","version":0,"updated_at":0,"value":null}),
+        );
+        let doc_layout = request(&mut conn, "doc.get");
+        reply(
+            &mut conn,
+            &doc_layout,
+            json!({
+                "name": "herdr-app",
+                "version": 1,
+                "updated_at": 1,
+                "value": { "spaces": [{ "id": "s1", "name": "S1", "tabs": [{ "id": "tab1", "name": "T1", "root": { "id": "p1", "type": "block", "content": { "terminal": "t1" } } }] }] }
+            }),
+        );
+        let doc_set = request(&mut conn, "doc.set");
+        reply(
+            &mut conn,
+            &doc_set,
+            json!({"name":"streams","version":1,"updated_at":2,"value":doc_set["params"]["value"]}),
+        );
+        let set_work = request(&mut conn, "terminal.label");
+        reply(
+            &mut conn,
+            &set_work,
+            terminal(json!({"streams.work": work_for_server})),
+        );
+        drop(conn);
+
+        let mut conn = BufReader::new(listener.accept().unwrap().0);
+        respond_hello(&mut conn);
+        let set_notice = request(&mut conn, "terminal.label");
+        let tok = set_notice["params"]["labels"][&notice_key_for_server]
+            .as_str()
+            .unwrap()
+            .to_string();
+        reply(
+            &mut conn,
+            &set_notice,
+            terminal(json!({(&notice_key_for_server): tok})),
+        );
+        drop(conn);
+
+        // 3. Lifecycle park (active -> parked) triggers after_save notice WITHOUT space binding!
+        let mut conn = BufReader::new(listener.accept().unwrap().0);
+        respond_hello(&mut conn);
+        let set_notice2 = request(&mut conn, "terminal.label");
+        let tok2 = set_notice2["params"]["labels"][&notice_key_for_server]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_ne!(tok2, tok);
+        reply(
+            &mut conn,
+            &set_notice2,
+            terminal(json!({(&notice_key_for_server): tok2})),
+        );
+        drop(conn);
+
+        // 4. Repeat lifecycle park (no-op) does NOT connect to hc or emit a notice; next is EOF retire.
+        let mut conn = BufReader::new(listener.accept().unwrap().0);
+        respond_hello(&mut conn);
+        let retire = request(&mut conn, "terminal.label");
+        assert_eq!(
+            retire["params"],
+            json!({"terminal":"t1","labels":{source_label_key:""}})
+        );
+        reply(&mut conn, &retire, terminal(json!({})));
+    });
+
+    let mut child = start(&f, &socket);
+    child.send(json!({"type":"request","id":1,"request":{"kind":"session_started"},"pi_context":context()}));
+    let _view1 = child.next();
+    let resp1 = child.next();
+    assert_eq!(resp1["id"], 1);
+
+    let enrollment = json!({
+        "version": 2,
+        "operation_id": "hc-life-enroll",
+        "catalog_source": catalog_source,
+        "harness": "pi",
+        "harness_session_id": "pi-session",
+        "actor": "user",
+        "cwd": f.directory.path(),
+        "stream_id": stream_id,
+        "session": { "title": "Life Pi" }
+    });
+    child.send(json!({"type":"request","id":2,"request":{"kind":"enroll","request":enrollment},"pi_context":context()}));
+    let _view2 = child.next();
+    let resp2 = child.next();
+    assert_eq!(resp2["id"], 2);
+    assert_eq!(resp2["outcome"]["status"], "success");
+
+    // First park changes status and emits a view + save notice.
+    child.send(json!({"type":"request","id":3,"request":{"kind":"lifecycle","action":"park"},"pi_context":context()}));
+    let view3 = child.next();
+    assert_eq!(view3["type"], "view");
+    let resp3 = child.next();
+    assert_eq!(resp3["id"], 3);
+    assert_eq!(resp3["outcome"]["status"], "success");
+    assert_eq!(resp3["outcome"]["result"]["session_changed"], true);
+
+    // Second park is a no-op and emits NO view/notice.
+    child.send(json!({"type":"request","id":4,"request":{"kind":"lifecycle","action":"park"},"pi_context":context()}));
+    let resp4 = child.next();
+    assert_eq!(resp4["id"], 4);
+    assert_eq!(resp4["outcome"]["status"], "success");
+    assert_eq!(resp4["outcome"]["result"]["session_changed"], false);
 
     assert_eq!(child.finish(), (0, String::new()));
     server.join().unwrap();

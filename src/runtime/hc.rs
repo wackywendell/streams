@@ -1221,6 +1221,73 @@ impl HcOperation {
         Ok(presentation)
     }
 
+    pub fn caller_stream_id(
+        &mut self,
+        scope: &WorkScope,
+        caller_terminal: &str,
+    ) -> Result<Option<String>, FrontendError> {
+        use crate::integration::PresentationSnapshot;
+        let presentation = self.presentation_for_caller(scope, Some(caller_terminal))?;
+        if let Some(stream) = presentation
+            .caller_space()
+            .and_then(|space| presentation.stream_for_space(&space))
+        {
+            return Ok(Some(stream));
+        }
+        let mut ancestors = Vec::new();
+        if self.supports("terminal.get") {
+            let mut visited = BTreeSet::new();
+            let mut current = caller_terminal.to_owned();
+            let mut depth = 0usize;
+            while depth < 8 && visited.insert(current.clone()) {
+                depth += 1;
+                let Ok(value) = self
+                    .client
+                    .request("terminal.get", &json!({ "terminal": current }))
+                else {
+                    break;
+                };
+                if depth > 1
+                    && let Some(label) = value
+                        .get("labels")
+                        .and_then(Value::as_object)
+                        .and_then(|labels| labels.get("streams.work"))
+                        .and_then(Value::as_str)
+                    && let Ok(parsed) = crate::codec::load_json(label)
+                    && let Ok(route) = serde_json::from_value::<WorkLabel>(parsed)
+                    && route.version == 1
+                    && route.scope == *scope
+                    && crate::model::check_text(&route.stream, "Stream", false).is_ok()
+                {
+                    return Ok(Some(route.stream));
+                }
+                if depth > 1 {
+                    ancestors.push(NativeRef {
+                        adapter: FrontendId::hc(),
+                        endpoint: presentation.published.endpoint.clone(),
+                        key: current.clone(),
+                    });
+                }
+                let Some(parent) = value
+                    .get("parent")
+                    .and_then(Value::as_str)
+                    .filter(|p| !p.is_empty() && !p.contains('/'))
+                else {
+                    break;
+                };
+                current = parent.to_owned();
+            }
+        }
+        for ancestor in ancestors {
+            if let Some(space) = presentation.space_for_terminal(&ancestor)
+                && let Some(stream) = presentation.stream_for_space(&space)
+            {
+                return Ok(Some(stream));
+            }
+        }
+        Ok(None)
+    }
+
     /// Bind an unassociated published caller space to `stream` and write `streams.work` on `caller_terminal`.
     pub fn bind_caller_terminal(
         &mut self,
@@ -1244,7 +1311,6 @@ impl HcOperation {
         use crate::integration::PresentationSnapshot;
         if let Some(space) = presentation.caller_space()
             && !presentation.before.rows.contains_key(&space.key)
-            && presentation.associated_spaces(stream).is_empty()
         {
             let wanted = SpaceAssociation {
                 space,

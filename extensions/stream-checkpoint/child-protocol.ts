@@ -38,6 +38,7 @@ export type ChildRequest =
  | {kind: "preview"; catalog: DomainObject; action: "apply" | "enroll"; request: DomainObject}
  | {kind: "enroll" | "apply"; request: DomainObject}
  | {kind: "sync"}
+ | {kind: "lifecycle"; action: "resume" | "park"}
  | {kind: "artifact"; request: ArtifactRequest}
  | {kind: "set_title_default"; target: "stream" | "session"; mode: TitleDefault}
  | {kind: "get_config"}

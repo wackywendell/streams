@@ -125,6 +125,11 @@ export class StreamCli {
  async getConfig(): Promise<ConfigSnapshot> {return this.configSnapshotValue(await this.run({kind:"get_config"}));}
  async setConfig(key: string, value: string): Promise<ConfigSnapshot> {return this.configSnapshotValue(await this.run({kind:"set_config", key, value}));}
  async unsetConfig(key: string): Promise<ConfigSnapshot> {return this.configSnapshotValue(await this.run({kind:"unset_config", key}));}
+ async lifecycle(action: "resume" | "park"): Promise<DomainObject> {
+  const value = await this.run({kind:"lifecycle", action});
+  if (!object(value) || typeof value.session_changed !== "boolean" || typeof value.stream_changed !== "boolean") throw new StreamsCliError("Invalid lifecycle result");
+  return value;
+ }
 }
 export function receiptText(value: Receipt): string {
  const saves = value.saves ?? (value.save ? [{operation_id: value.operation_id ?? "", save: value.save}] : []);

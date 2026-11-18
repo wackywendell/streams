@@ -43,6 +43,17 @@ function parseResetArgs(instructions: string): {auto: boolean; target: "all" | "
  }
  return {auto, target: target ?? "all"};
 }
+const shouldStartStreams = (ctx: ExtensionContext): boolean =>
+ ctx.mode !== "print" &&
+ ctx.mode !== "json" &&
+ (typeof ctx.sessionManager.getSessionFile !== "function" || ctx.sessionManager.getSessionFile() !== undefined);
+
+const isInteractiveTui = (ctx: ExtensionContext): boolean =>
+ ctx.hasUI === true &&
+ ctx.mode === "tui" &&
+ shouldStartStreams(ctx) &&
+ hasConversation(ctx.sessionManager);
+
 export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}): void {
  const agentDir = options.agentDir ?? process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
  let snapshot = defaultConfigSnapshot();
@@ -393,13 +404,14 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
  pi.registerTool({name: "create_stream", label: "Create initial Stream", description: "Ask the user to create an initial durable Stream and enroll this conversation. Never switches existing membership or launches workspaces.", parameters: Type.Object({title: Type.String(), reason: Type.String()}), async execute(_id, args, _signal, _update, ctx) {return result(await attach(ctx, args));}});
  pi.on("session_start", async (_event, ctx) => {
   clearStatusTimer();ctx.ui.setStatus?.("stream-debug", undefined);
+  if (!shouldStartStreams(ctx) && !options.cli) return;
   const state = useContext(ctx, true);
   if (!state.hydrated) await state.hydrate;
   else await state.ready;
   if (current(state, ctx)) await sync(ctx, "start", state);
  });
  pi.on("session_info_changed", async (event, ctx) => {
-  if (!event.name?.trim()) return;
+  if (!event.name?.trim() || (!shouldStartStreams(ctx) && !options.cli)) return;
   const state = useContext(ctx);
   const fence = scope.fence();
   try {
@@ -412,17 +424,20 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
   } catch(error) {if (fence.current()) warning(`Pi name changed, but its Streams edit failed: ${String(error)}`);}
  });
  pi.on("agent_end", (event, ctx) => {
-  if (owned && holder.current !== owned) return;
+  if (owned && holder.current !== owned || !shouldStartStreams(ctx)) return;
   useContext(ctx);
   if (!event.messages.some((message) => message.role === "assistant" && ["stop", "length"].includes(message.stopReason))) return;
   try {reporter.response(ctx);} catch(error) {warning(error);}
  });
- pi.on("session_tree", (_event, ctx) => {if (owned && holder.current !== owned) return;useContext(ctx);clearStatusTimer();ctx.ui.setStatus?.("stream-debug", undefined);scope.invalidate();});
+ pi.on("session_tree", (_event, ctx) => {if (owned && holder.current !== owned || (!shouldStartStreams(ctx) && !options.cli)) return;useContext(ctx);clearStatusTimer();ctx.ui.setStatus?.("stream-debug", undefined);scope.invalidate();});
  pi.on("session_shutdown", (_event, ctx) => shutdown ??= (async () => {
   const state = owned;
   if (!state || !current(state, ctx)) return;
   clearStatusTimer();ctx.ui.setStatus?.("stream-debug", undefined);
   native?.stop();scope.reset(ctx, true);
+  if (isInteractiveTui(ctx)) {
+   try { await clientFor(ctx, state).lifecycle?.("park"); } catch {}
+  }
   // Flush already-saved catalog changes only, never infer a final summary.
   try {await sync(ctx, "shutdown", state);} finally {
    holder.retirement = state.retire();

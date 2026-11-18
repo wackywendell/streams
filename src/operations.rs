@@ -11,7 +11,29 @@ use serde_json::{Map, Value};
 use strum::{AsRefStr, Display, EnumString, VariantNames};
 
 use crate::codec::{record_from_data, record_to_data};
-use crate::model::{NamingMode, Record, RecordKind, ValidationError};
+use crate::model::{NamingMode, Record, RecordKind, Session, Status, ValidationError};
+
+/// Read-time Stream activity projection: preserves explicit effort lifecycle states
+/// (Done, Closed, Blocked, Waiting) and derives live activity from child Sessions
+/// when the Stream is Active or Parked.
+pub fn effective_stream_status(stream_status: Status, sessions: &[&Session]) -> Status {
+    if matches!(
+        stream_status,
+        Status::Done | Status::Closed | Status::Blocked | Status::Waiting
+    ) || sessions.is_empty()
+    {
+        return stream_status;
+    }
+    if sessions.iter().any(|s| s.status == Status::Active) {
+        Status::Active
+    } else if sessions.iter().any(|s| s.status == Status::Blocked) {
+        Status::Blocked
+    } else if sessions.iter().any(|s| s.status == Status::Waiting) {
+        Status::Waiting
+    } else {
+        Status::Parked
+    }
+}
 
 /// Who supplied the intent. Automatic writes cannot change lifecycle or manual naming modes.
 #[derive(

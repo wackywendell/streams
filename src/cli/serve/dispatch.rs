@@ -1,5 +1,5 @@
 use streams::{
-    child_protocol::{CaptureTarget, DomainObject, PreviewAction, Request},
+    child_protocol::{CaptureTarget, DomainObject, LifecycleAction, PreviewAction, Request},
     config::ConfigKey,
     runtime::conversations::Harness,
 };
@@ -77,6 +77,49 @@ pub(super) fn execute(app: &App, session_id: &str, request: Request) -> Result<O
         Request::CardSettings {} => app.card_settings(session_id),
         Request::SetCardMode { target, mode } => app.set_card_mode(session_id, target, mode),
         Request::Sync {} => app.sync_records(),
+        Request::Lifecycle { action } => {
+            let opened = application::open_records(&app.config)?;
+            let op = uuid::Uuid::new_v4().to_string();
+            let update = match action {
+                LifecycleAction::Resume => {
+                    application::lifecycle::resume_session(&opened, Harness::Pi, session_id, &op)?
+                }
+                LifecycleAction::Park => {
+                    application::lifecycle::park_session(&opened, Harness::Pi, session_id, &op)?
+                }
+            };
+            let saves: Vec<serde_json::Value> = update
+                .saves
+                .iter()
+                .map(|save| {
+                    json!({
+                        "operation_id": op,
+                        "save": {
+                            "local": if save.repeated { "unchanged" } else { "persisted" },
+                            "domain": save.outcome,
+                        }
+                    })
+                })
+                .collect();
+            let mut body = json!({
+                "session_changed": update.session_changed,
+                "stream_changed": update.stream_changed,
+                "saves": saves,
+                "session": update.session.as_ref().map(|s| {
+                    streams::codec::record_to_data(&streams::model::Record::Session(s.clone()))
+                }),
+            });
+            if let Some(error) = &update.completion_error {
+                body["completion_error"] = json!(error);
+            }
+            let mut output = Output::value(body);
+            output.accepted_save = !update.saves.is_empty();
+            if let Some(error) = update.completion_error {
+                output.code = 2;
+                output.notices.push(error);
+            }
+            Ok(output)
+        }
         Request::Artifact { request } => app.artifact_request(request, Some(session_id)),
         Request::SessionStarted {}
         | Request::Attach {}

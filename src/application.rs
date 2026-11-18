@@ -4,6 +4,7 @@ pub mod artifacts;
 mod create;
 pub mod documents;
 pub mod integration;
+pub mod lifecycle;
 pub use create::create_record;
 mod enrollment;
 pub use enrollment::{EnrollmentSave, enroll_session, enroll_session_observed, enroll_stream};

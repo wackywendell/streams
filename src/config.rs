@@ -35,6 +35,8 @@ pub enum ConfigKey {
     StreamNaming,
     #[strum(serialize = "naming.session")]
     SessionNaming,
+    #[strum(serialize = "lifecycle.decay_days")]
+    LifecycleDecayDays,
     #[strum(serialize = "herdr.viewer.mode")]
     HerdrViewerMode,
     #[strum(serialize = "herdr.viewer.placement")]
@@ -82,6 +84,8 @@ pub enum ConfigSection {
     Frontend,
     #[strum(serialize = "naming")]
     Naming,
+    #[strum(serialize = "lifecycle")]
+    Lifecycle,
     #[strum(serialize = "herdr")]
     Herdr,
     #[strum(serialize = "herdr.viewer")]
@@ -274,12 +278,24 @@ impl Default for PiSettings {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LifecycleSettings {
+    pub decay_days: u32,
+}
+
+impl Default for LifecycleSettings {
+    fn default() -> Self {
+        Self { decay_days: 14 }
+    }
+}
+
 /// Effective host-local settings.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Settings {
     pub catalog_root: PathBuf,
     pub frontend: FrontendMode,
     pub naming: TitleDefaults,
+    pub lifecycle: LifecycleSettings,
     pub herdr: HerdrSettings,
     pub pi: PiSettings,
 }
@@ -439,6 +455,17 @@ impl Config {
                         *v = self.validate_toml_value(key, v.clone())?;
                     }
                 }
+                "lifecycle" => {
+                    for (name, v) in subtable.iter_mut() {
+                        let key =
+                            format!("lifecycle.{name}")
+                                .parse::<ConfigKey>()
+                                .map_err(|_| {
+                                    invalid(format!("unknown streams config key: lifecycle.{name}"))
+                                })?;
+                        *v = self.validate_toml_value(key, v.clone())?;
+                    }
+                }
                 "herdr" => self.validate_herdr_table(subtable)?,
                 "pi" => self.validate_pi_table(subtable)?,
                 _ => return Err(invalid(format!("invalid config section: {section}"))),
@@ -544,6 +571,14 @@ impl Config {
             .map_err(|_| invalid("invalid naming.session"))?
             .unwrap_or(NamingMode::Automatic);
 
+        let lifecycle_defaults = LifecycleSettings::default();
+        let lifecycle = LifecycleSettings {
+            decay_days: lookup_toml(&data, "lifecycle.decay_days")
+                .and_then(toml::Value::as_integer)
+                .map(|v| v as u32)
+                .unwrap_or(lifecycle_defaults.decay_days),
+        };
+
         let herdr_defaults = HerdrSettings::default();
         let herdr = HerdrSettings {
             viewer_mode: lookup_toml(&data, "herdr.viewer.mode")
@@ -639,6 +674,7 @@ impl Config {
                 stream: stream_naming,
                 session: session_naming,
             },
+            lifecycle,
             herdr,
             pi,
         })
@@ -675,6 +711,13 @@ impl Config {
             toml::Value::String(settings.naming.session.as_ref().into()),
         );
         root.insert("naming".into(), toml::Value::Table(naming));
+
+        let mut lifecycle = toml::Table::new();
+        lifecycle.insert(
+            "decay_days".into(),
+            toml::Value::Integer(i64::from(settings.lifecycle.decay_days)),
+        );
+        root.insert("lifecycle".into(), toml::Value::Table(lifecycle));
 
         let mut herdr = toml::Table::new();
         let mut viewer = toml::Table::new();
@@ -903,6 +946,12 @@ impl Config {
                 "false" => toml::Value::Boolean(false),
                 _ => return Err(invalid(format!("{key} must be true or false"))),
             },
+            ConfigKey::LifecycleDecayDays => {
+                let parsed: i64 = text
+                    .parse()
+                    .map_err(|_| invalid("lifecycle.decay_days must be an integer >= 0"))?;
+                toml::Value::Integer(parsed)
+            }
             ConfigKey::HerdrTimeoutMs => {
                 let parsed: i64 = text
                     .parse()
@@ -996,6 +1045,15 @@ impl Config {
             | ConfigKey::PiReportingDebugCommands => {
                 if !value.is_bool() {
                     return Err(invalid(format!("{key} must be a boolean")));
+                }
+                Ok(value)
+            }
+            ConfigKey::LifecycleDecayDays => {
+                let Some(n) = value.as_integer() else {
+                    return Err(invalid("lifecycle.decay_days must be an integer"));
+                };
+                if n < 0 || u32::try_from(n).is_err() {
+                    return Err(invalid("lifecycle.decay_days must be an integer >= 0"));
                 }
                 Ok(value)
             }

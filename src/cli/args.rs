@@ -193,6 +193,10 @@ pub(super) enum Command {
         #[arg(value_name = "REF")]
         reference: Option<String>,
     },
+    Tidy {
+        #[arg(long)]
+        days: Option<u32>,
+    },
     Sync,
     /// Inspect and manage the effort's reference relationships.
     Reference {
@@ -477,6 +481,13 @@ pub(super) enum SessionCommand {
         within: Option<String>,
         #[arg(long)]
         repository: Option<String>,
+    },
+    Lifecycle {
+        action: streams::child_protocol::LifecycleAction,
+        #[arg(long)]
+        harness: Harness,
+        #[arg(long)]
+        session_id: String,
     },
 }
 

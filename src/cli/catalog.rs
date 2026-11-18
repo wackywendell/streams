@@ -24,11 +24,32 @@ pub(super) fn list_records(
     publication: Option<serde_json::Value>,
 ) -> Result<Output> {
     let query = query.map(fold);
-    let mut streams: Vec<_> = opened
-        .inventory()?
+    let records = opened.inventory()?;
+    let mut sessions_by_stream: std::collections::BTreeMap<
+        (String, String),
+        Vec<streams::model::Session>,
+    > = std::collections::BTreeMap::new();
+    for read in &records {
+        if let Record::Session(session) = &read.record {
+            sessions_by_stream
+                .entry((session.host_id.clone(), session.stream_id.clone()))
+                .or_default()
+                .push(session.clone());
+        }
+    }
+    let mut streams: Vec<_> = records
         .into_iter()
         .filter_map(|read| match read.record {
-            Record::Stream(stream) => Some(stream),
+            Record::Stream(mut stream) => {
+                if let Some(members) =
+                    sessions_by_stream.get(&(stream.owner_host_id.clone(), stream.id.clone()))
+                {
+                    let refs: Vec<&_> = members.iter().collect();
+                    stream.status =
+                        streams::operations::effective_stream_status(stream.status, &refs);
+                }
+                Some(stream)
+            }
             _ => None,
         })
         .filter(|stream| {

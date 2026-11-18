@@ -1737,3 +1737,60 @@ test('record-local save receipt does not claim publication and uncertain writes 
  const publication=new StreamCli('/tmp',async()=>({status:'success',result:{local:'unchanged',domain:null}}));
  await assert.rejects(publication.sync(),/Invalid catalog receipt/);
 });
+
+test('interactive TUI sessions park on shutdown, stream reset does not mutate session status, and excluded contexts never start child or native controllers', async () => {
+ const lifecycleCalls=[];let inferCalls=0;
+ const handlers=new Map();
+ const liveCatalog=context();liveCatalog.session={...liveCatalog.session,status:'parked'};
+ const notices=[];
+ registerWorkCard({on:(name,fn)=>handlers.set(name,fn),registerCommand:()=>{},registerTool:()=>{},appendEntry:()=>{}},{
+  settings:{...defaults,reporting:'automatic',enrollment:'automatic',frequency:1},
+  cli:{sync:localSync,context:async()=>structuredClone(liveCatalog),lifecycle:async action=>{lifecycleCalls.push(action);return {session_changed:action==='park',stream_changed:false};},apply:async()=>({save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}},session:liveCatalog.session})},
+  infer:async()=>{inferCalls++;return {changes:{}};},
+ });
+ const tuiCtx={mode:'tui',hasUI:true,cwd:'/repo',sessionManager:{getSessionId:()=> 'native',getSessionFile:()=>'/tmp/s.jsonl',getLeafId:()=> 'leaf',getBranch:()=>[{id:'leaf'}],buildSessionProjection:()=>({messages:[{role:'user',content:'Real work',timestamp:0}]})},ui:{notify:text=>notices.push(text),setStatus:()=>{}}};
+ await handlers.get('session_start')({},tuiCtx);
+ assert.deepEqual(lifecycleCalls,[]);
+ handlers.get('agent_end')({messages:[{role:'assistant',stopReason:'stop'}]},tuiCtx);
+ await until(()=>inferCalls>=1);
+ assert.deepEqual(lifecycleCalls,[]);
+ await handlers.get('session_shutdown')({},tuiCtx);
+ assert.deepEqual(lifecycleCalls,['park']);
+ assert.deepEqual(notices,[]);
+
+ // Stream-only reset on a parked Session must keep capture observational and not call lifecycle.
+ const resetCalls=[];
+ const resetReporter=new Reporter({
+  cli:()=>({context:async()=>structuredClone(liveCatalog),lifecycle:async()=>{resetCalls.push('lifecycle');return {session_changed:true,stream_changed:false};},apply:async()=>({save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}})}),
+  settings:()=>defaults,
+  infer:async()=>({changes:{goal:'Updated goal'}}),
+  notice:()=>{},
+  receipt:()=>{},
+ });
+ resetReporter.reset(tuiCtx,false,'stream');
+ await resetReporter.idle();
+ assert.deepEqual(resetCalls,[]);
+
+ // Excluded contexts tested with production-shape child + native factories (no options.cli).
+ for (const skippedCtx of [
+  {mode:'print',hasUI:false,cwd:'/repo',sessionManager:{getSessionId:()=> 'p1',getSessionFile:()=>'/tmp/p1.jsonl',getLeafId:()=> 'l1',getBranch:()=>[{id:'l1'}],buildSessionProjection:()=>({messages:[{role:'user',content:'Print',timestamp:0}]})},ui:{notify:()=>{},setStatus:()=>{}}},
+  {mode:'json',hasUI:false,cwd:'/repo',sessionManager:{getSessionId:()=> 'j1',getSessionFile:()=>'/tmp/j1.jsonl',getLeafId:()=> 'l2',getBranch:()=>[{id:'l2'}],buildSessionProjection:()=>({messages:[{role:'user',content:'Json',timestamp:0}]})},ui:{notify:()=>{},setStatus:()=>{}}},
+  {mode:'tui',hasUI:true,cwd:'/repo',sessionManager:{getSessionId:()=> 'ephem',getSessionFile:()=>undefined,getLeafId:()=> 'l3',getBranch:()=>[{id:'l3'}],buildSessionProjection:()=>({messages:[{role:'user',content:'Ephem',timestamp:0}]})},ui:{notify:()=>{},setStatus:()=>{}}},
+ ]) {
+  const skippedHandlers=new Map();
+  let childStarts=0,childRequests=0,nativeStarts=0;
+  registerWorkCard({on:(name,fn)=>skippedHandlers.set(name,fn),registerCommand:()=>{},registerTool:()=>{},appendEntry:()=>{}},{
+   settings:{...defaults,reporting:'automatic',enrollment:'automatic',frequency:1},
+   child:()=>{childStarts++;return {run:async()=>{childRequests++;return {status:'success',result:{}};},stop:async()=>{}};},
+   native:async()=>{nativeStarts++;return {start:async()=>{nativeStarts++;},open:async()=>{},close:async()=>{},dispose:async()=>{}};},
+  });
+  await skippedHandlers.get('session_start')({},skippedCtx);
+  await skippedHandlers.get('session_info_changed')({name:'Renamed'},skippedCtx);
+  skippedHandlers.get('session_tree')({},skippedCtx);
+  skippedHandlers.get('agent_end')({messages:[{role:'assistant',stopReason:'stop'}]},skippedCtx);
+  await turn();
+  assert.equal(childStarts,0);
+  assert.equal(childRequests,0);
+  assert.equal(nativeStarts,0);
+ }
+});

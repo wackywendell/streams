@@ -537,7 +537,7 @@ impl App {
         })
     }
     fn hc_caller_stream_id(&self, host: &str, catalog_source: &str) -> Result<Option<String>> {
-        use streams::integration::{PresentationSnapshot, WorkScope};
+        use streams::integration::WorkScope;
         let configured = self.config.load()?.frontend;
         if !self.hc_selected(&configured, None)? {
             return Ok(None);
@@ -559,12 +559,38 @@ impl App {
         let client = frontend::hc::HcClient::connect(socket, None, 5.0, None)
             .map_err(|error| CliError::message(error.message))?;
         let mut operation = runtime::hc::HcOperation::new(client);
-        let presentation = operation
-            .presentation_for_caller(&scope, Some(caller))
+        operation
+            .caller_stream_id(&scope, caller)
+            .map_err(|error| CliError::message(error.message))
+    }
+    pub(super) fn bind_hc_caller_terminal(&self, stream_id: &str) -> Result<()> {
+        let Some(terminal) = self
+            .environment
+            .get("HC_TERMINAL_ID")
+            .map(String::as_str)
+            .filter(|value| !value.is_empty() && !value.contains('/'))
+        else {
+            return Ok(());
+        };
+        let configured = self.config.load()?.frontend;
+        if !self.hc_selected(&configured, None)? {
+            return Ok(());
+        }
+        let opened = application::open_records(&self.config)?;
+        let scope = streams::integration::WorkScope {
+            catalog: opened.source_id().into(),
+            host: opened.host().as_str().into(),
+        };
+        let socket = frontend::hc::HcEndpoint::resolve(&self.environment, &self.cwd)
             .map_err(|error| CliError::message(error.message))?;
-        Ok(presentation
-            .caller_space()
-            .and_then(|space| presentation.stream_for_space(&space)))
+        let client = frontend::hc::HcClient::connect(socket, None, 5.0, None)
+            .map_err(|error| CliError::message(error.message))?;
+        let mut operation = runtime::hc::HcOperation::new(client);
+        match operation.bind_caller_terminal(&scope, terminal, stream_id) {
+            streams::integration::Effect::Applied { value: () } => Ok(()),
+            streams::integration::Effect::NotApplied { reason }
+            | streams::integration::Effect::Uncertain { reason } => Err(CliError::message(reason)),
+        }
     }
     pub(super) fn notify_hc_save(&self) -> Result<()> {
         let Some(terminal) = self
@@ -830,7 +856,8 @@ impl App {
                     ));
                 }
                 let stream = self.record_target(&opened, &target)?;
-                catalog::update_record(
+                let stream_id = stream.id.clone();
+                let mut output = catalog::update_record(
                     &opened,
                     &stream,
                     title,
@@ -838,7 +865,27 @@ impl App {
                     settings.naming,
                     |path| self.read_text(path),
                     || Uuid::new_v4().to_string(),
-                )
+                )?;
+                if output.accepted_save
+                    && output
+                        .value
+                        .get("stream")
+                        .and_then(|s| s.get("status"))
+                        .and_then(Value::as_str)
+                        == Some("closed")
+                {
+                    let children = application::lifecycle::close_stream_sessions(
+                        &opened,
+                        &stream_id,
+                        &Uuid::new_v4().to_string(),
+                    );
+                    if let Some(error) = children.completion_error {
+                        output.code = 2;
+                        output.notices.push(error.clone());
+                        output.value["completion_error"] = json!(error);
+                    }
+                }
+                Ok(output)
             }
             Command::Close { target } => {
                 self.set_stream_status(&target, streams::model::Status::Closed)
@@ -849,6 +896,39 @@ impl App {
             Command::Check { reference } => {
                 let opened = application::open_records(&self.config)?;
                 catalog::check(&opened, reference.as_deref())
+            }
+            Command::Tidy { days } => {
+                let opened = application::open_records(&self.config)?;
+                let settings = self.config.load()?;
+                let decay_days = days.unwrap_or(settings.lifecycle.decay_days);
+                let summary = application::lifecycle::decay_host_records(
+                    &opened,
+                    decay_days,
+                    now_ms(),
+                    &Uuid::new_v4().to_string(),
+                )?;
+                let plain = format!(
+                    "closed {} stream(s), {} session(s) (decay_days={})",
+                    summary.closed_streams, summary.closed_sessions, decay_days
+                );
+                let mut output = Output::plain(
+                    json!({
+                        "decay_days": decay_days,
+                        "closed_sessions": summary.closed_sessions,
+                        "closed_streams": summary.closed_streams,
+                        "errors": summary.errors,
+                    }),
+                    plain,
+                );
+                output.accepted_save = summary.closed_sessions > 0 || summary.closed_streams > 0;
+                if !summary.errors.is_empty() {
+                    output.code = 2;
+                    output.notices.extend(summary.errors);
+                }
+                if output.accepted_save {
+                    let _ = self.notify_hc_save();
+                }
+                Ok(output)
             }
             Command::Sync => self.sync_records(),
             Command::Reference { command } => self.reference_cli(command),
@@ -867,7 +947,8 @@ impl App {
             ));
         }
         let stream = self.record_target(&opened, target)?;
-        catalog::save_stream_edit(
+        let stream_id = stream.id.clone();
+        let mut output = catalog::save_stream_edit(
             &opened,
             &stream,
             json!({"status": status})
@@ -876,7 +957,20 @@ impl App {
                 .clone(),
             settings.naming,
             &Uuid::new_v4().to_string(),
-        )
+        )?;
+        if output.accepted_save && status == streams::model::Status::Closed {
+            let children = application::lifecycle::close_stream_sessions(
+                &opened,
+                &stream_id,
+                &Uuid::new_v4().to_string(),
+            );
+            if let Some(error) = children.completion_error {
+                output.code = 2;
+                output.notices.push(error.clone());
+                output.value["completion_error"] = json!(error);
+            }
+        }
+        Ok(output)
     }
     fn configure(&self, overrides_flag: bool, action: Option<ConfigCommand>) -> Result<Output> {
         let format_plain = |toml_val: &toml::Value, json_val: &Value| -> Result<String> {
@@ -1097,13 +1191,40 @@ impl App {
                 "catalog root setting changed during apply",
             ));
         }
-        catalog::apply(
+        let mut output = catalog::apply(
             opened.records(),
             source,
             opened.source_id(),
             settings.naming,
-        )
+        )?;
+        if output.accepted_save
+            && let Some(stream) = output.value.get("stream")
+            && stream.get("status").and_then(Value::as_str) == Some("closed")
+            && let Some(stream_id) = stream.get("id").and_then(Value::as_str)
+        {
+            let children = application::lifecycle::close_stream_sessions(
+                &opened,
+                stream_id,
+                &Uuid::new_v4().to_string(),
+            );
+            if let Some(error) = children.completion_error {
+                output.code = 2;
+                output.notices.push(error.clone());
+                output.value["completion_error"] = json!(error);
+            }
+        }
+        Ok(output)
     }
+}
+
+pub(super) fn now_ms() -> u64 {
+    u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+    )
+    .unwrap_or(u64::MAX)
 }
 
 struct AgentObservation {

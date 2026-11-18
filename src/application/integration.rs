@@ -5,13 +5,16 @@ use crate::{
     integration::{
         ConversationId, LinkKind, ReadReply, Reference, ResolvedTarget, SessionView, WorkScope,
     },
-    model::{Record, RecordKind, Session, Stream, ValidationError},
+    model::{Record, RecordKind, Session, Status, Stream, ValidationError},
+    operations::effective_stream_status,
     storage::records::{RecordAddress, RecordReader, RecordStore},
 };
 
 pub struct Streams<'a> {
     records: &'a OpenedRecords,
     scope: WorkScope,
+    decay_days: u32,
+    now_ms: u64,
 }
 
 impl<'a> Streams<'a> {
@@ -22,7 +25,14 @@ impl<'a> Streams<'a> {
                 catalog: records.source_id().into(),
                 host: records.host().as_str().into(),
             },
+            decay_days: 0,
+            now_ms: 0,
         }
+    }
+    pub fn with_lifecycle(mut self, decay_days: u32, now_ms: u64) -> Self {
+        self.decay_days = decay_days;
+        self.now_ms = now_ms;
+        self
     }
     /// A supplied scope is an assertion, never a selector for another catalog or host.
     pub fn admit(records: &'a OpenedRecords, expected: &WorkScope) -> Result<Self> {
@@ -243,6 +253,29 @@ impl<'a> Streams<'a> {
         }
     }
 
+    fn projected_status(
+        &self,
+        stream_status: Status,
+        sessions: &[&Session],
+        last_updated_ms: u64,
+    ) -> Status {
+        let cutoff_ms = if self.decay_days > 0 && self.now_ms > 0 {
+            self.now_ms
+                .saturating_sub(u64::from(self.decay_days).saturating_mul(86_400_000))
+        } else {
+            0
+        };
+        if !matches!(stream_status, Status::Done | Status::Closed)
+            && cutoff_ms > 0
+            && last_updated_ms > 0
+            && last_updated_ms < cutoff_ms
+        {
+            Status::Closed
+        } else {
+            effective_stream_status(stream_status, sessions)
+        }
+    }
+
     fn host_stream_summaries(
         &self,
         sessions: &std::collections::BTreeMap<String, Session>,
@@ -253,12 +286,18 @@ impl<'a> Streams<'a> {
         let mut addresses = Vec::with_capacity(stream_reads.len() + sessions.len());
         let mut counts: std::collections::BTreeMap<String, (usize, usize)> =
             std::collections::BTreeMap::new();
+        let mut by_stream: std::collections::BTreeMap<&str, Vec<&Session>> =
+            std::collections::BTreeMap::new();
         for session in sessions.values() {
             let entry = counts.entry(session.stream_id.clone()).or_insert((0, 0));
             if session.status == crate::model::Status::Active {
                 entry.0 += 1;
             }
             entry.1 += 1;
+            by_stream
+                .entry(session.stream_id.as_str())
+                .or_default()
+                .push(session);
             addresses.push(RecordAddress::new(host, RecordKind::Session, &session.id)?);
         }
         let mut streams = Vec::with_capacity(stream_reads.len());
@@ -289,11 +328,16 @@ impl<'a> Streams<'a> {
             let last_updated_ms = stream_ms.max(session_ms);
             let (active_sessions, total_sessions) =
                 counts.get(&stream.id).copied().unwrap_or((0, 0));
+            let members = by_stream
+                .get(stream.id.as_str())
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            let status = self.projected_status(stream.status, members, last_updated_ms);
             summaries.push(StreamSummary {
                 id: stream.id,
                 title: stream.title,
                 goal_short: stream.goal_short,
-                status: stream.status,
+                status,
                 active_sessions,
                 total_sessions,
                 last_updated_ms,
@@ -613,12 +657,13 @@ impl<'a> Streams<'a> {
                 }
             }
         }
+        let status = effective_stream_status(stream.status, &members);
         Ok(StreamView {
             id: stream.id,
             title: stream.title,
             goal: stream.goal,
             goal_short: stream.goal_short,
-            status: stream.status,
+            status,
             sessions: members.into_iter().map(SessionSummary::from).collect(),
             documents,
             links,

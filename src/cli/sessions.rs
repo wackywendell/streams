@@ -263,6 +263,39 @@ impl App {
                     json!({"session_id":session.id,"host_id":session.host_id,"directory":directory}),
                 ))
             }
+            SessionCommand::Lifecycle {
+                action,
+                harness,
+                session_id,
+            } => {
+                let op = Uuid::new_v4().to_string();
+                let update = match action {
+                    streams::child_protocol::LifecycleAction::Resume => {
+                        application::lifecycle::resume_session(&opened, harness, &session_id, &op)?
+                    }
+                    streams::child_protocol::LifecycleAction::Park => {
+                        application::lifecycle::park_session(&opened, harness, &session_id, &op)?
+                    }
+                };
+                let mut output = Output::value(json!({
+                    "session_changed": update.session_changed,
+                    "stream_changed": update.stream_changed,
+                    "saves": update.saves.len(),
+                    "session": update.session.as_ref().map(|s| {
+                        streams::codec::record_to_data(&streams::model::Record::Session(s.clone()))
+                    }),
+                }));
+                output.accepted_save = !update.saves.is_empty();
+                if let Some(error) = update.completion_error {
+                    output.code = 2;
+                    output.notices.push(error.clone());
+                    output.value["completion_error"] = json!(error);
+                }
+                if output.accepted_save {
+                    let _ = self.notify_hc_save();
+                }
+                Ok(output)
+            }
         }
     }
 }
