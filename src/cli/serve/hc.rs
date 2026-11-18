@@ -12,6 +12,7 @@ use streams::{
     runtime::{
         RuntimeError,
         conversations::{ConversationRoots, Harness, conversation_file},
+        frontends::HcFrontend,
         hc::sources::SourceRegistration,
     },
     storage::records::{RecordAddress, RecordStore},
@@ -39,27 +40,10 @@ pub(super) fn remember_locator(
         Err(_) => return Err(CliError::message("Pi session file could not be verified")),
     };
     let opened = super::super::application::open_records(&app.config)?;
-    let host = opened.host().as_str();
-    let id = Session::id_for(host, "pi", &context.conversation.native_id);
-    let address = RecordAddress::new(host, RecordKind::Session, &id)
-        .map_err(|_| CliError::message("Pi Session is unavailable"))?;
-    let found = opened
-        .records()
-        .with_reader(|reader| reader.read(&address))
-        .map_err(|_| CliError::message("Pi Session is unavailable"))?;
-    let Some(found) = found else {
+    let Some(session) = pi_session(&opened, &context.conversation.native_id)? else {
         return Ok(());
     };
-    let Record::Session(session) = found.record else {
-        return Err(CliError::message("Pi Session is unavailable"));
-    };
-    if session.host_id != host
-        || session.harness != "pi"
-        || session.harness_session_id != context.conversation.native_id
-    {
-        return Err(CliError::message("Pi Session identity does not match"));
-    }
-    app.locations(opened.root(), host)?
+    app.locations(opened.root(), opened.host().as_str())?
         .remember_transcript(&session.stream_id, &session.id, &locator)
         .map_err(|error| {
             if error.is_uncertain() {
@@ -69,6 +53,32 @@ pub(super) fn remember_locator(
             }
         })?;
     Ok(())
+}
+
+/// The Session saved for this Pi conversation, checked against the identity it was read by.
+fn pi_session(
+    opened: &super::super::application::OpenedRecords,
+    native_id: &str,
+) -> Result<Option<Session>> {
+    let host = opened.host().as_str();
+    let id = Session::id_for(host, "pi", native_id);
+    let address = RecordAddress::new(host, RecordKind::Session, &id)
+        .map_err(|_| CliError::message("Pi Session is unavailable"))?;
+    let found = opened
+        .records()
+        .with_reader(|reader| reader.read(&address))
+        .map_err(|_| CliError::message("Pi Session is unavailable"))?;
+    let Some(found) = found else {
+        return Ok(None);
+    };
+    let Record::Session(session) = found.record else {
+        return Err(CliError::message("Pi Session is unavailable"));
+    };
+    if session.host_id != host || session.harness != "pi" || session.harness_session_id != native_id
+    {
+        return Err(CliError::message("Pi Session identity does not match"));
+    }
+    Ok(Some(session))
 }
 
 pub(super) struct Source {
@@ -125,47 +135,20 @@ impl Source {
         })
     }
 
-    pub fn bind_session(
+    /// hc as this source's caller: its terminal, on the endpoint it registered with.
+    pub fn frontend(
         &self,
-        scope: &streams::integration::WorkScope,
-        stream_id: &str,
+        app: &App,
+        scope: streams::integration::WorkScope,
         stopping: Cancellation,
-    ) -> Result<()> {
-        let client = HcClient::connect(
+    ) -> HcFrontend {
+        HcFrontend::registered(
+            app.caller(scope, 5.0),
+            self.registration.terminal(),
             self.socket.clone(),
-            Some(&self.endpoint),
-            5.0,
-            Some(stopping),
+            self.endpoint.clone(),
+            stopping,
         )
-        .map_err(|_| CliError::message("hc connection is unavailable"))?;
-        let mut operation = streams::runtime::hc::HcOperation::new(client);
-        match operation.bind_caller_terminal(scope, self.registration.terminal(), stream_id) {
-            Effect::Applied { value: () } => Ok(()),
-            Effect::NotApplied { reason } | Effect::Uncertain { reason } => {
-                Err(CliError::message(reason))
-            }
-        }
-    }
-
-    pub fn notify_saved(
-        &self,
-        scope: &streams::integration::WorkScope,
-        stopping: Cancellation,
-    ) -> Result<()> {
-        let client = HcClient::connect(
-            self.socket.clone(),
-            Some(&self.endpoint),
-            5.0,
-            Some(stopping),
-        )
-        .map_err(|_| CliError::message("hc save notice connection is unavailable"))?;
-        let mut operation = streams::runtime::hc::HcOperation::new(client);
-        match operation.notify_saved(scope, self.registration.terminal()) {
-            Effect::Applied { value: () } => Ok(()),
-            Effect::NotApplied { reason } | Effect::Uncertain { reason } => {
-                Err(CliError::message(reason))
-            }
-        }
     }
 
     pub fn retire(self, deadline: Instant) -> Result<()> {
@@ -213,29 +196,13 @@ pub(super) fn resolve_session(
         catalog: opened.source_id().into(),
         host: host.into(),
     };
-    let id = Session::id_for(host, "pi", session_id);
-    let address = RecordAddress::new(host, RecordKind::Session, &id)
-        .map_err(|_| CliError::message("Pi Session is unavailable"))?;
-    let found = opened
-        .records()
-        .with_reader(|reader| reader.read(&address))
-        .map_err(|_| CliError::message("Pi Session is unavailable"))?;
-    let Some(found) = found else {
+    let Some(session) = pi_session(&opened, session_id)? else {
         return Ok(SessionResolution {
             scope,
             session: None,
             desired_pi_name: None,
         });
     };
-    let Record::Session(session) = found.record else {
-        return Err(CliError::message("Pi Session is unavailable"));
-    };
-    if session.host_id != host
-        || session.harness != "pi"
-        || session.harness_session_id != session_id
-    {
-        return Err(CliError::message("Pi Session identity does not match"));
-    }
     if remember_directory
         && let Ok(directory) = streams::runtime::checkouts::canonical_directory(&app.cwd)
         && let Ok(locations) = app.locations(opened.root(), host)

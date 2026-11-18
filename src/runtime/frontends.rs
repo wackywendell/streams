@@ -19,8 +19,9 @@ use super::{
     workspace::{OpenResult, ResumeCommand, SelectedConversation, WorkspaceRuntime},
 };
 use crate::{
+    cancellation::Cancellation,
     frontend::{
-        FrontendError, FrontendId,
+        EndpointId, FrontendError, FrontendId,
         cmux::CmuxClient,
         hc::{HcClient, HcEndpoint, processes::OwnerProcesses},
         herdr::{HerdrClient, HerdrNativeSnapshot},
@@ -302,6 +303,8 @@ pub struct HcFrontend {
     caller: Caller,
     /// `HC_TERMINAL_ID`, when it is a valid local terminal key.
     terminal: Option<String>,
+    /// The endpoint a registered Pi source must keep talking to, and its cancellation.
+    pinned: Option<(HcEndpoint, EndpointId, Cancellation)>,
     connection: Option<(HcEndpoint, HcOperation)>,
     presentation: Option<HcPresentation>,
 }
@@ -315,8 +318,24 @@ impl HcFrontend {
         Self {
             caller,
             terminal,
+            pinned: None,
             connection: None,
             presentation: None,
+        }
+    }
+
+    /// The Pi child's registered source: its terminal, on the endpoint it registered with.
+    pub fn registered(
+        caller: Caller,
+        terminal: &str,
+        socket: HcEndpoint,
+        endpoint: EndpointId,
+        stopping: Cancellation,
+    ) -> Self {
+        Self {
+            terminal: Some(terminal.into()),
+            pinned: Some((socket, endpoint, stopping)),
+            ..Self::new(caller)
         }
     }
 
@@ -328,11 +347,27 @@ impl HcFrontend {
 
     fn connection(&mut self) -> Result<&mut (HcEndpoint, HcOperation)> {
         if self.connection.is_none() {
-            let socket = HcEndpoint::resolve(&self.caller.environment, &self.caller.cwd)?;
-            let client = HcClient::connect(socket.clone(), None, self.caller.timeout, None)?;
+            let (socket, expected, stopping) = match &self.pinned {
+                Some((socket, endpoint, stopping)) => {
+                    (socket.clone(), Some(endpoint), Some(stopping.clone()))
+                }
+                None => (
+                    HcEndpoint::resolve(&self.caller.environment, &self.caller.cwd)?,
+                    None,
+                    None,
+                ),
+            };
+            let client =
+                HcClient::connect(socket.clone(), expected, self.caller.timeout, stopping)?;
             self.connection = Some((socket, HcOperation::new(client)));
         }
         Ok(self.connection.as_mut().expect("connected"))
+    }
+
+    /// Each association or save notice is one hc operation on its own connection.
+    fn effect_connection(&mut self) -> Result<&mut HcOperation> {
+        self.connection = None;
+        Ok(&mut self.connection()?.1)
     }
 }
 impl Frontend for HcFrontend {
@@ -365,8 +400,7 @@ impl Frontend for HcFrontend {
         };
         let scope = self.caller.scope.clone();
         effect(
-            self.connection()?
-                .1
+            self.effect_connection()?
                 .bind_caller_terminal(&scope, &terminal, stream_id),
         )
     }
@@ -375,7 +409,7 @@ impl Frontend for HcFrontend {
             return Ok(());
         };
         let scope = self.caller.scope.clone();
-        effect(self.connection()?.1.notify_saved(&scope, &terminal))
+        effect(self.effect_connection()?.notify_saved(&scope, &terminal))
     }
     fn open(
         &mut self,

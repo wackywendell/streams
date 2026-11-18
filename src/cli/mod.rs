@@ -437,15 +437,13 @@ impl App {
         opened: &application::OpenedRecords,
         timeout: f64,
     ) -> Result<Box<dyn Frontend>> {
-        let caller = frontends::Caller {
-            scope: streams::integration::WorkScope {
+        let caller = self.caller(
+            streams::integration::WorkScope {
                 catalog: opened.source_id().into(),
                 host: opened.host().as_str().into(),
             },
-            environment: self.environment.clone(),
-            cwd: self.cwd.clone(),
             timeout,
-        };
+        );
         // The Pi child already holds a Herdr connection and its last observation.
         if id == frontend::FrontendId::Herdr
             && let Some(read) = &self.herdr
@@ -457,6 +455,14 @@ impl App {
             )?));
         }
         Ok(frontends::connect(id, caller))
+    }
+    fn caller(&self, scope: streams::integration::WorkScope, timeout: f64) -> frontends::Caller {
+        frontends::Caller {
+            scope,
+            environment: self.environment.clone(),
+            cwd: self.cwd.clone(),
+            timeout,
+        }
     }
     fn herdr_client(
         &self,
@@ -502,14 +508,6 @@ impl App {
                 "calling workspace has no Stream selector; pass an explicit reference",
             )
         })
-    }
-    /// Associate the calling workspace with `stream_id`, when the frontend keeps associations.
-    pub(super) fn associate_caller(&self, stream_id: &str) -> Result<()> {
-        let opened = application::open_records(&self.config)?;
-        match self.frontend(&opened, None, 5.0)? {
-            Some(mut frontend) => Ok(frontend.associate_caller(stream_id)?),
-            None => Ok(()),
-        }
     }
     /// Tell the caller's views that this command saved records.
     pub(super) fn notify_saved(&self) -> Result<()> {

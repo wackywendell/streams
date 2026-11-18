@@ -22,7 +22,8 @@ use streams::{
         self, ClientFrame, Outcome, PiRequestContext, Request, RequestError, RequestId,
         ServerFrame, Version2, Warnings,
     },
-    frontend::herdr::events::SubscriptionUpdate,
+    frontend::{FrontendId, herdr::events::SubscriptionUpdate},
+    runtime::frontends::{self, Frontend},
 };
 
 type SharedOutput = Arc<Mutex<Option<std::io::Stdout>>>;
@@ -111,8 +112,9 @@ impl HcSource {
             })));
         };
         let mut warnings = Vec::new();
-        if let Err(error) =
-            source.bind_session(&resolved.scope, &session.stream_id, stopping.clone())
+        if let Err(error) = source
+            .frontend(app, resolved.scope.clone(), stopping.clone())
+            .associate_caller(&session.stream_id)
         {
             warnings.push(error.to_string());
         }
@@ -145,41 +147,18 @@ impl HcSource {
                 },
             },
         )?;
-        let Self::Registered(source) = self else {
-            let mut first_error = None;
-            if bind_space
-                && let Some(session) = &resolved.session
-                && let Err(error) = app.associate_caller(&session.stream_id)
-            {
-                first_error = Some(error);
+        let mut frontend: Box<dyn Frontend> = match self {
+            Self::Registered(source) => {
+                Box::new(source.frontend(app, resolved.scope.clone(), stopping.clone()))
             }
-            if let Err(error) = app.notify_saved()
-                && first_error.is_none()
-            {
-                first_error = Some(error);
-            }
-            return match first_error {
-                Some(error) => Err(error),
-                None => Ok(()),
-            };
+            _ => frontends::connect(FrontendId::Hc, app.caller(resolved.scope, 5.0)),
         };
-        let mut first_error = None;
-        if bind_space
-            && let Some(session) = &resolved.session
-            && let Err(error) =
-                source.bind_session(&resolved.scope, &session.stream_id, stopping.clone())
-        {
-            first_error = Some(error);
-        }
-        if let Err(error) = source.notify_saved(&resolved.scope, stopping.clone())
-            && first_error.is_none()
-        {
-            first_error = Some(error);
-        }
-        match first_error {
-            Some(error) => Err(error),
-            None => Ok(()),
-        }
+        let associated = match &resolved.session {
+            Some(session) if bind_space => frontend.associate_caller(&session.stream_id),
+            _ => Ok(()),
+        };
+        let notified = frontend.notify_saved();
+        Ok(associated.and(notified)?)
     }
     fn retire(&mut self, deadline: Instant) -> Result<()> {
         match std::mem::replace(self, Self::Failed) {
@@ -308,8 +287,7 @@ impl Server {
                 return Err(CliError::message("request cancelled before dispatch"));
             }
             let app = self.app()?;
-            let hc_selected =
-                app.selection(None)?.resolved == Some(streams::frontend::FrontendId::Hc);
+            let hc_selected = app.selection(None)?.resolved == Some(FrontendId::Hc);
             if matches!(
                 request,
                 Request::SessionStarted {}
