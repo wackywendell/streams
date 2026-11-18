@@ -33,12 +33,15 @@ use crate::{
 
 /// A frontend as seen from one caller: its workspace, its Stream association and its views.
 pub trait Frontend {
-    /// The Stream the caller works on, if the frontend names one.
+    /// The Stream the caller works on, if the frontend names one. hc routes each terminal
+    /// with its own `streams.work` label; elsewhere this is the workspace's Stream.
     fn caller_stream(&mut self) -> Result<Option<String>>;
-    /// A Stream hint for an unenrolled conversation's context. It must not make the
-    /// frontend observe anything its own observation pass has not.
+    /// A Stream hint for an unenrolled conversation's context. It is separate from
+    /// [`Frontend::caller_stream`] so that a context read never costs Herdr a snapshot:
+    /// Herdr answers only from an observation it already holds, while hc reads its labels.
     fn context_stream(&mut self) -> Option<String>;
-    /// The Stream the caller's workspace names. A later [`Frontend::open`] reuses this observation.
+    /// The Stream the caller's workspace or hc space names, which may differ from a
+    /// terminal's routing. A later [`Frontend::open`] reuses this observation.
     fn workspace_stream(&mut self) -> Result<Option<String>>;
     /// Associate the caller with the Stream its Session belongs to.
     fn associate_caller(&mut self, stream_id: &str) -> Result<()>;

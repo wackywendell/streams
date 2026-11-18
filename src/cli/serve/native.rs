@@ -225,17 +225,18 @@ impl Controller {
                 .mode()?
                 .resolve(settings.herdr.cards_auto_open),
         );
-        let mut context = self.app.context_from_records(
-            &records,
-            ContextRequest {
-                harness: Harness::Pi,
-                native_id: &self.session_id,
-                stream_id: None,
-                environment_stream_id: None,
-                workspace_stream_id: None,
-            },
-            settings.naming,
-        )?;
+        let session_id = self.session_id.clone();
+        let environment_stream_id = self.app.environment.get("STREAMS_STREAM_ID").cloned();
+        let request = ContextRequest {
+            harness: Harness::Pi,
+            native_id: &session_id,
+            stream_id: None,
+            environment_stream_id: environment_stream_id.as_deref(),
+            workspace_stream_id: None,
+        };
+        let context = self
+            .app
+            .context_from_records(&records, request, settings.naming)?;
         // Establish the catalog baseline even if Herdr has not detected Pi yet.
         // Later binding changes are observed only after native observation succeeds.
         if self.binding == Binding::Unobserved {
@@ -278,25 +279,15 @@ impl Controller {
             records.source_id(),
             records.host().as_str(),
         )?;
-        if context.session.is_none()
-            && (selected.is_some() || self.app.environment.contains_key("STREAMS_STREAM_ID"))
-        {
-            context = self.app.context_from_records(
-                &records,
-                ContextRequest {
-                    harness: Harness::Pi,
-                    native_id: &self.session_id,
-                    stream_id: None,
-                    environment_stream_id: self
-                        .app
-                        .environment
-                        .get("STREAMS_STREAM_ID")
-                        .map(String::as_str),
-                    workspace_stream_id: selected.as_deref(),
-                },
-                settings.naming,
-            )?;
-        }
+        let context = streams::application::with_workspace_stream(
+            context,
+            request,
+            || selected.clone(),
+            |request| {
+                self.app
+                    .context_from_records(&records, request, settings.naming)
+            },
+        )?;
         if cancelled.load(Ordering::Acquire) {
             return Err(crate::cli::CliError::message("native request cancelled"));
         }

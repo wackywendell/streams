@@ -43,6 +43,28 @@ pub enum ApplicationError {
 
 pub type Result<T> = std::result::Result<T, ApplicationError>;
 
+/// Only an unenrolled conversation takes its Stream from the caller's workspace. Ask for
+/// that Stream only then, and when the workspace names one, `read` `request` again with it.
+pub fn with_workspace_stream<E>(
+    context: crate::agent::RecordContext,
+    request: crate::agent::ContextRequest<'_>,
+    workspace_stream: impl FnOnce() -> Option<String>,
+    read: impl FnOnce(
+        crate::agent::ContextRequest<'_>,
+    ) -> std::result::Result<crate::agent::RecordContext, E>,
+) -> std::result::Result<crate::agent::RecordContext, E> {
+    if context.session.is_some() {
+        return Ok(context);
+    }
+    match workspace_stream() {
+        Some(stream_id) => read(crate::agent::ContextRequest {
+            workspace_stream_id: Some(&stream_id),
+            ..request
+        }),
+        None => Ok(context),
+    }
+}
+
 /// Same-pass data, never serialized into the saved record.
 pub struct MoveSave {
     pub save: crate::storage::records::RecordSave<crate::operations::DomainOutcome>,

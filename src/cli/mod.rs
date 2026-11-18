@@ -966,7 +966,7 @@ impl App {
                 "catalog root setting changed during observation",
             ));
         }
-        let request = |workspace_stream_id| ContextRequest {
+        let request = ContextRequest {
             harness,
             native_id: session_id,
             stream_id,
@@ -974,24 +974,19 @@ impl App {
                 .environment
                 .get("STREAMS_STREAM_ID")
                 .map(String::as_str),
-            workspace_stream_id,
+            workspace_stream_id: None,
         };
-        let mut context = self.context_from_records(&opened, request(None), settings.naming)?;
-        // Only an unenrolled conversation takes its Stream from the caller's workspace.
-        if context.session.is_none() {
-            let workspace_stream = self
-                .frontend(&opened, None, 5.0)
-                .ok()
-                .flatten()
-                .and_then(|mut frontend| frontend.context_stream());
-            if workspace_stream.is_some() {
-                context = self.context_from_records(
-                    &opened,
-                    request(workspace_stream.as_deref()),
-                    settings.naming,
-                )?;
-            }
-        }
+        let context = application::with_workspace_stream(
+            self.context_from_records(&opened, request, settings.naming)?,
+            request,
+            || {
+                self.frontend(&opened, None, 5.0)
+                    .ok()
+                    .flatten()
+                    .and_then(|mut frontend| frontend.context_stream())
+            },
+            |request| self.context_from_records(&opened, request, settings.naming),
+        )?;
         let documents = if let (Some(stream), Some(session)) = (&context.stream, &context.session) {
             documents::context(
                 &self.registry(opened.host().as_str())?,
