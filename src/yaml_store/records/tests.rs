@@ -501,6 +501,30 @@ fn malformed_duplicate_key_and_wrong_identity_records_are_never_absence() {
 }
 
 #[test]
+fn unreadable_records_are_named_by_kind_path_and_cause() {
+    let (_dir, store) = setup();
+    let record = stream("work", "Before");
+    put(&store, "first", record.clone());
+    let key = RecordAddress::for_record(&record);
+    let path = store.root.join(relative_record_path(&key).unwrap());
+    let mut value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    value["record"]["archived"] = json!(false);
+    fs::write(&path, value.to_string()).unwrap();
+    let error = read(&store, &key).unwrap_err().to_string();
+    assert!(
+        error.starts_with("Stream record hosts/host/streams/work.yaml is unreadable: "),
+        "{error}"
+    );
+    assert!(error.contains("unknown field `archived`"), "{error}");
+    assert_eq!(
+        decode_record(&key, value.to_string().as_bytes())
+            .unwrap_err()
+            .to_string(),
+        error
+    );
+}
+
+#[test]
 fn symlinked_ancestors_leaves_and_special_files_are_rejected_without_blocking() {
     for ancestor in [
         "hosts",

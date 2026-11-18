@@ -269,11 +269,29 @@ pub fn decode_record(address: &RecordAddress, bytes: &[u8]) -> Result<RecordRead
     Ok(decode_envelope(address, bytes)?.1)
 }
 
+/// Every reader reports an undecodable record by kind and catalog path, with the cause.
 fn decode_envelope(
     address: &RecordAddress,
     bytes: &[u8],
 ) -> Result<(Envelope, RecordRead), StorageError> {
-    address.validate()?;
+    let path = relative_record_path(address)?;
+    let kind = match address.kind() {
+        RecordKind::Host => "Host",
+        RecordKind::Stream => "Stream",
+        RecordKind::Session => "Session",
+    };
+    decode_envelope_bytes(address, bytes).map_err(|error| {
+        StorageError::new(format!(
+            "{kind} record {} is unreadable: {error}",
+            path.display()
+        ))
+    })
+}
+
+fn decode_envelope_bytes(
+    address: &RecordAddress,
+    bytes: &[u8],
+) -> Result<(Envelope, RecordRead), StorageError> {
     let envelope: Envelope = decode(bytes)?;
     if envelope.version != 2 || envelope.kind != address.kind() {
         return Err(StorageError::new("unsupported or mismatched record schema"));
