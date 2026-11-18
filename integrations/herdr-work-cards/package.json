@@ -9,9 +9,6 @@
   },
   "files": [
     "src/config.ts",
-    "src/streams-bin.ts",
-    "src/streams-context.ts",
-    "src/pi/session-naming.ts",
     "dist/config.js",
     "dist/config.d.ts",
     "dist/config.js.map",

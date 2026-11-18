@@ -1,4 +1,4 @@
-import { projectSessionName } from "../../integrations/herdr-work-cards/src/pi/session-naming.ts";
+import { projectSessionName } from "./session-naming.ts";
 import { StreamsChild } from "./child.ts";
 import { StreamsCliError } from "./streams.ts";
 import { hcLifecycle, type ChildRequest, type DomainObject } from "./child-protocol.ts";

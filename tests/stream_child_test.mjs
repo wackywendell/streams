@@ -9,7 +9,7 @@ const {StreamsChild}=await jiti.import('../extensions/stream-checkpoint/child.ts
 const {decodeServerFrame}=await jiti.import('../extensions/stream-checkpoint/child-protocol.ts');
 const {default:register}=await jiti.import('../extensions/stream-checkpoint/index.ts');
 const {defaults}=await jiti.import('../extensions/stream-checkpoint/settings.ts');
-const {checkoutSource}=await jiti.import('../integrations/herdr-work-cards/src/streams-bin.ts');
+const {checkoutSource}=await jiti.import('../extensions/stream-checkpoint/streams-bin.ts');
 const source=checkoutSource();
 const wire=JSON.parse(readFileSync(new URL('./fixtures/pi-child-v2.json',import.meta.url),'utf8'));
 const tick=()=>new Promise(resolve=>setImmediate(resolve));

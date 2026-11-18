@@ -1,6 +1,6 @@
 # Streams work cards
 
-Rust projects saved Streams records into Herdr. This package supplies its manifest, launch helpers and the TypeScript Pi boundary utilities. The root Pi extension owns reporting and enrollment; this package does not run model inference or write a separate work catalog. See the [Streams README](../../README.md) for installation, commands and reporting settings.
+Rust projects saved Streams records into Herdr. This package supplies its manifest, launch helpers and configuration module. The root Pi extension owns reporting and enrollment; this package does not run model inference or write a separate work catalog. See the [Streams README](../../README.md) for installation, commands and reporting settings.
 
 The source was imported with its original history through `e7d74ce22f95893fa8eed570ef2e6a14d61f74bd`. The [native projection decision](../../docs/native-herdr-work-cards.md) explains the adaptation. The former standalone runtime and its `/work-card` commands are not supported.
 

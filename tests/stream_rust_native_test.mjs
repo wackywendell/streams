@@ -118,7 +118,8 @@ test('Rust launch manifest and packaged launcher require the binary and plain la
  for(const file of ['package.json','integrations/herdr-work-cards/package.json']) {
   const files=JSON.parse(readFileSync(join(root,file),'utf8')).files;
   assert.ok(files.some(path=>path.endsWith('streams-rust-herdr-plugin.toml')));
-  for(const shared of ['src/pi/session-naming.ts','src/streams-context.ts']) assert.ok(files.includes(file==='package.json'?'integrations/herdr-work-cards/'+shared:shared));
+  // The Pi extension owns its wire types, naming projection and binary selection.
+  assert.ok(!files.some(path=>/streams-context|session-naming|streams-bin/.test(path)));
  }
 });
 

@@ -34,7 +34,7 @@ test-rust:
 
 # Run Pi checkpoint and frozen helper-request tests against this Rust build
 test-pi: build
-    node --test tests/stream_child_test.mjs tests/stream_checkpoint_test.mjs tests/stream_sync_test.mjs tests/stream_outcomes_test.mjs tests/stream_native_test.mjs tests/stream_hc_lifecycle_test.mjs tests/stream_naming*_test.mjs tests/stream_prompt_*_test.mjs tests/stream_debug_settings_test.mjs tests/stream_capture_*_test.mjs tests/stream_lab_tools_test.mjs tests/stream_artifacts_test.mjs
+    node --test tests/stream_child_test.mjs tests/stream_checkpoint_test.mjs tests/stream_sync_test.mjs tests/stream_outcomes_test.mjs tests/stream_native_test.mjs tests/stream_hc_lifecycle_test.mjs tests/stream_naming*_test.mjs tests/stream_session_naming_test.mjs tests/stream_wire_test.mjs tests/stream_bin_test.mjs tests/stream_prompt_*_test.mjs tests/stream_debug_settings_test.mjs tests/stream_capture_*_test.mjs tests/stream_lab_tools_test.mjs tests/stream_artifacts_test.mjs
 
 # Exercise the Pi child protocol without starting Rust or Herdr
 test-pi-child:

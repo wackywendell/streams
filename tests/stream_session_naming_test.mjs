@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
-import { projectSessionName } from '../dist/pi/session-naming.js';
+import { createJiti } from 'jiti';
+const { projectSessionName } = await createJiti(import.meta.url).import(new URL('../extensions/stream-checkpoint/session-naming.ts', import.meta.url).pathname);
 
 function fixture(manager = SessionManager.inMemory()) {
   let sets = 0;

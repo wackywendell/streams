@@ -4,7 +4,7 @@ import { isAbsolute, join } from "node:path";
 import { buildInferencePayload } from "./agent.ts";
 import { digest } from "./capture.ts";
 import { privateDirectory, privateRead, privateWrite } from "./private-storage.ts";
-import { parseLocalContext } from "../../integrations/herdr-work-cards/src/streams-context.ts";
+import { parseLocalContext } from "./wire.ts";
 import type { PreparedRequest } from "./prompt-lab.ts";
 
 export type ArtifactKind = "capture" | "request" | "run";

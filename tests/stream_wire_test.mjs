@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {
+import { createJiti } from 'jiti';
+const {
   isReferenceTarget, isReferenceText, isReferenceValue, isRepositoryDocument,
   isResourceKey, isSession, isStream, parseLocalContext, referenceUrl, resourceKey,
-} from '../dist/streams-context.js';
+} = await createJiti(import.meta.url).import(new URL('../extensions/stream-checkpoint/wire.ts', import.meta.url).pathname);
 
 const stream = {
   id:'effort', title:'Streams', title_mode:'inherit', goal:null, goal_short:null, goal_mode:'automatic',

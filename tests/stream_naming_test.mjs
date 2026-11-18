@@ -8,7 +8,7 @@ const jiti = createJiti(import.meta.url);
 const { parseNamingEdit, saveNamingEdit, savePiNameEdit, namingCompletions } = await jiti.import(new URL('../extensions/stream-checkpoint/naming.ts', import.meta.url).pathname);
 const { default: registerWorkCard } = await jiti.import(new URL('../extensions/stream-checkpoint/index.ts',import.meta.url).pathname);
 const { defaults } = await jiti.import(new URL('../extensions/stream-checkpoint/settings.ts',import.meta.url).pathname);
-const { projectSessionName } = await jiti.import(new URL('../integrations/herdr-work-cards/src/pi/session-naming.ts',import.meta.url).pathname);
+const { projectSessionName } = await jiti.import(new URL('../extensions/stream-checkpoint/session-naming.ts',import.meta.url).pathname);
 const { validateChanges } = await jiti.import(new URL('../extensions/stream-checkpoint/core.ts', import.meta.url).pathname);
 const { editField } = await jiti.import(new URL('../extensions/stream-checkpoint/panel.ts', import.meta.url).pathname);
 

@@ -1,7 +1,7 @@
 // Typed protocol fake: one process, no native effects or request subprocesses.
 import { appendFileSync, readFileSync, realpathSync } from 'node:fs';
 import { createInterface } from 'node:readline';
-import { checkoutSource } from '../../integrations/herdr-work-cards/src/streams-bin.ts';
+import { checkoutSource } from '../../extensions/stream-checkpoint/streams-bin.ts';
 
 if (process.env.STREAMS_BIN_PATH !== realpathSync(process.argv[1])) throw Error('native launch binary was not canonicalized');
 const file=process.env.STREAMS_NATIVE_FIXTURE,log=process.env.STREAMS_NATIVE_LOG;

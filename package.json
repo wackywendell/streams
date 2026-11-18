@@ -11,10 +11,7 @@
     "integrations/herdr-work-cards/dist/config.js",
     "integrations/herdr-work-cards/dist/config.d.ts",
     "integrations/herdr-work-cards/dist/config.js.map",
-    "integrations/herdr-work-cards/src/pi/session-naming.ts",
     "integrations/herdr-work-cards/src/config.ts",
-    "integrations/herdr-work-cards/src/streams-bin.ts",
-    "integrations/herdr-work-cards/src/streams-context.ts",
     "integrations/herdr-work-cards/bin",
     "integrations/herdr-work-cards/streams-rust-herdr-plugin.toml"
   ],

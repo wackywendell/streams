@@ -3,7 +3,7 @@ import { DynamicBorder, getSelectListTheme } from "@earendil-works/pi-coding-age
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { referenceText, safeReferenceJson, type LocalContext, type Receipt, type Reference, type ReferenceValue, type ResourceKey, type StreamCli } from "./streams.ts";
 import { FieldEdit, ReferenceEdit, fields, isAutomaticReferenceValue, materialiseReference, referenceSelector, statuses, titleModes } from "./core.ts";
-import { isReferenceValue, resourceKey } from "../../integrations/herdr-work-cards/src/streams-context.ts";
+import { isReferenceValue, resourceKey } from "./wire.ts";
 export type DiscussionState = {input: string; messages: {role: "user" | "assistant"; text: string}[]; error?: string};
 export type CardState = {discussion: DiscussionState; edits: Map<string, FieldEdit>; referenceEdits?: Map<string, ReferenceEdit>};
 /** A small composer built around Pi's editor; unsent input survives close/reopen. */

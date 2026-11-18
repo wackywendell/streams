@@ -2,9 +2,9 @@ import type { ArtifactRequest, ChildRequest, ConfigSnapshot, DomainObject, Runne
 export type { CardMode, CardSettings, ConfigSnapshot } from "./child-protocol.ts";
 export type { Runner } from "./child-protocol.ts";
 
-import { parseLocalContext, isResourceKey, isStream as stream, isSession as session, type ResourceKey, type StreamWire, type SessionWire, type LocalContext, type Mode } from "../../integrations/herdr-work-cards/src/streams-context.ts";
-export { isReferenceText } from "../../integrations/herdr-work-cards/src/streams-context.ts";
-export type { Status, Mode, Reference, ReferenceValue, ReferenceTarget, ResourceKey, StreamWire, SessionWire, LocalContext } from "../../integrations/herdr-work-cards/src/streams-context.ts";
+import { parseLocalContext, isResourceKey, isStream as stream, isSession as session, type ResourceKey, type StreamWire, type SessionWire, type LocalContext, type Mode } from "./wire.ts";
+export { isReferenceText } from "./wire.ts";
+export type { Status, Mode, Reference, ReferenceValue, ReferenceTarget, ResourceKey, StreamWire, SessionWire, LocalContext } from "./wire.ts";
 export type ReferenceResult = {key: ResourceKey; action: "add" | "update" | "drop" | "restore" | "delete"; outcome: "changes" | "no-change" | "superseded" | "conflict"; reason: string};
 export type LocalStatus = "unchanged" | "persisted" | "committed" | "repair-required";
 export type SharingStatus = "local-only" | "pending" | "confirmed" | "blocked" | "failed" | "uncertain";

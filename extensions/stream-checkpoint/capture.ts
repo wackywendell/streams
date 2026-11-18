@@ -5,7 +5,7 @@ import { privateDirectory, privateRead, privateWrite } from "./private-storage.t
 export { privateDirectory, privateWrite } from "./private-storage.ts";
 import { CURRENT_SESSION_VERSION, SessionManager } from "@earendil-works/pi-coding-agent";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { isStream, parseLocalContext } from "../../integrations/herdr-work-cards/src/streams-context.ts";
+import { isStream, parseLocalContext } from "./wire.ts";
 import type { LocalContext, StreamWire } from "./streams.ts";
 
 export type CaptureTarget = {kind: "stream" | "workspace"; id: string; title: string};

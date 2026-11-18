@@ -6,11 +6,11 @@ import { dirname, join, resolve } from 'node:path';
 import { createJiti } from 'jiti';
 
 const jiti = createJiti(import.meta.url);
-const source = readFileSync(new URL('../src/streams-bin.ts', import.meta.url), 'utf8');
+const source = readFileSync(new URL('../extensions/stream-checkpoint/streams-bin.ts', import.meta.url), 'utf8');
 async function fixture(t) {
   const root = mkdtempSync(join(realpathSync(tmpdir()), 'streams-selector-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  const module = join(root, 'integrations/herdr-work-cards/src/streams-bin.ts');
+  const module = join(root, 'extensions/stream-checkpoint/streams-bin.ts');
   mkdirSync(dirname(module), { recursive: true });
   writeFileSync(module, source);
   const { resolveStreamsBin, checkoutSource } = await jiti.import(module);

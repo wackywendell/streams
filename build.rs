@@ -2,7 +2,7 @@
 //!
 //! The Pi extension computes the same digest over its checkout and refuses a
 //! binary built from other sources (`checkoutSource` in
-//! `integrations/herdr-work-cards/src/streams-bin.ts`).
+//! `extensions/stream-checkpoint/streams-bin.ts`).
 //! Both sides hash `Cargo.toml`, `Cargo.lock`, `build.rs` and every file under
 //! `src/`, sorted by `/`-separated relative path, each as
 //! `path NUL length NUL bytes`.

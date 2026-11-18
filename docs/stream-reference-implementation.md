@@ -96,7 +96,7 @@ type AutomaticReferenceValue = Omit<ReferenceValue, "target"> & {
 
 Every object rejects extra properties. Name, purpose and present recovery strings must pass the existing Rust nonempty text check.
 
-Export isReferenceText from streams-context.ts and re-export it from streams.ts for core callers. Use it for every new reference-owned string check, including repository locators, portable paths, and resource-key strings. Its acceptance matches Rust check_text with empty_ok=false. Preserve the original string and apply the existing relative-path and URL rules after this check. Keep unrelated existing validators unchanged.
+Export isReferenceText from wire.ts and re-export it from streams.ts for core callers. Use it for every new reference-owned string check, including repository locators, portable paths, and resource-key strings. Its acceptance matches Rust check_text with empty_ok=false. Preserve the original string and apply the existing relative-path and URL rules after this check. Keep unrelated existing validators unchanged.
 
 ```ts
 export function isReferenceText(value: unknown): value is string {
@@ -725,7 +725,7 @@ Modify only the following files for this phase.
 | src/model.rs | Add Reference, ReferenceValue, RepositoryDocument, target, key, role and state types and validation; introduce shared URL checking with the existing native browser credential restriction |
 | src/tui/render.rs | Delegate web_url validation to the shared function; suppress credential-bearing URL controls while leaving current collection rendering intact |
 | src/tui/tests.rs | Add username-only and username/password painter rejection cases using current record shapes |
-| integrations/herdr-work-cards/src/streams-context.ts | Add standalone matching reference types and validators; leave the existing Stream shape intact until phase 2 |
+| extensions/stream-checkpoint/wire.ts | Add standalone matching reference types and validators; leave the existing Stream shape intact until phase 2 |
 | tests/codec.rs | Add standalone reference/target serde and validation cases |
 | tests/enum_values.rs | Add role/state values |
 | integrations/herdr-work-cards/tests/record-context.test.mjs | Add standalone TypeScript reference validation cases |
@@ -745,7 +745,7 @@ Modify the following production files together. Entries marked Create or Delete 
 | Modify | src/model.rs; src/operations.rs; src/operations/edits.rs |
 | Modify | src/agent/record_update.rs; src/agent/preview.rs; src/agent/capture.rs |
 | Modify | src/application.rs; src/application/record_update.rs |
-| Modify | integrations/herdr-work-cards/src/streams-context.ts |
+| Modify | extensions/stream-checkpoint/wire.ts |
 | Modify | extensions/stream-checkpoint/core.ts; extensions/stream-checkpoint/agent.ts; extensions/stream-checkpoint/report-workflow.ts; extensions/stream-checkpoint/reporter.ts; extensions/stream-checkpoint/replay.ts; extensions/stream-checkpoint/streams.ts; extensions/stream-checkpoint/panel.ts; extensions/stream-checkpoint/index.ts |
 | Modify | src/cli/args.rs; src/cli/fields.rs; src/cli/mod.rs; src/cli/catalog.rs; src/cli/documents.rs; src/cli/cards.rs; src/cli/cards/source.rs |
 | Modify | src/tui/snapshot.rs; src/tui/render.rs; src/tui/view.rs; src/runtime/native_cards/documents.rs |
@@ -803,7 +803,7 @@ Keep offline activation as an explicit later action requiring user approval. Sto
 | Modify | `src/agent/preview.rs` | Apply the shared pure operation and domain projection. Preserve strict capture admission, simulate partial saves and retain per-reference results for refused proposals. |
 | Modify | `src/application.rs` | Re-export save_user_references from the private record_update module so CLI callers can reach the shared user save path. |
 | Modify | `src/application/record_update.rs` | Save the shared operation through the existing target callback and map its result into the stored outcome object. Add a user-reference save entry point alongside the ordinary user-edit entry point. |
-| Modify | `integrations/herdr-work-cards/src/streams-context.ts` | Replace the old reference wire types and validate the new collection, required fields, target shapes and exact-key uniqueness. Export and reuse isReferenceText with the specified Rust-equivalent whitespace/scalar contract. Require the new shape without adapting old records. |
+| Modify | `extensions/stream-checkpoint/wire.ts` | Replace the old reference wire types and validate the new collection, required fields, target shapes and exact-key uniqueness. Export and reuse isReferenceText with the specified Rust-equivalent whitespace/scalar contract. Require the new shape without adapting old records. |
 | Modify | `extensions/stream-checkpoint/core.ts` | Replace document-addition construction with automaticReferenceRequest for raw deferred proposals and referenceRequest for validated drafts. Use supplied operation IDs, preserve dirty input and keep reference changes separate from generic field edits. |
 | Modify | `extensions/stream-checkpoint/agent.ts` | Add model-facing reference proposals, a SessionReportResult runtime type with deferred raw proposal validation, and a dedicated reference discussion-edit variant. Supply known identities, roles, states and purposes in guidance; replace the Session-reset projection with the specified reference fields and newly included top-level checkout/location hints. Preserve the current evidence projection, manual title and goal rules, and the Stream reporting model's metadata-only scope. |
 | Modify | `extensions/stream-checkpoint/report-workflow.ts` | Save valid Session progress before validating raw reference proposals through automaticReferenceRequest. Catch later reference-stage errors, surface one warning and return prior savedAny. Preserve original capture and receipts; stop recapture, later inference and retries after errors or unapplied rows. |

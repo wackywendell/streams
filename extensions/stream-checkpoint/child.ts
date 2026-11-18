@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { checkoutRoot, checkoutSource, resolveStreamsBin } from "../../integrations/herdr-work-cards/src/streams-bin.ts";
+import { checkoutRoot, checkoutSource, resolveStreamsBin } from "./streams-bin.ts";
 import { decodeServerFrame, hcLifecycle, type ChildOutcome, type ChildView, type PiRequestContext, type Runner, type ServerFrame } from "./child-protocol.ts";
 
 type Pending = {resolve: (value: ChildOutcome) => void; reject: (error: Error) => void};

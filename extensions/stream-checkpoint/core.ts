@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { isReferenceText, receiptCanContinue, receiptHasUnappliedReferences, type ApplyRequest, type LocalContext, type Receipt, type Reference, type ReferenceValue, type ReferenceTarget, type ResourceKey, type SessionWire, type StreamWire, type Mode } from "./streams.ts";
-import { isReferenceValue, isResourceKey, parseLocalContext, resourceKey } from "../../integrations/herdr-work-cards/src/streams-context.ts";
+import { isReferenceValue, isResourceKey, parseLocalContext, resourceKey } from "./wire.ts";
 export const statuses = ["active", "waiting", "blocked", "parked", "done", "closed"];
 export const titleModes = ["automatic", "manual", "inherit"] as const;
 export const fields = {

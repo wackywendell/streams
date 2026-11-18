@@ -3,7 +3,7 @@ import { accessSync, constants, existsSync, readdirSync, readFileSync, realpathS
 import { isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const packageRoot = fileURLToPath(new URL('../../..', import.meta.url));
+const packageRoot = fileURLToPath(new URL('../..', import.meta.url));
 export const checkoutRoot = resolve(packageRoot);
 
 /**

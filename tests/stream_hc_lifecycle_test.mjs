@@ -7,7 +7,7 @@ const jiti=createJiti(import.meta.url,{interopDefault:true});
 const {default:register}=await jiti.import('../extensions/stream-checkpoint/index.ts');
 const {StreamsChild}=await jiti.import('../extensions/stream-checkpoint/child.ts');
 const {defaults}=await jiti.import('../extensions/stream-checkpoint/settings.ts');
-const {checkoutSource}=await jiti.import('../integrations/herdr-work-cards/src/streams-bin.ts');
+const {checkoutSource}=await jiti.import('../extensions/stream-checkpoint/streams-bin.ts');
 const turn=()=>new Promise(resolve=>setImmediate(resolve));
 const deferred=()=>{let resolve;const promise=new Promise(yes=>{resolve=yes;});return {promise,resolve};};
 function fixture(contextState={generation:0}) {
