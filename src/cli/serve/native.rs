@@ -357,6 +357,12 @@ impl Controller {
             subscription.set_watched_ids(panes, tabs, workspaces);
         }
     }
+    /// Whether the frontend selection for this Pi's environment and settings is Herdr.
+    fn in_herdr(&self) -> bool {
+        self.app
+            .selection(None)
+            .is_ok_and(|selection| selection.resolved == Some(streams::frontend::FrontendId::Herdr))
+    }
     pub fn request(&mut self, request: &Request, cancelled: Arc<AtomicBool>) -> Result<Output> {
         use streams::{child_protocol::CardTarget, config::CardMode};
         let mode = match request {
@@ -364,7 +370,7 @@ impl Controller {
             Request::CloseCard {} => Some(CardMode::Manual),
             _ => None,
         }
-        .filter(|_| self.app.environment.get("HERDR_ENV").map(String::as_str) == Some("1"));
+        .filter(|_| self.in_herdr());
         if let Some(mode) = mode {
             if cancelled.load(Ordering::Acquire) {
                 return Err(crate::cli::CliError::message("native request cancelled"));
@@ -385,7 +391,7 @@ impl Controller {
     }
     fn request_native(&mut self, request: &Request, cancelled: Arc<AtomicBool>) -> Result<Output> {
         self.enabled = true;
-        if self.app.environment.get("HERDR_ENV").map(String::as_str) != Some("1") {
+        if !self.in_herdr() {
             if matches!(request, Request::OpenCard {} | Request::CloseCard {}) {
                 return Err(crate::cli::CliError::message(
                     "native card effects require Herdr",
@@ -439,7 +445,7 @@ impl Controller {
         Ok(Output::value(result))
     }
     fn project(&mut self, cancelled: Arc<AtomicBool>, baseline: FileBaseline) -> Result<()> {
-        if !self.enabled || self.app.environment.get("HERDR_ENV").map(String::as_str) != Some("1") {
+        if !self.enabled || !self.in_herdr() {
             return Ok(());
         }
         let pass = self.observe(&cancelled, baseline)?;
@@ -502,7 +508,7 @@ impl Controller {
         request: Value,
         cancelled: Arc<AtomicBool>,
     ) -> Result<Output> {
-        if !self.enabled || self.app.environment.get("HERDR_ENV").map(String::as_str) != Some("1") {
+        if !self.enabled || !self.in_herdr() {
             return fallback.enroll_request(request);
         }
         let mut pass = self.observe(&cancelled, FileBaseline::Required)?;

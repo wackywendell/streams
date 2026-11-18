@@ -29,20 +29,13 @@ impl App {
         let records = application::open_records(&self.config)?;
         let facade = application::integration::Streams::admit(&records, &scope)?;
         facade.require_stream(stream)?;
-        let socket = frontend::hc::HcEndpoint::resolve(&self.environment, &self.cwd)
-            .map_err(|error| CliError::message(error.message))?;
-        let client = frontend::hc::HcClient::connect(socket, Some(&space.endpoint), 30.0, None)
-            .map_err(|error| CliError::message(error.message))?;
-        let mut operation = HcOperation::new(client);
-        let (before, published) = operation
-            .snapshots()
-            .map_err(|error| CliError::message(error.message))?;
         let wanted = SpaceAssociation {
             scope,
             stream: stream.into(),
             space: space.clone(),
         };
-        let association = operation.finish_associations(&before, &published, Some(&wanted));
+        let association = HcOperation::bind_space(&self.environment, &self.cwd, &wanted, 30.0)
+            .map_err(|error| CliError::message(error.message))?;
         let success = matches!(association, Effect::Applied { .. });
         let mut output = Output::value(json!({"requested_space":space,"association":association}));
         if !success {

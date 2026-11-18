@@ -616,21 +616,30 @@ fn queued_saves_apply_in_order_and_refuse_a_second_save_from_the_same_capture() 
 #[test]
 fn outside_herdr_lifecycle_is_inactive_and_explicit_effects_refuse() {
     let f = Fixture::new();
-    let mut child = f.start();
-    for (id, kind) in [(1, "session_started"), (2, "attach")] {
-        child.request(id, json!({"kind":kind}));
-        assert_eq!(
-            child.response(id)["outcome"],
-            json!({"status":"success","result":{"native":"inactive","reason":"outside_herdr"}})
-        );
+    // The frontend selection decides, so a Herdr pane with frontend.mode none is outside Herdr.
+    let mut in_pane = f.command();
+    in_pane
+        .env("HERDR_ENV", "1")
+        .env("HERDR_PANE_ID", "pane")
+        .env("HERDR_SOCKET_PATH", f.directory.path().join("absent.sock"));
+    for command in [f.command(), in_pane] {
+        let mut child = Transport::start(command, "pi-session");
+        assert_eq!(child.next()["type"], "ready");
+        for (id, kind) in [(1, "session_started"), (2, "attach")] {
+            child.request(id, json!({"kind":kind}));
+            assert_eq!(
+                child.response(id)["outcome"],
+                json!({"status":"success","result":{"native":"inactive","reason":"outside_herdr"}})
+            );
+        }
+        for (id, kind) in [(3, "open_card"), (4, "close_card")] {
+            child.request(id, json!({"kind":kind}));
+            assert_eq!(child.response(id)["outcome"]["status"], "error");
+        }
+        child.request(5, json!({"kind":"list_streams"}));
+        assert_eq!(child.response(5)["outcome"]["status"], "success");
+        assert_eq!(child.finish(), (0, String::new()));
     }
-    for (id, kind) in [(3, "open_card"), (4, "close_card")] {
-        child.request(id, json!({"kind":kind}));
-        assert_eq!(child.response(id)["outcome"]["status"], "error");
-    }
-    child.request(5, json!({"kind":"list_streams"}));
-    assert_eq!(child.response(5)["outcome"]["status"], "success");
-    assert_eq!(child.finish(), (0, String::new()));
 }
 
 #[test]

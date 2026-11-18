@@ -781,6 +781,19 @@ impl HcOperation {
             .map_err(|error| self.error(error.message))?;
         Ok((before, published))
     }
+    /// Associate `wanted`'s space with its Stream, on the hc core that published the space.
+    pub fn bind_space(
+        environment: &BTreeMap<String, String>,
+        cwd: &std::path::Path,
+        wanted: &SpaceAssociation,
+        timeout: f64,
+    ) -> Result<Effect<()>, FrontendError> {
+        let socket = crate::frontend::hc::HcEndpoint::resolve(environment, cwd)?;
+        let client = HcClient::connect(socket, Some(&wanted.space.endpoint), timeout, None)?;
+        let mut operation = Self::new(client);
+        let (before, published) = operation.snapshots()?;
+        Ok(operation.finish_associations(&before, &published, Some(wanted)))
+    }
     /// Check one requested placement once before using the retained association version.
     pub fn finish_requested_space(
         &mut self,

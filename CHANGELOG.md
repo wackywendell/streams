@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Moving a Pi pane into another Herdr workspace no longer moves its Session or creates an "Untitled effort" Stream. Layout never changes membership in any frontend, and no command moves a Session to another Stream yet. An hc space associated with another Stream now produces a warning, as a Herdr workspace does
+- The Pi child uses the frontend selection to decide whether it runs Herdr cards, so a Herdr pane with `frontend.mode` set to `none` or `cmux` stays inactive
 - The Pi child reports an error instead of following a symlink or reading a non-regular file at a watched record path, as Herdr cards already did
 - `/checkpoint` keeps the chooser's open or minimized state when drafting begins. Explicitly minimizing either stage keeps it closed after recommendations or a draft finish
 - Animated busy indicators now appear in the stream chooser and checkpoint card, including when the draft panel is minimized. Card frames do not add session entries; off-screen frames pause in regular terminal mode to avoid repeated scrollback redraws
