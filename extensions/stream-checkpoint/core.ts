@@ -11,9 +11,18 @@ export function patchFields(context: LocalContext, kind: Kind, actor: ReferenceA
 export function fieldChoices(context: LocalContext, kind: Kind, field: string): string[] | undefined {
  return patchFields(context, kind, "user").find(row => row.field === field)?.schema.enum;
 }
+/** Whether a field's schema accepts null, which clears it. */
+export function allowsNull(schema: FieldSchema): boolean {
+ return (schema.anyOf ?? [schema]).some(option => option.type === "null");
+}
+/** The free-text form a field's schema accepts, if it accepts any. */
+export function textSchema(schema: FieldSchema): FieldSchema | undefined {
+ return (schema.anyOf ?? [schema]).find(option => option.type === "string" && !option.enum);
+}
 /** Whether a field can be cleared to null. */
 export function fieldClears(context: LocalContext, kind: Kind, field: string): boolean {
- return !!patchFields(context, kind, "user").find(row => row.field === field)?.schema.anyOf?.some(schema => schema.type === "null");
+ const row = patchFields(context, kind, "user").find(row => row.field === field);
+ return !!row && allowsNull(row.schema);
 }
 /** A captured edit of one record; Rust validates the changes when it applies them. */
 export function editRequest(context: LocalContext, kind: Kind, changes: Record<string, unknown>, actor: ReferenceActor): ApplyRequest {

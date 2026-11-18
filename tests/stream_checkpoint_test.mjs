@@ -248,10 +248,12 @@ test('a reset discards an unreadable card before capturing it and enrolls again 
   capture:async()=>{events.push('capture');return {native:'native',cwd:'/repo',evidence:{messages:[],leafId:null},catalog:structuredClone(catalog),valid:()=>true,attached:async()=>true};},
   generate:async request=>{events.push(request.type);return request.type==='enroll'?{meaningful:false,stream:{title:'Work'},session:{title:'Lane'}}:{changes:{}};},
   enroll:async request=>{events.push('enroll');assert.equal(request.harness_session_id,'native');Object.assign(catalog,structuredClone(attached));return {saves:[{target:'session:native',save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}}]};},
-  apply:assert.fail,receipt:()=>{},notice:(text,level)=>notices.push({text,level}),
+  apply:async request=>{events.push(`apply:${request.kind}`);assert.deepEqual(request.changes,{goal:null});return {save:{local:'persisted',domain:{outcome:'changes'}}};},
+  receipt:()=>{},notice:(text,level)=>notices.push({text,level}),
  });
  assert.equal(saved,true);
- assert.deepEqual(events,['discard','capture','enroll','enroll','capture','session','capture','stream']);
+ // The Stream reset clears the goal the model left out.
+ assert.deepEqual(events,['discard','capture','enroll','enroll','capture','session','capture','stream','apply:stream']);
  assert.deepEqual(notices,[{text:`${reason}. Reset discarded it.`,level:'warning'}]);
 });
 test('a reset of a readable card discards nothing and says nothing',async()=>{
@@ -285,7 +287,7 @@ test('partial reference receipt warns and stops after accepted independent rows'
   const saved=await runReport({kind:'report',force:true},{signal:new AbortController().signal,automaticEnrollment:true,
    capture:async()=>{captures++;return {native:'native',cwd:'/repo',evidence:{messages:[],leafId:null},catalog:structuredClone(catalog),valid:()=>true,attached:async()=>true};},
    generate:async request=>{tasks.push(request.type);return {changes:{},reference_proposals:[dropped,addition]};},
-   apply:async request=>{calls++;const rows=request.changes.reference_changes;return {save:{local,domain:{outcome:'changes',reference_results:[{key:rows[0].key,action:'restore',outcome:'superseded',reason:'reference is Dropped; explicit restoration is required'},{key:rows[1].key,action:'add',outcome:'changes',reason:''}]}}};},
+   apply:async request=>{calls++;const rows=request.changes.reference_changes;return {save:{local,domain:{outcome:'changes',reference_results:[{key:rows[0].key,desired:rows[0].desired,action:'restore',outcome:'superseded',reason:'reference is Dropped; explicit restoration is required'},{key:rows[1].key,desired:rows[1].desired,action:'add',outcome:'changes',reason:''}]}}};},
    enroll:assert.fail,receipt:value=>receipts.push(value),notice:(text,level)=>notices.push({text,level}),
   });
   assert.equal(saved,true);assert.equal(calls,1);assert.equal(captures,1);assert.deepEqual(tasks,['session']);assert.equal(receipts.length,1);
@@ -345,7 +347,7 @@ test('Reporter forwards reference notice levels only through a live fence',async
   const proposal={name:'New',purpose:'Guide work',role:'background',state:'active',target:{kind:'link',url:'https://example.com/new'}};
   const reporter=new Reporter({cli:()=>({context:async()=>structuredClone(catalog),apply:async request=>{
    started=true;await new Promise(resolve=>release=resolve);const row=request.changes.reference_changes[0];
-   return {save:{local:'persisted',domain:{outcome:'changes',reference_results:[{key:row.key,action:'add',outcome:'changes',reason:''}]}}};
+   return {save:{local:'persisted',domain:{outcome:'changes',reference_results:[{key:row.key,desired:row.desired,action:'add',outcome:'changes',reason:''}]}}};
   }}),settings:()=>defaults,infer:async()=>({changes:{},reference_proposals:[proposal]}),notice:(text,level)=>notices.push({text,level}),receipt:value=>receipts.push(value)});
   reporter.request(f.ctx);await until(()=>started);if(invalidate)reporter.scope.reset(f.ctx,true);release();await reporter.idle();
   assert.deepEqual(notices,invalidate?[]:[{text:'Reference added: New',level:'info'}]);assert.equal(receipts.length,invalidate?0:1);
@@ -1022,7 +1024,7 @@ test('Streams notifications use Error messages without stacked error branding',a
 });
 test('extension forwards accepted automatic reference notices as info',async()=>{
  const handlers=new Map(),commands=new Map(),notices=[],live=context(),proposal={name:'New',purpose:'Context',role:'brief',state:'active',target:{kind:'link',url:'https://example.org/new'}};
- const cli={sync:localSync,context:async()=>structuredClone(live),apply:async request=>{live.stream.references.push({...proposal});return {save:{local:'persisted',domain:{outcome:'changes',reference_results:[{key:{kind:'url',url:proposal.target.url},outcome:'changes',reason:'added',action:'add'}]}}};}};
+ const cli={sync:localSync,context:async()=>structuredClone(live),apply:async request=>{live.stream.references.push({...proposal});return {save:{local:'persisted',domain:{outcome:'changes',reference_results:[{key:{kind:'url',url:proposal.target.url},desired:proposal,outcome:'changes',reason:'added',action:'add'}]}}};}};
  registerWorkCard({on:(name,fn)=>handlers.set(name,fn),registerCommand:(name,options)=>commands.set(name,options),registerTool:()=>{},appendEntry:()=>{}},{settings:{...defaults,reporting:'manual'},cli,infer:async(_ctx,req)=>req.type==='session'?{changes:{},reference_proposals:[proposal]}:{changes:{}}});
  const ctx={mode:'tui',hasUI:true,cwd:'/repo',sessionManager:{getSessionId:()=> 'native',getLeafId:()=> 'leaf',getBranch:()=>[{id:'leaf'}],buildSessionProjection:()=>({messages:[{role:'user',content:'Current work',timestamp:0}]})},ui:{notify:(text,level)=>notices.push({text,level}),setStatus:()=>{}}};
  await handlers.get('session_start')({},ctx);await commands.get('streams').handler('report',ctx);await until(()=>notices.some(row=>row.text.includes('Reference added: New')));
@@ -1312,7 +1314,7 @@ test('a refused short goal stays retained and archive has one confirmation',asyn
  await editField({ui:{select:async(title)=>{if(menus++===0)return 'Save field';assert.match(title,/goal/i);return 'Keep input and close';},notify:()=>{}}},{apply:async()=>{throw Error('invalid captured edit: stream.goal_short requires a goal');}},catalog,'stream','goal_short',state,()=>{});
  assert.equal(edit.value,'No source goal');assert.match(edit.error,/goal/);
  const actions=['Stream · Close…','Close'];let confirmations=0,writes=0;
- await openCard({sessionManager:{getSessionId:()=> 'native'},ui:{select:async(title,rows)=>{assert.ok(rows.every(row=>!row.startsWith('Stream · goal_short')));return actions.shift();},confirm:async()=>{confirmations++;return true;},notify:()=>{}}},{context:async()=>catalog,apply:async req=>{writes++;assert.deepEqual(req.changes,{status:'closed'});return {save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}};}},state,{receipt:()=>{},discuss:()=>{},settings:()=>{},report:()=>{}});
+ await openCard({sessionManager:{getSessionId:()=> 'native'},ui:{select:async(title,rows)=>{assert.ok(rows.some(row=>row.startsWith('Stream · goal_short')));return actions.shift();},confirm:async()=>{confirmations++;return true;},notify:()=>{}}},{context:async()=>catalog,apply:async req=>{writes++;assert.deepEqual(req.changes,{status:'closed'});return {save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}};}},state,{receipt:()=>{},discuss:()=>{},settings:()=>{},report:()=>{}});
  assert.equal(confirmations,1);assert.equal(writes,1);
 });
 test('fallback reference manager selects identical metadata by exact keys for edit and drop',async()=>{
@@ -1510,16 +1512,16 @@ test('all session descriptions and short forms share automatic report and reset 
  for(const field of ['recap_short','state_short','remaining_short']){
   const changes={[field]:' 😀'.repeat(30)};
   const result=parseInferenceResponse({type:'session',catalog,messages:[]},{content:[{type:'toolCall',name:'record_card',arguments:{changes}}]});
-  assert.ok(Array.from(result.changes[field]).length<=24);
+  assert.equal(result.changes[field],changes[field],'Rust cuts a long short form');
  }
 });
-test('infer normalizes null remaining/state, empty nullable fields, overlong short hints, and echoed non-automatic fields',async()=>{
+test('infer normalizes null remaining/state, empty nullable fields and echoed non-automatic fields, and leaves short forms and the goal rule to Rust',async()=>{
  const ctx=changes=>({model:{contextWindow:100000},modelRegistry:{complete:async()=>({stopReason:'toolUse',content:[{type:'toolCall',name:'record_card',arguments:{changes}}]})}});
  const sessionResult=await infer(ctx({title:'  ',state:null,state_short:`${'x'.repeat(90)}\nline`,remaining:null}),{type:'session',catalog:context(),messages:[],reset:true},new AbortController().signal);
- assert.deepEqual(sessionResult,{changes:{state:'',state_short:'x'.repeat(24),remaining:''}});
+ assert.deepEqual(sessionResult,{changes:{state:'',state_short:`${'x'.repeat(90)}\nline`,remaining:''}});
  const streamCatalog=context();streamCatalog.stream.goal=null;
  const streamResult=await infer(ctx({title:'Echoed manual',status:'active',goal:'   ',goal_short:'Orphan short'}),{type:'stream',catalog:streamCatalog,messages:[],reset:true},new AbortController().signal);
- assert.deepEqual(streamResult,{changes:{goal:null,goal_short:null}});
+ assert.deepEqual(streamResult,{changes:{goal:null,goal_short:'Orphan short'}});
 });
 test('a superseded report retains its receipt without retrying inference; a later explicit reset remains possible',async()=>{
  const catalog=context(),sibling={...session,id:'sibling',harness_session_id:'sibling-native',state:'Before'};

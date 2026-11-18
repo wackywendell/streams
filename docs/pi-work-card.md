@@ -60,10 +60,14 @@ Context returns `catalog_source`, resolved title defaults, the selected Session
 and its Stream, and their patch schemas. For each record and actor, the patch
 schemas list the fields that actor may change, in display order, with the JSON
 schema of each value; the automatic lists already omit protected text. Pi builds
-its field menus and the reporting tool schema from them and leaves validation to
-Rust, showing the refusal Rust returns. Source identity is the configured host and canonical catalog path,
-not an inode or directory-replacement generation. An offline reset stops writers;
-ordinary requests do not detect replacement with copied IDs at the same path.
+its field menus and the reporting tool schema from them. It reads model output
+through the same schemas: empty text becomes null where a field clears and no
+change where a field needs text, and a reset clears each clearable field the
+model left out. Rust validates the result, cuts short forms to their
+`maxLength`, and Pi shows any refusal Rust returns. Source identity is the
+configured host and canonical catalog path, not an inode or
+directory-replacement generation. An offline reset stops writers; ordinary
+requests do not detect replacement with copied IDs at the same path.
 
 A version-2 apply carries the original target, including its record revision,
 allowlisted changes and captured title default. It has no operation ID: a retry

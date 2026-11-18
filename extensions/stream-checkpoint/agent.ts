@@ -8,7 +8,7 @@ import { Check, Errors } from "typebox/value";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { LocalContext } from "./streams.ts";
-import { patchFields, type ReferenceDraft } from "./core.ts";
+import { allowsNull, patchFields, textSchema, type ReferenceDraft } from "./core.ts";
 import type { FieldSchema, ReferenceValue } from "./wire.ts";
 
 /** Drop the entire incomplete batch, and results with no surviving earlier call. */
@@ -75,27 +75,28 @@ export type ReferenceDiscussionEdit = {kind:"references"; actor:"automatic" | "u
 type DiscussionResult = {reply: string; edit?: {kind: "stream" | "session"; actor: "automatic" | "user"; changes: Record<string, unknown>} | ReferenceDiscussionEdit};
 export type Inferred = EnrollmentResult | ReportResult | DiscussionResult;
 export type InferenceResult<T extends Inference> = T extends EnrollmentInference ? EnrollmentResult : T extends ReportInference ? ReportResult : DiscussionResult;
-/** A model tool schema for one field, from Rust's field schema; short forms carry their length hint. */
-function fieldSchema(field: string, schema: FieldSchema): any {
- if (schema.anyOf) return Type.Union(schema.anyOf.map(option => fieldSchema(field, option)));
+/** A model tool schema for one field, from Rust's field schema. Rust cuts text over a length limit, so the limit is a hint. */
+function fieldSchema(schema: FieldSchema): any {
+ if (schema.anyOf) return Type.Union(schema.anyOf.map(fieldSchema));
  if (schema.enum) return literalUnion(schema.enum);
  if (schema.type === "null") return Type.Null();
- return Type.String(field.endsWith("_short") ? {maxLength: 24} : {});
+ return Type.String();
 }
 export function changesSchema(kind: "stream" | "session", catalog: LocalContext, actor: "automatic" | "user", allowEmpty = true) {
  const descriptions: Record<string, string> = kind === "session" ? {
   recap: "Session purpose and main result in one short sentence, roughly 12 words. Choose one main contribution, not a list; do not start with 'This session'.",
-  recap_short: "Condense recap only; prefer 1–2 words, at most 24 characters. Null if recap is empty.",
+  recap_short: "Condense recap only; prefer 1–2 words. Null if recap is empty.",
   state: "Current work position: what is done or underway, and any immediate wait or blocker. One short factual sentence, not first-person narration.",
-  state_short: "Condense state only; prefer 1–2 words, at most 24 characters. Null if state is empty.",
+  state_short: "Condense state only; prefer 1–2 words. Null if state is empty.",
   remaining: "One concrete next action not already stated in Status, roughly 12 words. Empty string if Status covers it or no work remains.",
-  remaining_short: "Condense remaining only; prefer 1–2 words, at most 24 characters. Null if remaining is empty.",
+  remaining_short: "Condense remaining only; prefer 1–2 words. Null if remaining is empty.",
  } : {
   goal: "The whole effort's enduring user purpose, not the reporting Session's work. Keep a fitting saved goal; do not append Session topics or milestones.",
  };
  return Type.Object(Object.fromEntries(patchFields(catalog, kind, actor).map(({field, schema: value}) => {
-  const schema = fieldSchema(field, value);
-  return [field, Type.Optional(descriptions[field] ? {...schema, description: descriptions[field]} : schema)];
+  const schema = fieldSchema(value), limit = textSchema(value)?.maxLength;
+  const description = [descriptions[field], limit && `At most ${limit} characters.`].filter(Boolean).join(" ");
+  return [field, Type.Optional(description ? {...schema, description} : schema)];
  })), {additionalProperties: false, ...(allowEmpty ? {} : {minProperties: 1})});
 }
 const titlePrompt = `Whenever generating or updating stream.title or session.title, use short, recognizable handles for the sidebar and tab bar, not descriptions of what the work does; descriptions belong in goal and recap.
@@ -152,7 +153,7 @@ function referenceDiscussionSchema(actor: "automatic" | "user") {
 export type InferencePayload = {systemPrompt: string; messages: ReturnType<typeof convertToLlm>; tools: {name: string; description: string; parameters: any}[]};
 export function buildInferencePayload(request: Inference, timestamp = 0): InferencePayload {
  let schema: any;
- if (request.type === "enroll") schema = Type.Object({meaningful: Type.Boolean(), stream: Type.Optional(Type.Object({title: Type.String(), goal: Type.Optional(Type.String()), goal_short: Type.Optional(Type.String({maxLength: 24}))}, {additionalProperties: false})), session: Type.Optional(Type.Object({title: Type.String()}, {additionalProperties: false}))}, {additionalProperties: false});
+ if (request.type === "enroll") schema = Type.Object({meaningful: Type.Boolean(), stream: Type.Optional(Type.Object({title: Type.String(), goal: Type.Optional(Type.String()), goal_short: Type.Optional(Type.String())}, {additionalProperties: false})), session: Type.Optional(Type.Object({title: Type.String()}, {additionalProperties: false}))}, {additionalProperties: false});
  else if (request.type === "discussion") schema = Type.Object({reply: Type.String(), edit: Type.Optional(Type.Union([...(["stream", "session"] as const).filter((kind) => request.catalog[kind]).flatMap((kind) => (["automatic", "user"] as const).map((actor) => Type.Object({kind: Type.Literal(kind), actor: Type.Literal(actor), changes: changesSchema(kind, request.catalog, actor, false)}, {additionalProperties: false}))), ...(request.catalog.stream ? (["automatic", "user"] as const).map(referenceDiscussionSchema) : [])]))}, {additionalProperties: false});
  else {
   const before = request.catalog[request.type];if (!before) throw Error("No attached catalog target");
@@ -198,18 +199,16 @@ export function parseInferenceResponse<T extends Inference>(request: T, response
  if (calls.length !== 1 || calls[0].name !== "record_card") throw Error("Reporting model must return exactly one structured record_card call");
  const rawArgs = structuredClone(calls[0].arguments);
  if ((request.type === "session" || request.type === "stream") && rawArgs && typeof rawArgs === "object" && !Array.isArray(rawArgs) && rawArgs.changes && typeof rawArgs.changes === "object" && !Array.isArray(rawArgs.changes)) {
-  const before = request.catalog[request.type]!, allowed = patchFields(request.catalog, request.type, "automatic").map(row => row.field), changes = rawArgs.changes as Record<string, unknown>;
+  const before = request.catalog[request.type]!, rows = patchFields(request.catalog, request.type, "automatic"), changes = rawArgs.changes as Record<string, unknown>;
   for (const [key, value] of Object.entries(changes)) {
-   if (!allowed.includes(key) && !key.endsWith("_mode") && Object.hasOwn(before, key)) {delete changes[key];continue;}
-   if (["recap", "state", "remaining"].includes(key) && value === null) changes[key] = "";
-   else if (key === "title" && typeof value === "string" && !value.trim()) delete changes[key];
-   else if (["goal", "goal_short", "recap_short", "state_short", "remaining_short"].includes(key) && typeof value === "string") {
-    const cleaned = key === "goal" ? value.trim() : Array.from(value.replace(/[\r\n\t]+/g, " ").trim()).slice(0, 24).join("").trim();
-    changes[key] = cleaned || null;
+   const row = rows.find(row => row.field === key);
+   if (!row) {if (!key.endsWith("_mode") && Object.hasOwn(before, key)) delete changes[key];continue;}
+   // Empty text means nothing: null where the field clears, no change where it needs text.
+   const text = textSchema(row.schema), clears = allowsNull(row.schema);
+   if (value === null && text && !clears && !text.minLength) changes[key] = "";
+   else if (typeof value === "string" && !value.trim() && text?.minLength) {
+    if (clears) changes[key] = null;else delete changes[key];
    }
-  }
-  if (request.type === "stream" && Object.hasOwn(changes, "goal_short") && changes.goal_short !== null && (Object.hasOwn(changes, "goal") ? changes.goal : request.catalog.stream!.goal) === null) {
-   changes.goal_short = null;
   }
  }
  if (!Check(schema, rawArgs)) {

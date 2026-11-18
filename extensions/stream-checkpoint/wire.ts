@@ -40,7 +40,7 @@ export type SessionWire = {
   revision: number; updated_at_ms: number;
 };
 /** The JSON schema of one field's value: a string, a choice, or either of two. */
-export type FieldSchema = {type?: 'string' | 'null'; enum?: string[]; anyOf?: FieldSchema[]};
+export type FieldSchema = {type?: 'string' | 'object' | 'null'; enum?: string[]; minLength?: number; maxLength?: number; anyOf?: FieldSchema[]};
 /** What each actor may change in a captured record, in display order, as Rust reports it. */
 export type PatchSchemas = Partial<Record<'stream' | 'session', Record<'automatic' | 'user', {field: string; schema: FieldSchema}[]>>>;
 export type LocalContext = {

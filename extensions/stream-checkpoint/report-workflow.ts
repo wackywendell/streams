@@ -1,4 +1,4 @@
-import { automaticReferenceRequest, editRequest, patchFields, referenceSelector } from "./core.ts";
+import { allowsNull, automaticReferenceRequest, editRequest, patchFields } from "./core.ts";
 import { receiptCanContinue, receiptHasUnappliedReferences, referenceText } from "./streams.ts";
 import type { DiscardedCard, LocalContext, Receipt, ApplyRequest } from "./streams.ts";
 import type { EnrollmentInference, InferenceResult, ReportInference } from "./agent.ts";
@@ -42,22 +42,20 @@ export async function runReport(action: ReportAction, environment: ReportEnviron
  const inferAndApply = async (kind: "session" | "stream"): Promise<boolean> => {
   const inferred = await generate({type: kind, catalog: capture.catalog, messages: capture.evidence.messages, instructions, reset});
   if (signal.aborted || !await capture.attached()) return false;
-  if (kind === "session" && reset) for (const short of ["recap_short", "state_short", "remaining_short"] as const) {
-   if (capture.catalog.session![short] != null && !Object.hasOwn(inferred.changes, short)) inferred.changes[short] = null;
+  // A reset clears what the model left out, wherever the field can be cleared.
+  if (reset) for (const {field, schema} of patchFields(capture.catalog, kind, "automatic")) {
+   if (allowsNull(schema) && (capture.catalog[kind] as Record<string, unknown>)[field] != null && !Object.hasOwn(inferred.changes, field)) inferred.changes[field] = null;
   }
-  if (kind === "stream" && reset && patchFields(capture.catalog, "stream", "automatic").some(row => row.field === "goal_short") && capture.catalog.stream!.goal_short !== null && !Object.hasOwn(inferred.changes, "goal_short")) inferred.changes.goal_short = null;
   const recordReceipt = (receipt: Receipt, request?: ApplyRequest): boolean => {
    environment.receipt(receipt);
    const accepted = receiptCanContinue(receipt);
    if (accepted) savedAny = true;
    if (request && request.actor === "automatic" && request.changes.reference_changes) {
-    const drafts = request.changes.reference_changes as {key: import("./streams.ts").ResourceKey; desired: {name:string} | null}[];
     const saves = receipt.saves?.map(item => item.save) ?? (receipt.save ? [receipt.save] : []);
     for (const save of saves) if (receipt.simulated || ["persisted", "committed"].includes(save.local)) {
      for (const row of save.domain?.reference_results ?? []) {
-      if (row.outcome !== "changes" || row.action !== "add" && row.action !== "drop") continue;
-      const draft = drafts.find(item => referenceSelector(item.key) === referenceSelector(row.key));
-      if (draft?.desired) environment.notice(`Reference ${row.action === "add" ? "added" : "dropped"}: ${referenceText(draft.desired.name)}`, "info");
+      if (row.outcome !== "changes" || row.action !== "add" && row.action !== "drop" || !row.desired) continue;
+      environment.notice(`Reference ${row.action === "add" ? "added" : "dropped"}: ${referenceText(row.desired.name)}`, "info");
      }
     }
    }

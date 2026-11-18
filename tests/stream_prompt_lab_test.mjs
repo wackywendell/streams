@@ -173,8 +173,7 @@ test('Session text schema describes distinct rows without changing constraints o
  assert.match(fields.state.description,/done or underway.*immediate wait or blocker/);
  assert.match(fields.remaining.description,/not already stated in Status/);
  for(const name of ['recap_short','state_short','remaining_short']) {
-  assert.equal(fields[name].anyOf[0].maxLength,24);
-  assert.match(fields[name].description,/at most 24 characters.*Null/);
+  assert.match(fields[name].description,/Null if \w+ is empty\. At most 24 characters\./);
  }
  const streamFields=buildInferencePayload({type:'stream',catalog:context(),messages:[]}).tools[0].parameters.properties.changes.properties;
  assert.match(streamFields.goal.description,/whole effort's enduring user purpose/);

@@ -217,7 +217,7 @@ export async function openCard(ctx: ExtensionContext, cli: StreamCli, state: Car
    {value: "settings", label: "Settings…", description: "Configure automatic reporting cadence, model, and naming"},
    {value: "close", label: "Close", description: "Close this dialog (Esc)"},
   ];
-  const streamFields = patchFields(catalog, "stream", "user").map(row => row.field).filter((f) => !(f === "goal_short" && stream.goal === null));
+  const streamFields = patchFields(catalog, "stream", "user").map(row => row.field);
   const streamItems: SelectItem[] = streamFields.map((field) => ({
    value: `field:stream:${field}`,
    label: `${field}…${state.edits.has(`stream:${field}`) ? " *" : ""}`,
