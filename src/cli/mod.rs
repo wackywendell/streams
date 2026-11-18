@@ -39,7 +39,7 @@ use streams::{
     config::{Config, ConfigKey, ConfigPath, encode_toml, toml_table_to_json, toml_value_to_json},
     frontend::{self, FrontendMode, FrontendRequest, FrontendSelection},
     model::{Record, Session, Stream, TitleMode, ValidationError},
-    operations::{self, Actor},
+    operations::{Actor, patches::StreamPatch},
     runtime::{
         self, CheckoutRegistry, DirectoryBindings, native::BuiltinFrontend, state::RuntimeState,
     },
@@ -920,10 +920,10 @@ impl App {
         catalog::save_stream_edit(
             &opened,
             &stream,
-            json!({"status": status})
-                .as_object()
-                .expect("status field")
-                .clone(),
+            StreamPatch {
+                status: Some(status),
+                ..StreamPatch::default()
+            },
             settings.naming,
         )
     }

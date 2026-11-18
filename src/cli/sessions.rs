@@ -5,6 +5,7 @@ use super::{
 };
 use streams::{
     model::{Checkout, Record, RecordKind, Session, Stream, TitleMode, ValidationError},
+    operations::patches::Patch,
     storage::records::{RecordAddress, RecordStore},
 };
 
@@ -144,20 +145,20 @@ impl App {
                         "catalog root setting changed during Session update",
                     ));
                 }
-                let mut changes =
+                let mut patch =
                     fields::session(&before, &intent, &mut |path| self.read_text(path))?;
-                if let Some(title) = title {
-                    changes.insert("title".into(), json!(title));
+                if title.is_some() {
+                    patch.title = title;
                 }
-                if changes.is_empty() {
+                if patch.is_empty() {
                     return Err(CliError::message(
                         "session update requires at least one field change",
                     ));
                 }
-                Ok(catalog::finish_record(application::save_user_edit(
+                Ok(catalog::finish_record(application::save_session_edit(
                     opened.records(),
-                    &Record::Session(before),
-                    &changes,
+                    &before,
+                    patch,
                     settings.naming,
                 )?))
             }

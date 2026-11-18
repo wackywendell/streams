@@ -3,7 +3,8 @@ use args::{SessionSelection, StreamFields};
 use std::sync::{Arc, atomic::AtomicBool};
 use streams::{
     frontend::{FrontendId, herdr::HerdrNativeSnapshot},
-    model::RecordKind,
+    model::{NamingMode, RecordKind},
+    operations::edits::StreamEdit,
     runtime::{
         conversations::ConversationRoots,
         native_markers::selected_stream,
@@ -348,13 +349,9 @@ impl App {
     fn proposed_stream(&self, host: &str, title: String, intent: &StreamFields) -> Result<Stream> {
         let mut stream = Stream::new(uuid::Uuid::new_v4().to_string(), title, None, host)?;
         stream.title_mode = TitleMode::Manual;
-        let changes = fields::stream(&stream, intent, &mut |path| self.read_text(path))?;
-        let Record::Stream(stream) =
-            operations::apply_changes(&Record::Stream(stream), &changes, Actor::User)?
-        else {
-            unreachable!("Stream fields preserve record kind")
-        };
-        Ok(stream)
+        let patch = fields::stream(&stream, intent, &mut |path| self.read_text(path))?;
+        let edit = StreamEdit::new(&stream, patch, Actor::User, None, NamingMode::default())?;
+        Ok(edit.after().clone())
     }
 
     pub(super) fn open_workspace(

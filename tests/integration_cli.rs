@@ -3172,10 +3172,13 @@ fn host_streams_lists_all_streams_with_active_session_counts_and_recency() {
     // Parked sessions remain eligible for Streams::select_open alongside Active sessions.
     let mut parked_session = fixture.sessions[0].clone();
     parked_session.status = Status::Parked;
-    application::save_user_edit(
+    application::save_session_edit(
         fixture.records.records(),
-        &Record::Session(fixture.sessions[0].clone()),
-        &json!({"status": "parked"}).as_object().unwrap().clone(),
+        &fixture.sessions[0],
+        streams::operations::patches::SessionPatch {
+            status: Some(Status::Parked),
+            ..Default::default()
+        },
         streams::model::TitleDefaults::default(),
     )
     .unwrap();

@@ -4,7 +4,7 @@
 use std::collections::{BTreeSet, VecDeque};
 use std::sync::OnceLock;
 
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 use streams::model::{
     NamingMode, Record, Reference, ReferenceRole, ReferenceState, ReferenceTarget, ReferenceValue,
     Session, Status, Stream, TitleDefaults, TitleMode,
@@ -78,8 +78,8 @@ fn production_admission_predicate_matches_ioa_guards_for_every_combination() {
     );
 }
 
-fn changes(value: Value) -> Map<String, Value> {
-    value.as_object().expect("json object").clone()
+fn changes<P: serde::de::DeserializeOwned>(value: Value) -> P {
+    serde_json::from_value(value).expect("patch fields")
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -125,7 +125,7 @@ impl ConcreteWorld {
 
         let session_report = SessionEdit::new(
             &session,
-            &changes(json!({
+            changes(json!({
                 "title": "Generated session title",
                 "state": "Generated session state",
                 "remaining": "Generated remaining work"
@@ -136,7 +136,7 @@ impl ConcreteWorld {
         .unwrap();
         let stream_report = StreamEdit::new(
             &stream_a,
-            &changes(json!({
+            changes(json!({
                 "title": "Generated stream title",
                 "goal": "Generated stream goal",
                 "goal_short": "Generated goal"
@@ -193,7 +193,7 @@ impl ConcreteWorld {
             "DirtySessionInputs" => {
                 let edit = SessionEdit::new(
                     &self.session,
-                    &changes(json!({"remaining": "User updated remaining"})),
+                    changes(json!({"remaining": "User updated remaining"})),
                     Actor::User,
                     self.current_defaults.session,
                 )
@@ -212,7 +212,7 @@ impl ConcreteWorld {
             "DirtyStreamInputs" => {
                 let edit = StreamEdit::new(
                     &self.stream_a,
-                    &changes(json!({
+                    changes(json!({
                         "goal": "User updated goal",
                         "goal_mode": self.stream_a.goal_mode
                     })),
@@ -234,7 +234,7 @@ impl ConcreteWorld {
                 StreamProtectionKind::TitleModeManual | StreamProtectionKind::GoalModeManual => {
                     let edit = SessionEdit::new(
                         &self.session,
-                        &changes(json!({"title_mode": "manual"})),
+                        changes(json!({"title_mode": "manual"})),
                         Actor::User,
                         self.current_defaults.session,
                     )
@@ -263,7 +263,7 @@ impl ConcreteWorld {
                     };
                     let edit = StreamEdit::new(
                         &self.stream_a,
-                        &changes(patch),
+                        changes(patch),
                         Actor::User,
                         None,
                         self.current_defaults.stream,

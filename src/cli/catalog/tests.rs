@@ -118,7 +118,10 @@ impl Fixture {
         save_stream_edit(
             &self.opened,
             &self.select(reference),
-            json!({"status": status}).as_object().unwrap().clone(),
+            streams::operations::patches::StreamPatch {
+                status: Some(status),
+                ..Default::default()
+            },
             TitleDefaults::default(),
         )
     }

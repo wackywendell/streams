@@ -1,8 +1,7 @@
 use std::path::Path;
 
-use serde::Serialize;
-use serde_json::{Map, Value};
 use streams::model::{Repository, Session, Stream};
+use streams::operations::patches::{SessionPatch, StreamPatch};
 
 use super::CliError;
 use super::args::{SessionFields, StreamFields};
@@ -11,19 +10,19 @@ pub(super) fn stream(
     current: &Stream,
     input: &StreamFields,
     read: &mut impl FnMut(&Path) -> Result<String, CliError>,
-) -> Result<Map<String, Value>, CliError> {
-    let mut changes = Map::new();
-    text(
-        &mut changes,
-        "goal",
-        &input.goal,
-        input.goal_file.as_deref(),
-        input.clear_goal,
-        read,
-    )?;
-    optional(&mut changes, "goal_mode", input.goal_mode)?;
-    optional(&mut changes, "title_mode", input.title_mode)?;
-    optional(&mut changes, "status", input.status)?;
+) -> Result<StreamPatch, CliError> {
+    let goal = text(&input.goal, input.goal_file.as_deref(), read)?;
+    let mut patch = StreamPatch {
+        goal: if input.clear_goal {
+            Some(None)
+        } else {
+            goal.map(Some)
+        },
+        goal_mode: input.goal_mode,
+        title_mode: input.title_mode,
+        status: input.status,
+        ..StreamPatch::default()
+    };
 
     if !input.add_repository.is_empty() || !input.remove_repository.is_empty() {
         let mut repositories = current.repositories.clone();
@@ -43,113 +42,89 @@ pub(super) fn stream(
             }
             repositories.insert(alias.clone(), repository);
         }
-        changes.insert("repositories".into(), serde_json::to_value(repositories)?);
+        patch.repositories = Some(repositories);
     }
 
-    Ok(changes)
+    Ok(patch)
 }
 
 pub(super) fn session(
     _current: &Session,
     input: &SessionFields,
     read: &mut impl FnMut(&Path) -> Result<String, CliError>,
-) -> Result<Map<String, Value>, CliError> {
-    let fields = [
-        (
-            "recap",
-            &input.recap,
-            input.recap_file.as_deref(),
-            input.clear_recap,
-        ),
-        (
-            "recap_short",
-            &input.recap_short,
-            input.recap_short_file.as_deref(),
-            input.clear_recap_short,
-        ),
-        (
-            "state",
-            &input.state,
-            input.state_file.as_deref(),
-            input.clear_state,
-        ),
-        (
-            "state_short",
-            &input.state_short,
-            input.state_short_file.as_deref(),
-            input.clear_state_short,
-        ),
-        (
-            "remaining",
-            &input.remaining,
-            input.remaining_file.as_deref(),
-            input.clear_remaining,
-        ),
-        (
-            "remaining_short",
-            &input.remaining_short,
-            input.remaining_short_file.as_deref(),
-            input.clear_remaining_short,
-        ),
-    ];
-    if fields
-        .iter()
-        .filter_map(|(_, _, file, _)| *file)
-        .filter(|path| *path == Path::new("-"))
-        .count()
+) -> Result<SessionPatch, CliError> {
+    if [
+        &input.recap_file,
+        &input.recap_short_file,
+        &input.state_file,
+        &input.state_short_file,
+        &input.remaining_file,
+        &input.remaining_short_file,
+    ]
+    .into_iter()
+    .filter(|file| file.as_deref() == Some(Path::new("-")))
+    .count()
         > 1
     {
         return Err(CliError::message(
             "only one field can read stdin in a command",
         ));
     }
-    let mut changes = Map::new();
-    for (name, value, file, clear) in fields {
-        text(&mut changes, name, value, file, false, read)?;
+    // Clearing a prose field leaves it empty; clearing a short form removes it.
+    let mut prose = |value: &Option<String>, file: &Option<std::path::PathBuf>, clear: bool| {
         if clear {
-            changes.insert(
-                name.into(),
-                if name.ends_with("_short") {
-                    Value::Null
-                } else {
-                    Value::String(String::new())
-                },
-            );
+            return Ok(Some(String::new()));
         }
-    }
-    optional(&mut changes, "title_mode", input.title_mode)?;
-    optional(&mut changes, "status", input.status)?;
-    Ok(changes)
+        text(value, file.as_deref(), read)
+    };
+    let recap = prose(&input.recap, &input.recap_file, input.clear_recap)?;
+    let state = prose(&input.state, &input.state_file, input.clear_state)?;
+    let remaining = prose(
+        &input.remaining,
+        &input.remaining_file,
+        input.clear_remaining,
+    )?;
+    let mut short = |value: &Option<String>, file: &Option<std::path::PathBuf>, clear: bool| {
+        if clear {
+            return Ok(Some(None));
+        }
+        text(value, file.as_deref(), read).map(|text| text.map(Some))
+    };
+    Ok(SessionPatch {
+        recap,
+        recap_short: short(
+            &input.recap_short,
+            &input.recap_short_file,
+            input.clear_recap_short,
+        )?,
+        state,
+        state_short: short(
+            &input.state_short,
+            &input.state_short_file,
+            input.clear_state_short,
+        )?,
+        remaining,
+        remaining_short: short(
+            &input.remaining_short,
+            &input.remaining_short_file,
+            input.clear_remaining_short,
+        )?,
+        title_mode: input.title_mode,
+        status: input.status,
+        ..SessionPatch::default()
+    })
 }
 
+/// A file's contents, or else the literal value.
 fn text(
-    changes: &mut Map<String, Value>,
-    name: &str,
     value: &Option<String>,
     file: Option<&Path>,
-    clear: bool,
     read: &mut impl FnMut(&Path) -> Result<String, CliError>,
-) -> Result<(), CliError> {
-    if let Some(file) = file {
-        changes.insert(name.into(), Value::String(read(file)?));
-    } else if let Some(value) = value {
-        changes.insert(name.into(), Value::String(value.clone()));
+) -> Result<Option<String>, CliError> {
+    match file {
+        Some(file) => read(file).map(Some),
+        None => Ok(value.clone()),
     }
-    if clear {
-        changes.insert(name.into(), Value::Null);
-    }
-    Ok(())
-}
-
-fn optional(
-    changes: &mut Map<String, Value>,
-    name: &str,
-    value: Option<impl Serialize>,
-) -> Result<(), CliError> {
-    if let Some(value) = value {
-        changes.insert(name.into(), serde_json::to_value(value)?);
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -157,6 +132,7 @@ mod tests {
     use super::*;
     use serde_json::json;
     use streams::model::{NamingMode, Status, TitleMode};
+    use streams::operations::patches::Patch;
 
     fn current_stream() -> Stream {
         Stream::new("stream", "Title", Some("Goal".into()), "host").unwrap()
@@ -199,7 +175,7 @@ mod tests {
         };
         let changes = stream(&current_stream(), &input, &mut no_read).unwrap();
         assert_eq!(
-            Value::Object(changes),
+            serde_json::to_value(changes).unwrap(),
             json!({"goal": "\n  user text  \n", "goal_mode": "automatic", "title_mode": "manual", "status": "waiting"})
         );
         assert_eq!(
@@ -211,8 +187,9 @@ mod tests {
                 },
                 &mut no_read
             )
-            .unwrap()["goal"],
-            Value::Null
+            .unwrap()
+            .goal,
+            Some(None)
         );
     }
 
@@ -227,8 +204,8 @@ mod tests {
             Ok("\nfile text\n".into())
         };
         assert_eq!(
-            stream(&current_stream(), &input, &mut read).unwrap()["goal"],
-            "\nfile text\n"
+            stream(&current_stream(), &input, &mut read).unwrap().goal,
+            Some(Some("\nfile text\n".into()))
         );
     }
 
@@ -258,7 +235,7 @@ mod tests {
         })
         .unwrap();
         assert_eq!(
-            Value::Object(changes),
+            serde_json::to_value(changes).unwrap(),
             json!({"recap":"Scope and achievements\n","recap_short":"Scope","state_short":"Now","remaining_short":"Next"})
         );
         let input = SessionFields {
@@ -271,7 +248,8 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            Value::Object(session(&current_session(), &input, &mut no_read).unwrap()),
+            serde_json::to_value(session(&current_session(), &input, &mut no_read).unwrap())
+                .unwrap(),
             json!({"recap":"","recap_short":null,"state":"","state_short":null,"remaining":"","remaining_short":null})
         );
         let input = SessionFields {
@@ -297,7 +275,7 @@ mod tests {
         })
         .unwrap();
         assert_eq!(
-            Value::Object(changes),
+            serde_json::to_value(changes).unwrap(),
             json!({"state": "\n  state  \n", "remaining": "remaining\n", "title_mode": "manual", "status": "blocked"})
         );
     }
@@ -319,7 +297,7 @@ mod tests {
         input.remove_repository = strings(&["repo", "absent"]);
         let changes = stream(&current, &input, &mut no_read).unwrap();
         assert_eq!(
-            changes["repositories"],
+            serde_json::to_value(changes.repositories).unwrap(),
             json!({"repo": {"url": "new"}, "keep": {"url": "unchanged"}})
         );
         input.add_repository = strings(&["repo", "new", "repo", "new"]);
@@ -344,7 +322,7 @@ mod tests {
         };
         let changes = stream(&current, &input, &mut no_read).unwrap();
         assert_eq!(
-            Value::Object(changes),
+            serde_json::to_value(changes).unwrap(),
             json!({
                 "goal":"Updated goal", "repositories":{"tools":{"url":"git@example.test:tools"}}
             })

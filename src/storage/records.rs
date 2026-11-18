@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::model::{Record, RecordKind, check_text};
+use crate::model::{Record, RecordKind, Session, Stream, check_text};
 
 use super::StorageError;
 
@@ -29,6 +29,22 @@ impl RecordAddress {
         };
         address.validate()?;
         Ok(address)
+    }
+
+    pub fn stream(stream: &Stream) -> Self {
+        Self {
+            host: stream.owner_host_id.clone(),
+            kind: RecordKind::Stream,
+            id: stream.id.clone(),
+        }
+    }
+
+    pub fn session(session: &Session) -> Self {
+        Self {
+            host: session.host_id.clone(),
+            kind: RecordKind::Session,
+            id: session.id.clone(),
+        }
     }
 
     pub fn for_record(record: &Record) -> Self {
@@ -176,6 +192,28 @@ impl<T> RecordSave<T> {
 /// The shell may read named dependencies; it has no enumeration or write capability.
 pub trait RecordReader {
     fn read(&self, address: &RecordAddress) -> Result<Option<RecordRead>, StorageError>;
+
+    /// The Stream `host` owns with this ID.
+    fn read_stream(&self, host: &str, id: &str) -> Result<Option<Stream>, StorageError> {
+        match self.read(&RecordAddress::new(host, RecordKind::Stream, id)?)? {
+            None => Ok(None),
+            Some(RecordRead {
+                record: Record::Stream(stream),
+            }) => Ok(Some(stream)),
+            Some(_) => Err(StorageError::new("a Stream address holds another record")),
+        }
+    }
+
+    /// The Session `host` holds with this ID.
+    fn read_session(&self, host: &str, id: &str) -> Result<Option<Session>, StorageError> {
+        match self.read(&RecordAddress::new(host, RecordKind::Session, id)?)? {
+            None => Ok(None),
+            Some(RecordRead {
+                record: Record::Session(session),
+            }) => Ok(Some(session)),
+            Some(_) => Err(StorageError::new("a Session address holds another record")),
+        }
+    }
 }
 
 /// Explicit human discovery, inspection and sync, separate from a point reader's capability.

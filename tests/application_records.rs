@@ -99,10 +99,16 @@ fn one_record_creation_reads_only_its_target_and_membership_and_a_retry_writes_n
             fs::metadata(marker).unwrap().len() as usize + bytes.len()
         );
         assert!(record_io::writes(&trace).is_empty());
-        application::save_user_edit(
+        let Record::Session(created) = &created.current.record else {
+            panic!("created a Session")
+        };
+        application::save_session_edit(
             &store,
-            &created.current.record,
-            json!({"state":"Later progress"}).as_object().unwrap(),
+            created,
+            streams::operations::patches::SessionPatch {
+                state: Some("Later progress".into()),
+                ..Default::default()
+            },
             TitleDefaults::default(),
         )
         .unwrap();

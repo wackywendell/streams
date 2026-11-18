@@ -1,17 +1,10 @@
 //! Pure captured edits. Conversation work and effort prose have different input guards.
 
-use std::collections::BTreeSet;
-
 use serde::Serialize;
-use serde_json::{Map, Value};
 
-use super::{
-    Actor, Reconciliation, agent_field_allowed, apply_changes, copy_field, field_eq, field_policy,
-    filter_automatic_changes, record_field_names,
-};
-use crate::model::{
-    NamingMode, Record, Session, Stream, TitleDefaults, TitleMode, ValidationError,
-};
+use super::patches::{Access, Patch, PatchField, SessionPatch, StreamPatch};
+use super::{Actor, Reconciliation};
+use crate::model::{NamingMode, Session, Stream, TitleDefaults, TitleMode, ValidationError};
 
 /// What a captured automatic report observes about its target when it is applied.
 /// `specs/report_admission.ioa.toml` models the same predicate; `tests/verification.rs`
@@ -79,22 +72,22 @@ pub struct StreamEdit {
     title_default: NamingMode,
 }
 
+/// Why an automatic report may not replace text: a reason and the conflicting fields.
+type Protection = Option<(&'static str, &'static [&'static str])>;
+
 impl SessionEdit {
     pub fn new(
         before: &Session,
-        changes: &Map<String, Value>,
+        patch: SessionPatch,
         actor: Actor,
         title_default: NamingMode,
     ) -> Result<Self, ValidationError> {
-        let Record::Session(after) = prepare(
-            &Record::Session(before.clone()),
-            changes,
+        let patch = admitted(
+            patch,
             actor,
-            title_default,
-        )?
-        else {
-            unreachable!("normalization preserves record kind")
-        };
+            &SessionPatch::protected(before, title_default),
+        )?;
+        let after = applied(before, &patch.normalized(before, actor))?;
         Ok(Self {
             before: before.clone(),
             after,
@@ -128,29 +121,19 @@ impl SessionEdit {
         if let Err(error) = stream.validate() {
             return refuse(self.actor, &error.to_string(), &["relationships"], false);
         }
-        let before = Record::Session(self.before.clone());
-        let after = Record::Session(self.after.clone());
-        let current_record = Record::Session(current.clone());
-        let changed = changed_fields(&before, &after);
+        let changed = SessionPatch::between(&self.before, &self.after);
         if self.actor == Actor::Automatic {
-            let (admission, protection) = self.admission_and_protection(
-                &before,
-                &current_record,
-                current,
-                &changed,
-                title_default,
-            );
+            let (admission, protection) =
+                self.admission_and_protection(current, &changed, title_default);
             apply_automatic(
-                &before,
-                &after,
-                &current_record,
+                current,
                 &changed,
                 AdmissionTarget::Session,
                 admission,
                 protection,
             )
         } else {
-            apply_user_fields(&before, &after, &current_record, &changed)
+            apply_user_fields(&self.before, current, &changed)
         }
     }
 
@@ -159,36 +142,29 @@ impl SessionEdit {
         current: &Session,
         current_default: NamingMode,
     ) -> ReportAdmission {
-        let before = Record::Session(self.before.clone());
-        let after = Record::Session(self.after.clone());
-        let current_record = Record::Session(current.clone());
-        let changed = changed_fields(&before, &after);
-        self.admission_and_protection(&before, &current_record, current, &changed, current_default)
+        let changed = SessionPatch::between(&self.before, &self.after);
+        self.admission_and_protection(current, &changed, current_default)
             .0
     }
 
     fn admission_and_protection(
         &self,
-        before: &Record,
-        current_record: &Record,
         current: &Session,
-        changed: &BTreeSet<&'static str>,
+        changed: &SessionPatch,
         current_default: NamingMode,
-    ) -> (
-        ReportAdmission,
-        Option<(&'static str, &'static [&'static str])>,
-    ) {
-        let protection = automatic_protection_conflict(
-            before,
-            current_record,
-            changed,
-            self.title_default,
-            current_default,
-        );
+    ) -> (ReportAdmission, Protection) {
+        let protection = changed.title.as_ref().and_then(|_| {
+            title_protection(
+                self.before.title_mode,
+                current.title_mode,
+                self.title_default,
+                current_default,
+            )
+        });
         let admission = ReportAdmission {
             in_captured_stream: same_captured_stream(&self.before, Some(current)),
             membership_unchanged: same_membership_period(&self.before, Some(current)),
-            session_inputs_clean: prose_inputs_clean(before, current_record, changed),
+            session_inputs_clean: prose_inputs_clean(&self.before, current, changed),
             session_protected: protection.is_some(),
             ..ReportAdmission::default()
         };
@@ -199,20 +175,13 @@ impl SessionEdit {
 impl StreamEdit {
     pub fn new(
         before: &Stream,
-        changes: &Map<String, Value>,
+        patch: StreamPatch,
         actor: Actor,
         captured_session: Option<Session>,
         title_default: NamingMode,
     ) -> Result<Self, ValidationError> {
-        let Record::Stream(after) = prepare(
-            &Record::Stream(before.clone()),
-            changes,
-            actor,
-            title_default,
-        )?
-        else {
-            unreachable!("normalization preserves record kind")
-        };
+        let patch = admitted(patch, actor, &StreamPatch::protected(before, title_default))?;
+        let after = applied(before, &patch.normalized(before, actor))?;
         if actor == Actor::User && captured_session.is_some() {
             return Err(ValidationError::new(
                 "user Stream edits cannot capture a Session dependency",
@@ -242,6 +211,10 @@ impl StreamEdit {
     pub fn before(&self) -> &Stream {
         &self.before
     }
+    /// The Stream this edit makes of its captured record.
+    pub fn after(&self) -> &Stream {
+        &self.after
+    }
     pub fn captured_session(&self) -> Option<&Session> {
         self.captured_session.as_ref()
     }
@@ -261,29 +234,19 @@ impl StreamEdit {
                 false,
             );
         }
-        let before = Record::Stream(self.before.clone());
-        let after = Record::Stream(self.after.clone());
-        let current_record = Record::Stream(current.clone());
-        let changed = changed_fields(&before, &after);
+        let changed = StreamPatch::between(&self.before, &self.after);
         if self.actor == Actor::Automatic {
-            let (admission, protection) = self.admission_and_protection(
-                &before,
-                &current_record,
-                session,
-                &changed,
-                title_default,
-            );
+            let (admission, protection) =
+                self.admission_and_protection(current, session, &changed, title_default);
             apply_automatic(
-                &before,
-                &after,
-                &current_record,
+                current,
                 &changed,
                 AdmissionTarget::Stream,
                 admission,
                 protection,
             )
         } else {
-            apply_user_fields(&before, &after, &current_record, &changed)
+            apply_user_fields(&self.before, current, &changed)
         }
     }
 
@@ -293,39 +256,37 @@ impl StreamEdit {
         session: Option<&Session>,
         current_default: NamingMode,
     ) -> ReportAdmission {
-        let before = Record::Stream(self.before.clone());
-        let after = Record::Stream(self.after.clone());
-        let current_record = Record::Stream(current.clone());
-        let changed = changed_fields(&before, &after);
-        self.admission_and_protection(&before, &current_record, session, &changed, current_default)
+        let changed = StreamPatch::between(&self.before, &self.after);
+        self.admission_and_protection(current, session, &changed, current_default)
             .0
     }
 
     fn admission_and_protection(
         &self,
-        before: &Record,
-        current_record: &Record,
+        current: &Stream,
         session: Option<&Session>,
-        changed: &BTreeSet<&'static str>,
+        changed: &StreamPatch,
         current_default: NamingMode,
-    ) -> (
-        ReportAdmission,
-        Option<(&'static str, &'static [&'static str])>,
-    ) {
-        let protection = automatic_protection_conflict(
-            before,
-            current_record,
-            changed,
-            self.title_default,
-            current_default,
-        );
+    ) -> (ReportAdmission, Protection) {
+        let title = changed.title.as_ref().and_then(|_| {
+            title_protection(
+                self.before.title_mode,
+                current.title_mode,
+                self.title_default,
+                current_default,
+            )
+        });
+        let goal = (current.goal_mode == NamingMode::Manual
+            && (changed.goal.is_some() || changed.goal_short.is_some()))
+        .then_some(("manual text is protected", &["goal_mode"][..]));
+        let protection = title.or(goal);
         let captured = self.captured_session.as_ref();
         let admission = ReportAdmission {
             in_captured_stream: captured
                 .is_some_and(|captured| same_captured_stream(captured, session)),
             membership_unchanged: captured
                 .is_some_and(|captured| same_membership_period(captured, session)),
-            stream_inputs_clean: prose_inputs_clean(before, current_record, changed),
+            stream_inputs_clean: prose_inputs_clean(&self.before, current, changed),
             stream_protected: protection.is_some(),
             ..ReportAdmission::default()
         };
@@ -354,35 +315,41 @@ pub fn report_admission_context(
     }
 }
 
-fn prepare(
-    before: &Record,
-    changes: &Map<String, Value>,
+/// The patch `actor` may submit, without the fields the record protects from automatic
+/// reports.
+fn admitted<P: Patch>(
+    mut patch: P,
     actor: Actor,
-    title_default: NamingMode,
-) -> Result<Record, ValidationError> {
-    before.validate_portable()?;
+    protected: &[P::Field],
+) -> Result<P, ValidationError> {
     if actor == Actor::Native {
         return Err(ValidationError::new(
             "native membership changes use the move operation",
         ));
     }
-    for field in changes.keys() {
-        if ["owner_host_id", "stream_id", "membership_epoch"].contains(&field.as_str())
-            || field_policy(before.kind(), field)
-                .is_none_or(|policy| actor == Actor::Automatic && !policy.automatic)
-        {
-            return Err(ValidationError::new(format!(
-                "field is not editable by this actor: {field}"
-            )));
+    if let Some(field) = patch
+        .fields()
+        .into_iter()
+        .find(|field| !field.access().permits(actor, false))
+    {
+        return Err(ValidationError::new(format!(
+            "field is not editable by this actor: {}",
+            field.name()
+        )));
+    }
+    if actor == Actor::Automatic {
+        for field in protected {
+            patch.remove(*field);
         }
     }
-    let changes = if actor == Actor::Automatic {
-        filter_automatic_changes(before, changes, title_default)
-    } else {
-        changes.clone()
-    };
-    let after = apply_changes(before, &changes, actor)?;
-    after.validate_portable()?;
+    Ok(patch)
+}
+
+fn applied<P: Patch>(before: &P::Record, patch: &P) -> Result<P::Record, ValidationError> {
+    P::check(before)?;
+    let mut after = before.clone();
+    patch.apply(&mut after);
+    P::check(&after)?;
     Ok(after)
 }
 
@@ -401,14 +368,6 @@ fn refuse(actor: Actor, reason: &str, fields: &[&str], stale: bool) -> Reconcili
     }
 }
 
-fn changed_fields(before: &Record, after: &Record) -> BTreeSet<&'static str> {
-    record_field_names(after)
-        .iter()
-        .copied()
-        .filter(|field| field_eq(before, after, field) == Some(false))
-        .collect()
-}
-
 fn same_captured_stream(captured: &Session, current: Option<&Session>) -> bool {
     current.is_some_and(|session| {
         session.id == captured.id
@@ -423,58 +382,39 @@ fn same_membership_period(captured: &Session, current: Option<&Session>) -> bool
         && current.is_some_and(|session| session.membership_epoch == captured.membership_epoch)
 }
 
-fn prose_inputs_clean(before: &Record, current: &Record, changed: &BTreeSet<&'static str>) -> bool {
-    record_field_names(before).iter().all(|field| {
-        !(agent_field_allowed(before.kind(), Actor::Automatic, field) || changed.contains(field))
-            || field_eq(before, current, field) == Some(true)
-    })
+/// Whether the record still holds the captured report prose and the fields this edit sets.
+fn prose_inputs_clean<P: Patch>(before: &P::Record, current: &P::Record, changed: &P) -> bool {
+    let drift = P::between(before, current);
+    !drift.overlaps(changed)
+        && drift
+            .fields()
+            .iter()
+            .all(|field| field.access() != Access::Report)
 }
 
-fn automatic_protection_conflict(
-    before: &Record,
-    current: &Record,
-    changed: &BTreeSet<&'static str>,
+fn title_protection(
+    captured_mode: TitleMode,
+    current_mode: TitleMode,
     captured_default: NamingMode,
     current_default: NamingMode,
-) -> Option<(&'static str, &'static [&'static str])> {
-    if changed.contains("title") {
-        let captured_mode = match before {
-            Record::Stream(stream) => stream.title_mode,
-            Record::Session(session) => session.title_mode,
-            _ => unreachable!(),
-        };
-        if captured_mode == TitleMode::Inherit && captured_default != current_default {
-            return Some(("title generation default changed", &["title_default"]));
-        }
-        let current_mode = match current {
-            Record::Stream(stream) => stream.title_mode,
-            Record::Session(session) => session.title_mode,
-            _ => unreachable!(),
-        };
-        if current_mode.resolve(current_default) == NamingMode::Manual {
-            return Some(("manual text is protected", &["title_mode"]));
-        }
+) -> Protection {
+    if captured_mode == TitleMode::Inherit && captured_default != current_default {
+        return Some(("title generation default changed", &["title_default"]));
     }
-    if let Record::Stream(stream) = current
-        && stream.goal_mode == NamingMode::Manual
-        && (changed.contains("goal") || changed.contains("goal_short"))
-    {
-        return Some(("manual text is protected", &["goal_mode"]));
+    if current_mode.resolve(current_default) == NamingMode::Manual {
+        return Some(("manual text is protected", &["title_mode"]));
     }
     None
 }
 
-#[allow(clippy::too_many_arguments)]
-fn apply_automatic(
-    _before: &Record,
-    after: &Record,
-    current: &Record,
-    changed: &BTreeSet<&'static str>,
+fn apply_automatic<P: Patch>(
+    current: &P::Record,
+    changed: &P,
     target: AdmissionTarget,
     admission: ReportAdmission,
-    protection: Option<(&'static str, &'static [&'static str])>,
+    protection: Protection,
 ) -> Reconciliation {
-    if let Err(error) = current.validate_portable() {
+    if let Err(error) = P::check(current) {
         return refuse(
             Actor::Automatic,
             &error.to_string(),
@@ -482,11 +422,10 @@ fn apply_automatic(
             false,
         );
     }
+    let mut candidate = current.clone();
+    changed.apply(&mut candidate);
     // A retried report that already landed, or one the record already holds, is no change.
-    if changed
-        .iter()
-        .all(|field| field_eq(current, after, field) == Some(true))
-    {
+    if candidate == *current {
         return Reconciliation::no_change("");
     }
     if target == AdmissionTarget::Stream && !admission.membership_unchanged {
@@ -508,11 +447,7 @@ fn apply_automatic(
             true,
         );
     }
-    let mut candidate = current.clone();
-    for field in changed {
-        copy_field(&mut candidate, after, field);
-    }
-    if let Err(error) = candidate.validate_portable() {
+    if let Err(error) = P::check(&candidate) {
         return refuse(
             Actor::Automatic,
             &error.to_string(),
@@ -520,38 +455,35 @@ fn apply_automatic(
             false,
         );
     }
-    if &candidate == current {
-        Reconciliation::no_change("")
-    } else {
-        Reconciliation::Changes {
-            record: Box::new(candidate),
-        }
+    Reconciliation::Changes {
+        record: Box::new(P::into_record(candidate)),
     }
 }
 
 /// User edits compare and swap on the captured revision. A retry that already landed, or
 /// intent the record already holds, is no change.
-fn apply_user_fields(
-    before: &Record,
-    after: &Record,
-    current: &Record,
-    changed: &BTreeSet<&'static str>,
+fn apply_user_fields<P: Patch>(
+    before: &P::Record,
+    current: &P::Record,
+    changed: &P,
 ) -> Reconciliation {
-    if let Err(error) = current.validate_portable() {
+    if let Err(error) = P::check(current) {
         return refuse(Actor::User, &error.to_string(), &["relationships"], false);
     }
-    if changed
-        .iter()
-        .all(|field| field_eq(current, after, field) == Some(true))
-    {
+    let mut candidate = current.clone();
+    changed.apply(&mut candidate);
+    if candidate == *current {
         return Reconciliation::no_change("");
     }
-    if current.revision() != before.revision() {
-        let conflicts: Vec<&str> = record_field_names(before)
-            .iter()
-            .copied()
-            .filter(|field| field_eq(current, before, field) == Some(false))
+    if P::revision(current) != P::revision(before) {
+        let mut conflicts: Vec<&str> = P::between(before, current)
+            .fields()
+            .into_iter()
+            .map(PatchField::name)
             .collect();
+        if conflicts.is_empty() {
+            conflicts.push("revision");
+        }
         return refuse(
             Actor::User,
             "record changed since capture; capture fresh inputs",
@@ -559,15 +491,11 @@ fn apply_user_fields(
             false,
         );
     }
-    let mut candidate = current.clone();
-    for field in changed {
-        copy_field(&mut candidate, after, field);
-    }
-    if let Err(error) = candidate.validate_portable() {
+    if let Err(error) = P::check(&candidate) {
         return refuse(Actor::User, &error.to_string(), &["relationships"], false);
     }
     Reconciliation::Changes {
-        record: Box::new(candidate),
+        record: Box::new(P::into_record(candidate)),
     }
 }
 

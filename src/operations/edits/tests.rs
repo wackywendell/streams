@@ -1,10 +1,17 @@
 use super::*;
-use crate::model::Status;
+use crate::model::{Record, Status};
 use crate::operations::DomainOutcome;
-use serde_json::json;
+use serde_json::{Value, json};
 
-fn changes(value: Value) -> Map<String, Value> {
-    value.as_object().unwrap().clone()
+fn changes<P: serde::de::DeserializeOwned>(value: Value) -> P {
+    serde_json::from_value(value).unwrap()
+}
+/// `before` as an edit by `actor` would leave it.
+fn edited(before: &Session, value: Value, actor: Actor) -> Session {
+    let patch: SessionPatch = changes(value);
+    let mut after = before.clone();
+    patch.normalized(before, actor).apply(&mut after);
+    after
 }
 fn stream(id: &str) -> Stream {
     Stream::new(id, id, None, "host").unwrap()
@@ -42,27 +49,18 @@ fn each_progress_field_invalidates_only_its_own_short_form() {
         } else {
             "Updated"
         };
-        let after = apply_changes(
-            &Record::Session(before.clone()),
-            &changes(json!({field:value})),
-            Actor::Automatic,
-        )
-        .unwrap();
-        let Record::Session(after) = after else {
-            unreachable!()
-        };
+        let after = edited(&before, json!({field:value}), Actor::Automatic);
         assert_eq!(after.recap_short.is_none(), field == "recap");
         assert_eq!(after.state_short.is_none(), field == "state");
         assert_eq!(after.remaining_short.is_none(), field == "remaining");
         if field != "status" {
             let short = format!("{field}_short");
-            let after = apply_changes(
-                &Record::Session(before.clone()),
-                &changes(json!({field:value,short.clone():"Fresh"})),
+            let after = edited(
+                &before,
+                json!({field:value,short.clone():"Fresh"}),
                 Actor::Automatic,
-            )
-            .unwrap();
-            assert_eq!(crate::codec::record_to_data(&after)[short], "Fresh");
+            );
+            assert_eq!(serde_json::to_value(&after).unwrap()[short], "Fresh");
         }
     }
 }
@@ -82,7 +80,7 @@ fn progress_group_guards_cover_all_long_and_short_fields() {
         ] {
             let edit = SessionEdit::new(
                 &before,
-                &changes(json!({"recap":"Scope", "recap_short":"Scope", "remaining_short":"Next"})),
+                changes(json!({"recap":"Scope", "recap_short":"Scope", "remaining_short":"Next"})),
                 actor,
                 NamingMode::Automatic,
             )
@@ -92,15 +90,7 @@ fn progress_group_guards_cover_all_long_and_short_fields() {
             } else {
                 "Concurrent"
             };
-            let Record::Session(current) = apply_changes(
-                &Record::Session(before.clone()),
-                &changes(json!({field:value})),
-                Actor::User,
-            )
-            .unwrap() else {
-                unreachable!()
-            };
-            let mut current = current;
+            let mut current = edited(&before, json!({field:value}), Actor::User);
             current.revision += 1;
             let result = edit.apply(&current, &stream("a"), NamingMode::Automatic);
             assert_eq!(
@@ -121,7 +111,7 @@ fn conversation_report_survives_move_and_return_without_restoring_old_membership
     let before = session();
     let edit = SessionEdit::new(
         &before,
-        &changes(json!({"state":"progress", "remaining":"next"})),
+        changes(json!({"state":"progress", "remaining":"next"})),
         Actor::Automatic,
         NamingMode::Automatic,
     )
@@ -149,7 +139,7 @@ fn effort_prose_cannot_cross_a_move_or_reenter_after_a_return() {
     let target = stream("a");
     let edit = StreamEdit::new(
         &target,
-        &changes(json!({"goal":"old effort prose"})),
+        changes(json!({"goal":"old effort prose"})),
         Actor::Automatic,
         Some(before.clone()),
         NamingMode::Automatic,
@@ -179,7 +169,7 @@ fn local_work_and_stream_input_changes_supersede_old_inference() {
     let before = session();
     let edit = SessionEdit::new(
         &before,
-        &changes(json!({"state":"old generated work"})),
+        changes(json!({"state":"old generated work"})),
         Actor::Automatic,
         NamingMode::Automatic,
     )
@@ -193,7 +183,7 @@ fn local_work_and_stream_input_changes_supersede_old_inference() {
     let target = stream("a");
     let edit = StreamEdit::new(
         &target,
-        &changes(json!({"goal":"old goal"})),
+        changes(json!({"goal":"old goal"})),
         Actor::Automatic,
         Some(before.clone()),
         NamingMode::Automatic,
@@ -227,7 +217,7 @@ fn manual_text_and_grouped_conversation_fields_remain_protected() {
     let before = session();
     let edit = SessionEdit::new(
         &before,
-        &changes(json!({"title":"generated"})),
+        changes(json!({"title":"generated"})),
         Actor::Automatic,
         NamingMode::Automatic,
     )
@@ -241,7 +231,7 @@ fn manual_text_and_grouped_conversation_fields_remain_protected() {
     ));
     let edit = SessionEdit::new(
         &before,
-        &changes(json!({"state":"edited state"})),
+        changes(json!({"state":"edited state"})),
         Actor::User,
         NamingMode::Automatic,
     )
@@ -255,7 +245,7 @@ fn manual_text_and_grouped_conversation_fields_remain_protected() {
     ));
     let edit = SessionEdit::new(
         &current,
-        &changes(json!({"title":"User name"})),
+        changes(json!({"title":"User name"})),
         Actor::User,
         NamingMode::Automatic,
     )
@@ -276,7 +266,7 @@ fn effective_title_modes_control_generation_without_changing_saved_modes() {
             before.title_mode = mode;
             let edit = SessionEdit::new(
                 &before,
-                &changes(json!({"title":"Generated name","state":"progress"})),
+                changes(json!({"title":"Generated name","state":"progress"})),
                 Actor::Automatic,
                 default,
             )
@@ -299,7 +289,7 @@ fn effective_title_modes_control_generation_without_changing_saved_modes() {
             before.title_mode = mode;
             let edit = StreamEdit::new(
                 &before,
-                &changes(json!({"title":"Generated effort","goal":"Goal"})),
+                changes(json!({"title":"Generated effort","goal":"Goal"})),
                 Actor::Automatic,
                 Some(session()),
                 default,
@@ -329,7 +319,7 @@ fn user_mode_changes_do_not_generate_a_new_title_and_ignore_default_drift() {
     for mode in ["automatic", "manual", "inherit"] {
         let edit = SessionEdit::new(
             &before,
-            &changes(json!({"title_mode":mode})),
+            changes(json!({"title_mode":mode})),
             Actor::User,
             NamingMode::Automatic,
         )
@@ -351,26 +341,17 @@ fn user_mode_changes_do_not_generate_a_new_title_and_ignore_default_drift() {
 
 #[test]
 fn ordinary_edits_reject_reference_collections() {
-    for actor in [Actor::User, Actor::Automatic] {
-        for field in [
-            "references",
-            "documents",
-            "issues",
-            "prs",
-            "reference_changes",
-        ] {
-            assert!(
-                StreamEdit::new(
-                    &stream("a"),
-                    &changes(json!({field:[]})),
-                    actor,
-                    (actor == Actor::Automatic).then(session),
-                    NamingMode::Automatic,
-                )
-                .is_err(),
-                "{actor:?} {field}"
-            );
-        }
+    for field in [
+        "references",
+        "documents",
+        "issues",
+        "prs",
+        "reference_changes",
+    ] {
+        assert!(
+            serde_json::from_value::<StreamPatch>(json!({field:[]})).is_err(),
+            "{field}"
+        );
     }
 }
 
@@ -384,14 +365,12 @@ fn constructors_reject_membership_identity_lifecycle_and_unscoped_generated_effo
         json!({"revision":2}),
         json!({"harness":"claude"}),
     ] {
-        assert!(
-            SessionEdit::new(&before, &changes(value), Actor::User, NamingMode::Automatic).is_err()
-        );
+        assert!(serde_json::from_value::<SessionPatch>(value).is_err());
     }
     assert!(
         SessionEdit::new(
             &before,
-            &changes(json!({"title_mode":"manual"})),
+            changes(json!({"title_mode":"manual"})),
             Actor::Automatic,
             NamingMode::Automatic
         )
@@ -400,7 +379,7 @@ fn constructors_reject_membership_identity_lifecycle_and_unscoped_generated_effo
     assert!(
         SessionEdit::new(
             &before,
-            &changes(json!({"state":"native"})),
+            changes(json!({"state":"native"})),
             Actor::Native,
             NamingMode::Automatic
         )
@@ -410,7 +389,7 @@ fn constructors_reject_membership_identity_lifecycle_and_unscoped_generated_effo
     assert!(
         StreamEdit::new(
             &target,
-            &changes(json!({"goal":"generated"})),
+            changes(json!({"goal":"generated"})),
             Actor::Automatic,
             None,
             NamingMode::Automatic
@@ -420,7 +399,7 @@ fn constructors_reject_membership_identity_lifecycle_and_unscoped_generated_effo
     assert!(
         StreamEdit::new(
             &target,
-            &changes(json!({"goal":"manual"})),
+            changes(json!({"goal":"manual"})),
             Actor::User,
             Some(before.clone()),
             NamingMode::Automatic
@@ -432,7 +411,7 @@ fn constructors_reject_membership_identity_lifecycle_and_unscoped_generated_effo
     assert!(
         StreamEdit::new(
             &foreign,
-            &changes(json!({"goal":"generated"})),
+            changes(json!({"goal":"generated"})),
             Actor::Automatic,
             Some(before),
             NamingMode::Automatic
@@ -446,7 +425,7 @@ fn foreign_or_mismatched_current_relationships_never_admit_a_local_edit() {
     let before = session();
     let edit = SessionEdit::new(
         &before,
-        &changes(json!({"status":"waiting"})),
+        changes(json!({"status":"waiting"})),
         Actor::User,
         NamingMode::Automatic,
     )

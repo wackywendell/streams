@@ -1,14 +1,16 @@
 //! Versioned captured edits. Old authority-bearing requests are never adapted or replayed.
 
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 
 use crate::{
-    codec::{load_json, objects, record_from_data, require_object},
-    model::{NamingMode, Record, RecordKind, Session, TitleDefaults, ValidationError, check_text},
+    codec::{load_json, object, objects, require_object, session_from_data, stream_from_data},
+    model::{NamingMode, RecordKind, Session, TitleDefaults, ValidationError, check_text},
     operations::{
-        Actor, agent_field_allowed,
+        Actor,
         edits::{SessionEdit, StreamEdit},
+        patches::{Patch, PatchField},
         references::{
             AutomaticDocumentTarget, AutomaticReferenceTarget, AutomaticReferenceValue,
             ReferenceChange, ReferenceChanges,
@@ -49,7 +51,7 @@ struct Wire {
     kind: RecordKind,
     actor: Actor,
     before: Value,
-    changes: Map<String, Value>,
+    changes: Value,
     title_default: NamingMode,
     #[serde(deserialize_with = "objects")]
     inputs: Vec<Input>,
@@ -174,25 +176,15 @@ pub fn parse_record_update(
     if wire.catalog_source != catalog_source {
         return Err(ValidationError::new("catalog source changed since capture"));
     }
-    if wire.actor == Actor::Native || wire.kind == RecordKind::Host {
+    if wire.actor == Actor::Native {
         return Err(ValidationError::new(
             "captured edits require user/automatic Stream or Session intent",
         ));
     }
-    let references = wire.kind == RecordKind::Stream
-        && wire.changes.len() == 1
-        && wire.changes.contains_key("reference_changes");
-    for field in wire.changes.keys() {
-        if !references && !agent_field_allowed(wire.kind, wire.actor, field) {
-            return Err(ValidationError::new(format!(
-                "unknown agent update field: {field}"
-            )));
-        }
-    }
-    let before = record_from_data(wire.kind, &wire.before)?;
-    let target = RecordAddress::for_record(&before);
-    let edit = match before {
-        Record::Session(session) => {
+    let edit = match wire.kind {
+        RecordKind::Session => {
+            let patch = agent_patch(wire.changes, wire.actor)?;
+            let session = session_from_data(&wire.before)?;
             if !wire.inputs.is_empty() {
                 return Err(ValidationError::new(
                     "Session edits capture only their own conversation fields",
@@ -200,20 +192,23 @@ pub fn parse_record_update(
             }
             CapturedEdit::Session(SessionEdit::new(
                 &session,
-                &wire.changes,
+                patch,
                 wire.actor,
                 wire.title_default,
             )?)
         }
-        Record::Stream(stream) => {
+        RecordKind::Stream => {
+            let references = match wire.changes.as_object() {
+                Some(changes) if changes.len() == 1 => changes.get("reference_changes"),
+                _ => None,
+            }
+            .map(|rows| parse_reference_changes(wire.actor, rows))
+            .transpose()?;
+            let stream = stream_from_data(&wire.before)?;
             let captured_session: Option<Session> = match wire.inputs.as_slice() {
                 [] => None,
                 [input] if input.kind == RecordKind::Session => {
-                    let Record::Session(session) = record_from_data(input.kind, &input.record)?
-                    else {
-                        unreachable!("kind fixes decoding")
-                    };
-                    Some(session)
+                    Some(session_from_data(&input.record)?)
                 }
                 _ => {
                     return Err(ValidationError::new(
@@ -221,30 +216,57 @@ pub fn parse_record_update(
                     ));
                 }
             };
-            if references {
-                let changes =
-                    parse_reference_changes(wire.actor, &wire.changes["reference_changes"])?;
-                CapturedEdit::References(ReferenceChanges::new(
+            match references {
+                Some(changes) => CapturedEdit::References(ReferenceChanges::new(
                     &stream,
                     wire.actor,
                     captured_session.as_ref(),
                     changes,
-                )?)
-            } else {
-                CapturedEdit::Stream(StreamEdit::new(
+                )?),
+                None => CapturedEdit::Stream(StreamEdit::new(
                     &stream,
-                    &wire.changes,
+                    agent_patch(wire.changes, wire.actor)?,
                     wire.actor,
                     captured_session,
                     wire.title_default,
-                )?)
+                )?),
             }
         }
-        Record::Host(_) => unreachable!("Host edits refused above"),
+        RecordKind::Host => {
+            return Err(ValidationError::new(
+                "captured edits require user/automatic Stream or Session intent",
+            ));
+        }
+    };
+    let target = match &edit {
+        CapturedEdit::Session(edit) => RecordAddress::session(edit.before()),
+        CapturedEdit::Stream(edit) => RecordAddress::stream(edit.before()),
+        CapturedEdit::References(changes) => RecordAddress::stream(changes.before()),
     };
     Ok(RecordUpdate {
         target,
         edit,
         title_defaults,
     })
+}
+
+/// An agent request's field changes, limited to the fields its actor may set through an
+/// agent.
+fn agent_patch<P: Patch + DeserializeOwned>(
+    changes: Value,
+    actor: Actor,
+) -> Result<P, ValidationError> {
+    let patch: P = object(changes)
+        .map_err(|error| ValidationError::new(format!("invalid captured edit: {error}")))?;
+    if let Some(field) = patch
+        .fields()
+        .into_iter()
+        .find(|field| !field.access().permits(actor, true))
+    {
+        return Err(ValidationError::new(format!(
+            "unknown agent update field: {}",
+            field.name()
+        )));
+    }
+    Ok(patch)
 }

@@ -517,19 +517,18 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use serde_json::json;
     use tempfile::tempdir;
 
     use super::*;
     use crate::{
         application::{
             create_record, initialize_records, move_session_observed, open_records_observed,
-            save_user_edit,
+            save_session_edit,
         },
         config::{Config, Strategy},
         file_store::records::RecordIoEvent,
         model::{Stream, TitleDefaults},
-        operations::{effective_stream_status, membership::MoveIntent},
+        operations::{effective_stream_status, membership::MoveIntent, patches::SessionPatch},
     };
 
     fn now_ms() -> u64 {
@@ -799,10 +798,14 @@ mod tests {
         let s_raced = session_with_status(&host, "stale", "n-raced", Status::Active);
         let s_done = session_with_status(&host, "finished", "n-done", Status::Done);
         create_record(opened.records(), &Record::Session(s_stale)).unwrap();
-        let raced = create_record(opened.records(), &Record::Session(s_raced.clone()))
-            .unwrap()
-            .current
-            .record;
+        let Record::Session(raced) =
+            create_record(opened.records(), &Record::Session(s_raced.clone()))
+                .unwrap()
+                .current
+                .record
+        else {
+            panic!("created a Session")
+        };
         create_record(opened.records(), &Record::Session(s_done)).unwrap();
 
         let base = now_ms();
@@ -818,11 +821,11 @@ mod tests {
 
         // Capture a stale decay plan past 14 days, then concurrently edit n-raced before applying!
         let plan = plan_decay(&opened, 14, base + 15 * 86_400_000).unwrap();
-        let changes = json!({"state": "Fresh concurrent update"})
-            .as_object()
-            .unwrap()
-            .clone();
-        save_user_edit(opened.records(), &raced, &changes, TitleDefaults::default()).unwrap();
+        let patch = SessionPatch {
+            state: Some("Fresh concurrent update".into()),
+            ..SessionPatch::default()
+        };
+        save_session_edit(opened.records(), &raced, patch, TitleDefaults::default()).unwrap();
         let raced_addr = RecordAddress::new(&host, RecordKind::Session, &s_raced.id).unwrap();
         let raced_rev_before = opened
             .records()
@@ -867,10 +870,13 @@ mod tests {
 
         // Already-active session inside a closed stream reopens the stream on resume without a redundant session write.
         let active = session_with_status(&host, "work", "n-active", Status::Active);
-        let active = create_record(opened.records(), &Record::Session(active))
+        let Record::Session(active) = create_record(opened.records(), &Record::Session(active))
             .unwrap()
             .current
-            .record;
+            .record
+        else {
+            panic!("created a Session")
+        };
         let reopened = resume_session(&opened, Harness::Pi, "n-active").unwrap();
         assert!(!reopened.session_changed);
         assert!(reopened.stream_changed);
@@ -896,17 +902,11 @@ mod tests {
         );
 
         // Concurrent non-status edit does not block park_session.
-        let changes = json!({"recap": "Concurrent report"})
-            .as_object()
-            .unwrap()
-            .clone();
-        save_user_edit(
-            opened.records(),
-            &active,
-            &changes,
-            TitleDefaults::default(),
-        )
-        .unwrap();
+        let patch = SessionPatch {
+            recap: Some("Concurrent report".into()),
+            ..SessionPatch::default()
+        };
+        save_session_edit(opened.records(), &active, patch, TitleDefaults::default()).unwrap();
         let parked = park_session(&opened, Harness::Pi, "n-active").unwrap();
         assert!(parked.session_changed);
         assert_eq!(read_session_status(&opened, "n-active"), Status::Parked);

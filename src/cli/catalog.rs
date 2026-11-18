@@ -5,14 +5,17 @@ mod tests;
 
 use super::args::StreamFields;
 use super::{CliError, Output, Result, fields, fold, printable, resolve, result_data};
-use serde_json::{Map, Value, json};
+use serde_json::json;
 use std::{collections::BTreeSet, path::Path};
 use streams::{
     agent,
     application::{self, OpenedRecords},
     codec::record_to_data,
     model::{Record, Status, Stream, TitleDefaults, ValidationError},
-    operations::{DomainOutcome, EditOutcome},
+    operations::{
+        DomainOutcome, EditOutcome,
+        patches::{Patch, StreamPatch},
+    },
     storage::records::{RecordSave, RecordStore},
     sync::records::RecordSync,
 };
@@ -149,33 +152,28 @@ pub(super) fn update_record(
     defaults: TitleDefaults,
     mut read: impl FnMut(&Path) -> Result<String>,
 ) -> Result<Output> {
-    let mut changes = fields::stream(stream, intent, &mut read)?;
-    if let Some(title) = title {
-        changes.insert("title".into(), json!(title));
+    let mut patch = fields::stream(stream, intent, &mut read)?;
+    if title.is_some() {
+        patch.title = title;
     }
-    if changes.is_empty() {
+    if patch.is_empty() {
         return Err(CliError::message(
             "update requires at least one field change",
         ));
     }
-    save_stream_edit(opened, stream, changes, defaults)
+    save_stream_edit(opened, stream, patch, defaults)
 }
 
 pub(super) fn save_stream_edit(
     opened: &OpenedRecords,
     stream: &Stream,
-    changes: Map<String, Value>,
+    patch: StreamPatch,
     defaults: TitleDefaults,
 ) -> Result<Output> {
     finish_stream_save(
         opened,
         Some(stream.status),
-        application::save_user_edit(
-            opened.records(),
-            &Record::Stream(stream.clone()),
-            &changes,
-            defaults,
-        ),
+        application::save_stream_edit(opened.records(), stream, patch, defaults),
     )
 }
 

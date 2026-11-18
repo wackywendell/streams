@@ -122,13 +122,27 @@ pub(crate) fn require_object<'a>(
 
 /// Decode a record's wire fields and check its logical constraints before use.
 pub fn record_from_data(kind: RecordKind, value: &Value) -> Result<Record, ValidationError> {
-    let record = match kind {
-        RecordKind::Stream => object::<Stream, _>(value.clone()).map(Record::Stream),
-        RecordKind::Session => object::<Session, _>(value.clone()).map(Record::Session),
-        RecordKind::Host => object::<Host, _>(value.clone()).map(Record::Host),
+    match kind {
+        RecordKind::Stream => stream_from_data(value).map(Record::Stream),
+        RecordKind::Session => session_from_data(value).map(Record::Session),
+        RecordKind::Host => {
+            let host = decode::<Host>(value)?;
+            host.validate()?;
+            Ok(Record::Host(host))
+        }
     }
-    .map_err(|error| ValidationError::new(error.to_string()))?;
-    record.validated()
+}
+
+pub fn stream_from_data(value: &Value) -> Result<Stream, ValidationError> {
+    decode::<Stream>(value)?.validated()
+}
+
+pub fn session_from_data(value: &Value) -> Result<Session, ValidationError> {
+    decode::<Session>(value)?.validated()
+}
+
+fn decode<T: DeserializeOwned>(value: &Value) -> Result<T, ValidationError> {
+    object::<T, _>(value.clone()).map_err(|error| ValidationError::new(error.to_string()))
 }
 
 struct StrictJsonSeed;

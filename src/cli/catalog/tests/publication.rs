@@ -6,11 +6,14 @@ fn direct_human_edit_retry_after_a_later_edit_conflicts_and_keeps_the_later_reco
     let created = f.create("Work", None, Status::Active);
     let id = created["id"].as_str().unwrap();
     let before = f.select(id);
-    let changes = json!({"goal":"First"}).as_object().unwrap().clone();
-    let first = application::save_user_edit(
+    let changes = streams::operations::patches::StreamPatch {
+        goal: Some(Some("First".into())),
+        ..Default::default()
+    };
+    let first = application::save_stream_edit(
         f.opened.records(),
-        &Record::Stream(before.clone()),
-        &changes,
+        &before,
+        changes.clone(),
         TitleDefaults::default(),
     )
     .unwrap();
@@ -22,10 +25,10 @@ fn direct_human_edit_retry_after_a_later_edit_conflicts_and_keeps_the_later_reco
         },
     ));
     let bytes = f.snapshot();
-    let retry = application::save_user_edit(
+    let retry = application::save_stream_edit(
         f.opened.records(),
-        &Record::Stream(before.clone()),
-        &changes,
+        &before,
+        changes.clone(),
         TitleDefaults::default(),
     )
     .unwrap();
