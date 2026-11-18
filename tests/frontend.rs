@@ -842,33 +842,3 @@ fn herdr_topology_rejects_every_missing_collection_and_broken_relationship() {
         assert!(HerdrTopology::parse(&bad).is_err(), "accepted {bad}");
     }
 }
-
-#[test]
-fn frontend_trait_is_object_safe() {
-    struct Plugin;
-    impl WorkspaceFrontend for Plugin {
-        fn frontend_id(&self) -> FrontendId {
-            FrontendId::Cmux
-        }
-        fn endpoint_id(&self) -> EndpointId {
-            EndpointId("plugin-server".into())
-        }
-        fn workspaces(&self) -> Result<Vec<Workspace>, FrontendError> {
-            Ok(Vec::new())
-        }
-        fn resolve(&self, _: WorkspaceSelector<'_>) -> Result<Workspace, FrontendError> {
-            Err(FrontendError::invalid("not found"))
-        }
-        fn create(&self, _: &CreateWorkspace) -> Result<Workspace, FrontendError> {
-            Err(FrontendError::invalid("unsupported"))
-        }
-        fn focus(&self, _: &NativeRef) -> Result<(), FrontendError> {
-            Err(FrontendError::invalid("unsupported"))
-        }
-        fn rename(&self, _: &NativeRef, _: &str) -> Result<(), FrontendError> {
-            Err(FrontendError::invalid("unsupported"))
-        }
-    }
-    let frontend: Box<dyn WorkspaceFrontend> = Box::new(Plugin);
-    assert_eq!(frontend.frontend_id(), FrontendId::Cmux);
-}

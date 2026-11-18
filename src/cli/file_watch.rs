@@ -59,15 +59,16 @@ impl FileWatch {
             loop {
                 match fs::metadata(parent) {
                     Ok(metadata) if metadata.is_dir() => break,
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                        parent = parent.parent().ok_or("no existing watch parent")?;
-                    }
-                    _ => {
+                    Ok(_) => {
                         return Err(format!(
                             "required watch parent is not a directory: {}",
                             parent.display()
                         ));
                     }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        parent = parent.parent().ok_or("no existing watch parent")?;
+                    }
+                    Err(error) => return Err(format!("{}: {error}", parent.display())),
                 }
             }
             parents.insert(parent.to_path_buf());

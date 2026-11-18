@@ -135,7 +135,8 @@ pub enum WorkspaceSelector<'a> {
     Exact(&'a NativeRef),
 }
 
-/// Implementable, object-safe boundary for common native workspace effects.
+/// Workspace effects the Herdr and cmux clients share, used as a trait object by the
+/// workspace runtime.
 ///
 /// Native presentation and Herdr topology use separate adapter-specific APIs:
 /// CMUX descriptions/colors are not Herdr metadata, and CMUX has no attestation
