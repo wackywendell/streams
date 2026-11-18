@@ -132,6 +132,47 @@ fn expected(values: &[&str]) -> Vec<String> {
 }
 
 #[test]
+fn resume_observes_through_hc_when_selected_otherwise_through_herdr_when_present() {
+    use streams::frontend::resolve_resume_frontend;
+    let herdr = context(&[("HERDR_ENV", "1"), ("HERDR_PANE_ID", "w1:p1")]);
+    let hc = context(&[("HC_TERMINAL_ID", "t1")]);
+    let cmux = context(&[("CMUX_WORKSPACE_ID", "c1")]);
+    let explicit = |id| Some(FrontendRequest::Explicit(id));
+    for (configured, requested, environment, expected) in [
+        (FrontendMode::Auto, None, &hc, Some(FrontendId::Hc)),
+        (FrontendMode::Auto, None, &herdr, Some(FrontendId::Herdr)),
+        (FrontendMode::Auto, None, &cmux, None),
+        (FrontendMode::None, None, &herdr, Some(FrontendId::Herdr)),
+        (
+            FrontendMode::Auto,
+            explicit(FrontendId::Cmux),
+            &herdr,
+            Some(FrontendId::Herdr),
+        ),
+        (
+            FrontendMode::Explicit(FrontendId::Herdr),
+            explicit(FrontendId::Cmux),
+            &cmux,
+            Some(FrontendId::Herdr),
+        ),
+        (
+            FrontendMode::Explicit(FrontendId::Herdr),
+            explicit(FrontendId::Hc),
+            &hc,
+            Some(FrontendId::Hc),
+        ),
+    ] {
+        assert_eq!(
+            resolve_resume_frontend(configured, requested, environment).unwrap(),
+            expected
+        );
+    }
+    assert!(
+        resolve_resume_frontend(FrontendMode::Auto, None, &context(&[("HERDR_ENV", "1")])).is_err()
+    );
+}
+
+#[test]
 fn selection_preserves_auto_none_explicit_and_override_policy() {
     let empty = BTreeMap::new();
     assert_eq!(

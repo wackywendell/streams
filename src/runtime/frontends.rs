@@ -137,7 +137,7 @@ pub struct HerdrFrontend {
     workspace_stream: Option<Option<String>>,
 }
 impl HerdrFrontend {
-    fn new(caller: Caller) -> Self {
+    pub fn new(caller: Caller) -> Self {
         Self {
             caller,
             native: None,
@@ -168,6 +168,12 @@ impl HerdrFrontend {
             self.native = Some(client);
         }
         Ok(self.native.as_ref().expect("connected"))
+    }
+
+    /// One Herdr snapshot, for a read of the whole topology.
+    pub fn into_snapshot(mut self) -> Result<HerdrNativeSnapshot> {
+        self.snapshot()?;
+        Ok(self.snapshot.take().expect("observed"))
     }
 
     /// This command's one Herdr snapshot.

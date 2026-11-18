@@ -1,7 +1,6 @@
 use super::*;
 use args::{SessionSelection, StreamFields};
 use streams::{
-    frontend::FrontendId,
     model::NamingMode,
     operations::{edits::StreamEdit, patches::Channel},
     runtime::{
@@ -306,15 +305,11 @@ impl App {
             require_local(&opened, stream)?;
         }
         // Resume executes here; observed reuse is best effort, without discovery.
-        let id = match self.selection(target.frontend)?.resolved {
-            Some(FrontendId::Hc) => Some(FrontendId::Hc),
-            _ if matches!(&settings.frontend, FrontendMode::Explicit(id) if *id == FrontendId::Herdr)
-                || self.environment.get("HERDR_ENV").map(String::as_str) == Some("1") =>
-            {
-                Some(FrontendId::Herdr)
-            }
-            _ => None,
-        };
+        let id = streams::frontend::resolve_resume_frontend(
+            settings.frontend,
+            target.frontend,
+            &self.environment,
+        )?;
         let mut frontend = id
             .map(|id| self.connect_frontend(id, &opened, 30.0))
             .transpose()?;

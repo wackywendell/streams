@@ -243,6 +243,25 @@ pub fn resolve_frontend(
     })
 }
 
+/// Resume runs in the calling terminal, so it needs a frontend only to see whether the
+/// conversation already runs: hc when selected, otherwise Herdr when it is configured or
+/// the caller runs inside it.
+pub fn resolve_resume_frontend(
+    configured: FrontendMode,
+    requested: Option<FrontendRequest>,
+    context: &BTreeMap<String, String>,
+) -> Result<Option<FrontendId>, FrontendSelectionError> {
+    let herdr = configured == FrontendMode::Explicit(FrontendId::Herdr)
+        || context.get("HERDR_ENV").is_some_and(|value| value == "1");
+    Ok(
+        match resolve_frontend(configured, requested, context)?.resolved {
+            Some(FrontendId::Hc) => Some(FrontendId::Hc),
+            _ if herdr => Some(FrontendId::Herdr),
+            _ => None,
+        },
+    )
+}
+
 pub(crate) fn nonempty(value: &str, name: &str) -> Result<(), FrontendError> {
     if value.trim().is_empty() || value.chars().any(char::is_control) {
         Err(FrontendError::invalid(format!("invalid {name}")))

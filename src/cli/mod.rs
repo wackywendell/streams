@@ -440,24 +440,39 @@ impl App {
         opened: &application::OpenedRecords,
         timeout: f64,
     ) -> Result<Box<dyn Frontend>> {
-        let caller = self.caller(
+        if id == frontend::FrontendId::Herdr {
+            return Ok(Box::new(self.herdr_frontend(opened, timeout)?));
+        }
+        Ok(frontends::connect(id, self.records_caller(opened, timeout)))
+    }
+    /// Herdr, through the Pi child's connection and last observation when it holds them.
+    fn herdr_frontend(
+        &self,
+        opened: &application::OpenedRecords,
+        timeout: f64,
+    ) -> Result<frontends::HerdrFrontend> {
+        let caller = self.records_caller(opened, timeout);
+        Ok(match &self.herdr {
+            Some(read) => frontends::HerdrFrontend::observed(
+                caller,
+                &read.client,
+                read.workspace_stream.clone(),
+            )?,
+            None => frontends::HerdrFrontend::new(caller),
+        })
+    }
+    fn records_caller(
+        &self,
+        opened: &application::OpenedRecords,
+        timeout: f64,
+    ) -> frontends::Caller {
+        self.caller(
             streams::integration::WorkScope {
                 catalog: opened.source_id().into(),
                 host: opened.host().as_str().into(),
             },
             timeout,
-        );
-        // The Pi child already holds a Herdr connection and its last observation.
-        if id == frontend::FrontendId::Herdr
-            && let Some(read) = &self.herdr
-        {
-            return Ok(Box::new(frontends::HerdrFrontend::observed(
-                caller,
-                &read.client,
-                read.workspace_stream.clone(),
-            )?));
-        }
-        Ok(frontends::connect(id, caller))
+        )
     }
     fn caller(&self, scope: streams::integration::WorkScope, timeout: f64) -> frontends::Caller {
         frontends::Caller {
@@ -466,27 +481,6 @@ impl App {
             cwd: self.cwd.clone(),
             timeout,
         }
-    }
-    fn herdr_client(
-        &self,
-        selection: &FrontendSelection,
-        timeout: f64,
-    ) -> Result<Option<frontend::herdr::HerdrClient>> {
-        if selection.resolved != Some(frontend::FrontendId::Herdr) {
-            return Ok(None);
-        }
-        if let Some(read) = &self.herdr {
-            return Ok(Some(
-                read.client
-                    .with_context(self.environment.clone())
-                    .map_err(runtime::RuntimeError::from)?,
-            ));
-        }
-        Ok(Some(
-            frontend::herdr::HerdrClient::connect(self.environment.clone(), timeout)
-                .and_then(|client| client.observing())
-                .map_err(runtime::RuntimeError::from)?,
-        ))
     }
     fn current_stream_id(
         &self,
@@ -909,20 +903,16 @@ impl App {
             self.config.runtime_state_dir_for(opened.root())?,
             opened.host().as_str(),
         )?;
+        // Capture reads open state from Herdr's topology only.
         let native = (|| -> Result<_> {
-            let client = self
-                .herdr_client(
-                    &self.selection(None)?,
-                    streams::sync::COMMAND_TIMEOUT_SECONDS,
-                )?
-                .ok_or_else(|| {
-                    CliError::message("Herdr topology unavailable; open state unknown")
-                })?;
-            client
-                .session_snapshot()
-                .and_then(|snapshot| frontend::herdr::HerdrNativeSnapshot::parse(&snapshot))
-                .map_err(runtime::RuntimeError::from)
-                .map_err(CliError::from)
+            if self.selection(None)?.resolved != Some(frontend::FrontendId::Herdr) {
+                return Err(CliError::message(
+                    "Herdr topology unavailable; open state unknown",
+                ));
+            }
+            Ok(self
+                .herdr_frontend(&opened, streams::sync::COMMAND_TIMEOUT_SECONDS)?
+                .into_snapshot()?)
         })()
         .map_err(|error| error.to_string());
         let native = native.as_ref().map_err(Clone::clone);
