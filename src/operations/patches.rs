@@ -273,7 +273,6 @@ patch! {
         goal => Goal: Option<String>, Report, ValueSchema::NONEMPTY;
         goal_short => GoalShort: Option<String>, Report, ValueSchema::SHORT;
         goal_mode => GoalMode: NamingMode, User, ValueSchema::choice(NamingMode::VARIANTS);
-        status => Status: Status, User, ValueSchema::choice(Status::VARIANTS);
         repositories => Repositories: BTreeMap<String, Repository>, Cli, ValueSchema::OBJECT;
     }
 }
@@ -399,7 +398,7 @@ pub struct PatchSchemas {
 
 impl ActorSchemas {
     /// Automatic rows leave out the fields the record protects from automatic reports.
-    fn new<F: PatchField>(protected: &[F]) -> Self {
+    fn new<F: PatchField>(protected: &[F], schema_for: impl Fn(F, Actor) -> FieldSchema) -> Self {
         let rows = |actor: Actor| {
             F::ALL
                 .iter()
@@ -407,7 +406,7 @@ impl ActorSchemas {
                 .filter(|field| field.access().permits(actor, Channel::Agent))
                 .filter(|field| actor != Actor::Automatic || !protected.contains(field))
                 .map(|field| {
-                    let schema = field.schema();
+                    let schema = schema_for(field, actor);
                     FieldRow {
                         field: field.name(),
                         short: schema.value() == ValueSchema::SHORT,
@@ -430,10 +429,22 @@ impl PatchSchemas {
         defaults: TitleDefaults,
     ) -> Self {
         Self {
-            stream: stream
-                .map(|stream| ActorSchemas::new(&StreamPatch::protected(stream, defaults.stream))),
+            stream: stream.map(|stream| {
+                ActorSchemas::new(
+                    &StreamPatch::protected(stream, defaults.stream),
+                    |field, _| field.schema(),
+                )
+            }),
             session: session.map(|session| {
-                ActorSchemas::new(&SessionPatch::protected(session, defaults.session))
+                ActorSchemas::new(
+                    &SessionPatch::protected(session, defaults.session),
+                    |field, actor| match (field, actor) {
+                        (SessionField::Status, Actor::Automatic) => {
+                            FieldSchema::Value(ValueSchema::choice(Status::REPORT_VARIANTS))
+                        }
+                        _ => field.schema(),
+                    },
+                )
             }),
         }
     }

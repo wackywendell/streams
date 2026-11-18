@@ -3116,9 +3116,20 @@ fn host_streams_lists_all_streams_with_active_session_counts_and_recency() {
         .join("work")
         .join("artifacts");
     std::fs::create_dir_all(&artifact_dir).unwrap();
-    let mut closed = Stream::new("closed", "Closed", None, host).unwrap();
-    closed.status = Status::Closed;
+    let closed = Stream::new("closed", "Closed", None, host).unwrap();
     application::create_record(fixture.records.records(), &Record::Stream(closed)).unwrap();
+    let mut closed_session = streams::model::Session::new(
+        streams::model::Session::id_for(host, "pi", "closed-conv"),
+        host,
+        "closed",
+        "pi",
+        "closed-conv",
+        "Closed conversation",
+    )
+    .unwrap();
+    closed_session.status = Status::Closed;
+    application::create_record(fixture.records.records(), &Record::Session(closed_session))
+        .unwrap();
 
     let mut req = fixture.envelope(json!({
         "kind": "read",

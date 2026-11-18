@@ -37,40 +37,27 @@ pub fn stream_activity_ms(stream: &Stream, members: &[&Session]) -> u64 {
         .fold(stream.updated_at_ms, u64::max)
 }
 
-/// Read-time Stream activity projection: preserves explicit effort lifecycle states
-/// (Done, Closed, Blocked, Waiting) and derives live activity from child Sessions
-/// when the Stream is Active or Parked.
-pub fn effective_stream_status(stream_status: Status, sessions: &[&Session]) -> Status {
-    if matches!(
-        stream_status,
-        Status::Done | Status::Closed | Status::Blocked | Status::Waiting
-    ) || sessions.is_empty()
-    {
-        return stream_status;
-    }
-    if sessions.iter().any(|s| s.status == Status::Active) {
-        Status::Active
-    } else if sessions.iter().any(|s| s.status == Status::Blocked) {
-        Status::Blocked
-    } else if sessions.iter().any(|s| s.status == Status::Waiting) {
-        Status::Waiting
-    } else {
-        Status::Parked
-    }
+/// Derived Stream status: the highest status among its Sessions under
+/// `active > blocked > waiting > parked > done > closed`, or `active` when empty.
+pub fn stream_status(sessions: &[&Session]) -> Status {
+    sessions
+        .iter()
+        .map(|session| session.status)
+        .max_by_key(|status| status.precedence())
+        .unwrap_or(Status::Active)
 }
 
-/// Unified read-time Stream status projection combining `effective_stream_status` and
-/// read-only age decay (`cutoff_ms`).
+/// Derived Stream status with read-only age decay (`cutoff_ms`).
 pub fn project_stream_status(
-    stream_status: Status,
     sessions: &[&Session],
     last_updated_ms: u64,
     cutoff_ms: Option<u64>,
 ) -> Status {
-    if stream_status.is_open() && is_stale_ms(last_updated_ms, cutoff_ms) {
+    let status = stream_status(sessions);
+    if status.is_open() && is_stale_ms(last_updated_ms, cutoff_ms) {
         Status::Closed
     } else {
-        effective_stream_status(stream_status, sessions)
+        status
     }
 }
 

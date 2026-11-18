@@ -40,7 +40,7 @@ use streams::{
     config::{Config, ConfigKey, ConfigPath, encode_toml, toml_table_to_json, toml_value_to_json},
     frontend::{self, FrontendMode, FrontendRequest, FrontendSelection},
     model::{Record, Session, Stream, TitleMode, ValidationError},
-    operations::{Actor, patches::StreamPatch},
+    operations::Actor,
     runtime::{
         self,
         frontends::{self, Frontend},
@@ -569,7 +569,8 @@ impl App {
                     _ => None,
                 })
                 .collect();
-            json!({"stream":stream,"sessions":sessions})
+            let status = streams::operations::stream_status(&sessions);
+            json!({"stream":stream,"status":status,"sessions":sessions})
         };
         if let Some(publication) = publication {
             value["sharing"] = publication;
@@ -731,12 +732,6 @@ impl App {
                     |path| self.read_text(path),
                 )
             }
-            Command::Close { target } => {
-                self.set_stream_status(&target, streams::model::Status::Closed)
-            }
-            Command::Restore { target } => {
-                self.set_stream_status(&target, streams::model::Status::Active)
-            }
             Command::Check { reference } => {
                 let opened = application::open_records(&self.config)?;
                 catalog::check(&opened, reference.as_deref())
@@ -747,19 +742,18 @@ impl App {
                 let summary =
                     application::lifecycle::decay_host_records(&opened, decay_days, now_ms())?;
                 let plain = format!(
-                    "closed {} stream(s), {} session(s) (decay_days={})",
-                    summary.closed_streams, summary.closed_sessions, decay_days
+                    "closed {} session(s) (decay_days={})",
+                    summary.closed_sessions, decay_days
                 );
                 let mut output = Output::plain(
                     json!({
                         "decay_days": decay_days,
                         "closed_sessions": summary.closed_sessions,
-                        "closed_streams": summary.closed_streams,
                         "errors": summary.errors,
                     }),
                     plain,
                 );
-                output.accepted_save = summary.closed_sessions > 0 || summary.closed_streams > 0;
+                output.accepted_save = summary.closed_sessions > 0;
                 if !summary.errors.is_empty() {
                     output.code = 2;
                     output.notices.extend(summary.errors);
@@ -773,19 +767,6 @@ impl App {
             Command::Checkout { command } => self.checkout(command),
             Command::Agent { command } => self.agent(command),
         }
-    }
-    fn set_stream_status(&self, target: &Target, status: streams::model::Status) -> Result<Output> {
-        let opened = application::open_records(&self.config)?;
-        let stream = self.record_target(&opened, target)?;
-        catalog::save_stream_edit(
-            &opened,
-            &stream,
-            StreamPatch {
-                status: Some(status),
-                ..StreamPatch::default()
-            },
-            opened.settings().naming,
-        )
     }
     fn configure(&self, overrides_flag: bool, action: Option<ConfigCommand>) -> Result<Output> {
         let format_plain = |toml_val: &toml::Value, json_val: &Value| -> Result<String> {

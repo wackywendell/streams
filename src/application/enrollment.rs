@@ -6,7 +6,7 @@ use serde::Serialize;
 use super::{OpenedRecords, Result};
 use crate::{
     agent::{EnrollmentRequest, RecordContext, effort_id_for},
-    model::{Record, RecordKind, Session, Status, Stream, ValidationError},
+    model::{Record, RecordKind, Session, Stream, ValidationError},
     operations::DomainOutcome,
     storage::records::{RecordAddress, RecordChange, RecordSave, RecordStore},
 };
@@ -188,8 +188,8 @@ impl EnrollmentReceipt {
 }
 
 /// Enroll a conversation from `directory`: create its proposed Stream, save its Session,
-/// remember the directory and reopen a closed Stream that gains an active Session. A
-/// failure after the first save is reported in the receipt, never retried.
+/// and remember the directory. A failure after the first save is reported in the receipt,
+/// never retried.
 pub fn enroll(
     opened: &OpenedRecords,
     request: &EnrollmentRequest,
@@ -228,17 +228,10 @@ pub fn enroll(
                 ValidationError::new("enrollment returned a non-Session conversation").into(),
             );
         };
-        let reopen = dependency.status == Status::Closed && session.status == Status::Active;
         let (stream_id, session_id) = (dependency.id.clone(), session.id.clone());
         receipt.stream = Some(dependency);
         receipt.session = Some(session);
         remember_directory(opened, &stream_id, &session_id, directory)?;
-        if reopen
-            && let Some(reopened) = super::lifecycle::reopen_closed_stream(opened, &stream_id)?
-            && let Record::Stream(updated) = reopened.current.record
-        {
-            receipt.stream = Some(updated);
-        }
         receipt.directory_selected = true;
         Ok(())
     })();

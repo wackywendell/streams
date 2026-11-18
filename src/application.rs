@@ -7,7 +7,7 @@ pub mod integration;
 pub mod lifecycle;
 mod listing;
 pub use create::create_record;
-pub use listing::{StreamFilter, StreamList, list_streams};
+pub use listing::{ListedStream, StreamFilter, StreamList, list_streams};
 mod enrollment;
 pub use enrollment::{
     EnrollmentReceipt, EnrollmentSave, enroll, enroll_session, enroll_session_observed,

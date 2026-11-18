@@ -35,6 +35,70 @@ fn changed(result: Reconciliation) -> Record {
 }
 
 #[test]
+fn automatic_session_reports_allow_done_and_reject_closed() {
+    let before = session();
+    for allowed in [
+        Status::Active,
+        Status::Waiting,
+        Status::Blocked,
+        Status::Parked,
+        Status::Done,
+    ] {
+        let edit = SessionEdit::new(
+            &before,
+            SessionPatch {
+                status: Some(allowed),
+                ..Default::default()
+            },
+            Actor::Automatic,
+            Channel::Agent,
+            NamingMode::Automatic,
+        )
+        .unwrap();
+        let Record::Session(after) = (match edit.apply(&before, &stream("a"), NamingMode::Automatic)
+        {
+            Reconciliation::Changes { record } => *record,
+            Reconciliation::NoChange { .. } => Record::Session(before.clone()),
+            other => panic!("expected changes or no-change for {allowed}, got {other:?}"),
+        }) else {
+            unreachable!()
+        };
+        assert_eq!(after.status, allowed);
+    }
+
+    let err = SessionEdit::new(
+        &before,
+        SessionPatch {
+            status: Some(Status::Closed),
+            ..Default::default()
+        },
+        Actor::Automatic,
+        Channel::Agent,
+        NamingMode::Automatic,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("closed"), "{err}");
+
+    let user_close = SessionEdit::new(
+        &before,
+        SessionPatch {
+            status: Some(Status::Closed),
+            ..Default::default()
+        },
+        Actor::User,
+        Channel::Agent,
+        NamingMode::Automatic,
+    )
+    .unwrap();
+    let Record::Session(after) =
+        changed(user_close.apply(&before, &stream("a"), NamingMode::Automatic))
+    else {
+        unreachable!()
+    };
+    assert_eq!(after.status, Status::Closed);
+}
+
+#[test]
 fn each_progress_field_invalidates_only_its_own_short_form() {
     let mut before = session();
     before.recap = "Scope".into();
@@ -200,14 +264,14 @@ fn local_work_and_stream_input_changes_supersede_old_inference() {
         edit.apply(&target, Some(&current), NamingMode::Automatic),
         Reconciliation::Changes { .. }
     ));
-    let mut closed_target = target.clone();
-    closed_target.status = Status::Closed;
+    let mut renamed_target = target.clone();
+    renamed_target.title_mode = TitleMode::Automatic;
     let Record::Stream(after) =
-        changed(edit.apply(&closed_target, Some(&before), NamingMode::Automatic))
+        changed(edit.apply(&renamed_target, Some(&before), NamingMode::Automatic))
     else {
         unreachable!()
     };
-    assert_eq!(after.status, Status::Closed);
+    assert_eq!(after.title_mode, TitleMode::Automatic);
     assert_eq!(after.goal.as_deref(), Some("old goal"));
     let mut prose_changed_target = target.clone();
     prose_changed_target.goal = Some("concurrent goal".into());

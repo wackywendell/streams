@@ -263,18 +263,8 @@ impl<'a> Streams<'a> {
         }
     }
 
-    fn projected_status(
-        &self,
-        stream_status: Status,
-        sessions: &[&Session],
-        last_updated_ms: u64,
-    ) -> Status {
-        project_stream_status(
-            stream_status,
-            sessions,
-            last_updated_ms,
-            self.lifecycle_cutoff,
-        )
+    fn projected_status(&self, sessions: &[&Session], last_updated_ms: u64) -> Status {
+        project_stream_status(sessions, last_updated_ms, self.lifecycle_cutoff)
     }
 
     /// A row's counts, status and recency reflect its readable Sessions only. An unreadable
@@ -317,7 +307,7 @@ impl<'a> Streams<'a> {
                 .map(Vec::as_slice)
                 .unwrap_or(&[]);
             let last_updated_ms = stream_activity_ms(&stream, members);
-            let status = self.projected_status(stream.status, members, last_updated_ms);
+            let status = self.projected_status(members, last_updated_ms);
             summaries.push(StreamSummary {
                 id: stream.id,
                 title: stream.title,
@@ -587,7 +577,7 @@ impl<'a> Streams<'a> {
             }
         }
         let last_updated_ms = stream_activity_ms(&stream, &members);
-        let status = self.projected_status(stream.status, &members, last_updated_ms);
+        let status = self.projected_status(&members, last_updated_ms);
         Ok(StreamView {
             id: stream.id,
             title: stream.title,

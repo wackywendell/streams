@@ -20,7 +20,6 @@ pub(super) fn stream(
         },
         goal_mode: input.goal_mode,
         title_mode: input.title_mode,
-        status: input.status,
         ..StreamPatch::default()
     };
 
@@ -170,13 +169,12 @@ mod tests {
             goal: Some("\n  user text  \n".into()),
             goal_mode: Some(NamingMode::Automatic),
             title_mode: Some(TitleMode::Manual),
-            status: Some(Status::Waiting),
             ..Default::default()
         };
         let changes = stream(&current_stream(), &input, &mut no_read).unwrap();
         assert_eq!(
             serde_json::to_value(changes).unwrap(),
-            json!({"goal": "\n  user text  \n", "goal_mode": "automatic", "title_mode": "manual", "status": "waiting"})
+            json!({"goal": "\n  user text  \n", "goal_mode": "automatic", "title_mode": "manual"})
         );
         assert_eq!(
             stream(

@@ -40,6 +40,23 @@ pub enum Status {
 }
 
 impl Status {
+    /// Status values automatic Session reports may set (`closed` requires user action or tidy).
+    pub const REPORT_VARIANTS: &'static [&'static str] =
+        &["active", "waiting", "blocked", "parked", "done"];
+
+    /// Precedence order for deriving a Stream's status as `max(sessions)`:
+    /// `active > blocked > waiting > parked > done > closed`.
+    pub const fn precedence(self) -> u8 {
+        match self {
+            Self::Active => 5,
+            Self::Blocked => 4,
+            Self::Waiting => 3,
+            Self::Parked => 2,
+            Self::Done => 1,
+            Self::Closed => 0,
+        }
+    }
+
     /// Whether work is neither finished (`done`) nor `closed`.
     pub const fn is_open(self) -> bool {
         matches!(
@@ -542,8 +559,6 @@ pub struct Stream {
     pub goal_short: Option<String>,
     #[serde(default)]
     pub goal_mode: NamingMode,
-    #[serde(default)]
-    pub status: Status,
     #[serde(default, deserialize_with = "object_map")]
     pub repositories: BTreeMap<String, Repository>,
     #[serde(deserialize_with = "objects")]
@@ -554,7 +569,7 @@ pub struct Stream {
 }
 
 impl Stream {
-    /// Creates an active stream with inherited title policy and no references.
+    /// Creates a stream with inherited title policy and no references.
     pub fn new(
         id: impl Into<String>,
         title: impl Into<String>,
@@ -569,7 +584,6 @@ impl Stream {
             title_mode: TitleMode::Inherit,
             goal_short: None,
             goal_mode: NamingMode::Automatic,
-            status: Status::Active,
             repositories: BTreeMap::new(),
             references: Vec::new(),
             revision: 0,

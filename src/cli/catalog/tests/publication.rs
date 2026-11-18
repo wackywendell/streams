@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn direct_human_edit_retry_after_a_later_edit_conflicts_and_keeps_the_later_record() {
     let f = Fixture::new();
-    let created = f.create("Work", None, Status::Active);
+    let created = f.create("Work", None);
     let id = created["id"].as_str().unwrap();
     let before = f.select(id);
     let changes = streams::operations::patches::StreamPatch {
@@ -48,7 +48,7 @@ fn direct_human_edit_retry_after_a_later_edit_conflicts_and_keeps_the_later_reco
 #[test]
 fn ordinary_human_edits_save_locally_without_opening_transport_or_publishing() {
     let f = Fixture::new();
-    let stream = f.create("Work", None, Status::Active);
+    let stream = f.create("Work", None);
     let id = stream["id"].as_str().unwrap();
     std::fs::write(
         f.opened.root().join(".catalog-local/transport.json"),

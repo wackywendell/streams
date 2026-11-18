@@ -99,20 +99,13 @@ fn record_local_offline_create_saves_without_publication_or_transport_admission(
     ]);
     let transport = f.root().join(".catalog-local/transport.json");
     let before = fs::read(&transport).unwrap();
-    let saved = f.ok(&[
-        "create",
-        "Saved offline",
-        "--goal",
-        "Keep local",
-        "--status",
-        "blocked",
-    ]);
+    let saved = f.ok(&["create", "Saved offline", "--goal", "Keep local"]);
     assert_eq!(saved["save"]["local"], "persisted");
     assert_eq!(saved["save"]["domain"]["outcome"], "changes");
     assert!(saved.get("publication").is_none());
     assert!(saved["save"].get("sharing").is_none());
     assert_eq!(saved["stream"]["goal"], "Keep local");
-    assert_eq!(saved["stream"]["status"], "blocked");
+    assert!(saved["stream"].get("status").is_none());
     assert_eq!(saved["stream"]["title_mode"], "manual");
     assert_eq!(saved["stream"]["goal_mode"], "manual");
     assert_eq!(
@@ -358,9 +351,12 @@ fn record_local_cli_initializes_enrolls_reports_and_retries_without_scans_or_pub
     assert!(enrolled.get("publication").is_none());
     let context = f.ok(&args);
     let listed = f.ok(&["list"]);
-    assert_eq!(listed["streams"], json!([context["stream"]]));
+    let mut expected_listed = context["stream"].clone();
+    expected_listed["status"] = json!("active");
+    assert_eq!(listed["streams"], json!([expected_listed]));
     let shown = f.ok(&["show", context["stream"]["id"].as_str().unwrap()]);
     assert_eq!(shown["stream"], context["stream"]);
+    assert_eq!(shown["status"], json!("active"));
     assert_eq!(shown["sessions"], json!([context["session"]]));
     assert_eq!(
         f.ok(&["check", context["stream"]["id"].as_str().unwrap()]),
@@ -439,44 +435,32 @@ fn record_local_cli_initializes_enrolls_reports_and_retries_without_scans_or_pub
     assert_eq!(code, 0, "{saved}");
     assert_eq!(saved["session"]["state"], "Complete");
     assert_eq!(f.ok(&args)["session"], saved["session"]);
-    for (intent, expected_status) in [
-        (
-            vec![
-                "update",
-                "--current",
-                "--title",
-                "Human title",
-                "--status",
-                "waiting",
-                "--add-repository",
-                "app",
-                "https://example.test/app.git",
-            ],
-            "waiting",
-        ),
-        (vec!["close", "--current"], "closed"),
-        (vec!["restore", "--current"], "active"),
-    ] {
-        let edited = f
-            .command()
-            .env("STREAMS_STREAM_ID", id)
-            .args(intent)
-            .arg("--json")
-            .output()
-            .unwrap();
-        assert!(
-            edited.status.success(),
-            "{}",
-            String::from_utf8_lossy(&edited.stdout)
-        );
-        let edited: Value = serde_json::from_slice(&edited.stdout).unwrap();
-        assert_eq!(edited["save"]["local"], "persisted");
-        assert!(edited["save"].get("sharing").is_none());
-        assert!(edited.get("publication").is_none());
-        assert_eq!(edited["stream"]["title"], "Human title");
-        assert_eq!(edited["stream"]["title_mode"], "manual");
-        assert_eq!(edited["stream"]["status"], expected_status);
-    }
+    let edited = f
+        .command()
+        .env("STREAMS_STREAM_ID", id)
+        .args([
+            "update",
+            "--current",
+            "--title",
+            "Human title",
+            "--add-repository",
+            "app",
+            "https://example.test/app.git",
+        ])
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(
+        edited.status.success(),
+        "{}",
+        String::from_utf8_lossy(&edited.stdout)
+    );
+    let edited: Value = serde_json::from_slice(&edited.stdout).unwrap();
+    assert_eq!(edited["save"]["local"], "persisted");
+    assert!(edited["save"].get("sharing").is_none());
+    assert!(edited.get("publication").is_none());
+    assert_eq!(edited["stream"]["title"], "Human title");
+    assert_eq!(edited["stream"]["title_mode"], "manual");
     assert_eq!(
         f.ok(&args)["stream"]["repositories"]["app"]["url"],
         "https://example.test/app.git"
@@ -870,8 +854,7 @@ fn local_catalog_does_not_require_git_in_plain_directories() {
         vec!["init", "--sync", "none"],
         vec!["create", "No subprocess"],
         vec!["list"],
-        vec!["archive", "No subprocess"],
-        vec!["restore", "No subprocess"],
+        vec!["update", "No subprocess", "--goal", "Still local"],
         vec!["check"],
         vec!["sync"],
     ] {
@@ -890,16 +873,6 @@ fn local_catalog_does_not_require_git_in_plain_directories() {
         );
         let data: Value = serde_json::from_slice(&output.stdout).unwrap();
         assert!(data.get("runtime").is_none(), "{data}");
-        if matches!(args[0], "close" | "archive" | "restore") {
-            assert_eq!(
-                data["stream"]["status"],
-                if args[0] == "restore" {
-                    "active"
-                } else {
-                    "closed"
-                }
-            );
-        }
         assert!(!probe.exists());
     }
 }

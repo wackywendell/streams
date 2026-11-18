@@ -10,14 +10,13 @@
       {"field": "title_mode", "schema": {"type": "string", "enum": ["automatic", "manual", "inherit"]}, "short": false},
       {"field": "goal", "schema": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]}, "short": false},
       {"field": "goal_short", "schema": {"anyOf": [{"type": "string", "minLength": 1, "maxLength": 24}, {"type": "null"}]}, "short": true},
-      {"field": "goal_mode", "schema": {"type": "string", "enum": ["automatic", "manual"]}, "short": false},
-      {"field": "status", "schema": {"type": "string", "enum": ["active", "waiting", "blocked", "parked", "done", "closed"]}, "short": false}
+      {"field": "goal_mode", "schema": {"type": "string", "enum": ["automatic", "manual"]}, "short": false}
     ]
   },
   "session": {
     "automatic": [
       {"field": "title", "schema": {"type": "string", "minLength": 1}, "short": false},
-      {"field": "status", "schema": {"type": "string", "enum": ["active", "waiting", "blocked", "parked", "done", "closed"]}, "short": false},
+      {"field": "status", "schema": {"type": "string", "enum": ["active", "waiting", "blocked", "parked", "done"]}, "short": false},
       {"field": "recap", "schema": {"type": "string"}, "short": false},
       {"field": "recap_short", "schema": {"anyOf": [{"type": "string", "minLength": 1, "maxLength": 24}, {"type": "null"}]}, "short": true},
       {"field": "state", "schema": {"type": "string"}, "short": false},

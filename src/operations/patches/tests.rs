@@ -24,7 +24,6 @@ fn each_field_names_who_may_set_it() {
             ("goal", Report),
             ("goal_short", Report),
             ("goal_mode", User),
-            ("status", User),
             ("repositories", Cli),
         ]
     );
@@ -101,11 +100,11 @@ fn between_and_apply_round_trip() {
     let before = stream();
     let mut after = before.clone();
     after.goal = None;
-    after.status = Status::Done;
+    after.goal_mode = NamingMode::Manual;
     let patch = StreamPatch::between(&before, &after);
     assert_eq!(
         serde_json::to_value(&patch).unwrap(),
-        json!({"goal": null, "status": "done"})
+        json!({"goal": null, "goal_mode": "manual"})
     );
     let mut applied = before.clone();
     patch.apply(&mut applied);

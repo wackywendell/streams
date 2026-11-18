@@ -198,10 +198,10 @@ fn format_marker_requires_strict_json_and_the_configured_producer() {
         assert!(read(&store, &key).is_err(), "{bytes}");
     }
     // A catalog from an older Streams version names the reset step.
-    fs::write(store.root.join(FORMAT), r#"{"version":2,"host":"host"}"#).unwrap();
+    fs::write(store.root.join(FORMAT), r#"{"version":3,"host":"host"}"#).unwrap();
     let error = read(&store, &key).unwrap_err().to_string();
     assert!(error.contains(RESET_HINT), "{error}");
-    fs::write(store.root.join(FORMAT), r#"{"version":3,"host":"host"}"#).unwrap();
+    fs::write(store.root.join(FORMAT), r#"{"version":4,"host":"host"}"#).unwrap();
     assert!(read(&store, &key).unwrap().is_none());
 }
 

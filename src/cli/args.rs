@@ -178,15 +178,6 @@ pub(super) enum Command {
         #[command(flatten)]
         fields: StreamFields,
     },
-    #[command(alias = "archive")]
-    Close {
-        #[command(flatten)]
-        target: Target,
-    },
-    Restore {
-        #[command(flatten)]
-        target: Target,
-    },
     Check {
         #[arg(value_name = "REF")]
         reference: Option<String>,
@@ -527,8 +518,6 @@ pub(super) struct StreamFields {
     pub(super) goal_mode: Option<NamingMode>,
     #[arg(long)]
     pub(super) title_mode: Option<TitleMode>,
-    #[arg(long)]
-    pub(super) status: Option<Status>,
     #[arg(long, num_args = 2, action = ArgAction::Append, value_names = ["ALIAS", "URL"])]
     pub(super) add_repository: Vec<String>,
     #[arg(long, action = ArgAction::Append, value_name = "ALIAS")]
@@ -677,11 +666,17 @@ mod tests {
 
     #[test]
     fn all_frontend_overrides_are_validated_before_dispatch() {
-        for command in ["show", "update", "archive", "restore"] {
+        for command in ["show", "update", "open", "resume"] {
             for invalid in ["", "  ", "adapter\n"] {
                 assert!(parse(&[command, "effort", "--frontend", invalid]).is_err());
             }
         }
+        // Stream status is derived from Sessions; direct Stream status commands are absent.
+        for retired in ["close", "archive", "restore"] {
+            assert!(parse(&[retired, "effort"]).is_err());
+        }
+        assert!(parse(&["create", "Effort", "--status", "active"]).is_err());
+        assert!(parse(&["update", "effort", "--status", "done"]).is_err());
         assert!(parse(&["frontend", "get", "--frontend", ""]).is_err());
         assert!(
             parse(&[

@@ -4,7 +4,9 @@ use serde::Serialize;
 
 use super::patches::{Access, Channel, Patch, PatchField, SessionPatch, StreamPatch};
 use super::{Actor, Reconciliation};
-use crate::model::{NamingMode, Session, Stream, TitleDefaults, TitleMode, ValidationError};
+use crate::model::{
+    NamingMode, Session, Status, Stream, TitleDefaults, TitleMode, ValidationError,
+};
 
 /// What a captured automatic report observes about its target when it is applied.
 /// `specs/report_admission.ioa.toml` models the same predicate; `tests/verification.rs`
@@ -89,6 +91,11 @@ impl SessionEdit {
             channel,
             &SessionPatch::protected(before, title_default),
         )?;
+        if actor == Actor::Automatic && patch.status == Some(Status::Closed) {
+            return Err(ValidationError::new(
+                "automatic reports cannot set session status to closed",
+            ));
+        }
         let after = applied(before, &patch.normalized(before, actor))?;
         Ok(Self {
             before: before.clone(),

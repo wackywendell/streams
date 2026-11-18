@@ -121,9 +121,6 @@ impl App {
                             url,
                             None,
                         )?;
-                        if stream.status == streams::model::Status::Closed {
-                            application::lifecycle::reopen_closed_stream(&opened, &stream.id)?;
-                        }
                         Ok(())
                     })();
                     if let Err(error) = completion {
@@ -254,10 +251,6 @@ impl App {
                 };
                 let mut output = Output::value(update.to_json());
                 output.accepted_save = !update.saves.is_empty();
-                if let Some(error) = update.completion_error {
-                    output.code = 2;
-                    output.notices.push(error);
-                }
                 Ok(output)
             }
         }

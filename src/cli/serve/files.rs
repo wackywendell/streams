@@ -264,14 +264,13 @@ mod tests {
             files.groups["stream"], old_path,
             "raw Session bytes cannot compute desired membership"
         );
-        let mut changed = Stream::new(
+        let changed = Stream::new(
             "next",
             "next",
             Some("changed after context collection".into()),
             host,
         )
         .unwrap();
-        changed.status = streams::model::Status::Waiting;
         save(&records, Record::Stream(changed));
         files.set_stream(Some("next")).unwrap();
         let next_path = files.groups["stream"].clone();

@@ -58,15 +58,14 @@ impl Fixture {
         self.sequence.set(next);
         next
     }
-    fn create(&self, title: &str, goal: Option<&str>, status: Status) -> Value {
-        let mut stream = Stream::new(
+    fn create(&self, title: &str, goal: Option<&str>) -> Value {
+        let stream = Stream::new(
             format!("stream-{}", self.next_id()),
             title,
             goal.map(str::to_owned),
             self.opened.host().as_str(),
         )
         .unwrap();
-        stream.status = status;
         let record = Record::Stream(stream);
         let saved = self
             .opened
@@ -83,6 +82,30 @@ impl Fixture {
             )
             .unwrap();
         record_to_data(&saved.current.record)
+    }
+    fn attach_session(
+        &self,
+        stream_id: &str,
+        native_id: &str,
+        status: Status,
+    ) -> streams::model::Session {
+        let host = self.opened.host().as_str();
+        let mut session = streams::model::Session::new(
+            streams::model::Session::id_for(host, "pi", native_id),
+            host,
+            stream_id,
+            "pi",
+            native_id,
+            native_id,
+        )
+        .unwrap();
+        session.status = status;
+        let saved =
+            application::create_record(self.opened.records(), &Record::Session(session)).unwrap();
+        let Record::Session(saved) = saved.current.record else {
+            unreachable!()
+        };
+        saved
     }
     fn select(&self, reference: &str) -> Stream {
         select_stream(&self.opened.inventory().unwrap(), reference)
@@ -114,16 +137,25 @@ impl Fixture {
             |_| panic!("unexpected text read"),
         )
     }
-    fn set_status(&self, reference: &str, status: Status) -> Result<Output> {
-        save_stream_edit(
-            &self.opened,
-            &self.select(reference),
-            streams::operations::patches::StreamPatch {
+    fn set_session_status(
+        &self,
+        session: &streams::model::Session,
+        status: Status,
+    ) -> streams::model::Session {
+        let saved = application::save_session_edit(
+            self.opened.records(),
+            session,
+            streams::operations::patches::SessionPatch {
                 status: Some(status),
                 ..Default::default()
             },
             TitleDefaults::default(),
         )
+        .unwrap();
+        let Record::Session(updated) = saved.current.record else {
+            unreachable!()
+        };
+        updated
     }
     fn snapshot(&self) -> Value {
         json!(
@@ -145,10 +177,10 @@ fn ok(result: Result<Output>) -> Value {
 #[test]
 fn local_catalog_manages_fields_visibility_and_full_unicode_literal_selection() {
     let f = Fixture::new();
-    let stream = f.create("Straße", Some("Literal [plan]"), Status::Waiting);
+    let stream = f.create("Straße", Some("Literal [plan]"));
     let id = stream["id"].as_str().unwrap();
     assert_eq!(ok(f.show("STRASSE"))["stream"], stream);
-    let continuation = f.create("STRASSE continuation", None, Status::Waiting);
+    let continuation = f.create("STRASSE continuation", None);
     assert_eq!(ok(f.show("STRASSE"))["stream"]["id"], id);
     assert_eq!(
         ok(f.list(Some("literal ["), &[], false, false))["streams"]
@@ -179,8 +211,7 @@ fn local_catalog_manages_fields_visibility_and_full_unicode_literal_selection() 
     }
     assert_eq!(reads, vec![Path::new("goal.txt"), Path::new("-")]);
 
-    let closed = ok(f.set_status(id, Status::Closed));
-    assert_eq!(closed["stream"]["status"], "closed");
+    let session = f.attach_session(id, "conv-1", Status::Closed);
     assert_eq!(
         ok(f.list(None, &[], false, false))["streams"]
             .as_array()
@@ -188,7 +219,9 @@ fn local_catalog_manages_fields_visibility_and_full_unicode_literal_selection() 
             .len(),
         1
     );
-    assert_eq!(ok(f.list(None, &[], true, false))["streams"][0]["id"], id);
+    let closed_list = ok(f.list(None, &[], true, false));
+    assert_eq!(closed_list["streams"][0]["id"], id);
+    assert_eq!(closed_list["streams"][0]["status"], "closed");
     assert_eq!(
         ok(f.list(None, &[], false, true))["streams"]
             .as_array()
@@ -196,15 +229,19 @@ fn local_catalog_manages_fields_visibility_and_full_unicode_literal_selection() 
             .len(),
         2
     );
-    let restored = ok(f.set_status(id, Status::Active));
-    assert_eq!(restored["stream"]["status"], "active");
+    let session = f.set_session_status(&session, Status::Done);
+    assert_eq!(
+        ok(f.list(None, &[Status::Done], false, false))["streams"][0]["id"],
+        id
+    );
+    let _ = f.set_session_status(&session, Status::Active);
     assert_eq!(
         ok(check(&f.opened, Some(id))),
-        json!({"valid":true,"streams":1,"sessions":0})
+        json!({"valid":true,"streams":1,"sessions":1})
     );
     assert_eq!(
         ok(check(&f.opened, None)),
-        json!({"valid":true,"streams":2,"sessions":0})
+        json!({"valid":true,"streams":2,"sessions":1})
     );
     assert_eq!(ok(f.show("continu"))["stream"], continuation);
     let error = f.show("STRAS").err().unwrap().data();
@@ -228,7 +265,7 @@ fn local_catalog_manages_fields_visibility_and_full_unicode_literal_selection() 
 #[test]
 fn repositories_keep_identity_and_reject_invalid_intent_before_save() {
     let f = Fixture::new();
-    let stream = f.create("Work", None, Status::Waiting);
+    let stream = f.create("Work", None);
     let id = stream["id"].as_str().unwrap();
     let changed = ok(f.update(
         id,

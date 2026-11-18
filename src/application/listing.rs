@@ -1,8 +1,9 @@
-//! The catalog listing: every host's readable Streams, with status projected from members.
+//! The catalog listing: every host's readable Streams, with status derived from members.
 
 use std::collections::BTreeMap;
 
 use icu_casemap::CaseMapper;
+use serde::Serialize;
 
 use super::{OpenedRecords, Result};
 use crate::{
@@ -22,13 +23,21 @@ pub struct StreamFilter<'a> {
     pub all: bool,
 }
 
+/// One Stream in a listing with its view-only derived status.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ListedStream {
+    #[serde(flatten)]
+    pub stream: Stream,
+    pub status: Status,
+}
+
 pub struct StreamList {
     /// Sorted by folded title, then owner host and ID.
-    pub streams: Vec<Stream>,
+    pub streams: Vec<ListedStream>,
     pub unreadable: Vec<UnreadableRecord>,
 }
 
-/// List Streams with their projected status. Only this host's Streams decay after
+/// List Streams with their derived status. Only this host's Streams decay after
 /// `cutoff_ms`.
 pub fn list_streams(
     opened: &OpenedRecords,
@@ -51,7 +60,7 @@ pub fn list_streams(
         .records
         .into_iter()
         .filter_map(|read| match read.record {
-            Record::Stream(mut stream) => {
+            Record::Stream(stream) => {
                 let members = sessions_by_stream
                     .get(&(stream.owner_host_id.clone(), stream.id.clone()))
                     .map(Vec::as_slice)
@@ -60,31 +69,30 @@ pub fn list_streams(
                 let stream_cutoff =
                     cutoff_ms.filter(|_| stream.owner_host_id == opened.host().as_str());
                 let last_updated_ms = stream_activity_ms(&stream, &refs);
-                stream.status =
-                    project_stream_status(stream.status, &refs, last_updated_ms, stream_cutoff);
-                Some(stream)
+                let status = project_stream_status(&refs, last_updated_ms, stream_cutoff);
+                Some(ListedStream { stream, status })
             }
             _ => None,
         })
-        .filter(|stream| {
+        .filter(|entry| {
             (filter.all
                 || if filter.closed {
-                    stream.status == Status::Closed
+                    entry.status == Status::Closed
                 } else {
-                    stream.status != Status::Closed || filter.status.contains(&Status::Closed)
+                    entry.status != Status::Closed || filter.status.contains(&Status::Closed)
                 })
-                && (filter.status.is_empty() || filter.status.contains(&stream.status))
+                && (filter.status.is_empty() || filter.status.contains(&entry.status))
                 && query.as_ref().is_none_or(|query| {
-                    fold(&stream.title).contains(query)
-                        || fold(stream.goal.as_deref().unwrap_or("")).contains(query)
+                    fold(&entry.stream.title).contains(query)
+                        || fold(entry.stream.goal.as_deref().unwrap_or("")).contains(query)
                 })
         })
         .collect();
-    streams.sort_by_cached_key(|stream| {
+    streams.sort_by_cached_key(|entry| {
         (
-            fold(&stream.title),
-            stream.owner_host_id.clone(),
-            stream.id.clone(),
+            fold(&entry.stream.title),
+            entry.stream.owner_host_id.clone(),
+            entry.stream.id.clone(),
         )
     });
     Ok(StreamList {

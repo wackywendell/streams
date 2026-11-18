@@ -7,7 +7,7 @@ use std::sync::OnceLock;
 use serde_json::{Value, json};
 use streams::model::{
     NamingMode, Record, Reference, ReferenceRole, ReferenceState, ReferenceTarget, ReferenceValue,
-    Session, Status, Stream, TitleDefaults, TitleMode,
+    Session, Stream, TitleDefaults, TitleMode,
 };
 use streams::operations::edits::{
     ReportAdmission, SessionEdit, StreamEdit, report_admission_context,
@@ -496,11 +496,10 @@ fn non_prose_metadata_edits_and_session_work_remain_orthogonal_to_stream_admissi
     let mut world = ConcreteWorld::new(StreamProtectionKind::InheritedDefaultFlip);
     let baseline = world.project().booleans;
 
-    // Concurrent non-prose edits (archive flag, issue links, explicit Automatic title_mode pin)
+    // Concurrent non-prose edits (issue links, explicit Automatic title_mode pin)
     // leave admission booleans unchanged and do not cause Conflict on automatic reports.
     world.session.title_mode = TitleMode::Automatic;
     world.stream_a.title_mode = TitleMode::Automatic;
-    world.stream_a.status = Status::Closed;
     world.stream_a.references.push(
         Reference::new(ReferenceValue {
             name: "Issue 1".into(),
@@ -538,7 +537,6 @@ fn non_prose_metadata_edits_and_session_work_remain_orthogonal_to_stream_admissi
     let Record::Stream(updated_stream) = *record else {
         unreachable!()
     };
-    assert_eq!(updated_stream.status, Status::Closed);
     assert_eq!(updated_stream.title_mode, TitleMode::Automatic);
     assert_eq!(updated_stream.references.len(), 1);
     assert_eq!(

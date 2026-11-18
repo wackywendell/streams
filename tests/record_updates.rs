@@ -555,14 +555,21 @@ fn manual_stream_edit_has_no_session_dependency_even_after_membership_changes() 
 #[test]
 fn agent_requests_cannot_set_cli_or_user_only_fields() {
     let user = json!({"version":2,"title_default":"automatic","catalog_source":"source","kind":"stream","actor":"user","before":stream("a"),"changes":{"repositories":{}},"inputs":[]});
-    let automatic = json!({"version":2,"title_default":"automatic","catalog_source":"source","kind":"stream","actor":"automatic","before":stream("a"),"changes":{"status":"done"},"inputs":[{"kind":"session","record":session()}]});
-    for (request, field) in [(user, "repositories"), (automatic, "status")] {
+    let automatic = json!({"version":2,"title_default":"automatic","catalog_source":"source","kind":"stream","actor":"automatic","before":stream("a"),"changes":{"goal_mode":"manual"},"inputs":[{"kind":"session","record":session()}]});
+    for (request, field) in [(user, "repositories"), (automatic, "goal_mode")] {
         let error = parse_record_update(request, "source", TitleDefaults::default()).unwrap_err();
         assert_eq!(
             error.to_string(),
             format!("field is not editable by this actor: {field}")
         );
     }
+    // Stream patches reject `status` outright because Stream status is derived from Sessions.
+    let stream_status = json!({"version":2,"title_default":"automatic","catalog_source":"source","kind":"stream","actor":"user","before":stream("a"),"changes":{"status":"done"},"inputs":[]});
+    let error = parse_record_update(stream_status, "source", TitleDefaults::default()).unwrap_err();
+    assert!(
+        error.to_string().contains("unknown field `status`"),
+        "{error}"
+    );
 }
 
 fn reference_value(url: &str) -> Value {

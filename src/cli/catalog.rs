@@ -16,7 +16,7 @@ use streams::{
         DomainOutcome, EditOutcome,
         patches::{Patch, StreamPatch},
     },
-    storage::records::{RecordSave, RecordStore},
+    storage::records::RecordSave,
     sync::records::RecordSync,
 };
 
@@ -41,13 +41,13 @@ pub(super) fn list_records(
     )?;
     let streams = listing.streams;
     let mut plain = String::from("HOST/ID  STATUS  TITLE");
-    for stream in &streams {
+    for entry in &streams {
         plain.push_str(&format!(
             "\n{}/{}  {}  {}",
-            stream.owner_host_id,
-            stream.id,
-            stream.status,
-            printable(&stream.title)
+            entry.stream.owner_host_id,
+            entry.stream.id,
+            entry.status,
+            printable(&entry.stream.title)
         ));
     }
     let mut output = Output::plain(
@@ -124,11 +124,12 @@ pub(super) fn save_stream_edit(
     patch: StreamPatch,
     defaults: TitleDefaults,
 ) -> Result<Output> {
-    finish_stream_save(
-        opened,
-        Some(stream.status),
-        application::save_stream_edit(opened.records(), stream, patch, defaults),
-    )
+    Ok(finish_record(application::save_stream_edit(
+        opened.records(),
+        stream,
+        patch,
+        defaults,
+    )?))
 }
 
 #[cfg(test)]
@@ -147,47 +148,10 @@ pub(super) fn apply(
 
 pub(super) fn apply_opened(opened: &OpenedRecords, request: serde_json::Value) -> Result<Output> {
     let update = agent::parse_record_update(request, opened.source_id(), opened.settings().naming)?;
-    let before_status = if update.target().kind() == streams::model::RecordKind::Stream {
-        opened
-            .records()
-            .with_reader(|reader| reader.read(update.target()))
-            .map_err(application::ApplicationError::from)?
-            .and_then(|read| match read.record {
-                Record::Stream(stream) => Some(stream.status),
-                _ => None,
-            })
-    } else {
-        None
-    };
-    finish_stream_save(
-        opened,
-        before_status,
-        application::save_record_update(opened.records(), &update),
-    )
-}
-
-fn finish_stream_save(
-    opened: &OpenedRecords,
-    before_status: Option<Status>,
-    saved: application::Result<RecordSave<EditOutcome>>,
-) -> Result<Output> {
-    let saved = saved?;
-    let after_record = saved.current.record.clone();
-    let mut output = finish_record(saved);
-    if output.accepted_save
-        && let Some(before) = before_status
-        && let Some(children) = application::lifecycle::cascade_stream_close_if_transitioned(
-            opened,
-            before,
-            &after_record,
-        )
-        && let Some(error) = children.completion_error
-    {
-        output.code = 2;
-        output.notices.push(error.clone());
-        output.value["completion_error"] = json!(error);
-    }
-    Ok(output)
+    Ok(finish_record(application::save_record_update(
+        opened.records(),
+        &update,
+    )?))
 }
 
 /// A created record reports like an edit with nothing refused.

@@ -632,7 +632,7 @@ fn malformed_objects_unknown_fields_enum_maps_and_duplicate_json_are_rejected() 
         ("/action", json!({"apply":null})),
         ("/request/actor", json!({"automatic":null})),
         ("/request/kind", json!({"stream":null})),
-        ("/catalog/stream/status", json!({"active":null})),
+        ("/catalog/session/status", json!({"active":null})),
         ("/catalog/stream/title_mode", json!({"inherit":null})),
     ] {
         let mut wire = base.clone();

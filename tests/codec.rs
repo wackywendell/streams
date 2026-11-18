@@ -241,17 +241,11 @@ fn defaults_apply_only_to_missing_nonnullable_fields() {
     let encoded = roundtrip(RecordKind::Stream, &stream());
     assert_eq!(encoded["title_mode"], "inherit");
     assert_eq!(encoded["goal_mode"], "automatic");
-    assert_eq!(encoded["status"], "active");
+    assert!(encoded.get("status").is_none());
     assert_eq!(encoded["repositories"], json!({}));
     assert_eq!(encoded["goal_short"], Value::Null);
     assert_eq!(encoded["references"], json!([]));
-    for field in [
-        "title_mode",
-        "goal_mode",
-        "status",
-        "repositories",
-        "references",
-    ] {
+    for field in ["title_mode", "goal_mode", "repositories", "references"] {
         let mut data = stream();
         data[field] = Value::Null;
         assert!(
@@ -664,13 +658,22 @@ fn domain_validation_still_rejects_duplicate_collections() {
             .to_string(),
         "stream.title must be a nonempty string"
     );
+    let mut session_data = session();
+    session_data["status"] = json!("invalid");
+    assert!(
+        record_from_data(RecordKind::Session, &session_data)
+            .unwrap_err()
+            .to_string()
+            .contains("unknown variant")
+    );
+    // Stream records reject unknown `status` fields (format v4 does not store Stream.status).
     data = stream();
-    data["status"] = json!("invalid");
+    data["status"] = json!("active");
     assert!(
         record_from_data(RecordKind::Stream, &data)
             .unwrap_err()
             .to_string()
-            .contains("unknown variant")
+            .contains("unknown field")
     );
     data = stream();
     data["goal_short"] = json!("summary");

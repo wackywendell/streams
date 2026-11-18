@@ -103,10 +103,6 @@ pub(super) fn execute(app: &App, session_id: &str, request: Request) -> Result<O
             };
             let mut output = Output::value(update.to_json());
             output.accepted_save = !update.saves.is_empty();
-            if let Some(error) = update.completion_error {
-                output.code = 2;
-                output.notices.push(error);
-            }
             Ok(output)
         }
         Request::Artifact { request } => app.artifact_request(request, Some(session_id)),
