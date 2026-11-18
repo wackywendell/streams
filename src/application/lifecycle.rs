@@ -275,7 +275,7 @@ pub fn close_stream_sessions(
     let host = opened.host().as_str();
     let session_reads = match opened
         .host_sessions()
-        .and_then(|listing| Ok(listing.complete()?))
+        .and_then(|listing| listing.complete().map_err(Into::into))
     {
         Ok(reads) => reads,
         Err(error) => {

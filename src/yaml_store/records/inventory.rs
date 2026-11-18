@@ -126,10 +126,16 @@ pub fn decode_record_tree(
 impl YamlRecordStore {
     /// The caller holds the catalog lock; discovery and sync share one physical tree policy.
     pub(crate) fn read_locked_tree(&self) -> Result<BTreeMap<PathBuf, Vec<u8>>, StorageError> {
+        self.read_locked(true)
+    }
+
+    /// Reads every discovered file, or only the record files when `artifacts` is false.
+    fn read_locked(&self, artifacts: bool) -> Result<BTreeMap<PathBuf, Vec<u8>>, StorageError> {
         let mut paths = Vec::new();
         self.discover(&self.root.join("hosts"), &mut paths)?;
         paths
             .into_iter()
+            .filter(|path| artifacts || super::artifacts::artifact_key_from_path(path).is_err())
             .map(|path| {
                 let bytes = self.read_named(&path)?.ok_or_else(|| {
                     StorageError::new("record disappeared during locked discovery")
@@ -201,17 +207,9 @@ impl RecordInventory for YamlRecordStore {
 
     fn listing(&self) -> Result<RecordListing, StorageError> {
         let _scope = self.scope(false)?;
-        let mut paths = Vec::new();
-        self.discover(&self.root.join("hosts"), &mut paths)?;
         let mut listing = RecordListing::default();
-        for path in paths {
-            if super::artifacts::artifact_key_from_path(&path).is_ok() {
-                continue;
-            }
+        for (path, bytes) in self.read_locked(false)? {
             let address = address_from_relative_path(&path)?;
-            let bytes = self
-                .read_named(&path)?
-                .ok_or_else(|| StorageError::new("record disappeared during locked discovery"))?;
             list(&mut listing, decode_record(&address, &bytes))?;
         }
         Ok(sorted(listing))
