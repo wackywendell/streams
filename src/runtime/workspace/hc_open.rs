@@ -1,14 +1,101 @@
 use super::*;
 use crate::{
+    frontend::hc::{HcEndpoint, processes::OwnerProcesses},
     integration::{
-        Access, ConversationId, ExecutionSnapshot, LaunchItem, PreparedOpen, PresentationSnapshot,
-        SessionOpenResult, SpaceDecision, VerifiedLaunch, WorkScope, classify_open,
+        Access, ConversationId, ExecutionSnapshot, LaunchItem, OpenReport, PreparedOpen,
+        PresentationSnapshot, SessionOpenResult, SpaceDecision, VerifiedLaunch, WorkScope,
+        classify_open, complete_open,
     },
-    runtime::hc::{HcOperation, HcPresentation, HcWorkExecution},
+    runtime::hc::{HcOperation, HcPresentation, HcWorkExecution, open::OpenContext},
 };
 use std::collections::BTreeSet;
 
 impl WorkspaceRuntime<'_> {
+    /// Observe hc once, then prepare, execute and report one opening of `sessions`.
+    /// `presentation` reuses an observation the caller already holds.
+    pub fn open_hc(
+        &self,
+        operation: &mut HcOperation,
+        socket: &HcEndpoint,
+        stream: &Stream,
+        sessions: &[Session],
+        cwd: Option<&Path>,
+        presentation: Option<HcPresentation>,
+    ) -> Result<OpenReport> {
+        let scope = WorkScope {
+            catalog: self.catalog_source.into(),
+            host: self.host_id.into(),
+        };
+        let execution = if operation.supports("terminal.list") {
+            OwnerProcesses::new().ok().and_then(|observer| {
+                operation
+                    .registered_sources(&observer)
+                    .ok()?
+                    .for_scope(scope.clone())
+                    .ok()
+            })
+        } else {
+            None
+        };
+        let presentation = match presentation {
+            Some(presentation) => Some(presentation),
+            None if operation.supports("doc.get") => operation.presentation(&scope, None).ok(),
+            None => None,
+        };
+        let mut locator_failures = BTreeSet::new();
+        let locators: Vec<_> = sessions
+            .iter()
+            .map(
+                |session| match self.locations.transcript_file(&stream.id, &session.id) {
+                    Ok(path) => path,
+                    Err(_) => {
+                        locator_failures.insert(session.id.clone());
+                        None
+                    }
+                },
+            )
+            .collect();
+        let selected: Vec<_> = sessions
+            .iter()
+            .zip(&locators)
+            .map(|(session, locator)| SelectedConversation {
+                session,
+                locator: locator.as_deref(),
+            })
+            .collect();
+        let (plan, mut outcomes) = self.prepare_hc_open(
+            &AtomicBool::new(false),
+            stream,
+            &selected,
+            cwd,
+            available(execution.as_ref(), "hc Pi presence is unavailable"),
+            available(presentation.as_ref(), "hc presentation is unavailable"),
+        )?;
+        for id in locator_failures {
+            if matches!(outcomes.get(&id), Some(SessionOpenResult::Skipped { .. })) {
+                outcomes.insert(
+                    id,
+                    SessionOpenResult::Skipped {
+                        reason: "saved Session locator is unavailable".into(),
+                    },
+                );
+            }
+        }
+        let conversations: Vec<_> = sessions.iter().map(ConversationId::from).collect();
+        let effects = operation.execute_prepared_open(
+            &plan,
+            OpenContext {
+                scope: &scope,
+                socket,
+                environment: self.environment,
+                selected: &conversations,
+                execution: execution.as_ref(),
+                presentation: presentation.as_ref(),
+            },
+        );
+        Ok(complete_open(plan, effects, outcomes))
+    }
+
     /// Build an hc opening from one scoped observation. This performs no native or catalog writes.
     pub fn prepare_hc_open(
         &self,
@@ -209,5 +296,14 @@ impl WorkspaceRuntime<'_> {
             },
             outcomes,
         ))
+    }
+}
+
+fn available<T>(value: Option<T>, reason: &str) -> Access<T> {
+    match value {
+        Some(value) => Access::Available { value },
+        None => Access::Unavailable {
+            reason: reason.into(),
+        },
     }
 }

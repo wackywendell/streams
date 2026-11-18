@@ -201,11 +201,8 @@ impl App {
         )>,
     ) -> Result<(Value, bool)> {
         use streams::{
-            integration::{Access, ConversationId, SessionOpenResult, WorkScope, complete_open},
-            runtime::hc::{
-                HcOperation,
-                open::{OpenContext, hc_needs_attention},
-            },
+            integration::WorkScope,
+            runtime::hc::{HcOperation, open::hc_needs_attention},
         };
         let locations = self.locations(opened.root(), opened.host().as_str())?;
         let roots = ConversationRoots::from_environment()?;
@@ -225,46 +222,6 @@ impl App {
                 (None, socket, HcOperation::new(client))
             }
         };
-        let execution = if operation.supports("terminal.list") {
-            streams::frontend::hc::processes::OwnerProcesses::new()
-                .ok()
-                .and_then(|observer| {
-                    operation
-                        .registered_sources(&observer)
-                        .ok()?
-                        .for_scope(scope.clone())
-                        .ok()
-                })
-        } else {
-            None
-        };
-        let presentation = match presentation {
-            Some(presentation) => Some(presentation),
-            None if operation.supports("doc.get") => operation.presentation(&scope, None).ok(),
-            None => None,
-        };
-        let mut locator_failures = std::collections::BTreeSet::new();
-        let locators: Vec<_> = sessions
-            .iter()
-            .map(
-                |session| match locations.transcript_file(&stream.id, &session.id) {
-                    Ok(path) => path,
-                    Err(_) => {
-                        locator_failures.insert(session.id.clone());
-                        None
-                    }
-                },
-            )
-            .collect();
-        let selected: Vec<_> = sessions
-            .iter()
-            .zip(&locators)
-            .map(|(session, locator)| SelectedConversation {
-                session,
-                locator: locator.as_deref(),
-            })
-            .collect();
-        let conversations: Vec<_> = sessions.iter().map(ConversationId::from).collect();
         let runtime = WorkspaceRuntime::new(
             opened.host().as_str(),
             &locations,
@@ -273,46 +230,8 @@ impl App {
             &roots,
             &self.environment,
         );
-        let (plan, mut outcomes) = runtime.prepare_hc_open(
-            &AtomicBool::new(false),
-            stream,
-            &selected,
-            cwd,
-            execution.as_ref().map_or_else(
-                || Access::Unavailable {
-                    reason: "hc Pi presence is unavailable".into(),
-                },
-                |value| Access::Available { value },
-            ),
-            presentation.as_ref().map_or_else(
-                || Access::Unavailable {
-                    reason: "hc presentation is unavailable".into(),
-                },
-                |value| Access::Available { value },
-            ),
-        )?;
-        for id in locator_failures {
-            if matches!(outcomes.get(&id), Some(SessionOpenResult::Skipped { .. })) {
-                outcomes.insert(
-                    id,
-                    SessionOpenResult::Skipped {
-                        reason: "saved Session locator is unavailable".into(),
-                    },
-                );
-            }
-        }
-        let effects = operation.execute_prepared_open(
-            &plan,
-            OpenContext {
-                scope: &scope,
-                socket: &socket,
-                environment: &self.environment,
-                selected: &conversations,
-                execution: execution.as_ref(),
-                presentation: presentation.as_ref(),
-            },
-        );
-        let report = complete_open(plan, effects, outcomes);
+        let report =
+            runtime.open_hc(&mut operation, &socket, stream, sessions, cwd, presentation)?;
         let needs_attention = hc_needs_attention(&scope, &report);
         let ok = needs_attention.is_empty();
         Ok((
