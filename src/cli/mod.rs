@@ -1118,7 +1118,9 @@ impl App {
                 stream_id,
                 workspace_id,
             } => self.capture_inputs(stream_id.as_deref(), workspace_id.as_deref()),
-            AgentCommand::Apply => self.apply_request(&self.input.read()?),
+            AgentCommand::Apply => {
+                self.apply_request(streams::codec::load_json(&self.input.read()?)?)
+            }
             AgentCommand::Context {
                 harness,
                 session_id,
@@ -1129,7 +1131,7 @@ impl App {
         }
     }
 
-    fn apply_request(&self, source: &str) -> Result<Output> {
+    fn apply_request(&self, request: serde_json::Value) -> Result<Output> {
         let opened = application::open_records(&self.config)?;
         let settings = self.config.load()?;
         if settings.catalog_root != opened.root() {
@@ -1137,7 +1139,7 @@ impl App {
                 "catalog root setting changed during apply",
             ));
         }
-        catalog::apply_opened(&opened, source, settings.naming)
+        catalog::apply_opened(&opened, request, settings.naming)
     }
 }
 

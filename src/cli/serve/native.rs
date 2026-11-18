@@ -583,15 +583,15 @@ impl Controller {
     pub fn enroll(
         &mut self,
         fallback: &App,
-        request: &Value,
+        request: Value,
         cancelled: Arc<AtomicBool>,
     ) -> Result<Output> {
         if !self.enabled || self.app.environment.get("HERDR_ENV").map(String::as_str) != Some("1") {
-            return fallback.enroll_request(&request.to_string());
+            return fallback.enroll_request(request);
         }
         let mut pass = self.observe(&cancelled, None, FileBaseline::Required)?;
         let records = self.records.as_ref().unwrap().clone();
-        let request = EnrollmentRequest::parse(&request.to_string(), records.source_id())?;
+        let request = EnrollmentRequest::parse(request, records.source_id())?;
         let target = request
             .stream_id()
             .map(str::to_owned)

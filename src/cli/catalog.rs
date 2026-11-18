@@ -184,7 +184,8 @@ pub(super) fn apply(
     source_id: &str,
     defaults: streams::model::TitleDefaults,
 ) -> Result<Output> {
-    let update = agent::parse_record_update(captured, source_id, defaults)?;
+    let update =
+        agent::parse_record_update(streams::codec::load_json(captured)?, source_id, defaults)?;
     Ok(finish_record(application::save_record_update(
         store, &update,
     )?))
@@ -192,10 +193,10 @@ pub(super) fn apply(
 
 pub(super) fn apply_opened(
     opened: &OpenedRecords,
-    source: &str,
+    request: serde_json::Value,
     defaults: streams::model::TitleDefaults,
 ) -> Result<Output> {
-    let update = agent::parse_record_update(source, opened.source_id(), defaults)?;
+    let update = agent::parse_record_update(request, opened.source_id(), defaults)?;
     let before_status = if update.target().kind() == streams::model::RecordKind::Stream {
         opened
             .records()

@@ -4,6 +4,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use crate::{
+    child_protocol::PreviewAction,
     codec::{
         ascii_json, load_json, object, require_object, required_nullable, session_from_data,
         stream_from_data,
@@ -17,19 +18,11 @@ use super::{
     record_update::{CapturedEdit, parse_record_update},
 };
 
-#[derive(strum::EnumString, strum::VariantNames)]
-#[strum(serialize_all = "kebab-case")]
-enum Action {
-    Apply,
-    Enroll,
-}
-crate::codec::deserialize_string_enum!(Action);
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PreviewWire {
     catalog: Value,
-    action: Action,
+    action: PreviewAction,
     request: Value,
 }
 
@@ -134,9 +127,9 @@ fn simulated(domain: Value) -> Value {
         "detail":"Card proposal simulation only; nothing persisted or published"})
 }
 
-fn apply(snapshot: &mut Snapshot, source: &str) -> Result<Value, ValidationError> {
+fn apply(snapshot: &mut Snapshot, request: Value) -> Result<Value, ValidationError> {
     snapshot.require_local()?;
-    let update = parse_record_update(source, &snapshot.source, snapshot.defaults)?;
+    let update = parse_record_update(request, &snapshot.source, snapshot.defaults)?;
     let mut reference_domain = None;
     let decision = match &update.edit {
         CapturedEdit::Session(edit) => {
@@ -223,9 +216,9 @@ fn preview_effort_id(request: &EnrollmentRequest, host: &str) -> String {
     uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, name.as_bytes()).to_string()
 }
 
-fn enroll(snapshot: &mut Snapshot, source: &str) -> Result<Value, ValidationError> {
+fn enroll(snapshot: &mut Snapshot, request: Value) -> Result<Value, ValidationError> {
     snapshot.require_local()?;
-    let request = EnrollmentRequest::parse(source, &snapshot.source)?;
+    let request = EnrollmentRequest::parse(request, &snapshot.source)?;
     if let Some(id) = request.stream_id()
         && snapshot
             .stream
@@ -290,11 +283,19 @@ pub fn preview(source: &str) -> Result<Value, ValidationError> {
     require_object(&value, "agent preview")?;
     let wire: PreviewWire = serde_json::from_value(value)
         .map_err(|error| ValidationError::new(format!("invalid agent preview: {error}")))?;
-    let mut snapshot = Snapshot::parse(&wire.catalog)?;
-    let request = wire.request.to_string();
-    let receipt = match wire.action {
-        Action::Apply => apply(&mut snapshot, &request)?,
-        Action::Enroll => enroll(&mut snapshot, &request)?,
+    project(&wire.catalog, wire.action, wire.request)
+}
+
+/// Project one captured request over the supplied catalog context.
+pub fn project(
+    catalog: &Value,
+    action: PreviewAction,
+    request: Value,
+) -> Result<Value, ValidationError> {
+    let mut snapshot = Snapshot::parse(catalog)?;
+    let receipt = match action {
+        PreviewAction::Apply => apply(&mut snapshot, request)?,
+        PreviewAction::Enroll => enroll(&mut snapshot, request)?,
     };
     Ok(json!({"simulated":true,"local":"unchanged","catalog":snapshot.project(),"receipt":receipt}))
 }

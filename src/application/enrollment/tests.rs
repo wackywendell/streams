@@ -12,7 +12,7 @@ fn request(stream: Option<&str>) -> EnrollmentRequest {
     } else {
         wire["stream"] = json!({"title":"Effort","goal":"Goal"});
     }
-    EnrollmentRequest::parse(&wire.to_string(), "source").unwrap()
+    EnrollmentRequest::parse(wire.clone(), "source").unwrap()
 }
 fn read_session(store: &FileRecordStore) -> Option<Session> {
     store
@@ -135,7 +135,7 @@ fn missing_stream_changed_intent_and_unrelated_existing_effort_refuse_without_im
     assert!(read_session(&store).is_none());
     let initial = request(None);
     enroll_stream(&store, "host", &initial).unwrap();
-    let changed=EnrollmentRequest::parse(&json!({"version":2,"catalog_source":"source","harness":"pi","harness_session_id":"native","stream":{"title":"Changed"},"session":{"title":"Conversation"},"actor":"automatic","cwd":"/fixture"}).to_string(),"source").unwrap();
+    let changed=EnrollmentRequest::parse(json!({"version":2,"catalog_source":"source","harness":"pi","harness_session_id":"native","stream":{"title":"Changed"},"session":{"title":"Conversation"},"actor":"automatic","cwd":"/fixture"}),"source").unwrap();
     assert!(enroll_stream(&store, "host", &changed).is_err());
     assert!(read_session(&store).is_none());
 }
@@ -144,11 +144,11 @@ fn enrollment_requests_require_version_two_and_reject_old_permission_fields() {
     let wire = json!({"version":2,"catalog_source":"source","harness":"pi","harness_session_id":"native","stream":{"title":"Effort"},"session":{"title":"Conversation"},"actor":"automatic","cwd":"/fixture"});
     let mut old = wire.clone();
     old["version"] = json!(1);
-    assert!(EnrollmentRequest::parse(&old.to_string(), "source").is_err());
+    assert!(EnrollmentRequest::parse(old.clone(), "source").is_err());
     old = wire.clone();
     old["authority"] = json!({"host_id":"host","token":"old"});
-    assert!(EnrollmentRequest::parse(&old.to_string(), "source").is_err());
+    assert!(EnrollmentRequest::parse(old.clone(), "source").is_err());
     old = wire.clone();
     old["operation_id"] = json!("old");
-    assert!(EnrollmentRequest::parse(&old.to_string(), "source").is_err());
+    assert!(EnrollmentRequest::parse(old.clone(), "source").is_err());
 }

@@ -1,3 +1,4 @@
+use serde_json::Value;
 use streams::{
     child_protocol::{CaptureTarget, DomainObject, LifecycleAction, PreviewAction, Request},
     config::ConfigKey,
@@ -11,8 +12,10 @@ pub(super) fn preview(
     action: PreviewAction,
     request: DomainObject,
 ) -> Result<Output> {
-    Ok(Output::value(agent::preview(
-        &json!({"catalog":catalog,"action":action,"request":request}).to_string(),
+    Ok(Output::value(agent::project(
+        &Value::Object(catalog),
+        action,
+        Value::Object(request),
     )?))
 }
 
@@ -40,8 +43,8 @@ pub(super) fn execute(app: &App, session_id: &str, request: Request) -> Result<O
             action,
             request,
         } => preview(catalog, action, request),
-        Request::Enroll { request } => app.enroll_request(&serde_json::to_string(&request)?),
-        Request::Apply { request } => app.apply_request(&serde_json::to_string(&request)?),
+        Request::Enroll { request } => app.enroll_request(Value::Object(request)),
+        Request::Apply { request } => app.apply_request(Value::Object(request)),
         Request::ListStreams {} => {
             let opened = application::open_records(&app.config)?;
             let settings = app.config.load()?;

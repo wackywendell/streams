@@ -78,7 +78,7 @@ fn update_with_defaults(
 ) -> RecordSave<EditOutcome> {
     save_record_update(
         store,
-        &parse_record_update(&value.to_string(), "source", defaults).unwrap(),
+        &parse_record_update(value.clone(), "source", defaults).unwrap(),
     )
     .unwrap()
 }
@@ -443,7 +443,7 @@ fn request_schema_rejects_old_tokens_unversioned_requests_and_rosters() {
     let valid = wire(&session(), "automatic", "work");
     assert!(
         parse_record_update(
-            &valid.to_string(),
+            valid.clone(),
             "source",
             streams::model::TitleDefaults::default()
         )
@@ -480,7 +480,7 @@ fn request_schema_rejects_old_tokens_unversioned_requests_and_rosters() {
     ] {
         assert!(
             parse_record_update(
-                &invalid.to_string(),
+                invalid.clone(),
                 "source",
                 streams::model::TitleDefaults::default()
             )
@@ -489,7 +489,7 @@ fn request_schema_rejects_old_tokens_unversioned_requests_and_rosters() {
     }
     assert!(
         parse_record_update(
-            &valid.to_string(),
+            valid.clone(),
             "changed-source",
             streams::model::TitleDefaults::default()
         )
@@ -498,7 +498,7 @@ fn request_schema_rejects_old_tokens_unversioned_requests_and_rosters() {
     let roster = json!({"version":2,"title_default":"automatic","catalog_source":"source","kind":"stream","actor":"automatic","before":stream("a"),"changes":{"goal":"prose"},"inputs":[{"kind":"session","record":session()},{"kind":"session","record":session()}]});
     assert!(
         parse_record_update(
-            &roster.to_string(),
+            roster.clone(),
             "source",
             streams::model::TitleDefaults::default()
         )
@@ -515,7 +515,7 @@ fn manual_stream_edit_has_no_session_dependency_even_after_membership_changes() 
     invalid["inputs"] = json!([{"kind":"session","record":session()}]);
     assert!(
         parse_record_update(
-            &invalid.to_string(),
+            invalid.clone(),
             "source",
             streams::model::TitleDefaults::default()
         )
@@ -996,7 +996,7 @@ fn correction_old_selector_cannot_reach_the_new_target_and_user_can_restore_drop
 #[test]
 fn reference_raw_parser_rejects_authority_presence_overlap_and_old_list_payloads() {
     let valid = reference_wire(&stream("a"), "automatic", json!([doc_row()]));
-    assert!(parse_record_update(&valid.to_string(), "source", TitleDefaults::default()).is_ok());
+    assert!(parse_record_update(valid.clone(), "source", TitleDefaults::default()).is_ok());
     let mut invalids = Vec::new();
     for (field, value) in [
         ("commit", Value::Null),
@@ -1059,7 +1059,7 @@ fn reference_raw_parser_rejects_authority_presence_overlap_and_old_list_payloads
     invalids.push(deletion);
     for invalid in invalids {
         assert!(
-            parse_record_update(&invalid.to_string(), "source", TitleDefaults::default()).is_err(),
+            parse_record_update(invalid.clone(), "source", TitleDefaults::default()).is_err(),
             "{invalid}"
         );
     }
@@ -1068,7 +1068,7 @@ fn reference_raw_parser_rejects_authority_presence_overlap_and_old_list_payloads
     user["actor"] = json!("user");
     user["inputs"] = json!([]);
     user["changes"]["reference_changes"][0]["desired"]["target"]["ref"] = Value::Null;
-    assert!(parse_record_update(&user.to_string(), "source", TitleDefaults::default()).is_ok());
+    assert!(parse_record_update(user.clone(), "source", TitleDefaults::default()).is_ok());
     let mut before = stream("a");
     before.references.push(reference("https://example.test/a"));
     let deletion = reference_wire(
@@ -1076,10 +1076,10 @@ fn reference_raw_parser_rejects_authority_presence_overlap_and_old_list_payloads
         "user",
         json!([{"key":{"kind":"url","url":"https://example.test/a"},"desired":null}]),
     );
-    assert!(parse_record_update(&deletion.to_string(), "source", TitleDefaults::default()).is_ok());
+    assert!(parse_record_update(deletion.clone(), "source", TitleDefaults::default()).is_ok());
     let mut invalid = deletion.clone();
     invalid["operation_id"] = json!("old");
-    assert!(parse_record_update(&invalid.to_string(), "source", TitleDefaults::default()).is_err());
+    assert!(parse_record_update(invalid.clone(), "source", TitleDefaults::default()).is_err());
 }
 
 #[test]

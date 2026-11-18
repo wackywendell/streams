@@ -68,7 +68,7 @@ impl Fixture {
         } else {
             wire["stream"] = json!({"title":"Effort","goal":"Goal"})
         }
-        EnrollmentRequest::parse(&wire.to_string(), self.opened.source_id()).unwrap()
+        EnrollmentRequest::parse(wire.clone(), self.opened.source_id()).unwrap()
     }
     fn context(&self) -> RecordContext {
         self.app

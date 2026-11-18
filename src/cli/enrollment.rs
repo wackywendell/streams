@@ -56,12 +56,12 @@ impl Receipt {
 
 impl App {
     pub(super) fn enroll(&self) -> Result<Output> {
-        self.enroll_request(&self.input.read()?)
+        self.enroll_request(streams::codec::load_json(&self.input.read()?)?)
     }
 
-    pub(super) fn enroll_request(&self, source: &str) -> Result<Output> {
+    pub(super) fn enroll_request(&self, request: serde_json::Value) -> Result<Output> {
         let opened = application::open_records(&self.config)?;
-        let request = EnrollmentRequest::parse(source, opened.source_id())?;
+        let request = EnrollmentRequest::parse(request, opened.source_id())?;
         let settings = self.config.load()?;
         if settings.catalog_root != opened.root() {
             return Err(CliError::message(

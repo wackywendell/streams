@@ -186,7 +186,7 @@ fn enrollment_parser_and_constructors_share_typed_identity_and_naming_rules() {
     let mut wire = enrollment();
     wire["actor"] = json!("user");
     wire["stream"] = json!({"title": "New", "goal": "Goal", "goal_short": "Compact"});
-    let parsed = EnrollmentRequest::parse(&wire.to_string(), "physical-source").unwrap();
+    let parsed = EnrollmentRequest::parse(wire.clone(), "physical-source").unwrap();
     assert_eq!(parsed.catalog_source(), "physical-source");
     assert_eq!(parsed.harness(), Harness::Pi);
     assert_eq!(parsed.harness_session_id(), "native");
@@ -211,13 +211,13 @@ fn enrollment_parser_and_constructors_share_typed_identity_and_naming_rules() {
     assert!(parsed.session("host", "").is_err());
 
     wire["stream"] = json!({"title": "No goal"});
-    let parsed = EnrollmentRequest::parse(&wire.to_string(), "physical-source").unwrap();
+    let parsed = EnrollmentRequest::parse(wire.clone(), "physical-source").unwrap();
     assert_eq!(
         parsed.stream("host", "id").unwrap().goal_mode.to_string(),
         "automatic"
     );
     wire["stream"] = json!({"title": "Invalid", "goal_short": "Orphaned summary"});
-    assert!(EnrollmentRequest::parse(&wire.to_string(), "physical-source").is_err());
+    assert!(EnrollmentRequest::parse(wire.clone(), "physical-source").is_err());
 }
 
 #[test]
@@ -225,7 +225,7 @@ fn enrollment_rejects_native_actor_even_when_no_records_would_be_created() {
     let mut request = enrollment();
     request["actor"] = json!("native");
     request["stream_id"] = json!("effort");
-    assert!(EnrollmentRequest::parse(&request.to_string(), "physical-source").is_err());
+    assert!(EnrollmentRequest::parse(request.clone(), "physical-source").is_err());
     reject(&context(), "enroll", &request);
     request["stream"] = json!({"title": "New"});
     reject(&empty(), "enroll", &request);
@@ -268,7 +268,7 @@ fn enrollment_request_shape_and_text_validation_match_the_live_boundary() {
         let mut request = base.clone();
         request.as_object_mut().unwrap().remove(field);
         assert!(
-            EnrollmentRequest::parse(&request.to_string(), "physical-source").is_err(),
+            EnrollmentRequest::parse(request.clone(), "physical-source").is_err(),
             "{field}"
         );
     }
@@ -300,7 +300,7 @@ fn enrollment_request_shape_and_text_validation_match_the_live_boundary() {
         let mut request = base.clone();
         request[field] = value;
         assert!(
-            EnrollmentRequest::parse(&request.to_string(), "physical-source").is_err(),
+            EnrollmentRequest::parse(request.clone(), "physical-source").is_err(),
             "{request}"
         );
         reject(&context(), "enroll", &request);
@@ -308,13 +308,17 @@ fn enrollment_request_shape_and_text_validation_match_the_live_boundary() {
     let mut explicit_null = base.clone();
     explicit_null["stream"] = Value::Null;
     explicit_null["stream_id"] = Value::Null;
-    EnrollmentRequest::parse(&explicit_null.to_string(), "physical-source").unwrap();
+    EnrollmentRequest::parse(explicit_null.clone(), "physical-source").unwrap();
     let duplicate = base.to_string().replacen(
         "\"title\":\"Contribution\"",
         "\"title\":\"Contribution\",\"title\":\"duplicate\"",
         1,
     );
-    assert!(EnrollmentRequest::parse(&duplicate, "physical-source").is_err());
+    assert!(
+        streams::codec::load_json(&duplicate)
+            .and_then(|value| EnrollmentRequest::parse(value, "physical-source"))
+            .is_err()
+    );
 }
 
 #[test]

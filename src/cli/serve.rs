@@ -350,8 +350,8 @@ impl Server {
                 Request::Enroll { request } => {
                     let value = serde_json::Value::Object(request);
                     let output = match controller {
-                        Some(controller) => controller.enroll(&app, &value, cancelled.clone()),
-                        None => app.enroll_request(&value.to_string()),
+                        Some(controller) => controller.enroll(&app, value, cancelled.clone()),
+                        None => app.enroll_request(value),
                     }?;
                     if hc_selected
                         && output.accepted_save

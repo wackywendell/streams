@@ -5,7 +5,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 
 use crate::{
-    codec::{load_json, object, objects, require_object, session_from_data, stream_from_data},
+    codec::{object, objects, require_object, session_from_data, stream_from_data},
     model::{NamingMode, RecordKind, Session, TitleDefaults, ValidationError, check_text},
     operations::{
         Actor,
@@ -159,11 +159,10 @@ fn parse_reference_changes(
 }
 
 pub fn parse_record_update(
-    source: &str,
+    value: Value,
     catalog_source: &str,
     title_defaults: TitleDefaults,
 ) -> Result<RecordUpdate, ValidationError> {
-    let value = load_json(source)?;
     require_object(&value, "captured edit")?;
     let wire: Wire = serde_json::from_value(value.clone())
         .map_err(|error| ValidationError::new(format!("invalid captured edit: {error}")))?;

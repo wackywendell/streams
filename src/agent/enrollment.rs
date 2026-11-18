@@ -1,9 +1,10 @@
 //! Validated enrollment intent shared by live adapters and effect-free replay.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::{
-    codec::{ascii_json, load_json, object, optional_object, require_object},
+    codec::{ascii_json, object, optional_object, require_object},
     model::{NamingMode, Session, Stream, TitleMode, ValidationError, check_text},
     operations::Actor,
     runtime::conversations::Harness,
@@ -69,8 +70,7 @@ pub struct EnrollmentRequest {
 
 impl EnrollmentRequest {
     /// Preserve the enrollment wire shape while fencing the physical catalog source.
-    pub fn parse(source: &str, catalog_source: &str) -> Result<Self, ValidationError> {
-        let value = load_json(source)?;
+    pub fn parse(value: Value, catalog_source: &str) -> Result<Self, ValidationError> {
         require_object(&value, "agent enrollment")?;
         let wire: EnrollmentWire = serde_json::from_value(value)
             .map_err(|e| ValidationError::new(format!("invalid agent enrollment: {e}")))?;
