@@ -186,20 +186,16 @@ impl App {
                 .with_lifecycle(decay_days, now_ms());
             match &request.body {
                 ModBody::Read { selections } => {
-                    use streams::integration::{
-                        PresentationSnapshot, ViewSelection, ViewingChoice,
-                    };
-                    let needs_sidebar = selections
-                        .as_slice()
-                        .iter()
-                        .any(|selection| matches!(selection, ViewSelection::Sidebar { .. }));
-                    let needs_frame = selections
-                        .as_slice()
-                        .iter()
-                        .any(|selection| matches!(selection, ViewSelection::Frame { .. }));
-                    let mut presentation = None;
-                    let mut execution = None;
-                    if (needs_sidebar || needs_frame)
+                    use streams::integration::{Access, TerminalObservation, ViewSelection};
+                    let needs_native = selections.as_slice().iter().any(|selection| {
+                        matches!(
+                            selection,
+                            ViewSelection::Frame { .. } | ViewSelection::Tab { .. }
+                        )
+                    });
+                    let observer = needs_native.then(frontend::hc::processes::OwnerProcesses::new);
+                    let mut terminals = None;
+                    if needs_native
                         && let Ok(socket) =
                             frontend::hc::HcEndpoint::resolve(&self.environment, &self.cwd)
                         && let Ok(client) = frontend::hc::HcClient::connect(
@@ -210,63 +206,22 @@ impl App {
                         )
                     {
                         verified_endpoint = Some(client.endpoint().clone());
-                        let mut operation = streams::runtime::hc::HcOperation::new(client);
-                        let mut candidates = std::collections::BTreeMap::new();
-                        for selection in selections.as_slice() {
-                            if let ViewSelection::Frame { terminal } = selection {
-                                candidates.insert(terminal.key.clone(), terminal);
-                            }
-                        }
-                        if needs_sidebar
-                            && let Ok(native) = operation.presentation(facade.scope(), None)
-                        {
-                            for selection in selections.as_slice() {
-                                if let ViewSelection::Sidebar {
-                                    space,
-                                    viewing:
-                                        ViewingChoice::Follow {
-                                            last_agent: Some(terminal),
-                                        },
-                                } = selection
-                                    && native.stream_for_space(space).is_some()
-                                    && native.space_for_terminal(terminal).as_ref() == Some(space)
-                                {
-                                    candidates.insert(terminal.key.clone(), terminal);
-                                }
-                            }
-                            presentation = Some(native);
-                        }
-                        if !candidates.is_empty()
-                            && let Ok(observer) = frontend::hc::processes::OwnerProcesses::new()
-                        {
-                            let mut snapshot = streams::runtime::hc::HcForeground::new(
-                                operation.endpoint().clone(),
-                            );
-                            for terminal in candidates.into_values() {
-                                let value = operation.foreground(terminal, &observer);
-                                snapshot.insert(terminal, value);
-                            }
-                            execution = Some(snapshot);
+                        if let Some(Ok(observer)) = &observer {
+                            terminals = Some(streams::runtime::hc::HcTerminals::new(
+                                streams::runtime::hc::HcOperation::new(client),
+                                observer,
+                                facade.scope().clone(),
+                            ));
                         }
                     }
-                    let values = if presentation.is_some() || execution.is_some() {
-                        facade.read_views(
+                    let values = match terminals.as_mut() {
+                        Some(native) => facade.read_views(
                             selections.as_slice(),
-                            match presentation.as_ref() {
-                                Some(value) => streams::integration::Access::Available { value },
-                                None => streams::integration::Access::Unavailable {
-                                    reason: "native presentation is unavailable".into(),
-                                },
+                            Access::Available {
+                                value: native as &mut dyn TerminalObservation,
                             },
-                            match execution.as_ref() {
-                                Some(value) => streams::integration::Access::Available { value },
-                                None => streams::integration::Access::Unavailable {
-                                    reason: "foreground context is unavailable".into(),
-                                },
-                            },
-                        )
-                    } else {
-                        facade.read_saved_views(selections.as_slice())
+                        ),
+                        None => facade.read_saved_views(selections.as_slice()),
                     }
                     .map_err(|_| WireError::unavailable("saved views are unavailable"))?;
                     let herdr_config = self

@@ -150,14 +150,6 @@ impl crate::integration::ExecutionSnapshot for HerdrWorkExecution<'_> {
             .collect();
         Access::Available { value }
     }
-    fn foreground_conversation(
-        &self,
-        _: &crate::integration::NativeRef,
-    ) -> crate::integration::ForegroundConversation {
-        crate::integration::ForegroundConversation::Unknown {
-            reason: "foreground was not inspected by this work query".into(),
-        }
-    }
 }
 
 impl HerdrClient {

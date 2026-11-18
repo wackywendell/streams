@@ -308,11 +308,6 @@ impl crate::integration::ExecutionSnapshot for RegisteredSources {
             reason: "Stream routing was not inspected".into(),
         }
     }
-    fn foreground_conversation(&self, _: &NativeRef) -> crate::integration::ForegroundConversation {
-        crate::integration::ForegroundConversation::Unknown {
-            reason: "foreground context was not inspected".into(),
-        }
-    }
 }
 
 impl HcWorkExecution {
@@ -377,11 +372,6 @@ impl crate::integration::ExecutionSnapshot for HcWorkExecution {
                 reason: reason.clone(),
             },
             Access::Unsupported => Access::Unsupported,
-        }
-    }
-    fn foreground_conversation(&self, _: &NativeRef) -> crate::integration::ForegroundConversation {
-        crate::integration::ForegroundConversation::Unknown {
-            reason: "foreground context was not inspected".into(),
         }
     }
 }
@@ -943,53 +933,71 @@ fn bounded_associations(value: &Value) -> Result<(), FrontendError> {
     }
     Ok(())
 }
-pub struct HcForeground {
-    endpoint: EndpointId,
-    values: BTreeMap<String, crate::integration::ForegroundConversation>,
+/// Point reads of hc terminals for one integration request, each made when a read first asks.
+pub struct HcTerminals<'a> {
+    operation: HcOperation,
+    observer: &'a dyn crate::frontend::hc::processes::ProcessObserver,
+    scope: WorkScope,
+    foreground: BTreeMap<String, crate::integration::ForegroundConversation>,
+    presentation: Option<Result<HcPresentation, String>>,
 }
-impl HcForeground {
-    pub fn new(endpoint: EndpointId) -> Self {
+impl<'a> HcTerminals<'a> {
+    pub fn new(
+        operation: HcOperation,
+        observer: &'a dyn crate::frontend::hc::processes::ProcessObserver,
+        scope: WorkScope,
+    ) -> Self {
         Self {
-            endpoint,
-            values: BTreeMap::new(),
+            operation,
+            observer,
+            scope,
+            foreground: BTreeMap::new(),
+            presentation: None,
         }
     }
-    pub fn insert(
+    fn local(&self, terminal: &NativeRef) -> bool {
+        terminal.adapter == FrontendId::hc() && terminal.endpoint == *self.operation.endpoint()
+    }
+}
+impl crate::integration::TerminalObservation for HcTerminals<'_> {
+    fn foreground_conversation(
         &mut self,
         terminal: &NativeRef,
-        value: crate::integration::ForegroundConversation,
-    ) {
-        if terminal.adapter == FrontendId::hc() && terminal.endpoint == self.endpoint {
-            self.values.insert(terminal.key.clone(), value);
-        }
-    }
-}
-impl crate::integration::ExecutionSnapshot for HcForeground {
-    fn presence(&self, _: &crate::integration::ConversationId) -> crate::integration::Presence {
-        crate::integration::Presence::Unknown {
-            reason: "work presence was not inspected".into(),
-        }
-    }
-    fn verified_terminals(&self, _: &crate::integration::ConversationId) -> Vec<NativeRef> {
-        vec![]
-    }
-    fn stream_terminals(&self, _: &str) -> crate::integration::Access<Vec<NativeRef>> {
-        crate::integration::Access::Unavailable {
-            reason: "Stream routing was not inspected".into(),
-        }
-    }
-    fn foreground_conversation(
-        &self,
-        terminal: &NativeRef,
     ) -> crate::integration::ForegroundConversation {
-        if terminal.adapter == FrontendId::hc()
-            && terminal.endpoint == self.endpoint
-            && let Some(value) = self.values.get(&terminal.key)
-        {
+        if !self.local(terminal) {
+            return crate::integration::ForegroundConversation::Unknown {
+                reason: "terminal belongs to another endpoint".into(),
+            };
+        }
+        if let Some(value) = self.foreground.get(&terminal.key) {
             return value.clone();
         }
-        crate::integration::ForegroundConversation::Unknown {
-            reason: "foreground context was not inspected".into(),
+        let value = self.operation.foreground(terminal, self.observer);
+        self.foreground.insert(terminal.key.clone(), value.clone());
+        value
+    }
+    fn routed_stream(
+        &mut self,
+        terminal: &NativeRef,
+    ) -> crate::integration::Access<Option<String>> {
+        use crate::integration::Access;
+        if !self.local(terminal) {
+            return Access::Unavailable {
+                reason: "terminal belongs to another endpoint".into(),
+            };
+        }
+        let presentation = self.presentation.get_or_insert_with(|| {
+            self.operation
+                .presentation(&self.scope, None)
+                .map_err(|_| "hc presentation is unavailable".to_owned())
+        });
+        match presentation {
+            Ok(presentation) => Access::Available {
+                value: self.operation.routed_stream(presentation, &terminal.key),
+            },
+            Err(reason) => Access::Unavailable {
+                reason: reason.clone(),
+            },
         }
     }
 }
@@ -1107,33 +1115,43 @@ impl HcOperation {
         Ok(presentation)
     }
 
-    /// Resolve the Stream associated with `caller_terminal`:
-    /// check its own space first, then walk up to 8 terminals (including `caller_terminal`)
-    /// checking `streams.work` labels and space associations at each hop in nearest-ancestor order.
+    /// Resolve the Stream associated with `caller_terminal`; see [`Self::routed_stream`].
     pub fn caller_stream_id(
         &mut self,
         scope: &WorkScope,
         caller_terminal: &str,
     ) -> Result<Option<String>, FrontendError> {
-        use crate::integration::PresentationSnapshot;
-        if caller_terminal.is_empty()
-            || caller_terminal.contains('/')
-            || crate::model::check_text(caller_terminal, "terminal", false).is_err()
-        {
+        if !valid_terminal(caller_terminal) {
             return Ok(None);
         }
-        let presentation = self.presentation_for_caller(scope, Some(caller_terminal))?;
+        let presentation = self.presentation(scope, None)?;
+        Ok(self.routed_stream(&presentation, caller_terminal))
+    }
+
+    /// The Stream hc routes `terminal` to: its own space's association first, then a walk up to
+    /// 8 terminals (including `terminal`) checking `streams.work` labels and space associations at
+    /// each hop in nearest-ancestor order.
+    pub fn routed_stream(
+        &mut self,
+        presentation: &HcPresentation,
+        terminal: &str,
+    ) -> Option<String> {
+        use crate::integration::PresentationSnapshot;
+        if !valid_terminal(terminal) {
+            return None;
+        }
+        let scope = &presentation.scope;
         if let Some(stream) = presentation
-            .caller_space()
+            .space_for_terminal(&presentation.space_ref(terminal))
             .and_then(|space| presentation.stream_for_space(&space))
         {
-            return Ok(Some(stream));
+            return Some(stream);
         }
         if !self.supports("terminal.get") {
-            return Ok(None);
+            return None;
         }
         let mut visited = BTreeSet::new();
-        let mut current = caller_terminal.to_owned();
+        let mut current = terminal.to_owned();
         let mut depth = 0usize;
         while depth < 8 && visited.insert(current.clone()) {
             depth += 1;
@@ -1152,7 +1170,7 @@ impl HcOperation {
                 && let Some(route) = WorkLabel::parse(label)
                 && route.scope == *scope
             {
-                return Ok(Some(route.stream));
+                return Some(route.stream);
             }
             if depth > 1 {
                 let ancestor = NativeRef {
@@ -1163,7 +1181,7 @@ impl HcOperation {
                 if let Some(space) = presentation.space_for_terminal(&ancestor)
                     && let Some(stream) = presentation.stream_for_space(&space)
                 {
-                    return Ok(Some(stream));
+                    return Some(stream);
                 }
             }
             let Some(parent) = value
@@ -1175,7 +1193,7 @@ impl HcOperation {
             };
             current = parent.to_owned();
         }
-        Ok(None)
+        None
     }
 
     /// Bind an unassociated published caller space to `stream` and write `streams.work` on `caller_terminal`.
@@ -1301,6 +1319,12 @@ impl HcOperation {
             }
         }
     }
+}
+
+fn valid_terminal(key: &str) -> bool {
+    !key.is_empty()
+        && !key.contains('/')
+        && crate::model::check_text(key, "terminal", false).is_ok()
 }
 
 fn invalid(message: impl Into<String>) -> FrontendError {

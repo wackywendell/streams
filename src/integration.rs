@@ -274,10 +274,6 @@ pub enum Reference {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ActivationContext {
     Explicit,
-    FollowFrame {
-        terminal: NativeRef,
-        expected_session: String,
-    },
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -359,7 +355,14 @@ pub trait ExecutionSnapshot {
     fn presence(&self, conversation: &ConversationId) -> Presence;
     fn verified_terminals(&self, conversation: &ConversationId) -> Vec<NativeRef>;
     fn stream_terminals(&self, stream: &str) -> Access<Vec<NativeRef>>;
-    fn foreground_conversation(&self, terminal: &NativeRef) -> ForegroundConversation;
+}
+/// Point observations of single terminals, made when a read first asks and kept for its request.
+pub trait TerminalObservation {
+    /// The conversation the terminal's registered helper reports in the foreground.
+    fn foreground_conversation(&mut self, terminal: &NativeRef) -> ForegroundConversation;
+    /// The Stream the frontend routes the terminal to: its space's association, else the nearest
+    /// `streams.work` label or associated space among it and its parent terminals.
+    fn routed_stream(&mut self, terminal: &NativeRef) -> Access<Option<String>>;
 }
 pub trait PresentationSnapshot {
     fn contains_space(&self, space: &NativeRef) -> bool;
@@ -705,35 +708,12 @@ pub enum FrameContext {
         reason: String,
     },
 }
+/// What a tab's sidebar shows: the tab's Stream, or the host's Streams when it has none.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum ViewingChoice {
-    Follow {
-        #[serde(deserialize_with = "required_nullable")]
-        last_agent: Option<NativeRef>,
-    },
-    Pinned {
-        session: String,
-    },
-}
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum ViewingSession {
-    Selected { session: String },
-    None,
-    Unavailable { reason: String },
-}
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum SidebarContext {
-    Associated {
-        stream: Box<StreamView>,
-        viewing_session: ViewingSession,
-    },
-    Unassociated,
-    Unavailable {
-        reason: String,
-    },
+pub enum TabContext {
+    Stream { stream: Box<StreamView> },
+    Unassociated { streams: HostListing },
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -791,9 +771,10 @@ pub enum ViewSelection {
     Frame {
         terminal: NativeRef,
     },
-    Sidebar {
-        space: NativeRef,
-        viewing: ViewingChoice,
+    /// A tab's terminals, most relevant first. Its Stream is the Stream of the first terminal
+    /// running an enrolled conversation, else the first Stream the frontend routes one of them to.
+    Tab {
+        terminals: Vec<NativeRef>,
     },
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -848,7 +829,7 @@ pub enum ModReadValue {
     Session { value: SessionView },
     HostStreams { value: HostListing },
     Frame { context: FrameContext },
-    Sidebar { value: SidebarContext },
+    Tab { context: TabContext },
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

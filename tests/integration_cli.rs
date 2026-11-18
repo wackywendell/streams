@@ -395,44 +395,51 @@ fn hc_public_open_and_start_preserve_runtime_shapes_and_current_lookup() {
     assert!(saved["completion_error"]["message"].is_string());
 }
 
-fn saved_presentation(scope: &WorkScope) -> streams::runtime::hc::HcPresentation {
-    use streams::{
-        frontend::EndpointId,
-        runtime::hc::{AssociationSnapshot, HcPresentation, PublishedLayout},
-    };
-    let endpoint = EndpointId("core".into());
-    let before=AssociationSnapshot::decode(endpoint.clone(),7,json!({"version":1,"spaces":{"target":{"scope":scope,"stream":"work","space":{"adapter":"hc","endpoint":"core","key":"target"}}}})).unwrap();
-    let layout=PublishedLayout::decode(endpoint,json!({"spaces":[{"id":"target","tabs":[{"id":"tab","root":{"type":"block","content":{"terminal":"t1"}}}]},{"id":"outside","tabs":[{"id":"other-tab","root":{"type":"block","content":{"terminal":"t2"}}}]}]})).unwrap();
-    HcPresentation::new(scope.clone(), before, layout, None).unwrap()
+/// Point observations a test scripts per terminal. It records each question a read asks.
+#[derive(Default)]
+struct ScriptedTerminals {
+    foreground: std::collections::BTreeMap<&'static str, ForegroundConversation>,
+    routes: std::collections::BTreeMap<&'static str, Access<Option<String>>>,
+    asked: Vec<(&'static str, String)>,
+}
+impl ScriptedTerminals {
+    fn runs(mut self, terminal: &'static str, native: &str) -> Self {
+        self.foreground.insert(
+            terminal,
+            ForegroundConversation::Current(ConversationId {
+                harness: "pi".into(),
+                native_id: native.into(),
+            }),
+        );
+        self
+    }
+    fn routes(mut self, terminal: &'static str, route: Access<Option<String>>) -> Self {
+        self.routes.insert(terminal, route);
+        self
+    }
+}
+impl TerminalObservation for ScriptedTerminals {
+    fn foreground_conversation(&mut self, terminal: &NativeRef) -> ForegroundConversation {
+        self.asked.push(("foreground", terminal.key.clone()));
+        self.foreground
+            .get(terminal.key.as_str())
+            .cloned()
+            .unwrap_or(ForegroundConversation::NotApplicable)
+    }
+    fn routed_stream(&mut self, terminal: &NativeRef) -> Access<Option<String>> {
+        self.asked.push(("route", terminal.key.clone()));
+        self.routes
+            .get(terminal.key.as_str())
+            .cloned()
+            .unwrap_or(Access::Available { value: None })
+    }
 }
 
-enum PointOnlyExecution {
-    Current(&'static str),
-    NotApplicable,
-    Unknown,
-}
-impl ExecutionSnapshot for PointOnlyExecution {
-    fn presence(&self, _: &ConversationId) -> Presence {
-        panic!("sidebar must not inspect global presence")
-    }
-    fn verified_terminals(&self, _: &ConversationId) -> Vec<NativeRef> {
-        panic!("sidebar must not inspect global execution")
-    }
-    fn stream_terminals(&self, _: &str) -> Access<Vec<NativeRef>> {
-        panic!("sidebar must not inspect global execution")
-    }
-    fn foreground_conversation(&self, terminal: &NativeRef) -> ForegroundConversation {
-        assert_eq!(terminal.key, "t1", "inspect only the in-space candidate");
-        match self {
-            Self::Current(native) => ForegroundConversation::Current(ConversationId {
-                harness: "pi".into(),
-                native_id: (*native).into(),
-            }),
-            Self::NotApplicable => ForegroundConversation::NotApplicable,
-            Self::Unknown => ForegroundConversation::Unknown {
-                reason: "foreground evidence is unavailable".into(),
-            },
-        }
+fn hc_terminal(key: &str) -> NativeRef {
+    NativeRef {
+        adapter: streams::frontend::FrontendId::hc(),
+        endpoint: streams::frontend::EndpointId("core".into()),
+        key: key.into(),
     }
 }
 
@@ -723,7 +730,7 @@ fn saved_batch_shares_host_decodes_and_producer_lists_with_standalone_artifact_p
     .unwrap();
     events.lock().unwrap().clear();
     let facade = Streams::new(&records);
-    let native = saved_presentation(facade.scope());
+    let mut native = ScriptedTerminals::default().runs("t1", "one");
     let replies = facade
         .read_views(
             &[
@@ -739,19 +746,11 @@ fn saved_batch_shares_host_decodes_and_producer_lists_with_standalone_artifact_p
                 ViewSelection::SavedSession {
                     session: fixture.sessions[2].id.clone(),
                 },
-                ViewSelection::Sidebar {
-                    space: NativeRef {
-                        adapter: streams::frontend::FrontendId::hc(),
-                        endpoint: streams::frontend::EndpointId("core".into()),
-                        key: "target".into(),
-                    },
-                    viewing: ViewingChoice::Pinned {
-                        session: fixture.sessions[0].id.clone(),
-                    },
+                ViewSelection::Tab {
+                    terminals: vec![hc_terminal("t1")],
                 },
             ],
-            Access::Available { value: &native },
-            Access::Unsupported,
+            Access::Available { value: &mut native },
         )
         .unwrap();
     let WireResult::Ok(ModReadValue::Stream { value: work }) = &replies[0] else {
@@ -812,7 +811,8 @@ fn saved_batch_shares_host_decodes_and_producer_lists_with_standalone_artifact_p
         matches!(&replies[3],WireResult::Ok(ModReadValue::Session {value}) if value.stream=="next")
     );
     assert!(
-        matches!(&replies[4],WireResult::Ok(ModReadValue::Sidebar{value:SidebarContext::Associated{viewing_session:ViewingSession::Selected{session},..}}) if session==&fixture.sessions[0].id)
+        matches!(&replies[4],WireResult::Ok(ModReadValue::Tab{context:TabContext::Stream{stream}}) if **stream==*work),
+        "the tab's Stream view shares the batch's Stream read"
     );
     let events = events.lock().unwrap();
     assert_eq!(
@@ -823,7 +823,7 @@ fn saved_batch_shares_host_decodes_and_producer_lists_with_standalone_artifact_p
         3,
         "one host partition and two producer directories"
     );
-    assert_eq!(events.iter().filter(|event|matches!(event,RecordIoEvent::Read(path) if path.parent()==Some(partition.join("conversations").as_path()))).count(),3,"each Session decoded once, including the addressed Session");
+    assert_eq!(events.iter().filter(|event|matches!(event,RecordIoEvent::Read(path) if path.parent()==Some(partition.join("conversations").as_path()))).count(),4,"the batch decodes each Session once, and the tab's enrolled Session is read once more by address");
     assert!(!events.iter().any(|event|matches!(event,RecordIoEvent::Read(path) if path.components().any(|part|part.as_os_str()=="artifacts"))),"no artifact content reads");
 }
 
@@ -1607,18 +1607,6 @@ fn link_actions_revalidate_saved_kind_and_url_without_native_or_owner_path_discl
                 assert!(!result.to_string().contains(url));
             }
         }
-        let result = invoke(
-            "work",
-            "issue",
-            "https://example.test/shared-issue",
-            json!({"kind":"follow_frame","terminal":{"adapter":"hc","endpoint":"core","key":"t1"},"expected_session":fixture.sessions[0].id}),
-            global,
-        );
-        assert_eq!(
-            result,
-            json!({"kind":"needs_viewer","value":[{"kind":"open_url","url":"https://example.test/shared-issue"}]}),
-            "saved links open directly without foreground process-group re-verification"
-        );
     }
     application::save_user_references(
         fixture.records.records(),
@@ -1645,213 +1633,164 @@ fn link_actions_revalidate_saved_kind_and_url_without_native_or_owner_path_discl
 }
 
 #[test]
-fn shared_sidebar_policy_uses_only_point_foreground_and_keeps_inactive_pinned_members() {
-    use streams::{
-        application,
-        model::{Record, Session, Status},
-    };
+fn tab_reads_take_an_enrolled_sessions_stream_before_routing_and_show_the_host_otherwise() {
+    use streams::application;
     let fixture = SavedFixture::new();
     let facade = application::integration::Streams::new(&fixture.records);
-    let native = saved_presentation(facade.scope());
-    let mut inactive = Session::new(
-        Session::id_for(&facade.scope().host, "pi", "inactive"),
-        &facade.scope().host,
-        "work",
-        "pi",
-        "inactive",
-        "Inactive",
-    )
-    .unwrap();
-    inactive.status = Status::Done;
-    application::create_record(
-        fixture.records.records(),
-        &Record::Session(inactive.clone()),
-    )
-    .unwrap();
-    let resource = |key: &str| NativeRef {
-        adapter: streams::frontend::FrontendId::hc(),
-        endpoint: streams::frontend::EndpointId("core".into()),
-        key: key.into(),
+    let tab = |keys: &[&str]| ViewSelection::Tab {
+        terminals: keys.iter().map(|key| hc_terminal(key)).collect(),
     };
-    for (execution, expected) in [
-        (PointOnlyExecution::Current("one"), "selected"),
-        (PointOnlyExecution::Current("moved"), "none"),
-        (PointOnlyExecution::Current("unenrolled"), "none"),
-        (PointOnlyExecution::NotApplicable, "none"),
-        (PointOnlyExecution::Unknown, "unavailable"),
-    ] {
-        let selections = [
-            ViewingChoice::Follow {
-                last_agent: Some(resource("t1")),
-            },
-            ViewingChoice::Follow { last_agent: None },
-            ViewingChoice::Follow {
-                last_agent: Some(resource("t2")),
-            },
-            ViewingChoice::Pinned {
-                session: inactive.id.clone(),
-            },
-            ViewingChoice::Pinned {
-                session: fixture.sessions[2].id.clone(),
-            },
-        ]
-        .into_iter()
-        .map(|viewing| ViewSelection::Sidebar {
-            space: resource("target"),
-            viewing,
-        })
-        .collect::<Vec<_>>();
-        let replies = facade
-            .read_views(
-                &selections,
-                Access::Available { value: &native },
-                Access::Available { value: &execution },
-            )
-            .unwrap();
-        for (index, expected) in [expected, "none", "none", "selected", "unavailable"]
+    let read = |native: &mut ScriptedTerminals, selections: &[ViewSelection]| {
+        serde_json::to_value(
+            facade
+                .read_views(selections, Access::Available { value: native })
+                .unwrap(),
+        )
+        .unwrap()
+    };
+    let asked = |native: &ScriptedTerminals| {
+        native
+            .asked
             .iter()
-            .enumerate()
-        {
-            let WireResult::Ok(ModReadValue::Sidebar {
-                value:
-                    SidebarContext::Associated {
-                        stream,
-                        viewing_session,
+            .map(|(question, key)| format!("{question} {key}"))
+            .collect::<Vec<_>>()
+    };
+    let work = Access::Available {
+        value: Some("work".into()),
+    };
+
+    // An enrolled Session names the Stream even when an earlier terminal is routed elsewhere.
+    let mut native = ScriptedTerminals::default()
+        .routes("shell", work.clone())
+        .runs("agent", "moved");
+    let values = read(&mut native, &[tab(&["shell", "agent"])]);
+    assert_eq!(values[0]["ok"]["context"]["kind"], "stream");
+    assert_eq!(values[0]["ok"]["context"]["stream"]["id"], "next");
+    assert_eq!(asked(&native), ["foreground shell", "foreground agent"]);
+
+    // Without an enrolled Session, the first routed terminal names the Stream.
+    let mut native = ScriptedTerminals::default()
+        .runs("agent", "unenrolled")
+        .routes("shell", work.clone());
+    let values = read(&mut native, &[tab(&["agent", "shell"])]);
+    assert_eq!(values[0]["ok"]["context"]["stream"]["id"], "work");
+    assert_eq!(
+        asked(&native),
+        [
+            "foreground agent",
+            "foreground shell",
+            "route agent",
+            "route shell"
+        ]
+    );
+
+    // A tab with no Stream, including one with no terminals, shows the host's Streams.
+    for keys in [&["shell"][..], &[]] {
+        let mut native = ScriptedTerminals::default();
+        native.foreground.insert(
+            "shell",
+            ForegroundConversation::Unknown {
+                reason: "foreground is unknown".into(),
+            },
+        );
+        let values = read(&mut native, &[tab(keys)]);
+        let context = &values[0]["ok"]["context"];
+        assert_eq!(context["kind"], "unassociated");
+        assert_eq!(context["streams"]["streams"].as_array().unwrap().len(), 3);
+        assert_eq!(context["streams"]["unreadable"], json!([]));
+    }
+
+    // Routing that cannot be read is an error, never an unassociated tab.
+    let mut native = ScriptedTerminals::default().routes(
+        "shell",
+        Access::Unavailable {
+            reason: "hc presentation is unavailable".into(),
+        },
+    );
+    let values = read(&mut native, &[tab(&["shell"])]);
+    assert_eq!(
+        values[0]["error"],
+        json!({"kind":"unavailable","message":"hc presentation is unavailable"})
+    );
+
+    // A tab and a frame of the same terminal share one foreground observation.
+    let mut native = ScriptedTerminals::default().runs("agent", "one");
+    let values = read(
+        &mut native,
+        &[
+            tab(&["agent"]),
+            ViewSelection::Frame {
+                terminal: hc_terminal("agent"),
+            },
+        ],
+    );
+    assert_eq!(values[0]["ok"]["context"]["stream"]["id"], "work");
+    assert_eq!(
+        values[1]["ok"]["context"]["session"]["id"],
+        fixture.sessions[0].id
+    );
+    assert_eq!(asked(&native), ["foreground agent"]);
+
+    // An unreadable enrolled Session falls back to routing, and the view names the record.
+    let session_file = fixture
+        .records
+        .root()
+        .join("hosts")
+        .join(streams::file_store::encode_component(&facade.scope().host))
+        .join("conversations")
+        .join(format!(
+            "{}.json",
+            streams::file_store::encode_component(&fixture.sessions[0].id)
+        ));
+    std::fs::write(&session_file, b"not a record").unwrap();
+    let mut native = ScriptedTerminals::default()
+        .runs("agent", "one")
+        .routes("agent", work);
+    let values = read(
+        &mut native,
+        &[
+            tab(&["agent"]),
+            ViewSelection::Frame {
+                terminal: hc_terminal("agent"),
+            },
+        ],
+    );
+    let stream = &values[0]["ok"]["context"]["stream"];
+    assert_eq!(stream["id"], "work");
+    assert_eq!(stream["sessions"].as_array().unwrap().len(), 1);
+    assert_eq!(stream["unreadable"][0]["kind"], "session");
+    assert_eq!(values[1]["ok"]["context"]["kind"], "unavailable");
+
+    // Without terminal observation, tab and frame reads fail and saved reads still succeed.
+    let values = serde_json::to_value(
+        facade
+            .read_views(
+                &[
+                    tab(&["agent"]),
+                    ViewSelection::Frame {
+                        terminal: hc_terminal("agent"),
                     },
-            }) = &replies[index]
-            else {
-                panic!("{:?}", replies[index])
-            };
-            assert_eq!(stream.id, "work");
-            assert_eq!(
-                serde_json::to_value(viewing_session).unwrap()["kind"],
-                *expected
-            );
-        }
-        assert!(
-            matches!(&replies[3],WireResult::Ok(ModReadValue::Sidebar{value:SidebarContext::Associated{viewing_session:ViewingSession::Selected{session},..}}) if session==&inactive.id)
-        );
-    }
+                    ViewSelection::SavedStream {
+                        stream: "next".into(),
+                    },
+                ],
+                Access::Unavailable {
+                    reason: "hc is unavailable".into(),
+                },
+            )
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(values[0]["error"]["kind"], "unavailable");
+    assert_eq!(values[1]["ok"]["context"]["kind"], "unavailable");
+    assert_eq!(values[2]["ok"]["kind"], "stream");
 }
 
 #[test]
-fn native_sidebar_reads_use_one_context_snapshot_and_keep_saved_data_when_follow_is_unavailable() {
-    use crate::integration_hc::{FakeCore, Reply, Step};
-    let fixture = SavedFixture::new();
-    let scope = streams::application::integration::Streams::new(&fixture.records)
-        .scope()
-        .clone();
-    let resource = |key: &str| NativeRef {
-        adapter: streams::frontend::FrontendId::hc(),
-        endpoint: streams::frontend::EndpointId("core".into()),
-        key: key.into(),
-    };
-    let row = |key: &str| streams::runtime::hc::SpaceAssociation {
-        scope: scope.clone(),
-        stream: "work".into(),
-        space: resource(key),
-    };
-    let mut foreign = row("foreign");
-    foreign.scope.host = "another-host".into();
-    let associations = json!({"version":1,"spaces":{"target":row("target"),"stale":row("stale"),"foreign":foreign}});
-    let layout = json!({"spaces":[{"id":"target","tabs":[{"id":"tab","root":{"type":"block","content":{"terminal":"t1"}}}]},{"id":"outside","tabs":[{"id":"other-tab","root":{"type":"block","content":{"terminal":"t2"}}}]},{"id":"empty"},{"id":"foreign"}]});
-    let sidebar = |space: NativeRef, viewing: Value| json!({"kind":"sidebar","space":space,"viewing":viewing});
-    let follow = |candidate: Option<NativeRef>| json!({"kind":"follow","last_agent":candidate});
-    let pinned = |id: &str| json!({"kind":"pinned","session":id});
-    let mut wrong = resource("target");
-    wrong.endpoint.0 = "wrong-core".into();
-    let mut request=fixture.envelope(json!({"kind":"read","selections":[{"kind":"saved_stream","stream":"work"},sidebar(resource("target"),follow(None)),sidebar(resource("target"),pinned(&fixture.sessions[0].id)),sidebar(resource("target"),pinned(&fixture.sessions[2].id)),sidebar(resource("target"),pinned("missing")),sidebar(resource("target"),follow(Some(resource("t1")))),sidebar(resource("target"),follow(Some(resource("t2")))),sidebar(resource("empty"),follow(None)),sidebar(resource("stale"),follow(None)),sidebar(resource("foreign"),follow(None)),sidebar(wrong,follow(None)),{"kind":"frame","terminal":resource("t1")}] }));
-    request["endpoint"] = json!("core");
-    for global_json in [false, true] {
-        let core = FakeCore::new(vec![
-            Step(
-                "doc.get",
-                json!({"name":"streams"}),
-                Reply::Value(json!({"version":7,"value":associations})),
-            ),
-            Step(
-                "doc.get",
-                json!({"name":"herdr-app"}),
-                Reply::Value(json!({"version":90,"value":layout})),
-            ),
-            Step(
-                "terminal.get",
-                json!({"terminal":"t1"}),
-                Reply::Reject("unavailable"),
-            ),
-        ]);
-        let mut command = fixture.command();
-        command.env("HC_SOCKET", &core.socket);
-        if global_json {
-            command.arg("--json");
-        }
-        let output = command
-            .args([
-                "integration",
-                "request",
-                "--request-json",
-                &request.to_string(),
-            ])
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert!(output.stderr.is_empty());
-        let reply = ModReply::decode(std::str::from_utf8(&output.stdout).unwrap()).unwrap();
-        assert_eq!(
-            reply.verified_endpoint,
-            Some(streams::frontend::EndpointId("core".into()))
-        );
-        assert!(reply.viewer_projection.is_empty());
-        assert!(reply.warnings.is_empty());
-        let WireResult::Ok(ModResult::Read { values, .. }) = reply.result else {
-            panic!("read reply")
-        };
-        let values = serde_json::to_value(values).unwrap();
-        assert_eq!(values[0]["ok"]["kind"], "stream");
-        let associated = &values[1]["ok"]["value"];
-        assert_eq!(associated["kind"], "associated");
-        assert_eq!(associated["stream"]["goal"], "Saved full goal");
-        assert_eq!(associated["viewing_session"]["kind"], "none");
-        assert_eq!(
-            values[2]["ok"]["value"]["viewing_session"],
-            json!({"kind":"selected","session":fixture.sessions[0].id})
-        );
-        for index in [3, 4, 5] {
-            assert_eq!(values[index]["ok"]["value"]["kind"], "associated");
-            assert_eq!(
-                values[index]["ok"]["value"]["viewing_session"]["kind"],
-                "unavailable"
-            );
-            assert_eq!(values[index]["ok"]["value"]["stream"], associated["stream"]);
-        }
-        assert_eq!(values[6]["ok"]["value"]["viewing_session"]["kind"], "none");
-        for index in [7, 9] {
-            assert_eq!(values[index]["ok"]["value"]["kind"], "unassociated");
-        }
-        for index in [8, 10] {
-            assert_eq!(values[index]["ok"]["value"]["kind"], "unavailable");
-        }
-        assert_eq!(
-            values[11]["ok"]["context"]["kind"], "unavailable",
-            "frame execution reports unavailable when terminal.get fails"
-        );
-        assert_eq!(
-            core.finish().len(),
-            4,
-            "only the in-space Follow candidate is read"
-        );
-    }
-}
-
-#[test]
-fn native_sidebar_follows_a_registered_foreground_conversation_without_a_process_census() {
+fn native_tab_reads_resolve_an_enrolled_pi_terminal_with_one_point_read() {
     use crate::integration_hc::{FakeCore, Reply, Step};
     use streams::{
-        frontend::{EndpointId, FrontendId, hc::processes::OwnerProcesses},
+        frontend::hc::processes::OwnerProcesses,
         runtime::hc::{PiSourceClaim, labels::source_key},
     };
     struct Child(std::process::Child);
@@ -1868,17 +1807,10 @@ fn native_sidebar_follows_a_registered_foreground_conversation_without_a_process
             .spawn()
             .unwrap(),
     );
-    let observer = OwnerProcesses::new().unwrap();
-    let helper = observer.observe(child.0.id()).unwrap();
-    let endpoint = EndpointId("core".into());
-    let scope = streams::application::integration::Streams::new(&fixture.records)
-        .scope()
-        .clone();
-    let resource = |key: &str| NativeRef {
-        adapter: FrontendId::hc(),
-        endpoint: endpoint.clone(),
-        key: key.into(),
-    };
+    let helper = OwnerProcesses::new()
+        .unwrap()
+        .observe(child.0.id())
+        .unwrap();
     let claim = PiSourceClaim {
         version: PiSourceClaim::VERSION,
         conversation: ConversationId {
@@ -1887,38 +1819,17 @@ fn native_sidebar_follows_a_registered_foreground_conversation_without_a_process
         },
         helper: helper.clone(),
     };
-    let label = source_key(&claim.helper);
-    let association = streams::runtime::hc::SpaceAssociation {
-        scope: scope.clone(),
-        stream: "work".into(),
-        space: resource("target"),
-    };
-    let core = FakeCore::new(vec![
-        Step(
-            "doc.get",
-            json!({"name":"streams"}),
-            Reply::Value(
-                json!({"version":1,"value":{"version":1,"spaces":{"target":association}}}),
-            ),
+    let core = FakeCore::new(vec![Step(
+        "terminal.get",
+        json!({"terminal":"t1"}),
+        Reply::Value(
+            json!({"address":"t1","state":"live","pid":10,"labels":{source_key(&helper):serde_json::to_string(&claim).unwrap()}}),
         ),
-        Step(
-            "doc.get",
-            json!({"name":"herdr-app"}),
-            Reply::Value(
-                json!({"version":2,"value":{"spaces":[{"id":"target","tabs":[{"id":"tab","root":{"type":"block","content":{"terminal":"t1"}}}]}]}}),
-            ),
-        ),
-        Step(
-            "terminal.get",
-            json!({"terminal":"t1"}),
-            Reply::Value(
-                json!({"address":"t1","state":"live","pid":10,"labels":{label:serde_json::to_string(&claim).unwrap()}}),
-            ),
-        ),
-    ]);
-    let selection = json!({"kind":"sidebar","space":resource("target"),"viewing":{"kind":"follow","last_agent":resource("t1")}});
-    let mut request =
-        fixture.envelope(json!({"kind":"read","selections":[selection.clone(),selection]}));
+    )]);
+    let mut request = fixture.envelope(json!({"kind":"read","selections":[
+        {"kind":"tab","terminals":[hc_terminal("t1")]},
+        {"kind":"frame","terminal":hc_terminal("t1")}
+    ]}));
     request["endpoint"] = json!("core");
     let output = fixture
         .command()
@@ -1936,51 +1847,101 @@ fn native_sidebar_follows_a_registered_foreground_conversation_without_a_process
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let reply = ModReply::decode(std::str::from_utf8(&output.stdout).unwrap()).unwrap();
-    let WireResult::Ok(ModResult::Read { values, .. }) = reply.result else {
-        panic!("read reply")
-    };
-    for value in serde_json::to_value(values).unwrap().as_array().unwrap() {
-        assert_eq!(
-            value["ok"]["value"]["viewing_session"],
-            json!({"kind":"selected","session":fixture.sessions[0].id})
-        );
-    }
+    let reply: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let values = &reply["result"]["ok"]["values"];
+    assert_eq!(values[0]["ok"]["context"]["kind"], "stream");
+    assert_eq!(values[0]["ok"]["context"]["stream"]["id"], "work");
+    assert_eq!(
+        values[0]["ok"]["context"]["stream"]["goal"],
+        "Saved full goal"
+    );
+    assert_eq!(
+        values[1]["ok"]["context"]["session"]["id"],
+        fixture.sessions[0].id
+    );
     assert_eq!(
         core.finish().len(),
-        4,
-        "one point read for the repeated candidate"
+        2,
+        "one terminal read serves the tab and the frame, with no routing reads"
     );
 }
 
 #[test]
-fn unavailable_native_sidebar_context_does_not_break_independent_saved_reads_or_claim_empty_context()
- {
+fn native_tab_reads_route_a_shell_by_its_space_then_its_work_label() {
     use crate::integration_hc::{FakeCore, Reply, Step};
     let fixture = SavedFixture::new();
-    for case in ["wrong-endpoint", "bad-associations", "bad-layout"] {
+    let scope = streams::application::integration::Streams::new(&fixture.records)
+        .scope()
+        .clone();
+    let shell = |labels: Value| {
+        Step(
+            "terminal.get",
+            json!({"terminal":"t3"}),
+            Reply::Value(json!({"address":"t3","state":"live","pid":10,"labels":labels})),
+        )
+    };
+    let associations = |stream: Option<&str>| {
+        let spaces = match stream {
+            Some(stream) => json!({"target":streams::runtime::hc::SpaceAssociation {
+                scope: scope.clone(),
+                stream: stream.into(),
+                space: hc_terminal("target"),
+            }}),
+            None => json!({}),
+        };
+        Step(
+            "doc.get",
+            json!({"name":"streams"}),
+            Reply::Value(json!({"version":1,"value":{"version":1,"spaces":spaces}})),
+        )
+    };
+    let layout = || {
+        Step(
+            "doc.get",
+            json!({"name":"herdr-app"}),
+            Reply::Value(
+                json!({"version":2,"value":{"spaces":[{"id":"target","tabs":[{"id":"tab","root":{"type":"block","content":{"terminal":"t3"}}}]}]}}),
+            ),
+        )
+    };
+    let label = streams::runtime::hc::labels::work_value(&scope, "next").unwrap();
+    for case in [
+        "space",
+        "label",
+        "none",
+        "bad-associations",
+        "wrong-endpoint",
+    ] {
         let steps = match case {
-            "wrong-endpoint" => vec![],
-            "bad-associations" => vec![Step(
-                "doc.get",
-                json!({"name":"streams"}),
-                Reply::Value(json!({"version":1,"value":{"version":2,"spaces":{}}})),
-            )],
-            _ => vec![
+            "space" => vec![shell(json!({})), associations(Some("work")), layout()],
+            "label" => vec![
+                shell(json!({})),
+                associations(None),
+                layout(),
+                shell(json!({"streams.work":label})),
+            ],
+            "none" => vec![
+                shell(json!({})),
+                associations(None),
+                layout(),
+                shell(json!({})),
+            ],
+            "bad-associations" => vec![
+                shell(json!({})),
                 Step(
                     "doc.get",
                     json!({"name":"streams"}),
-                    Reply::Value(json!({"version":0,"value":null})),
-                ),
-                Step(
-                    "doc.get",
-                    json!({"name":"herdr-app"}),
-                    Reply::Value(json!({"version":1,"value":{"spaces":null}})),
+                    Reply::Value(json!({"version":1,"value":{"version":2,"spaces":{}}})),
                 ),
             ],
+            _ => vec![],
         };
+        let expected_calls = steps.len() + 1;
         let core = FakeCore::new(steps);
-        let mut request=fixture.envelope(json!({"kind":"read","selections":[{"kind":"saved_stream","stream":"work"},{"kind":"sidebar","space":{"adapter":"hc","endpoint":"core","key":"target"},"viewing":{"kind":"follow","last_agent":null}}]}));
+        let mut request = fixture.envelope(json!({"kind":"read","selections":[
+            {"kind":"tab","terminals":[hc_terminal("t3")]},
+            {"kind":"saved_stream","stream":"work"}
+        ]}));
         if case != "wrong-endpoint" {
             request["endpoint"] = json!("core");
         }
@@ -1995,26 +1956,30 @@ fn unavailable_native_sidebar_context_does_not_break_independent_saved_reads_or_
             ])
             .output()
             .unwrap();
-        assert!(output.status.success());
-        assert!(output.stderr.is_empty());
+        assert!(output.status.success(), "{case}");
+        assert!(output.stderr.is_empty(), "{case}");
         let reply: Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(
             reply["verified_endpoint"].is_null(),
-            case == "wrong-endpoint"
+            case == "wrong-endpoint",
+            "{case}"
         );
-        assert_eq!(reply["result"]["ok"]["values"][0]["ok"]["kind"], "stream");
-        assert_eq!(
-            reply["result"]["ok"]["values"][1]["error"]["kind"],
-            "unavailable"
-        );
-        assert_eq!(
-            core.finish().len(),
-            match case {
-                "wrong-endpoint" => 1,
-                "bad-associations" => 2,
-                _ => 3,
-            }
-        );
+        let values = &reply["result"]["ok"]["values"];
+        let tab = &values[0];
+        match case {
+            "space" => assert_eq!(tab["ok"]["context"]["stream"]["id"], "work"),
+            "label" => assert_eq!(tab["ok"]["context"]["stream"]["id"], "next"),
+            "none" => assert_eq!(
+                tab["ok"]["context"]["streams"]["streams"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                3
+            ),
+            _ => assert_eq!(tab["error"]["kind"], "unavailable", "{case}"),
+        }
+        assert_eq!(values[1]["ok"]["kind"], "stream", "{case}");
+        assert_eq!(core.finish().len(), expected_calls, "{case}");
     }
 }
 
@@ -3110,20 +3075,12 @@ fn host_streams_lists_all_streams_with_active_session_counts_and_recency() {
     let decayed_facade =
         application::integration::Streams::new(&fixture.records).with_lifecycle(14, future_now);
     let decayed_replies = decayed_facade
-        .read_views(
-            &[
-                ViewSelection::HostStreams {},
-                ViewSelection::SavedStream {
-                    stream: "work".into(),
-                },
-            ],
-            Access::Unavailable {
-                reason: "none".into(),
+        .read_saved_views(&[
+            ViewSelection::HostStreams {},
+            ViewSelection::SavedStream {
+                stream: "work".into(),
             },
-            Access::Unavailable {
-                reason: "none".into(),
-            },
-        )
+        ])
         .unwrap();
     let WireResult::Ok(ModReadValue::HostStreams {
         value: decayed_list,
@@ -3163,20 +3120,12 @@ fn host_listings_show_readable_streams_and_name_unreadable_records() {
     };
     let read = || {
         application::integration::Streams::new(&fixture.records)
-            .read_views(
-                &[
-                    ViewSelection::HostStreams {},
-                    ViewSelection::SavedStream {
-                        stream: "work".into(),
-                    },
-                ],
-                Access::Unavailable {
-                    reason: "none".into(),
+            .read_saved_views(&[
+                ViewSelection::HostStreams {},
+                ViewSelection::SavedStream {
+                    stream: "work".into(),
                 },
-                Access::Unavailable {
-                    reason: "none".into(),
-                },
-            )
+            ])
             .unwrap()
     };
     let listing = |value: &WireResult<ModReadValue>| match value {

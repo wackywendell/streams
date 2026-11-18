@@ -347,90 +347,50 @@ impl<'a> Streams<'a> {
     pub fn read_views(
         &self,
         selections: &[crate::integration::ViewSelection],
-        presentation: crate::integration::Access<&dyn crate::integration::PresentationSnapshot>,
-        execution: crate::integration::Access<&dyn crate::integration::ExecutionSnapshot>,
+        terminals: crate::integration::Access<&mut dyn crate::integration::TerminalObservation>,
     ) -> Result<Vec<crate::integration::WireResult<crate::integration::ModReadValue>>> {
         use crate::integration::{
-            Access, CompanionVisibility, ForegroundConversation, FrameContext, ModReadValue,
-            SidebarContext, ViewSelection, WireResult,
+            Access, CompanionVisibility, FrameContext, ModReadValue, TabContext, ViewSelection,
+            WireError, WireResult,
         };
+        let mut terminals = terminals;
+        let mut enrolled = std::collections::HashMap::new();
         let mut expanded = selections.to_vec();
-        let mut contexts = std::collections::BTreeMap::new();
         let mut frames = std::collections::BTreeMap::new();
+        let mut tab_errors = std::collections::BTreeMap::new();
         for (index, selection) in selections.iter().enumerate() {
-            match selection {
-                ViewSelection::Sidebar { space, .. } => {
-                    let native = match &presentation {
-                        Access::Available { value } => value,
-                        _ => {
-                            contexts.insert(
-                                index,
-                                SidebarContext::Unavailable {
-                                    reason: "native presentation is unavailable".into(),
-                                },
-                            );
-                            continue;
-                        }
+            match (selection, &mut terminals) {
+                (ViewSelection::Frame { terminal }, Access::Available { value: native }) => {
+                    let context = match self.enrolled_session(&mut enrolled, *native, terminal) {
+                        Enrollment::Enrolled(session) => FrameContext::Enrolled {
+                            session: Box::new(SessionView::from(&*session)),
+                            companion: CompanionVisibility::Shown,
+                        },
+                        Enrollment::Unenrolled => FrameContext::Unenrolled,
+                        Enrollment::NotApplicable => FrameContext::NotApplicable,
+                        Enrollment::Unavailable(reason) => FrameContext::Unavailable { reason },
                     };
-                    if !native.contains_space(space) {
-                        contexts.insert(
-                            index,
-                            SidebarContext::Unavailable {
-                                reason: "space is unavailable on this endpoint".into(),
-                            },
-                        );
-                        continue;
-                    }
-                    match native.stream_for_space(space) {
-                        Some(stream) => expanded[index] = ViewSelection::SavedStream { stream },
-                        None => {
-                            contexts.insert(index, SidebarContext::Unassociated);
+                    frames.insert(index, context);
+                }
+                (ViewSelection::Tab { terminals: tab }, Access::Available { value: native }) => {
+                    match self.tab_stream(&mut enrolled, *native, tab) {
+                        Ok(Some(stream)) => expanded[index] = ViewSelection::SavedStream { stream },
+                        Ok(None) => expanded[index] = ViewSelection::HostStreams,
+                        Err(reason) => {
+                            tab_errors.insert(index, WireError::unavailable(reason));
                         }
                     }
                 }
-                ViewSelection::Frame { terminal } => {
-                    let foreground = match &execution {
-                        Access::Available { value } => value.foreground_conversation(terminal),
-                        _ => {
-                            frames.insert(
-                                index,
-                                FrameContext::Unavailable {
-                                    reason: "frame context is unavailable".into(),
-                                },
-                            );
-                            continue;
-                        }
-                    };
-                    match foreground {
-                        ForegroundConversation::Current(conversation) => {
-                            let session = Session::id_for(
-                                &self.scope.host,
-                                &conversation.harness,
-                                &conversation.native_id,
-                            );
-                            let context = self
-                                .records
-                                .records()
-                                .with_reader(|reader| self.session(reader, &session))
-                                .map(|found| match found {
-                                    Some(value) => FrameContext::Enrolled {
-                                        session: Box::new(SessionView::from(&value)),
-                                        companion: CompanionVisibility::Shown,
-                                    },
-                                    None => FrameContext::Unenrolled,
-                                })
-                                .unwrap_or_else(|_| FrameContext::Unavailable {
-                                    reason: "saved Session view is unavailable".into(),
-                                });
-                            frames.insert(index, context);
-                        }
-                        ForegroundConversation::NotApplicable => {
-                            frames.insert(index, FrameContext::NotApplicable);
-                        }
-                        ForegroundConversation::Unknown { reason } => {
-                            frames.insert(index, FrameContext::Unavailable { reason });
-                        }
-                    }
+                (ViewSelection::Frame { .. }, _) => {
+                    frames.insert(
+                        index,
+                        FrameContext::Unavailable {
+                            reason: "frame context is unavailable".into(),
+                        },
+                    );
+                }
+                (ViewSelection::Tab { .. }, _) => {
+                    tab_errors.insert(index, WireError::unavailable("tab context is unavailable"));
                 }
                 _ => {}
             }
@@ -440,104 +400,95 @@ impl<'a> Streams<'a> {
             .into_iter()
             .enumerate()
             .map(|(index, read)| match &selections[index] {
-                ViewSelection::Sidebar { space, viewing } => {
-                    let context = contexts.remove(&index).unwrap_or_else(|| match read {
+                ViewSelection::Frame { .. } => WireResult::Ok(ModReadValue::Frame {
+                    context: frames.remove(&index).expect("every frame is resolved"),
+                }),
+                ViewSelection::Tab { .. } => {
+                    if let Some(error) = tab_errors.remove(&index) {
+                        return WireResult::Error(error);
+                    }
+                    match read {
                         WireResult::Ok(ModReadValue::Stream { value }) => {
-                            let viewing_session = self.sidebar_viewing(
-                                &value,
-                                space,
-                                viewing,
-                                &presentation,
-                                &execution,
-                            );
-                            SidebarContext::Associated {
-                                stream: Box::new(value),
-                                viewing_session,
-                            }
+                            WireResult::Ok(ModReadValue::Tab {
+                                context: TabContext::Stream {
+                                    stream: Box::new(value),
+                                },
+                            })
                         }
-                        _ => SidebarContext::Unavailable {
-                            reason: "associated Stream view is unavailable".into(),
-                        },
-                    });
-                    WireResult::Ok(ModReadValue::Sidebar { value: context })
-                }
-                ViewSelection::Frame { .. } => {
-                    let context = frames.remove(&index).unwrap_or(match read {
-                        WireResult::Ok(ModReadValue::Session { value }) => FrameContext::Enrolled {
-                            session: Box::new(value),
-                            companion: CompanionVisibility::Shown,
-                        },
-                        _ => FrameContext::Unenrolled,
-                    });
-                    WireResult::Ok(ModReadValue::Frame { context })
+                        WireResult::Ok(ModReadValue::HostStreams { value }) => {
+                            WireResult::Ok(ModReadValue::Tab {
+                                context: TabContext::Unassociated { streams: value },
+                            })
+                        }
+                        WireResult::Ok(_) => unreachable!("a tab expands to a Stream or host read"),
+                        WireResult::Error(error) => WireResult::Error(error),
+                    }
                 }
                 _ => read,
             })
             .collect())
     }
 
-    fn sidebar_viewing(
+    /// The tab's Stream: an enrolled conversation's Session names it, else frontend routing does.
+    /// A Session that cannot be read is skipped here; the view shown names it as unreadable.
+    fn tab_stream(
         &self,
-        stream: &crate::integration::StreamView,
-        space: &crate::integration::NativeRef,
-        viewing: &crate::integration::ViewingChoice,
-        presentation: &crate::integration::Access<&dyn crate::integration::PresentationSnapshot>,
-        execution: &crate::integration::Access<&dyn crate::integration::ExecutionSnapshot>,
-    ) -> crate::integration::ViewingSession {
-        use crate::integration::{Access, ForegroundConversation, ViewingChoice, ViewingSession};
-        let member = |id: &str| stream.sessions.iter().any(|session| session.id == id);
-        match viewing {
-            ViewingChoice::Pinned { session } => {
-                if member(session) {
-                    ViewingSession::Selected {
-                        session: session.clone(),
-                    }
-                } else {
-                    ViewingSession::Unavailable {
-                        reason: "pinned Session is not a current member on this host".into(),
-                    }
-                }
-            }
-            ViewingChoice::Follow { last_agent: None } => ViewingSession::None,
-            ViewingChoice::Follow {
-                last_agent: Some(terminal),
-            } => {
-                let Access::Available { value: native } = presentation else {
-                    return ViewingSession::Unavailable {
-                        reason: "native presentation is unavailable".into(),
-                    };
-                };
-                if native.space_for_terminal(terminal).as_ref() != Some(space) {
-                    return ViewingSession::None;
-                }
-                let foreground = match execution {
-                    Access::Available { value } => value.foreground_conversation(terminal),
-                    _ => {
-                        return ViewingSession::Unavailable {
-                            reason: "foreground context is unavailable".into(),
-                        };
-                    }
-                };
-                match foreground {
-                    ForegroundConversation::Current(conversation) => {
-                        let session = Session::id_for(
-                            &self.scope.host,
-                            &conversation.harness,
-                            &conversation.native_id,
-                        );
-                        if member(&session) {
-                            ViewingSession::Selected { session }
-                        } else {
-                            ViewingSession::None
-                        }
-                    }
-                    ForegroundConversation::NotApplicable => ViewingSession::None,
-                    ForegroundConversation::Unknown { reason } => {
-                        ViewingSession::Unavailable { reason }
-                    }
-                }
+        enrolled: &mut std::collections::HashMap<crate::integration::NativeRef, Enrollment>,
+        native: &mut dyn crate::integration::TerminalObservation,
+        terminals: &[crate::integration::NativeRef],
+    ) -> std::result::Result<Option<String>, String> {
+        use crate::integration::Access;
+        for terminal in terminals {
+            if let Enrollment::Enrolled(session) = self.enrolled_session(enrolled, native, terminal)
+            {
+                return Ok(Some(session.stream_id));
             }
         }
+        for terminal in terminals {
+            match native.routed_stream(terminal) {
+                Access::Available {
+                    value: Some(stream),
+                } => return Ok(Some(stream)),
+                Access::Available { value: None } | Access::Unsupported => {}
+                Access::Unavailable { reason } => return Err(reason),
+            }
+        }
+        Ok(None)
+    }
+
+    /// One foreground observation and Session read per terminal, shared by every selection.
+    fn enrolled_session(
+        &self,
+        enrolled: &mut std::collections::HashMap<crate::integration::NativeRef, Enrollment>,
+        native: &mut dyn crate::integration::TerminalObservation,
+        terminal: &crate::integration::NativeRef,
+    ) -> Enrollment {
+        use crate::integration::ForegroundConversation;
+        enrolled
+            .entry(terminal.clone())
+            .or_insert_with(|| match native.foreground_conversation(terminal) {
+                ForegroundConversation::Current(conversation) => {
+                    let session = Session::id_for(
+                        &self.scope.host,
+                        &conversation.harness,
+                        &conversation.native_id,
+                    );
+                    match self
+                        .records
+                        .records()
+                        .with_reader(|reader| self.session(reader, &session))
+                    {
+                        Ok(Some(session)) => Enrollment::Enrolled(Box::new(session)),
+                        Ok(None) => Enrollment::Unenrolled,
+                        Err(_) => {
+                            Enrollment::Unavailable("saved Session view is unavailable".into())
+                        }
+                    }
+                }
+                ForegroundConversation::NotApplicable => Enrollment::NotApplicable,
+                ForegroundConversation::Unknown { reason } => Enrollment::Unavailable(reason),
+            })
+            .clone()
     }
 
     fn stream_view(
@@ -800,6 +751,15 @@ impl<'a> Streams<'a> {
             session
         }))
     }
+}
+
+/// What a terminal's foreground observation says about its enrolled Session.
+#[derive(Clone)]
+enum Enrollment {
+    Enrolled(Box<Session>),
+    Unenrolled,
+    NotApplicable,
+    Unavailable(String),
 }
 
 fn sessions_by_id(reads: Vec<RecordRead>) -> std::collections::BTreeMap<String, Session> {

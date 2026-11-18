@@ -36,9 +36,6 @@ impl ExecutionSnapshot for Facts {
     fn stream_terminals(&self, _: &str) -> Access<Vec<NativeRef>> {
         panic!("classification does not select unrelated work")
     }
-    fn foreground_conversation(&self, _: &NativeRef) -> ForegroundConversation {
-        panic!("classification is not a foreground query")
-    }
 }
 #[derive(Default)]
 struct OnceNative {
@@ -487,10 +484,6 @@ fn herdr_work_evidence_preserves_id_and_path_matching_without_foreground_authori
     assert!(matches!(
         evidence.stream_terminals("other"),
         Access::Unavailable { .. }
-    ));
-    assert!(matches!(
-        evidence.foreground_conversation(&terminal("ta")),
-        ForegroundConversation::Unknown { .. }
     ));
     assert!(!locator.exists());
 }
