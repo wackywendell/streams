@@ -27,13 +27,13 @@ Send a JSON object on stdin to `streams agent apply --json`, with these fields:
 - `title_default`: the captured resolved `title_defaults.session` or `title_defaults.stream`, matching the target kind. Do not substitute the current setting after inference.
 - `inputs`: `[]` for Session edits; for an automatic Stream edit, exactly `[{"kind":"session","record":CAPTURED_SESSION}]`. A direct user Stream edit may omit that dependency with `[]`. Sibling records and ownership tokens are not accepted.
 
-Use separate captures and inferences for session progress and stream metadata. Capture the second target before its inference, after the first save; do not retrofit either base after inference. User-directed discussion synthesized by a helper still needs its captured inputs. Ordinary direct field edits can retain field-level reconciliation.
+Use separate captures and inferences for session progress and stream metadata. Capture the second target before its inference, after the first save; do not retrofit either base after inference. User-directed discussion synthesized by a helper still needs its captured inputs.
 
 There is no operation ID. Resubmitting the same request is safe: one that already landed returns `no-change`, and one overtaken by a later edit returns `superseded` (automatic) or `conflict` (user). A user edit applies only to the captured `revision`.
 
 Inspect domain, local-save and sharing outcomes separately. `changes` or `no-change` with a successful local outcome is not proof of remote publication. `superseded` means discard automatic output and capture again before a new inference; never substitute a new base into the old request. Explicit conflicts need inspection rather than silent overwriting.
 
-Exit code 2 can include accepted local records and receipts when publication or a later step failed. Preserve these outcomes. A null domain result or repair-required local result is not a successful edit. Do not blindly retry, recreate records or delete repair evidence.
+Exit code 2 can include accepted local records when publication or a later step failed. Inspect the outcome first. A null domain result or repair-required local result is not a successful edit. Resubmitting the same captured request is safe; `superseded` or `conflict` means capture again. Do not recreate records or delete repair evidence.
 
 ## Reference proposals
 
@@ -45,10 +45,10 @@ Automatic values contain name, purpose, role, state and target. Document targets
 
 Automatic rows compare the complete captured value; user reference edits apply only to the captured Stream `revision`. Additions require the key to be absent at capture and apply. Automatic restoration of Dropped rows is refused per row; user restoration and deletion require explicit direction. User deletion uses desired=null.
 
-Inspect every `reference_results` row. A partial aggregate Changes receipt can preserve independent accepted references while refusing others. Retain the receipt and saved progress, surface unapplied rows and stop later inference without recapture or retry. New inference needs new evidence and capture. The [reference implementation contract](../../../docs/stream-reference-implementation.md) defines exact packet and result schemas.
+Inspect every `reference_results` row. A partial Changes result can save independent references while refusing others. Surface the unapplied rows. Resubmitting the same captured request is safe but applies nothing new; a later attempt needs new evidence and a fresh capture. The [reference implementation contract](../../../docs/stream-reference-implementation.md) defines exact packet and result schemas.
 
 ## Initial enrollment
 
 When policy permits enrollment, send a JSON object on stdin to `streams agent enroll --json` with `version: 2`, captured `catalog_source`, `harness`, `harness_session_id`, `session: {title: ...}`, `actor` and an existing absolute `cwd`. Supply either an exact `stream_id` or initial `stream: {title: ..., goal: ...}`; omit goal if unknown. Existing caller-workspace associations take precedence over inventing another effort. A conflicting explicit creation fails rather than switching membership.
 
-Enrollment saves records and remembers local directories before best-effort native marker projection, without opening, launching or focusing resources. It may save a Stream and Session separately. Keep both receipts on partial failure. Inspect actual context and retained receipts before deciding whether to resubmit the original request; do not blindly retry or turn partial enrollment into a new effort.
+Enrollment saves records and remembers local directories before best-effort native marker projection, without opening, launching or focusing resources. It may save a Stream and Session separately, and a partial failure reports the Stream it saved. Inspect the outcome and current context. Resubmitting the same request is safe and reuses what already landed; do not turn partial enrollment into a new effort.

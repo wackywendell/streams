@@ -124,7 +124,7 @@ export class ReferenceEdit {
   try {
    const request = this.request();if (!request) return;
    const receipt = await cli.apply(request);onReceipt?.(receipt);
-   if (receiptHasUnappliedReferences(receipt) || !receiptCanContinue(receipt)) throw Error("Reference edit not applied; input and receipt retained. Inspect the current row before reapplying.");
+   if (receiptHasUnappliedReferences(receipt) || !receiptCanContinue(receipt)) throw Error("Reference edit not applied; input kept. Inspect the current row before reapplying.");
    this.error = undefined;return receipt;
   } catch (error) {this.error = String(error);throw error;}
  }
@@ -146,7 +146,7 @@ export class FieldEdit {
    onReceipt?.(result);
    if (!result.save?.domain) throw Error("Invalid catalog receipt");
    if (result.save.domain.outcome === "conflict" || result.save.domain.outcome === "superseded") throw Error(`Edit ${result.save.domain.outcome}. Your input is retained. Compare the live field, then discard and reopen to use its new base.`);
-   if (!receiptCanContinue(result)) throw Error("Local save receipt retained; completion or publication requires inspection before another write. Do not blindly retry.");
+   if (!receiptCanContinue(result)) throw Error("Save did not complete; inspect its completion or publication outcome. Resubmitting the same captured request is safe; superseded or conflict means capture again.");
    this.error = undefined;return result;
   } catch (error) {this.error = String(error);throw error;}
  }

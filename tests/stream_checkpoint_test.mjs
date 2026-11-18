@@ -972,7 +972,7 @@ test('wholly refused discussion retains additions and deletion before preserving
   else {history.push(screen);if(composer++===0){component.handleInput('Question');component.handleInput('\r');}else component.handleInput('\x1b');}
  })}};
  await handlers.get('session_start')({},ctx);await openPanel(ctx);
- assert.equal(writes,1);assert.equal(receipts.length,1);assert.match(history.at(-1),/Question/);assert.match(history.at(-1),/input and save receipt retained/);assert.doesNotMatch(history.at(-1),/Must not appear|user: Question/);
+ assert.equal(writes,1);assert.equal(receipts.length,1);assert.match(history.at(-1),/Question/);assert.match(history.at(-1),/input kept/);assert.doesNotMatch(history.at(-1),/Must not appear|user: Question/);
  assert.match(managerScreen,/Forget.*Retained deletion · Source absent/);assert.match(managerScreen,/First.*Retained addition · Source absent/);assert.match(managerScreen,/Second.*Retained addition · Source absent/);assert.ok(notices.some(row=>row.level==='warning'));
 });
 for(const failure of ['throw','abort','invalid','branch','cwd','source','attachment','shutdown','conflict','superseded','repair','completion'])test(`discussion ${failure} retains composer/history and isolates replacement source`,async()=>{
@@ -996,7 +996,7 @@ for(const failure of ['throw','abort','invalid','branch','cwd','source','attachm
  const ctx={mode:'tui',hasUI:true,cwd:'/repo',sessionManager:{getSessionId:()=> 'native',getLeafId:()=>leaf,getBranch:()=>[{id:leaf}],buildSessionProjection:()=>({messages:[]})},ui:{select:async()=>menuCount++%2===0?'Discuss…':'Close',notify:text=>notices.push(text),setStatus:()=>{},custom:async factory=>new Promise(resolve=>{const component=factory({terminal:{rows:30},requestRender(){}},{fg:(_color,text)=>text,bold:text=>text},{},resolve);if(component.render(100).join("\n").includes("1: Actions")){if(menuCount++%2===0){component.handleInput("\x1b[B");component.handleInput("\r");}else component.handleInput("\x1b");return;}renders.push(component.render(100).join('\n'));if(!submitted){submitted=true;component.handleInput('retry question');component.handleInput('\r');}else component.handleInput('\x1b');})}};
  await handlers.get('session_start')({},ctx);await openPanel(ctx);
  assert.equal(receipts.length,saveFailure?1:0);
- if(saveFailure)assert.ok(notices.some(text=>text.includes('input and save receipt retained')));
+ if(saveFailure)assert.ok(notices.some(text=>text.includes('Discussion edit did not complete; input kept')));
  else if(!['throw','invalid'].includes(failure))assert.deepEqual(notices,[]);
  if(failure==='shutdown') {assert.equal(renders.length,1);await handlers.get('session_start')({}, {...ctx});}
  // Reopen the original attachment after a cancelled source/attachment change.

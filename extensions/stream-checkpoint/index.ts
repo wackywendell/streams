@@ -226,7 +226,7 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
        }
       }
       if (!capture.valid()) return;
-      if (!receiptCanContinue(value)) throw Error("Discussion edit did not complete; input and save receipt retained. Inspect save and publication outcomes before another write.");
+      if (!receiptCanContinue(value)) throw Error("Discussion edit did not complete; input kept. Inspect save and publication outcomes before another write.");
      }
      state.discussion.messages = [...prospective, {role: "assistant", text: response.reply}];state.discussion.input = "";
      state.discussion.error = undefined;

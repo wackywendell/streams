@@ -28,5 +28,5 @@ export async function chooseInitial(ctx: ExtensionContext, cli: StreamCli, optio
  if (ctx.sessionManager.getSessionId() !== native || signal?.aborted) return {status: "cancelled"};
  const value = await cli.enroll({version: 2, catalog_source: before.catalog_source, harness: "pi", harness_session_id: native, ...(streamId ? {stream_id: streamId} : {stream: {title}}), session: {title: sessionTitle}, actor: "user", cwd: ctx.cwd});
  receipt(value);
- return {status: receiptCanContinue(value) ? "enrolled" : "receipts retained; inspect save outcomes before further writes", stream_id: value.stream?.id};
+ return {status: receiptCanContinue(value) ? "enrolled" : "inspect save outcomes before further writes", stream_id: value.stream?.id};
 }

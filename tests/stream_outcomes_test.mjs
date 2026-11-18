@@ -81,6 +81,6 @@ test('field editing retains input and its receipt when publication needs repair'
  const edit = new FieldEdit('session',context,'title');edit.value='After';
  const value = {...receipt,publication:{...publication,local:'repair-required'}};
  const receipts=[];
- await assert.rejects(edit.save({apply:async()=>value},r=>receipts.push(r)),/Do not blindly retry/);
+ await assert.rejects(edit.save({apply:async()=>value},r=>receipts.push(r)),/Resubmitting the same captured request is safe/);
  assert.equal(edit.dirty,true);assert.equal(edit.value,'After');assert.equal(receipts[0],value);
 });
