@@ -41,7 +41,9 @@ use streams::{
     model::{Record, Session, Stream, TitleMode, ValidationError},
     operations::{Actor, patches::StreamPatch},
     runtime::{
-        self, CheckoutRegistry, DirectoryBindings, native::BuiltinFrontend, state::RuntimeState,
+        self, CheckoutRegistry, DirectoryBindings,
+        frontends::{self, Frontend},
+        state::RuntimeState,
     },
     sync::outcomes,
 };
@@ -218,7 +220,7 @@ fn execute(command: Command, input: Input, json: bool) -> Result<Output> {
             app.input = input;
             let output = app.execute(command)?;
             if output.accepted_save
-                && let Err(error) = app.notify_hc_save()
+                && let Err(error) = app.notify_saved()
             {
                 eprintln!("streams: {error}");
             }
@@ -391,17 +393,6 @@ impl App {
             herdr: None,
         })
     }
-    fn hc_selected(
-        &self,
-        configured: &FrontendMode,
-        requested: Option<&FrontendRequest>,
-    ) -> Result<bool> {
-        Ok(
-            frontend::resolve_frontend(configured.clone(), requested.cloned(), &self.environment)?
-                .resolved
-                == Some(frontend::FrontendId::Hc),
-        )
-    }
     fn selection(&self, requested: Option<FrontendRequest>) -> Result<FrontendSelection> {
         Ok(frontend::resolve_frontend(
             self.config.load()?.frontend,
@@ -427,191 +418,107 @@ impl App {
             self.registry(host)?,
         ))
     }
-    fn native_frontend(
+    /// The selected frontend, serving the caller of this command on `opened`'s records.
+    fn frontend(
+        &self,
+        opened: &application::OpenedRecords,
+        requested: Option<FrontendRequest>,
+        timeout: f64,
+    ) -> Result<Option<Box<dyn Frontend>>> {
+        self.selection(requested)?
+            .resolved
+            .map(|id| self.connect_frontend(id, opened, timeout))
+            .transpose()
+    }
+    fn connect_frontend(
+        &self,
+        id: frontend::FrontendId,
+        opened: &application::OpenedRecords,
+        timeout: f64,
+    ) -> Result<Box<dyn Frontend>> {
+        let caller = frontends::Caller {
+            scope: streams::integration::WorkScope {
+                catalog: opened.source_id().into(),
+                host: opened.host().as_str().into(),
+            },
+            environment: self.environment.clone(),
+            cwd: self.cwd.clone(),
+            timeout,
+        };
+        // The Pi child already holds a Herdr connection and its last observation.
+        if id == frontend::FrontendId::Herdr
+            && let Some(read) = &self.herdr
+        {
+            return Ok(Box::new(frontends::HerdrFrontend::observed(
+                caller,
+                &read.client,
+                read.workspace_stream.clone(),
+            )?));
+        }
+        Ok(frontends::connect(id, caller))
+    }
+    fn herdr_client(
         &self,
         selection: &FrontendSelection,
         timeout: f64,
-    ) -> Result<Option<BuiltinFrontend>> {
-        selection
-            .resolved
-            .as_ref()
-            .map(|id| {
-                if *id == frontend::FrontendId::Herdr
-                    && let Some(read) = &self.herdr
-                {
-                    return Ok(BuiltinFrontend::Herdr(
-                        read.client
-                            .with_context(self.environment.clone())
-                            .map_err(runtime::RuntimeError::from)?,
-                    ));
-                }
-                BuiltinFrontend::connect(
-                    id,
-                    std::sync::Arc::new(streams::process::NativeProcessRunner),
-                    self.environment.clone(),
-                    timeout,
-                )
-                .map_err(Into::into)
-            })
-            .transpose()
+    ) -> Result<Option<frontend::herdr::HerdrClient>> {
+        if selection.resolved != Some(frontend::FrontendId::Herdr) {
+            return Ok(None);
+        }
+        if let Some(read) = &self.herdr {
+            return Ok(Some(
+                read.client
+                    .with_context(self.environment.clone())
+                    .map_err(runtime::RuntimeError::from)?,
+            ));
+        }
+        Ok(Some(
+            frontend::herdr::HerdrClient::connect(self.environment.clone(), timeout)
+                .and_then(|client| client.observing())
+                .map_err(runtime::RuntimeError::from)?,
+        ))
     }
     fn current_stream_id(
         &self,
-        host: &str,
-        catalog_source: &str,
+        opened: &application::OpenedRecords,
         requested: Option<FrontendRequest>,
     ) -> Result<String> {
         let configured = self.config.load()?.frontend;
-        let explicit = self
-            .environment
-            .get("STREAMS_STREAM_ID")
-            .map(String::as_str);
-        if let Some(id) = explicit {
+        if let Some(id) = self.environment.get("STREAMS_STREAM_ID") {
             streams::model::check_text(id, "STREAMS_STREAM_ID", false)?;
             return Ok(id.to_owned());
         }
         let selection = frontend::resolve_frontend(configured, requested, &self.environment)?;
-        if selection.resolved.as_ref() == Some(&frontend::FrontendId::Hc) {
-            use streams::integration::WorkScope;
-            let caller = self
-                .environment
-                .get("HC_TERMINAL_ID")
-                .map(String::as_str)
-                .filter(|value| !value.is_empty() && !value.contains('/'))
-                .ok_or_else(|| {
-                    CliError::message(
-                        "hc --current requires HC_TERMINAL_ID or an explicit reference",
-                    )
-                })?;
-            let scope = WorkScope {
-                catalog: catalog_source.into(),
-                host: host.into(),
-            };
-            let socket = frontend::hc::HcEndpoint::resolve(&self.environment, &self.cwd)
-                .map_err(|error| CliError::message(error.message))?;
-            let client = frontend::hc::HcClient::connect(socket, None, 30.0, None)
-                .map_err(|error| CliError::message(error.message))?;
-            let mut operation = runtime::hc::HcOperation::new(client);
-            return operation
-                .caller_stream_id(&scope, caller)
-                .map_err(|error| CliError::message(error.message))?
-                .ok_or_else(|| {
-                    CliError::message(
-                        "calling workspace has no Stream selector; pass an explicit reference",
-                    )
-                });
-        }
-        let connection = self.native_frontend(&selection, 30.0)?;
-        let client = connection
-            .as_ref()
-            .and_then(BuiltinFrontend::herdr)
+        let mut frontend = selection
+            .resolved
+            .map(|id| self.connect_frontend(id, opened, 30.0))
+            .transpose()?
             .ok_or_else(|| {
-                CliError::message(
-                    "--current requires an explicit Stream key or Herdr workspace metadata",
-                )
+                CliError::message("--current requires an explicit Stream key or a frontend")
             })?;
-        let snapshot = client
-            .session_snapshot()
-            .and_then(|snapshot| frontend::herdr::HerdrNativeSnapshot::parse(&snapshot))
-            .map_err(runtime::RuntimeError::from)?;
-        runtime::native_markers::selected_stream(
-            &snapshot,
-            &client
-                .current_pane_from(snapshot.raw())
-                .map_err(runtime::RuntimeError::from)?
-                .workspace_id,
-            catalog_source,
-            host,
-        )?
-        .ok_or_else(|| {
+        frontend.caller_stream()?.ok_or_else(|| {
             CliError::message(
                 "calling workspace has no Stream selector; pass an explicit reference",
             )
         })
     }
-    fn hc_caller_stream_id(&self, host: &str, catalog_source: &str) -> Result<Option<String>> {
-        use streams::integration::WorkScope;
-        let configured = self.config.load()?.frontend;
-        if !self.hc_selected(&configured, None)? {
-            return Ok(None);
+    /// Associate the calling workspace with `stream_id`, when the frontend keeps associations.
+    pub(super) fn associate_caller(&self, stream_id: &str) -> Result<()> {
+        let opened = application::open_records(&self.config)?;
+        match self.frontend(&opened, None, 5.0)? {
+            Some(mut frontend) => Ok(frontend.associate_caller(stream_id)?),
+            None => Ok(()),
         }
-        let Some(caller) = self
-            .environment
-            .get("HC_TERMINAL_ID")
-            .map(String::as_str)
-            .filter(|value| !value.is_empty() && !value.contains('/'))
-        else {
-            return Ok(None);
-        };
-        let scope = WorkScope {
-            catalog: catalog_source.into(),
-            host: host.into(),
-        };
-        let socket = frontend::hc::HcEndpoint::resolve(&self.environment, &self.cwd)
-            .map_err(|error| CliError::message(error.message))?;
-        let client = frontend::hc::HcClient::connect(socket, None, 5.0, None)
-            .map_err(|error| CliError::message(error.message))?;
-        let mut operation = runtime::hc::HcOperation::new(client);
-        operation
-            .caller_stream_id(&scope, caller)
-            .map_err(|error| CliError::message(error.message))
     }
-    pub(super) fn bind_hc_caller_terminal(&self, stream_id: &str) -> Result<()> {
-        let Some(terminal) = self
-            .environment
-            .get("HC_TERMINAL_ID")
-            .map(String::as_str)
-            .filter(|value| !value.is_empty() && !value.contains('/'))
-        else {
-            return Ok(());
-        };
-        let configured = self.config.load()?.frontend;
-        if !self.hc_selected(&configured, None)? {
+    /// Tell the caller's views that this command saved records.
+    pub(super) fn notify_saved(&self) -> Result<()> {
+        if self.selection(None)?.resolved.is_none() {
             return Ok(());
         }
         let opened = application::open_records(&self.config)?;
-        let scope = streams::integration::WorkScope {
-            catalog: opened.source_id().into(),
-            host: opened.host().as_str().into(),
-        };
-        let socket = frontend::hc::HcEndpoint::resolve(&self.environment, &self.cwd)
-            .map_err(|error| CliError::message(error.message))?;
-        let client = frontend::hc::HcClient::connect(socket, None, 5.0, None)
-            .map_err(|error| CliError::message(error.message))?;
-        let mut operation = runtime::hc::HcOperation::new(client);
-        match operation.bind_caller_terminal(&scope, terminal, stream_id) {
-            streams::integration::Effect::Applied { value: () } => Ok(()),
-            streams::integration::Effect::NotApplied { reason }
-            | streams::integration::Effect::Uncertain { reason } => Err(CliError::message(reason)),
-        }
-    }
-    pub(super) fn notify_hc_save(&self) -> Result<()> {
-        let Some(terminal) = self
-            .environment
-            .get("HC_TERMINAL_ID")
-            .map(String::as_str)
-            .filter(|value| !value.is_empty() && !value.contains('/'))
-        else {
-            return Ok(());
-        };
-        let configured = self.config.load()?.frontend;
-        if !self.hc_selected(&configured, None)? {
-            return Ok(());
-        }
-        let opened = application::open_records(&self.config)?;
-        let scope = streams::integration::WorkScope {
-            catalog: opened.source_id().into(),
-            host: opened.host().as_str().into(),
-        };
-        let socket = frontend::hc::HcEndpoint::resolve(&self.environment, &self.cwd)
-            .map_err(|error| CliError::message(error.message))?;
-        let client = frontend::hc::HcClient::connect(socket, None, 5.0, None)
-            .map_err(|error| CliError::message(error.message))?;
-        let mut operation = runtime::hc::HcOperation::new(client);
-        match operation.notify_saved(&scope, terminal) {
-            streams::integration::Effect::Applied { value: () } => Ok(()),
-            streams::integration::Effect::NotApplied { reason }
-            | streams::integration::Effect::Uncertain { reason } => Err(CliError::message(reason)),
+        match self.frontend(&opened, None, 5.0)? {
+            Some(mut frontend) => Ok(frontend.notify_saved()?),
+            None => Ok(()),
         }
     }
     fn record_target(
@@ -626,11 +533,7 @@ impl App {
                     "--current cannot be combined with a reference",
                 ));
             }
-            let id = self.current_stream_id(
-                opened.host().as_str(),
-                opened.source_id(),
-                target.frontend.clone(),
-            )?;
+            let id = self.current_stream_id(opened, target.frontend.clone())?;
             return Ok(opened
                 .records()
                 .with_reader(|reader| -> application::Result<Stream> {
@@ -1004,13 +907,11 @@ impl App {
             opened.host().as_str(),
         )?;
         let native = (|| -> Result<_> {
-            let connection = self.native_frontend(
-                &self.selection(None)?,
-                streams::sync::COMMAND_TIMEOUT_SECONDS,
-            )?;
-            let client = connection
-                .as_ref()
-                .and_then(BuiltinFrontend::herdr)
+            let client = self
+                .herdr_client(
+                    &self.selection(None)?,
+                    streams::sync::COMMAND_TIMEOUT_SECONDS,
+                )?
                 .ok_or_else(|| {
                     CliError::message("Herdr topology unavailable; open state unknown")
                 })?;
@@ -1072,31 +973,32 @@ impl App {
                 "catalog root setting changed during observation",
             ));
         }
-        let workspace_stream = if let Some(stream) = self
-            .herdr
-            .as_ref()
-            .and_then(|read| read.workspace_stream.clone())
-        {
-            Some(stream)
-        } else {
-            self.hc_caller_stream_id(opened.host().as_str(), opened.source_id())
+        let request = |workspace_stream_id| ContextRequest {
+            harness,
+            native_id: session_id,
+            stream_id,
+            environment_stream_id: self
+                .environment
+                .get("STREAMS_STREAM_ID")
+                .map(String::as_str),
+            workspace_stream_id,
+        };
+        let mut context = self.context_from_records(&opened, request(None), settings.naming)?;
+        // Only an unenrolled conversation takes its Stream from the caller's workspace.
+        if context.session.is_none() {
+            let workspace_stream = self
+                .frontend(&opened, None, 5.0)
                 .ok()
                 .flatten()
-        };
-        let context = self.context_from_records(
-            &opened,
-            ContextRequest {
-                harness,
-                native_id: session_id,
-                stream_id,
-                environment_stream_id: self
-                    .environment
-                    .get("STREAMS_STREAM_ID")
-                    .map(String::as_str),
-                workspace_stream_id: workspace_stream.as_deref(),
-            },
-            settings.naming,
-        )?;
+                .and_then(|mut frontend| frontend.context_stream());
+            if workspace_stream.is_some() {
+                context = self.context_from_records(
+                    &opened,
+                    request(workspace_stream.as_deref()),
+                    settings.naming,
+                )?;
+            }
+        }
         let documents = if let (Some(stream), Some(session)) = (&context.stream, &context.session) {
             documents::context(
                 &self.registry(opened.host().as_str())?,

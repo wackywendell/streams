@@ -1,5 +1,8 @@
 use super::*;
-use std::{fs, sync::Mutex};
+use std::{
+    fs,
+    sync::{Arc, Mutex},
+};
 use streams::model::Status;
 use streams::{
     config::Config,

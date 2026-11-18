@@ -64,7 +64,6 @@ impl<'a> WorkspaceRuntime<'a> {
     pub fn new(
         host_id: &'a str,
         locations: &'a DirectoryBindings,
-        frontend: Option<&'a BuiltinFrontend>,
         catalog_source: &'a str,
         roots: &'a ConversationRoots,
         environment: &'a BTreeMap<String, String>,
@@ -72,10 +71,21 @@ impl<'a> WorkspaceRuntime<'a> {
         Self {
             host_id,
             locations,
-            frontend,
+            frontend: None,
             catalog_source,
             roots,
             environment,
+        }
+    }
+
+    /// The same runtime acting through `frontend`'s workspaces.
+    pub fn with_frontend<'b>(&self, frontend: &'b BuiltinFrontend) -> WorkspaceRuntime<'b>
+    where
+        'a: 'b,
+    {
+        WorkspaceRuntime {
+            frontend: Some(frontend),
+            ..*self
         }
     }
 
@@ -146,6 +156,13 @@ impl<'a> WorkspaceRuntime<'a> {
             None,
         )?;
         Ok(())
+    }
+    /// Each Session's saved transcript locator, in order.
+    pub fn locators(&self, stream: &Stream, sessions: &[Session]) -> Result<Vec<Option<PathBuf>>> {
+        sessions
+            .iter()
+            .map(|session| self.locations.transcript_file(&stream.id, &session.id))
+            .collect()
     }
     fn reference(&self, workspace: &str) -> Result<NativeRef> {
         let adapter = self.frontend()?.adapter();

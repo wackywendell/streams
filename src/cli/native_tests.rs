@@ -24,16 +24,9 @@ fn current_identity_never_suppresses_configuration_errors() {
     };
     let opened =
         application::initialize_records(&app.config, Strategy::None, None, "main").unwrap();
-    assert_eq!(
-        app.current_stream_id(opened.host().as_str(), opened.source_id(), None)
-            .unwrap(),
-        "effort"
-    );
+    assert_eq!(app.current_stream_id(&opened, None).unwrap(), "effort");
     fs::write(app.config.config_path(), "invalid config").unwrap();
-    assert!(
-        app.current_stream_id(opened.host().as_str(), opened.source_id(), None)
-            .is_err()
-    );
+    assert!(app.current_stream_id(&opened, None).is_err());
 }
 
 #[test]

@@ -62,11 +62,11 @@ impl Fixture {
         WorkspaceRuntime::new(
             "host",
             &self.locations,
-            Some(&self.frontend),
             "catalog",
             &self.roots,
             &self.environment,
         )
+        .with_frontend(&self.frontend)
     }
     fn session(&self, id: &str) -> (Session, PathBuf) {
         let path = self.temp.path().join(format!("{id}.jsonl"));
@@ -367,14 +367,7 @@ fn remembered_directory_is_preserved_unless_the_caller_supplies_a_replacement() 
 fn resume_prepares_only_the_exact_locator_without_a_native_guard() {
     let f = Fixture::new(|method, _| panic!("unexpected {method}"));
     let (session, file) = f.session("resume");
-    let runtime = WorkspaceRuntime::new(
-        "host",
-        &f.locations,
-        None,
-        "catalog",
-        &f.roots,
-        &f.environment,
-    );
+    let runtime = WorkspaceRuntime::new("host", &f.locations, "catalog", &f.roots, &f.environment);
     assert!(
         runtime
             .resume(

@@ -1094,7 +1094,7 @@ fn hc_open_plan_uses_only_selected_work_and_positive_observations() {
         ("HOME".into(), cwd.display().to_string()),
         ("PATH".into(), "/bin:/usr/bin".into()),
     ]);
-    let runtime = WorkspaceRuntime::new("host", &locations, None, "catalog", &roots, &environment);
+    let runtime = WorkspaceRuntime::new("host", &locations, "catalog", &roots, &environment);
     let processes = Processes::live([40]);
     let endpoint = EndpointId("core".into());
     let claim = PiSourceClaim {

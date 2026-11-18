@@ -149,11 +149,11 @@ impl HcSource {
             let mut first_error = None;
             if bind_space
                 && let Some(session) = &resolved.session
-                && let Err(error) = app.bind_hc_caller_terminal(&session.stream_id)
+                && let Err(error) = app.associate_caller(&session.stream_id)
             {
                 first_error = Some(error);
             }
-            if let Err(error) = app.notify_hc_save()
+            if let Err(error) = app.notify_saved()
                 && first_error.is_none()
             {
                 first_error = Some(error);
@@ -308,7 +308,8 @@ impl Server {
                 return Err(CliError::message("request cancelled before dispatch"));
             }
             let app = self.app()?;
-            let hc_selected = app.hc_selected(&app.config.load()?.frontend, None)?;
+            let hc_selected =
+                app.selection(None)?.resolved == Some(streams::frontend::FrontendId::Hc);
             if matches!(
                 request,
                 Request::SessionStarted {}
@@ -555,7 +556,7 @@ fn read_input(server: Arc<Server>) {
                                     let result = worker.catalog(request, &flag);
                                     if result.as_ref().is_ok_and(|output| output.accepted_save)
                                         && let Ok(app) = worker.app()
-                                        && let Err(error) = app.notify_hc_save()
+                                        && let Err(error) = app.notify_saved()
                                     {
                                         worker.warning(&error)?;
                                     }

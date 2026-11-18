@@ -540,7 +540,6 @@ impl App {
         let runtime = WorkspaceRuntime::new(
             &facade.scope().host,
             &locations,
-            None,
             &facade.scope().catalog,
             &roots,
             &self.environment,

@@ -1,13 +1,11 @@
 use super::*;
 use args::{SessionSelection, StreamFields};
-use std::sync::{Arc, atomic::AtomicBool};
 use streams::{
-    frontend::{FrontendId, herdr::HerdrNativeSnapshot},
+    frontend::FrontendId,
     model::NamingMode,
     operations::{edits::StreamEdit, patches::Channel},
     runtime::{
         conversations::ConversationRoots,
-        native_markers::selected_stream,
         workspace::{SelectedConversation, WorkspaceRuntime},
     },
     storage::records::{RecordRead, RecordStore},
@@ -18,9 +16,10 @@ pub(super) enum Creation {
     Workspace(Option<FrontendRequest>),
 }
 
-struct MetadataSelection {
-    stream: Stream,
-    snapshot: HerdrNativeSnapshot,
+fn no_frontend() -> CliError {
+    CliError::message(
+        "no native frontend selected; pass --frontend herdr, --frontend cmux or --frontend hc (or use resume)",
+    )
 }
 
 fn require_local(opened: &application::OpenedRecords, stream: &Stream) -> Result<()> {
@@ -147,128 +146,23 @@ impl App {
         Ok(Some(catalog::select_stream(inventory, reference)?.clone()))
     }
 
-    fn metadata_workspace_target(
+    /// The Stream the caller's workspace names, for metadata-only `--current`.
+    fn workspace_target(
         &self,
         opened: &application::OpenedRecords,
-        frontend: Option<&BuiltinFrontend>,
-    ) -> Result<MetadataSelection> {
-        let client = frontend.and_then(BuiltinFrontend::herdr).ok_or_else(|| {
+        frontend: Option<&mut (dyn Frontend + 'static)>,
+    ) -> Result<Stream> {
+        let frontend = frontend.ok_or_else(|| {
             CliError::message(
-                "metadata-only --current requires Herdr; supply an explicit Stream key",
+                "metadata-only --current requires a frontend; supply an explicit Stream key",
             )
         })?;
-        let snapshot = client
-            .session_snapshot()
-            .and_then(|snapshot| HerdrNativeSnapshot::parse(&snapshot))
-            .map_err(runtime::RuntimeError::from)?;
-        let caller = client
-            .current_pane_from(snapshot.raw())
-            .map_err(runtime::RuntimeError::from)?;
-        let id = selected_stream(
-            &snapshot,
-            &caller.workspace_id,
-            opened.source_id(),
-            opened.host().as_str(),
-        )?
-        .ok_or_else(|| {
+        let id = frontend.workspace_stream()?.ok_or_else(|| {
             CliError::message("calling workspace has no Stream marker; supply a reference")
         })?;
         let stream = exact_stream(opened, &id)?;
         require_local(opened, &stream)?;
-        Ok(MetadataSelection { stream, snapshot })
-    }
-
-    fn open_hc_runtime(
-        &self,
-        opened: &application::OpenedRecords,
-        stream: &Stream,
-        sessions: &[Session],
-        cwd: Option<&Path>,
-        retained: Option<(
-            streams::runtime::hc::HcPresentation,
-            streams::frontend::hc::HcEndpoint,
-            streams::runtime::hc::HcOperation,
-        )>,
-    ) -> Result<(Value, bool)> {
-        use streams::{
-            integration::WorkScope,
-            runtime::hc::{HcOperation, open::hc_needs_attention},
-        };
-        let locations = self.locations(opened.root(), opened.host().as_str())?;
-        let roots = ConversationRoots::from_environment()?;
-        let scope = WorkScope {
-            catalog: opened.source_id().into(),
-            host: opened.host().as_str().into(),
-        };
-        let (presentation, socket, mut operation) = match retained {
-            Some((presentation, socket, operation)) => (Some(presentation), socket, operation),
-            None => {
-                let socket =
-                    streams::frontend::hc::HcEndpoint::resolve(&self.environment, &self.cwd)
-                        .map_err(|error| CliError::message(error.message))?;
-                let client =
-                    streams::frontend::hc::HcClient::connect(socket.clone(), None, 30.0, None)
-                        .map_err(|error| CliError::message(error.message))?;
-                (None, socket, HcOperation::new(client))
-            }
-        };
-        let runtime = WorkspaceRuntime::new(
-            opened.host().as_str(),
-            &locations,
-            None,
-            opened.source_id(),
-            &roots,
-            &self.environment,
-        );
-        let report =
-            runtime.open_hc(&mut operation, &socket, stream, sessions, cwd, presentation)?;
-        let needs_attention = hc_needs_attention(&scope, &report);
-        let ok = needs_attention.is_empty();
-        Ok((
-            json!({"backend":"hc","report":report,"needs_attention":needs_attention}),
-            ok,
-        ))
-    }
-
-    fn hc_metadata_target(
-        &self,
-        opened: &application::OpenedRecords,
-    ) -> Result<(
-        Stream,
-        streams::runtime::hc::HcPresentation,
-        streams::frontend::hc::HcEndpoint,
-        streams::runtime::hc::HcOperation,
-    )> {
-        use streams::integration::{PresentationSnapshot, WorkScope};
-        let caller = self
-            .environment
-            .get("HC_TERMINAL_ID")
-            .map(String::as_str)
-            .filter(|value| !value.is_empty() && !value.contains('/'))
-            .ok_or_else(|| {
-                CliError::message("hc --current requires HC_TERMINAL_ID or an explicit reference")
-            })?;
-        let scope = WorkScope {
-            catalog: opened.source_id().into(),
-            host: opened.host().as_str().into(),
-        };
-        let socket = streams::frontend::hc::HcEndpoint::resolve(&self.environment, &self.cwd)
-            .map_err(|error| CliError::message(error.message))?;
-        let client = streams::frontend::hc::HcClient::connect(socket.clone(), None, 30.0, None)
-            .map_err(|error| CliError::message(error.message))?;
-        let mut operation = streams::runtime::hc::HcOperation::new(client);
-        let presentation = operation
-            .presentation_for_caller(&scope, Some(caller))
-            .map_err(|error| CliError::message(error.message))?;
-        let space = presentation.caller_space().ok_or_else(|| {
-            CliError::message("calling space is not published in the layout; supply a reference")
-        })?;
-        let id = presentation.stream_for_space(&space).ok_or_else(|| {
-            CliError::message("calling workspace has no Stream marker; supply a reference")
-        })?;
-        let stream = exact_stream(opened, &id)?;
-        require_local(opened, &stream)?;
-        Ok((stream, presentation, socket, operation))
+        Ok(stream)
     }
 
     pub(super) fn create_stream(
@@ -295,29 +189,19 @@ impl App {
             let Creation::Workspace(requested) = creation else {
                 return Ok(None);
             };
-            let selection = self.selection(requested)?;
-            if selection.resolved.as_ref() == Some(&FrontendId::Hc) {
-                return Ok(Some(self.open_hc_runtime(
-                    &opened,
-                    &stream,
-                    &[],
-                    Some(&directory),
-                    None,
-                )?));
-            }
+            let mut frontend = self
+                .frontend(&opened, requested, 30.0)?
+                .ok_or_else(no_frontend)?;
             let roots = ConversationRoots::from_environment()?;
-            let frontend = self.native_frontend(&selection, 30.0)?;
-            let cancelled = AtomicBool::new(false);
-            let result = WorkspaceRuntime::new(
+            let runtime = WorkspaceRuntime::new(
                 opened.host().as_str(),
                 &locations,
-                frontend.as_ref(),
                 opened.source_id(),
                 &roots,
                 &self.environment,
-            )
-            .open(&cancelled, &stream, &[], Some(&directory), None)?;
-            let ok = result.needs_attention.is_empty();
+            );
+            let result = frontend.open(&runtime, &stream, &[], Some(&directory))?;
+            let ok = result.needs_attention().is_empty();
             Ok(Some((json!(result), ok)))
         })();
         match completion {
@@ -372,64 +256,26 @@ impl App {
         if let Some(stream) = &explicit {
             require_local(&opened, stream)?;
         }
-        let selection =
-            frontend::resolve_frontend(settings.frontend, target.frontend, &self.environment)?;
+        let mut frontend = self.frontend(&opened, target.frontend, 30.0)?;
         let cwd = cwd.as_deref().map(|path| self.path(path)).transpose()?;
-        if selection.resolved.as_ref() == Some(&FrontendId::Hc) {
-            let hc_target = explicit
-                .is_none()
-                .then(|| self.hc_metadata_target(&opened))
-                .transpose()?;
-            let (stream, retained) = match (explicit, hc_target) {
-                (Some(stream), None) => (stream, None),
-                (None, Some((stream, presentation, socket, operation))) => {
-                    (stream, Some((presentation, socket, operation)))
-                }
-                _ => unreachable!("explicit or hc metadata target"),
-            };
-            let sessions = selected_sessions(&opened, &stream, &session, inventory.as_deref())?;
-            let (runtime, ok) =
-                self.open_hc_runtime(&opened, &stream, &sessions, cwd.as_deref(), retained)?;
-            let mut output = Output::value(json!({"stream_id":stream.id,"runtime":runtime}));
-            output.code = if ok { 0 } else { 2 };
-            return Ok(output);
-        }
+        let stream = match explicit {
+            Some(stream) => stream,
+            None => self.workspace_target(&opened, frontend.as_deref_mut())?,
+        };
+        let sessions = selected_sessions(&opened, &stream, &session, inventory.as_deref())?;
+        let mut frontend = frontend.ok_or_else(no_frontend)?;
         let locations = self.locations(opened.root(), opened.host().as_str())?;
         let roots = ConversationRoots::from_environment()?;
-        let frontend = self.native_frontend(&selection, 30.0)?;
-        let cancelled = AtomicBool::new(false);
-        let metadata = explicit
-            .is_none()
-            .then(|| self.metadata_workspace_target(&opened, frontend.as_ref()))
-            .transpose()?;
-        let stream = explicit
-            .as_ref()
-            .unwrap_or_else(|| &metadata.as_ref().expect("metadata target").stream);
-        let observed = metadata.as_ref().map(|selected| &selected.snapshot);
-        let sessions = selected_sessions(&opened, stream, &session, inventory.as_deref())?;
-        let bindings = sessions
-            .iter()
-            .map(|session| locations.transcript_file(&stream.id, &session.id))
-            .collect::<std::result::Result<Vec<_>, runtime::RuntimeError>>()?;
-        let selected = sessions
-            .iter()
-            .zip(&bindings)
-            .map(|(session, binding)| SelectedConversation {
-                session,
-                locator: binding.as_deref(),
-            })
-            .collect::<Vec<_>>();
-        let result = WorkspaceRuntime::new(
+        let runtime = WorkspaceRuntime::new(
             opened.host().as_str(),
             &locations,
-            frontend.as_ref(),
             opened.source_id(),
             &roots,
             &self.environment,
-        )
-        .open(&cancelled, stream, &selected, cwd.as_deref(), observed)?;
+        );
+        let result = frontend.open(&runtime, &stream, &sessions, cwd.as_deref())?;
         let mut output = Output::value(json!({"stream_id":stream.id,"runtime":result}));
-        output.code = if result.needs_attention.is_empty() {
+        output.code = if result.needs_attention().is_empty() {
             0
         } else {
             2
@@ -460,36 +306,23 @@ impl App {
             require_local(&opened, stream)?;
         }
         // Resume executes here; observed reuse is best effort, without discovery.
-        let use_hc = self.hc_selected(&settings.frontend, target.frontend.as_ref())?;
-        let use_herdr = !use_hc
-            && (matches!(&settings.frontend, FrontendMode::Explicit(id) if *id == FrontendId::Herdr)
-                || self.environment.get("HERDR_ENV").map(String::as_str) == Some("1"));
-        let frontend = if use_herdr {
-            Some(BuiltinFrontend::connect(
-                &FrontendId::Herdr,
-                Arc::new(streams::process::NativeProcessRunner),
-                self.environment.clone(),
-                30.0,
-            )?)
-        } else {
-            None
+        let id = match self.selection(target.frontend)?.resolved {
+            Some(FrontendId::Hc) => Some(FrontendId::Hc),
+            _ if matches!(&settings.frontend, FrontendMode::Explicit(id) if *id == FrontendId::Herdr)
+                || self.environment.get("HERDR_ENV").map(String::as_str) == Some("1") =>
+            {
+                Some(FrontendId::Herdr)
+            }
+            _ => None,
         };
-        let hc_target = (explicit.is_none() && use_hc)
-            .then(|| self.hc_metadata_target(&opened))
+        let mut frontend = id
+            .map(|id| self.connect_frontend(id, &opened, 30.0))
             .transpose()?;
-        let (hc_stream, mut hc_operation) = match hc_target {
-            Some((stream, _, _, operation)) => (Some(stream), Some(operation)),
-            None => (None, None),
+        let stream = match explicit {
+            Some(stream) => stream,
+            None => self.workspace_target(&opened, frontend.as_deref_mut())?,
         };
-        let metadata = (explicit.is_none() && hc_stream.is_none())
-            .then(|| self.metadata_workspace_target(&opened, frontend.as_ref()))
-            .transpose()?;
-        let stream = explicit
-            .as_ref()
-            .or(hc_stream.as_ref())
-            .unwrap_or_else(|| &metadata.as_ref().expect("metadata target").stream);
-        let observed = metadata.as_ref().map(|selected| &selected.snapshot);
-        let sessions = selected_sessions(&opened, stream, &session, inventory.as_deref())?;
+        let sessions = selected_sessions(&opened, &stream, &session, inventory.as_deref())?;
         let session = match sessions.as_slice() {
             [session] => session,
             [] => {
@@ -504,35 +337,6 @@ impl App {
                 });
             }
         };
-        if use_hc && session.harness == "pi" {
-            let mut operation = match hc_operation.take() {
-                Some(operation) => operation,
-                None => {
-                    let socket =
-                        streams::frontend::hc::HcEndpoint::resolve(&self.environment, &self.cwd)
-                            .map_err(|_| CliError::message("hc Pi presence is unavailable"))?;
-                    let client = streams::frontend::hc::HcClient::connect(socket, None, 30.0, None)
-                        .map_err(|_| CliError::message("hc Pi presence is unavailable"))?;
-                    streams::runtime::hc::HcOperation::new(client)
-                }
-            };
-            let observer = streams::frontend::hc::processes::OwnerProcesses::new()
-                .map_err(|_| CliError::message("hc Pi presence is unavailable"))?;
-            let sources = operation
-                .registered_sources(&observer)
-                .map_err(|_| CliError::message("hc Pi presence is unavailable"))?;
-            match sources.presence(&streams::integration::ConversationId::from(session)) {
-                streams::integration::Presence::Absent => {}
-                streams::integration::Presence::Running { .. } => {
-                    return Err(CliError::message(
-                        "conversation is already observed running; left in place",
-                    ));
-                }
-                streams::integration::Presence::Unknown { .. } => {
-                    return Err(CliError::message("hc Pi presence is unavailable"));
-                }
-            }
-        }
         let locations = self.locations(opened.root(), opened.host().as_str())?;
         let locator = locations.transcript_file(&stream.id, &session.id)?;
         let selected = SelectedConversation {
@@ -544,12 +348,14 @@ impl App {
         let runtime = WorkspaceRuntime::new(
             opened.host().as_str(),
             &locations,
-            frontend.as_ref(),
             opened.source_id(),
             &roots,
             &self.environment,
         );
-        let command = runtime.resume(stream, selected, cwd.as_deref(), observed)?;
+        let command = match frontend.as_mut() {
+            Some(frontend) => frontend.resume(&runtime, &stream, selected, cwd.as_deref())?,
+            None => runtime.resume(&stream, selected, cwd.as_deref(), None)?,
+        };
         match command.exec() {
             Ok(never) => match never {},
             Err(error) => Err(error.into()),

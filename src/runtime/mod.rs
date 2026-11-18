@@ -6,6 +6,7 @@
 pub mod card_settings;
 pub mod checkouts;
 pub mod conversations;
+pub mod frontends;
 pub mod hc;
 pub mod launch;
 pub mod locations;
