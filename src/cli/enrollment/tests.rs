@@ -162,7 +162,9 @@ fn enrollment_retried_after_a_move_refuses_without_writing_or_retargeting_direct
         .err()
         .unwrap();
     assert!(
-        error.to_string().contains("use an explicit move"),
+        error
+            .to_string()
+            .contains("moving a Session to another Stream is not supported yet"),
         "{error}"
     );
     assert_eq!(fs::read(selected_path).unwrap(), selected);

@@ -71,8 +71,9 @@ then compares desired and observed values to produce actions. Reading and
 executing belong to the shell. Catalog changes and frontend effects have separate
 action types and executors; no executor holds a transaction across both systems.
 
-Each field has one direction: an observed workspace move can change Session
-membership; saved titles feed native display. Display changes do not move Pi or
+Each field has one direction: saved membership feeds workspace markers, and
+an observed workspace move never changes Session membership; saved titles feed
+native display. Display changes do not move Pi or
 select membership. An echo event therefore finds no difference instead of
 starting a feedback loop.
 

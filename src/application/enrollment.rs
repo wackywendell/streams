@@ -106,7 +106,7 @@ pub fn enroll_session_observed(
                     .is_some_and(|id| id != current.stream_id)
                 {
                     return Err(ValidationError::new(
-                        "conversation already belongs to another Stream; use an explicit move",
+                        "conversation already belongs to another Stream; moving a Session to another Stream is not supported yet",
                     )
                     .into());
                 }

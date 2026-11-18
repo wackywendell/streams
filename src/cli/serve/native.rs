@@ -535,12 +535,14 @@ impl Controller {
                     .as_ref()
                     .map(|session| session.stream_id.clone())
             });
-        if self
-            .app
-            .herdr
-            .as_ref()
-            .and_then(|read| read.workspace_stream.as_ref())
-            .is_some_and(|selected| target.as_ref() != Some(selected))
+        // An enrolled Session keeps its Stream wherever its pane is.
+        if pass.context.session.is_none()
+            && self
+                .app
+                .herdr
+                .as_ref()
+                .and_then(|read| read.workspace_stream.as_ref())
+                .is_some_and(|selected| target.as_ref() != Some(selected))
         {
             return Err(crate::cli::CliError::message(
                 "workspace names a different Stream; captured enrollment target was not changed",

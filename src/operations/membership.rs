@@ -77,6 +77,7 @@ impl MoveIntent {
 /// Read Session + old Stream + destination, then replace only the returned Session.
 /// `None` means membership already matches; no new membership period is created.
 /// Destination creation and native relationship/evidence writes are separate operations.
+/// The planned Session move command uses it.
 pub fn apply_move(
     session: &Session,
     source: &Stream,

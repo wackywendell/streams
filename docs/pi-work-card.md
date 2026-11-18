@@ -24,7 +24,7 @@ A catalog session identifies one native Pi conversation on one host and belongs 
 
 Resolve an existing session association before enrolling anything. A caller workspace's explicit stream association can supply the initial effort. With meaningful work but no association, automatic mode may enroll an effort and its first session. Avoid enrollment for greetings or other context that does not establish an effort. Explicit initial attachment is available for an unbound conversation.
 
-Once attached, Pi does not offer a switch-to-another-stream action. There is no Session-move CLI or Pi switch action. Observed workspace moves follow [native reconciliation](native-context-reconciliation.md); a refresh preserves saved membership and warns on conflicting markers. Changing a title never changes membership.
+Once attached, Pi does not offer a switch-to-another-stream action. There is no Session-move CLI or Pi switch action. Moving a pane into another workspace or space never changes membership ([native reconciliation](native-context-reconciliation.md)); a refresh preserves saved membership and warns on conflicting markers. Changing a title never changes membership.
 
 Enrollment reuses an observed workspace association rather than guessing from names or cwd. The private Pi channel supplies conversation identity; native completion uses one current observation. Record saves and marker projection are separate, not a transaction or a claim of exactly-once concurrent enrollment. Native associations and absolute directories remain host-local. Enrollment does not open workspaces, launch agents or move focus.
 

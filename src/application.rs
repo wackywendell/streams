@@ -52,6 +52,7 @@ pub struct MoveSave {
 
 /// Reuse the Stream read during apply when constructing the resulting native context.
 /// A retried move finds the Session already in its destination and changes nothing.
+/// The planned Session move command (CLI redesign) uses it.
 pub fn move_session_observed(
     store: &impl crate::storage::records::RecordStore,
     intent: &crate::operations::membership::MoveIntent,

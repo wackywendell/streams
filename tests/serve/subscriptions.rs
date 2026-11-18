@@ -1151,6 +1151,37 @@ fn a_pi_workspace_move_into_a_marked_workspace_leaves_membership_unchanged() {
     let context = &response["outcome"]["result"];
     assert_eq!(context["session"], f.session, "{response}");
     assert_eq!(context["stream"], before);
+    // Enrolling again for the saved Stream is a no-op wherever the pane is; the marker
+    // conflict stays a warning.
+    child.request(
+        2,
+        json!({"kind":"enroll","request":{
+            "version":2,"catalog_source":context["catalog_source"],
+            "harness":"pi","harness_session_id":f.session["harness_session_id"],
+            "actor":"user","cwd":f.fixture.directory.path(),"stream_id":original,
+            "session":{"title":"Before"}
+        }}),
+    );
+    let enrolled = loop {
+        let frame = child.next();
+        if frame["type"] == "response" {
+            break frame;
+        }
+    };
+    assert_eq!(
+        enrolled["outcome"]["status"], "saved_with_warnings",
+        "{enrolled}"
+    );
+    assert!(
+        enrolled["outcome"]["warnings"][0]
+            .as_str()
+            .unwrap()
+            .contains("another Stream")
+    );
+    assert_eq!(
+        enrolled["outcome"]["result"]["session"]["stream_id"],
+        original
+    );
     assert_eq!(f.fixture.ok(&["list"], None), streams);
     assert_eq!(
         f.snapshot.lock().unwrap()["workspaces"][1]["tokens"]["strm_stream"],

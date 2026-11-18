@@ -10,7 +10,7 @@ Streams and work cards should remain consistent and usable during ordinary Pi an
 
 Separate the conversation, its current Stream membership and its native location. A work card describes the conversation's own work across Stream moves. A stream card describes the shared effort. Names and pane addresses identify neither.
 
-Layout never changes membership, in every frontend. Moving a Pi pane, tab or terminal into another Herdr workspace or hc space leaves the Session in its saved Stream, and no Stream is created. Membership changes only through an explicit move. The child keeps the observed placement (the Stream that the owner's workspace names) in one place, its native pass, so a later change could show it to the agent to propose a move.
+Layout never changes membership, in every frontend. Moving a Pi pane, tab or terminal into another Herdr workspace or hc space leaves the Session in its saved Stream, and no Stream is created. Membership changes only through an explicit move, which no command offers yet; the planned Session move command adds one. The child keeps the observed placement (the Stream that the owner's workspace names) in one place, its native pass, so a later change could show it to the agent to propose a move.
 
 Startup, pane and tab moves, report completion, file changes and workspace marker changes all preserve the saved Session's membership. In an unmarked workspace, project that Session's Stream association instead of creating another Stream. A conflicting marker warns without changing membership. This keeps an externally changed membership from being undone by its own file notification. `session attach` creates a new record; it is not a move command. A restarted child uses saved membership rather than guessing whether Pi moved while it was absent; it keeps no owner-location baseline or move journal.
 
@@ -34,9 +34,9 @@ Session identity is `(host, agent, native Session ID)`, where agent means the co
 
 ## CLI and Pi boundary
 
-The library owns reconciliation and result admission, exposed through the CLI. The Pi child is bound to its Session and collects native observations itself. Native events, including Pi workspace moves, project current records and return cards with their captured context. Ordinary catalog reads remain read-only.
+The library owns reconciliation and result admission, exposed through the CLI. The Pi child is bound to its Session and collects native observations itself. Native events, including Pi workspace moves, project current records and return cards with their captured context; they never change membership. Ordinary catalog reads remain read-only.
 
-Pi runs the model and returns its proposed updates with their original captured context. The library assesses conversation-local and Stream-shared updates separately against current records. A workspace move need not invalidate useful work-card updates, but results computed for the previous Stream must not be retargeted to the destination. Pi does not send caller proof or a native snapshot back to the child.
+Pi runs the model and returns its proposed updates with their original captured context. The library assesses conversation-local and Stream-shared updates separately against current records. An explicit move need not invalidate useful work-card updates, but results computed for the previous Stream must not be retargeted to the destination. Pi does not send caller proof or a native snapshot back to the child.
 
 Pi carries request context without interpreting membership or orchestrating record changes. The CLI owns the checks and returns which updates were accepted. This keeps movement policy and stale-result handling consistent across callers.
 
