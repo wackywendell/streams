@@ -513,15 +513,16 @@ impl App {
         })
     }
     /// Tell the caller's views that this command saved records.
+    /// A caller with no usable frontend context has no views to tell.
     pub(super) fn notify_saved(&self) -> Result<()> {
-        if self.selection(None)?.resolved.is_none() {
+        let Ok(FrontendSelection {
+            resolved: Some(id), ..
+        }) = self.selection(None)
+        else {
             return Ok(());
-        }
+        };
         let opened = application::open_records(&self.config)?;
-        match self.frontend(&opened, None, 5.0)? {
-            Some(mut frontend) => Ok(frontend.notify_saved()?),
-            None => Ok(()),
-        }
+        Ok(self.connect_frontend(id, &opened, 5.0)?.notify_saved()?)
     }
     fn record_target(
         &self,

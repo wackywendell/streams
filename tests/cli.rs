@@ -1628,3 +1628,31 @@ fn config_cli_supports_toml_list_get_set_unset_path_and_model() {
     assert_eq!(f.ok(&["config", "unset", "herdr.viewer.mode"]), Value::Null);
     assert_eq!(f.ok(&["config", "get", "herdr.viewer.mode"]), "editor");
 }
+
+#[test]
+fn a_save_without_a_usable_frontend_context_notifies_nothing_and_stays_quiet() {
+    let f = Fixture::new();
+    f.init();
+    for environment in [
+        &[
+            ("CMUX_WORKSPACE_ID", "w"),
+            ("HERDR_ENV", "1"),
+            ("HERDR_PANE_ID", "p"),
+        ][..],
+        &[("HERDR_ENV", "1")][..],
+    ] {
+        let output = f
+            .command()
+            .envs(environment.iter().copied())
+            .args(["create", "Quiet", "--json"])
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{environment:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            "",
+            "{environment:?}"
+        );
+    }
+}
