@@ -245,7 +245,7 @@ impl HcOperation {
 
 fn new_space(operation: &HcOperation) -> NativeRef {
     NativeRef {
-        adapter: FrontendId::hc(),
+        adapter: FrontendId::Hc,
         endpoint: operation.endpoint().clone(),
         key: uuid::Uuid::new_v4().to_string(),
     }

@@ -161,11 +161,8 @@ fn explicit_current_reads_need_no_supported_or_available_frontend() {
     f.init();
     let stream = f.create("Current");
     let id = stream["id"].as_str().unwrap();
-    assert_eq!(
-        f.ok(&["show", id, "--frontend", "third-party"])["stream"],
-        stream
-    );
-    for frontend in ["auto", "third-party"] {
+    assert_eq!(f.ok(&["show", id, "--frontend", "cmux"])["stream"], stream);
+    for frontend in ["auto", "cmux"] {
         let output = f
             .command()
             .env("STREAMS_STREAM_ID", id)
@@ -844,9 +841,15 @@ fn frontend_policy_errors_keep_typed_candidates_without_native_calls() {
     assert_eq!(error["error"]["candidates"], json!(["cmux", "herdr"]));
     assert!(!f.root().exists());
     assert_eq!(
-        f.ok(&["frontend", "get", "--frontend", "third-party"]),
-        json!({"configured":"auto","requested":"third-party","resolved":"third-party"})
+        f.ok(&["frontend", "get", "--frontend", "hc"]),
+        json!({"configured":"auto","requested":"hc","resolved":"hc"})
     );
+    let unknown = f
+        .command()
+        .args(["frontend", "get", "--frontend", "third-party", "--json"])
+        .output()
+        .unwrap();
+    assert_ne!(unknown.status.code(), Some(0), "{unknown:?}");
 }
 
 #[test]

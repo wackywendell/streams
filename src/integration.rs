@@ -51,7 +51,7 @@ pub struct NativeRef {
 }
 impl NativeRef {
     pub fn validate(&self) -> std::result::Result<(), ValidationError> {
-        for value in [&self.adapter.0, &self.endpoint.0, &self.key] {
+        for value in [&self.endpoint.0, &self.key] {
             check_text(value, "native reference", false)?;
         }
         Ok(())

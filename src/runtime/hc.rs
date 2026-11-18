@@ -87,7 +87,7 @@ pub fn registered_foreground(
     let Ok(native) = serde_json::from_value::<Terminal>(value) else {
         return unknown();
     };
-    if terminal.adapter != FrontendId::hc()
+    if terminal.adapter != FrontendId::Hc
         || native.address != terminal.key
         || native.state != "live"
     {
@@ -209,7 +209,7 @@ impl RegisteredSources {
                         scope: route.scope,
                         stream: route.stream,
                         terminal: NativeRef {
-                            adapter: FrontendId::hc(),
+                            adapter: FrontendId::Hc,
                             endpoint: endpoint.clone(),
                             key: address.into(),
                         },
@@ -232,7 +232,7 @@ impl RegisteredSources {
                 continue;
             }
             let terminal = NativeRef {
-                adapter: FrontendId::hc(),
+                adapter: FrontendId::Hc,
                 endpoint: endpoint.clone(),
                 key: address,
             };
@@ -418,7 +418,7 @@ impl AssociationSnapshot {
             row.space
                 .validate()
                 .map_err(|_| invalid("invalid associated space"))?;
-            if row.space.adapter != FrontendId::hc()
+            if row.space.adapter != FrontendId::Hc
                 || row.space.endpoint != endpoint
                 || row.space.key != *key
             {
@@ -628,7 +628,7 @@ pub fn prepare_associations(
         return Err(invalid("layout belongs to another endpoint"));
     }
     if let Some(wanted) = wanted {
-        if wanted.space.adapter != FrontendId::hc() || wanted.space.endpoint != published.endpoint {
+        if wanted.space.adapter != FrontendId::Hc || wanted.space.endpoint != published.endpoint {
             return Err(invalid("space belongs to another endpoint"));
         }
         if !published.space_keys.contains(&wanted.space.key) {
@@ -801,7 +801,7 @@ impl HcOperation {
         if scope.validate().is_err()
             || crate::model::check_text(stream, "Stream", false).is_err()
             || space.validate().is_err()
-            || space.adapter != FrontendId::hc()
+            || space.adapter != FrontendId::Hc
             || space.key.contains('/')
             || space.endpoint != *self.endpoint()
             || before.endpoint != *self.endpoint()
@@ -958,7 +958,7 @@ impl<'a> HcTerminals<'a> {
         }
     }
     fn local(&self, terminal: &NativeRef) -> bool {
-        terminal.adapter == FrontendId::hc() && terminal.endpoint == *self.operation.endpoint()
+        terminal.adapter == FrontendId::Hc && terminal.endpoint == *self.operation.endpoint()
     }
 }
 fn cached_terminal(
@@ -1067,11 +1067,11 @@ impl HcPresentation {
         })
     }
     fn local(&self, resource: &NativeRef) -> bool {
-        resource.adapter == FrontendId::hc() && resource.endpoint == self.published.endpoint
+        resource.adapter == FrontendId::Hc && resource.endpoint == self.published.endpoint
     }
     fn local_ref(&self, key: &str) -> NativeRef {
         NativeRef {
-            adapter: FrontendId::hc(),
+            adapter: FrontendId::Hc,
             endpoint: self.published.endpoint.clone(),
             key: key.into(),
         }
@@ -1192,7 +1192,7 @@ impl HcOperation {
         let caller = caller_terminal
             .filter(|id| !id.is_empty() && !id.contains('/'))
             .map(|id| NativeRef {
-                adapter: FrontendId::hc(),
+                adapter: FrontendId::Hc,
                 endpoint: published.endpoint.clone(),
                 key: id.into(),
             });

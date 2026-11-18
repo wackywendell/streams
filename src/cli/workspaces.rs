@@ -296,7 +296,7 @@ impl App {
                 return Ok(None);
             };
             let selection = self.selection(requested)?;
-            if selection.resolved.as_ref() == Some(&FrontendId::hc()) {
+            if selection.resolved.as_ref() == Some(&FrontendId::Hc) {
                 return Ok(Some(self.open_hc_runtime(
                     &opened,
                     &stream,
@@ -375,7 +375,7 @@ impl App {
         let selection =
             frontend::resolve_frontend(settings.frontend, target.frontend, &self.environment)?;
         let cwd = cwd.as_deref().map(|path| self.path(path)).transpose()?;
-        if selection.resolved.as_ref() == Some(&FrontendId::hc()) {
+        if selection.resolved.as_ref() == Some(&FrontendId::Hc) {
             let hc_target = explicit
                 .is_none()
                 .then(|| self.hc_metadata_target(&opened))
@@ -462,11 +462,11 @@ impl App {
         // Resume executes here; observed reuse is best effort, without discovery.
         let use_hc = self.hc_selected(&settings.frontend, target.frontend.as_ref())?;
         let use_herdr = !use_hc
-            && (matches!(&settings.frontend, FrontendMode::Explicit(id) if *id == FrontendId::herdr())
+            && (matches!(&settings.frontend, FrontendMode::Explicit(id) if *id == FrontendId::Herdr)
                 || self.environment.get("HERDR_ENV").map(String::as_str) == Some("1"));
         let frontend = if use_herdr {
             Some(BuiltinFrontend::connect(
-                &FrontendId::herdr(),
+                &FrontendId::Herdr,
                 Arc::new(streams::process::NativeProcessRunner),
                 self.environment.clone(),
                 30.0,

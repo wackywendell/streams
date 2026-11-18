@@ -35,7 +35,7 @@ impl PreparedTerminal {
             .space
             .validate()
             .map_err(|error| crate::runtime::invalid(error.to_string()))?;
-        if context.space.adapter != FrontendId::hc() || context.space.key.contains('/') {
+        if context.space.adapter != FrontendId::Hc || context.space.key.contains('/') {
             return Err(crate::runtime::invalid("invalid hc placement reference"));
         }
         let (cwd, mut environment, argv) = match item {
@@ -143,7 +143,7 @@ impl PreparedTerminal {
         space
             .validate()
             .map_err(|error| crate::runtime::invalid(error.to_string()))?;
-        if space.adapter != FrontendId::hc() || space.key.contains('/') {
+        if space.adapter != FrontendId::Hc || space.key.contains('/') {
             return Err(crate::runtime::invalid("invalid hc placement reference"));
         }
         if argv.is_empty()
@@ -205,7 +205,7 @@ impl HcWorkExecution {
         space
             .validate()
             .map_err(|_| super::invalid("hc placement is unavailable"))?;
-        if space.adapter != FrontendId::hc()
+        if space.adapter != FrontendId::Hc
             || space.endpoint != self.sources.endpoint
             || space.key.contains('/')
         {
@@ -374,7 +374,7 @@ impl HcOperation {
                 if confirmed {
                     Effect::Applied {
                         value: NativeRef {
-                            adapter: FrontendId::hc(),
+                            adapter: FrontendId::Hc,
                             endpoint: self.endpoint().clone(),
                             key: address.expect("confirmed address").into(),
                         },
@@ -436,7 +436,7 @@ mod tests {
             host: "host".into(),
         };
         let space = NativeRef {
-            adapter: FrontendId::hc(),
+            adapter: FrontendId::Hc,
             endpoint: EndpointId("core".into()),
             key: "space".into(),
         };
@@ -490,7 +490,7 @@ mod tests {
             host: "host".into(),
         };
         let space = NativeRef {
-            adapter: FrontendId::hc(),
+            adapter: FrontendId::Hc,
             endpoint: EndpointId("core".into()),
             key: "space".into(),
         };

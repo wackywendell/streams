@@ -107,7 +107,7 @@ fn scope() -> WorkScope {
 }
 fn reference(key: &str) -> NativeRef {
     NativeRef {
-        adapter: FrontendId::hc(),
+        adapter: FrontendId::Hc,
         endpoint: EndpointId("core".into()),
         key: key.into(),
     }
@@ -2079,7 +2079,7 @@ fn terminal_routing_works_when_host_processes_cannot_be_observed() {
         host: "host".into(),
     };
     let terminal = NativeRef {
-        adapter: FrontendId::hc(),
+        adapter: FrontendId::Hc,
         endpoint: EndpointId("core".into()),
         key: "t1".into(),
     };
@@ -2149,7 +2149,7 @@ fn registered_foreground_reads_only_the_requested_terminal() {
         ),
     )]);
     let terminal = NativeRef {
-        adapter: FrontendId::hc(),
+        adapter: FrontendId::Hc,
         endpoint: EndpointId("core".into()),
         key: "t1".into(),
     };

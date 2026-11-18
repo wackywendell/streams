@@ -7,7 +7,7 @@ use streams::{
 
 fn terminal(key: &str) -> NativeRef {
     NativeRef {
-        adapter: FrontendId("test".into()),
+        adapter: FrontendId::Herdr,
         endpoint: EndpointId("owner-core".into()),
         key: key.into(),
     }
@@ -395,7 +395,7 @@ fn owner_core_and_adapter_are_part_of_exact_resource_identity() {
     other.endpoint = EndpointId("other-core".into());
     assert_ne!(first, other);
     other = first.clone();
-    other.adapter = FrontendId("other".into());
+    other.adapter = FrontendId::Cmux;
     assert_ne!(first, other);
     assert!(first.validate().is_ok());
     other.key.clear();
@@ -445,7 +445,7 @@ fn herdr_work_evidence_preserves_id_and_path_matching_without_foreground_authori
         assert_eq!(
             locations.as_slice(),
             &[NativeRef {
-                adapter: FrontendId("herdr".into()),
+                adapter: FrontendId::Herdr,
                 endpoint: endpoint.clone(),
                 key: key.into()
             }]

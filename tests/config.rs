@@ -223,30 +223,27 @@ fn expanduser_preserves_home_with_redundant_slashes() {
 }
 
 #[test]
-fn overrides_get_set_and_extensible_frontends() {
+fn overrides_get_set_and_closed_frontends() {
     let f = Fixture::new();
     f.config.set(ConfigKey::CatalogRoot, "~/Catalog").unwrap();
-    f.config
-        .set(ConfigKey::FrontendMode, "third-party-adapter")
-        .unwrap();
+    assert!(
+        f.config
+            .set(ConfigKey::FrontendMode, "third-party-adapter")
+            .is_err()
+    );
+    f.config.set(ConfigKey::FrontendMode, "hc").unwrap();
     let settings = f.config.load().unwrap();
     assert_eq!(settings.catalog_root, f.home.join("Catalog"));
-    assert_eq!(
-        settings.frontend,
-        FrontendMode::Explicit(FrontendId("third-party-adapter".into()))
-    );
+    assert_eq!(settings.frontend, FrontendMode::Explicit(FrontendId::Hc));
     assert_eq!(
         f.config.get(ConfigKey::CatalogRoot).unwrap(),
         json!(f.home.join("Catalog"))
     );
-    assert_eq!(
-        f.config.get(ConfigKey::FrontendMode).unwrap(),
-        "third-party-adapter"
-    );
+    assert_eq!(f.config.get(ConfigKey::FrontendMode).unwrap(), "hc");
     assert_eq!(
         f.config.read_overrides().unwrap(),
         json!({
-            "catalog":{"root":f.home.join("Catalog")}, "frontend":{"mode":"third-party-adapter"}
+            "catalog":{"root":f.home.join("Catalog")}, "frontend":{"mode":"hc"}
         })
     );
     assert!(!f.home.join("Catalog").exists());

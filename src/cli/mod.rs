@@ -106,7 +106,7 @@ impl From<frontend::FrontendSelectionError> for CliError {
             frontend::FrontendSelectionError::IncompleteHerdr => Self::Message(message),
             frontend::FrontendSelectionError::Ambiguous(candidates) => Self::Ambiguous {
                 message,
-                candidates: candidates.into_iter().map(|id| id.0).collect(),
+                candidates: candidates.into_iter().map(|id| id.to_string()).collect(),
             },
         }
     }
@@ -399,7 +399,7 @@ impl App {
         Ok(
             frontend::resolve_frontend(configured.clone(), requested.cloned(), &self.environment)?
                 .resolved
-                == Some(frontend::FrontendId::hc()),
+                == Some(frontend::FrontendId::Hc),
         )
     }
     fn selection(&self, requested: Option<FrontendRequest>) -> Result<FrontendSelection> {
@@ -436,7 +436,7 @@ impl App {
             .resolved
             .as_ref()
             .map(|id| {
-                if id.0 == "herdr"
+                if *id == frontend::FrontendId::Herdr
                     && let Some(read) = &self.herdr
                 {
                     return Ok(BuiltinFrontend::Herdr(
@@ -471,7 +471,7 @@ impl App {
             return Ok(id.to_owned());
         }
         let selection = frontend::resolve_frontend(configured, requested, &self.environment)?;
-        if selection.resolved.as_ref() == Some(&frontend::FrontendId::hc()) {
+        if selection.resolved.as_ref() == Some(&frontend::FrontendId::Hc) {
             use streams::integration::WorkScope;
             let caller = self
                 .environment
@@ -783,8 +783,8 @@ impl App {
                 let selection = self.selection(frontend)?;
                 Ok(Output::value(
                     json!({"configured":mode(&selection.configured),
-                    "requested":selection.requested.map(|request| match request { FrontendRequest::Auto=>"auto".into(), FrontendRequest::Explicit(id)=>id.0 }),
-                    "resolved":selection.resolved.map(|id|id.0)}),
+                    "requested":selection.requested.map(|request| match request { FrontendRequest::Auto=>"auto".into(), FrontendRequest::Explicit(id)=>id.to_string() }),
+                    "resolved":selection.resolved.map(|id|id.to_string())}),
                 ))
             }
             Command::List {
@@ -1174,7 +1174,7 @@ fn mode(mode: &FrontendMode) -> &str {
     match mode {
         FrontendMode::Auto => "auto",
         FrontendMode::None => "none",
-        FrontendMode::Explicit(id) => &id.0,
+        FrontendMode::Explicit(id) => id.as_ref(),
     }
 }
 fn fold(value: &str) -> String {

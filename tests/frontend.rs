@@ -184,25 +184,21 @@ fn selection_preserves_auto_none_explicit_and_override_policy() {
     ] {
         assert!(resolve_frontend(FrontendMode::Auto, None, &context(&values)).is_err());
     }
-    for id in [
-        FrontendId::cmux(),
-        FrontendId::herdr(),
-        FrontendId("future".into()),
-    ] {
+    for id in [FrontendId::Cmux, FrontendId::Herdr, FrontendId::Hc] {
         assert_eq!(
             resolve_frontend(
-                FrontendMode::Explicit(id.clone()),
+                FrontendMode::Explicit(id),
                 Some(FrontendRequest::Auto),
                 &both
             )
             .unwrap()
             .resolved,
-            Some(id.clone())
+            Some(id)
         );
         assert_eq!(
             resolve_frontend(
                 FrontendMode::None,
-                Some(FrontendRequest::Explicit(id.clone())),
+                Some(FrontendRequest::Explicit(id)),
                 &both
             )
             .unwrap()
@@ -217,12 +213,12 @@ fn selection_preserves_auto_none_explicit_and_override_policy() {
         None
     );
     for (values, id) in [
-        (vec![("CMUX_WORKSPACE_ID", "c1")], FrontendId::cmux()),
+        (vec![("CMUX_WORKSPACE_ID", "c1")], FrontendId::Cmux),
         (
             vec![("HERDR_ENV", "1"), ("HERDR_PANE_ID", "w1:p1")],
-            FrontendId::herdr(),
+            FrontendId::Herdr,
         ),
-        (vec![("HC_TERMINAL_ID", "t1")], FrontendId::hc()),
+        (vec![("HC_TERMINAL_ID", "t1")], FrontendId::Hc),
     ] {
         assert_eq!(
             resolve_frontend(FrontendMode::Auto, None, &context(&values))
@@ -369,7 +365,7 @@ fn wrong_frontend_endpoint_or_empty_ref_never_dispatches() {
     let client = cmux(&fake, &[]);
     for target in [
         WorkspaceRef {
-            frontend: FrontendId::herdr(),
+            frontend: FrontendId::Herdr,
             ..reference(&client, "w1")
         },
         WorkspaceRef {
@@ -622,7 +618,7 @@ fn herdr_missing_caller_mismatched_pane_and_workspace_fail_closed() {
     assert!(client.resolve(WorkspaceSelector::Explicit("w1")).is_err());
     for target in [
         WorkspaceRef {
-            frontend: FrontendId::cmux(),
+            frontend: FrontendId::Cmux,
             ..reference(&client, "w1")
         },
         WorkspaceRef {
@@ -807,11 +803,11 @@ fn herdr_topology_rejects_every_missing_collection_and_broken_relationship() {
 }
 
 #[test]
-fn frontend_trait_accepts_an_independent_adapter_without_closed_enum_dispatch() {
+fn frontend_trait_is_object_safe() {
     struct Plugin;
     impl WorkspaceFrontend for Plugin {
         fn frontend_id(&self) -> FrontendId {
-            FrontendId("independent".into())
+            FrontendId::Cmux
         }
         fn endpoint_id(&self) -> EndpointId {
             EndpointId("plugin-server".into())
@@ -833,5 +829,5 @@ fn frontend_trait_accepts_an_independent_adapter_without_closed_enum_dispatch() 
         }
     }
     let frontend: Box<dyn WorkspaceFrontend> = Box::new(Plugin);
-    assert_eq!(frontend.frontend_id(), FrontendId("independent".into()));
+    assert_eq!(frontend.frontend_id(), FrontendId::Cmux);
 }

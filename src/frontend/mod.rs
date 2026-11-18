@@ -15,23 +15,28 @@ use std::path::PathBuf;
 
 pub use transport::{CommandEvidence, CommandOutcome, FrontendError, NativeRequest};
 
-/// Extensible frontend identity. Third-party adapters may use their own IDs.
+/// The built-in frontends. The identity only selects an implementation.
 #[derive(
-    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    strum::EnumString,
+    strum::AsRefStr,
+    strum::Display,
 )]
-#[serde(transparent)]
-pub struct FrontendId(pub String);
-
-impl FrontendId {
-    pub fn cmux() -> Self {
-        Self("cmux".into())
-    }
-    pub fn herdr() -> Self {
-        Self("herdr".into())
-    }
-    pub fn hc() -> Self {
-        Self("hc".into())
-    }
+#[serde(rename_all = "lowercase")]
+#[strum(serialize_all = "lowercase")]
+pub enum FrontendId {
+    Cmux,
+    Herdr,
+    Hc,
 }
 
 /// Adapter-defined endpoint identity; equality is exact, not GUI focus.
@@ -152,7 +157,7 @@ pub trait WorkspaceFrontend {
     fn rename(&self, reference: &WorkspaceRef, title: &str) -> Result<(), FrontendError>;
 }
 
-/// Configured frontend policy, including extensible explicit adapters.
+/// Configured frontend policy.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FrontendMode {
     Auto,
@@ -173,10 +178,10 @@ impl std::str::FromStr for FrontendRequest {
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
             "auto" => Ok(Self::Auto),
-            id if !id.trim().is_empty() && !id.chars().any(char::is_control) => {
-                Ok(Self::Explicit(FrontendId(id.into())))
-            }
-            _ => Err("invalid frontend identifier"),
+            id => id
+                .parse()
+                .map(Self::Explicit)
+                .map_err(|_| "invalid frontend identifier; expected auto, herdr, cmux or hc"),
         }
     }
 }
@@ -205,7 +210,7 @@ pub fn resolve_frontend(
     context: &BTreeMap<String, String>,
 ) -> Result<FrontendSelection, FrontendSelectionError> {
     let policy = match &requested {
-        Some(FrontendRequest::Explicit(id)) => FrontendMode::Explicit(id.clone()),
+        Some(FrontendRequest::Explicit(id)) => FrontendMode::Explicit(*id),
         _ => configured.clone(),
     };
     let resolved = match policy {
@@ -223,13 +228,13 @@ pub fn resolve_frontend(
             }
             let mut active = Vec::new();
             if cmux {
-                active.push(FrontendId::cmux());
+                active.push(FrontendId::Cmux);
             }
             if herdr {
-                active.push(FrontendId::herdr());
+                active.push(FrontendId::Herdr);
             }
             if hc {
-                active.push(FrontendId::hc());
+                active.push(FrontendId::Hc);
             }
             match active.len() {
                 0 => None,

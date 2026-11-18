@@ -216,16 +216,17 @@ fn title_defaults_and_card_defaults_validate_strictly() {
 
 #[test]
 fn overrides_normalize_paths_and_preserve_explicit_frontend() {
-    let table: toml::Table = toml::from_str(
-        "[catalog]\nroot = \"~/Catalog\"\n[frontend]\nmode = \"third-party-adapter\"\n",
-    )
-    .unwrap();
+    let table: toml::Table =
+        toml::from_str("[catalog]\nroot = \"~/Catalog\"\n[frontend]\nmode = \"hc\"\n").unwrap();
     let validated = config().validate_overrides_toml(table).unwrap();
     assert_eq!(
         toml_table_to_json(&validated).unwrap(),
         json!({
             "catalog": {"root": "/home/test/Catalog"},
-            "frontend": {"mode": "third-party-adapter"}
+            "frontend": {"mode": "hc"}
         })
     );
+    let unknown: toml::Table =
+        toml::from_str("[frontend]\nmode = \"third-party-adapter\"\n").unwrap();
+    assert!(config().validate_overrides_toml(unknown).is_err());
 }

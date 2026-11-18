@@ -554,9 +554,17 @@ impl Config {
             None => toml::Value::String(path_text(&self.data_home.join("streams/catalog"))?.into()),
         };
         let root_val = self.validate_toml_value(ConfigKey::CatalogRoot, root_val)?;
-        let mode = lookup_toml(&data, "frontend.mode")
+        let frontend = match lookup_toml(&data, "frontend.mode")
             .and_then(toml::Value::as_str)
-            .unwrap_or("auto");
+            .unwrap_or("auto")
+        {
+            "auto" => FrontendMode::Auto,
+            "none" => FrontendMode::None,
+            name => FrontendMode::Explicit(
+                name.parse()
+                    .map_err(|_| invalid("frontend.mode must be auto, none, herdr, cmux or hc"))?,
+            ),
+        };
 
         let stream_naming = lookup_toml(&data, "naming.stream")
             .and_then(toml::Value::as_str)
@@ -665,11 +673,7 @@ impl Config {
 
         Ok(Settings {
             catalog_root: PathBuf::from(root_val.as_str().expect("validated string")),
-            frontend: match mode {
-                "auto" => FrontendMode::Auto,
-                "none" => FrontendMode::None,
-                name => FrontendMode::Explicit(FrontendId(name.into())),
-            },
+            frontend,
             naming: TitleDefaults {
                 stream: stream_naming,
                 session: session_naming,
@@ -686,7 +690,7 @@ impl Config {
         let mode = match settings.frontend {
             FrontendMode::Auto => "auto".into(),
             FrontendMode::None => "none".into(),
-            FrontendMode::Explicit(id) => id.0,
+            FrontendMode::Explicit(id) => id.to_string(),
         };
         let mut root = toml::Table::new();
 
@@ -998,7 +1002,12 @@ impl Config {
         }
         match key {
             ConfigKey::FrontendMode => {
-                text(key, &value)?;
+                let mode = text(key, &value)?;
+                if !matches!(mode, "auto" | "none") && mode.parse::<FrontendId>().is_err() {
+                    return Err(invalid(format!(
+                        "{key} must be auto, none, herdr, cmux or hc"
+                    )));
+                }
                 Ok(value)
             }
             ConfigKey::StreamNaming

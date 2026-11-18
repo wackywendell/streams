@@ -20,16 +20,16 @@ impl BuiltinFrontend {
         environment: BTreeMap<String, String>,
         timeout: f64,
     ) -> Result<Self> {
-        match id.0.as_str() {
-            "herdr" => Ok(Self::Herdr(
+        match id {
+            FrontendId::Herdr => Ok(Self::Herdr(
                 HerdrClient::connect(environment, timeout)?.observing()?,
             )),
-            "cmux" => Ok(Self::Cmux(CmuxClient::connect(
+            FrontendId::Cmux => Ok(Self::Cmux(CmuxClient::connect(
                 runner,
                 environment,
                 timeout,
             )?)),
-            _ => Err(invalid(format!("unsupported native frontend: {}", id.0))),
+            FrontendId::Hc => Err(invalid(format!("unsupported native frontend: {id}"))),
         }
     }
 

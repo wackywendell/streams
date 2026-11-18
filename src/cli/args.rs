@@ -666,12 +666,13 @@ mod tests {
     }
 
     #[test]
-    fn targets_remain_runtime_decisions_and_frontends_are_open() {
+    fn targets_remain_runtime_decisions_and_frontends_are_closed() {
         assert!(parse(&["show"]).is_ok());
-        let parsed = parse(&["show", "effort", "-c", "-f", "new-adapter"]).unwrap();
+        let parsed = parse(&["show", "effort", "-c", "-f", "hc"]).unwrap();
         assert!(
-            matches!(parsed.command, Command::Show { target: Target { reference: Some(reference), current: true, frontend: Some(frontend) }, .. } if reference == "effort" && frontend == FrontendRequest::Explicit(streams::frontend::FrontendId("new-adapter".into())))
+            matches!(parsed.command, Command::Show { target: Target { reference: Some(reference), current: true, frontend: Some(frontend) }, .. } if reference == "effort" && frontend == FrontendRequest::Explicit(streams::frontend::FrontendId::Hc))
         );
+        assert!(parse(&["show", "effort", "-f", "new-adapter"]).is_err());
     }
 
     #[test]

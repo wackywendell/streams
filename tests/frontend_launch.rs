@@ -237,7 +237,7 @@ fn invalid_arguments_never_dispatch_effects() {
             ..workspace.clone()
         },
         WorkspaceRef {
-            frontend: FrontendId::cmux(),
+            frontend: FrontendId::Cmux,
             ..workspace.clone()
         },
     ] {

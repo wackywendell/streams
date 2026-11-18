@@ -21,7 +21,7 @@ impl App {
         let scope: WorkScope = serde_json::from_value(scope)?;
         let space: NativeRef = serde_json::from_value(space)?;
         space.validate()?;
-        if space.adapter != frontend::FrontendId::hc() {
+        if space.adapter != frontend::FrontendId::Hc {
             return Err(CliError::message(
                 "bind-space requires an hc space reference",
             ));
@@ -150,7 +150,7 @@ impl App {
         Ok(Output::plain(Value::Null, String::new()))
     }
     pub(super) fn integration_describe(&self, frontend: FrontendRequest) -> Result<Output> {
-        if frontend != FrontendRequest::Explicit(frontend::FrontendId::hc()) {
+        if frontend != FrontendRequest::Explicit(frontend::FrontendId::Hc) {
             return Err(CliError::message(
                 "integration describe requires --frontend hc",
             ));

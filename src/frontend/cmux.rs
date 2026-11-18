@@ -293,7 +293,7 @@ impl CmuxClient {
 
 impl WorkspaceFrontend for CmuxClient {
     fn frontend_id(&self) -> FrontendId {
-        FrontendId::cmux()
+        FrontendId::Cmux
     }
     fn endpoint_id(&self) -> EndpointId {
         self.endpoint.identity()

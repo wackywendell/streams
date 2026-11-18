@@ -91,7 +91,7 @@ impl crate::integration::ExecutionSnapshot for HerdrWorkExecution<'_> {
             .matching_agents(wanted)
             .into_iter()
             .map(|agent| NativeRef {
-                adapter: FrontendId("herdr".into()),
+                adapter: FrontendId::Herdr,
                 endpoint: self.endpoint.clone(),
                 key: agent.pane_id.clone(),
             })
@@ -143,7 +143,7 @@ impl crate::integration::ExecutionSnapshot for HerdrWorkExecution<'_> {
                     })
             })
             .map(|pane| crate::integration::NativeRef {
-                adapter: FrontendId("herdr".into()),
+                adapter: FrontendId::Herdr,
                 endpoint: self.endpoint.clone(),
                 key: pane.pane.id.clone(),
             })
@@ -184,7 +184,7 @@ impl HerdrClient {
             let workspace = match &plan.space {
                 SpaceDecision::Reuse { space } => {
                     let workspace = WorkspaceRef {
-                        frontend: space.adapter.clone(),
+                        frontend: space.adapter,
                         endpoint: space.endpoint.clone(),
                         native_id: space.key.clone(),
                     };
@@ -770,7 +770,7 @@ impl HerdrClient {
 
 impl WorkspaceFrontend for HerdrClient {
     fn frontend_id(&self) -> FrontendId {
-        FrontendId::herdr()
+        FrontendId::Herdr
     }
     fn endpoint_id(&self) -> EndpointId {
         self.endpoint.identity()

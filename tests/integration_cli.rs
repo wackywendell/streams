@@ -437,7 +437,7 @@ impl TerminalObservation for ScriptedTerminals {
 
 fn hc_terminal(key: &str) -> NativeRef {
     NativeRef {
-        adapter: streams::frontend::FrontendId::hc(),
+        adapter: streams::frontend::FrontendId::Hc,
         endpoint: streams::frontend::EndpointId("core".into()),
         key: key.into(),
     }
@@ -1915,7 +1915,7 @@ fn native_tab_reads_route_a_shell_by_its_space_then_its_work_label() {
         "streams.work": streams::runtime::hc::labels::work_value(&scope, "next").unwrap()
     });
     let foreign = NativeRef {
-        adapter: streams::frontend::FrontendId::hc(),
+        adapter: streams::frontend::FrontendId::Hc,
         endpoint: streams::frontend::EndpointId("other-core".into()),
         key: "t3".into(),
     };
@@ -2118,7 +2118,7 @@ fn bind_space_uses_only_the_saved_stream_and_one_verified_native_write() {
         .scope()
         .clone();
     let space = NativeRef {
-        adapter: streams::frontend::FrontendId::hc(),
+        adapter: streams::frontend::FrontendId::Hc,
         endpoint: streams::frontend::EndpointId("core".into()),
         key: "target".into(),
     };
@@ -2527,7 +2527,7 @@ fn frame_reads_and_reference_opening_resolve_enrolled_sessions_and_viewer_termin
         .scope()
         .clone();
     let resource = |key: &str| NativeRef {
-        adapter: FrontendId::hc(),
+        adapter: FrontendId::Hc,
         endpoint: endpoint.clone(),
         key: key.into(),
     };
