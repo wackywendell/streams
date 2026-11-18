@@ -973,11 +973,15 @@ fn saved_cli_refuses_wrong_scope_and_disabled_native_requests_without_effects() 
         let reply = ModReply::decode(std::str::from_utf8(&output.stdout).unwrap()).unwrap();
         match reply.result {
             WireResult::Error(error) => assert_eq!(error.kind, "unavailable"),
-            WireResult::Ok(ModResult::Read { values, .. }) => assert!(
-                values
-                    .iter()
-                    .all(|value| matches!(value, WireResult::Error(_)))
-            ),
+            WireResult::Ok(ModResult::Read { values, .. }) => assert!(values.iter().all(|value| {
+                matches!(
+                    value,
+                    WireResult::Error(_)
+                        | WireResult::Ok(ModReadValue::Frame {
+                            context: FrameContext::Unavailable { .. }
+                        })
+                )
+            })),
             WireResult::Ok(ModResult::ReferenceOpened { value }) => assert!(matches!(
                 value.result,
                 ReferenceOpenResult::NotApplied { .. }
@@ -1761,7 +1765,7 @@ fn tab_reads_take_an_enrolled_sessions_stream_before_routing_and_show_the_host_o
     assert_eq!(stream["unreadable"][0]["kind"], "session");
     assert_eq!(values[1]["ok"]["context"]["kind"], "unavailable");
 
-    // Without terminal observation, tab and frame reads fail and saved reads still succeed.
+    // Without terminal observation, tab and frame reads give its reason and saved reads succeed.
     let values = serde_json::to_value(
         facade
             .read_views(
@@ -1781,8 +1785,15 @@ fn tab_reads_take_an_enrolled_sessions_stream_before_routing_and_show_the_host_o
             .unwrap(),
     )
     .unwrap();
-    assert_eq!(values[0]["error"]["kind"], "unavailable");
-    assert_eq!(values[1]["ok"]["context"]["kind"], "unavailable");
+    assert_eq!(
+        values[0]["error"],
+        json!({"kind":"unavailable","message":"hc is unavailable"}),
+        "a tab read reports why terminals cannot be observed"
+    );
+    assert_eq!(
+        values[1]["ok"]["context"],
+        json!({"kind":"unavailable","reason":"hc is unavailable"})
+    );
     assert_eq!(values[2]["ok"]["kind"], "stream");
 }
 
@@ -1873,11 +1884,13 @@ fn native_tab_reads_route_a_shell_by_its_space_then_its_work_label() {
     let scope = streams::application::integration::Streams::new(&fixture.records)
         .scope()
         .clone();
-    let shell = |labels: Value| {
+    let shell = |key: &str, labels: Value, parent: Option<&str>| {
         Step(
             "terminal.get",
-            json!({"terminal":"t3"}),
-            Reply::Value(json!({"address":"t3","state":"live","pid":10,"labels":labels})),
+            json!({ "terminal": key }),
+            Reply::Value(
+                json!({"address":key,"state":"live","pid":10,"labels":labels,"parent":parent}),
+            ),
         )
     };
     let associations = |stream: Option<&str>| {
@@ -1904,42 +1917,133 @@ fn native_tab_reads_route_a_shell_by_its_space_then_its_work_label() {
             ),
         )
     };
-    let label = streams::runtime::hc::labels::work_value(&scope, "next").unwrap();
+    let label = json!({
+        "streams.work": streams::runtime::hc::labels::work_value(&scope, "next").unwrap()
+    });
+    let foreign = NativeRef {
+        adapter: streams::frontend::FrontendId::hc(),
+        endpoint: streams::frontend::EndpointId("other-core".into()),
+        key: "t3".into(),
+    };
+    let no_stream = Value::Null;
     for case in [
         "space",
         "label",
+        "parent-label",
         "none",
+        "missing-parent",
+        "walk-fails",
+        "two-terminals",
+        "foreign-terminal",
         "bad-associations",
         "wrong-endpoint",
     ] {
-        let steps = match case {
-            "space" => vec![shell(json!({})), associations(Some("work")), layout()],
-            "label" => vec![
-                shell(json!({})),
-                associations(None),
-                layout(),
-                shell(json!({"streams.work":label})),
-            ],
-            "none" => vec![
-                shell(json!({})),
-                associations(None),
-                layout(),
-                shell(json!({})),
-            ],
-            "bad-associations" => vec![
-                shell(json!({})),
-                Step(
-                    "doc.get",
-                    json!({"name":"streams"}),
-                    Reply::Value(json!({"version":1,"value":{"version":2,"spaces":{}}})),
-                ),
-            ],
-            _ => vec![],
+        let (terminals, steps, stream) = match case {
+            "space" => (
+                vec![hc_terminal("t3")],
+                vec![
+                    shell("t3", json!({}), None),
+                    associations(Some("work")),
+                    layout(),
+                ],
+                json!("work"),
+            ),
+            // The foreground read's reply is the walk's first hop.
+            "label" => (
+                vec![hc_terminal("t3")],
+                vec![
+                    shell("t3", label.clone(), None),
+                    associations(None),
+                    layout(),
+                ],
+                json!("next"),
+            ),
+            "parent-label" => (
+                vec![hc_terminal("t5")],
+                vec![
+                    shell("t5", json!({}), Some("t6")),
+                    associations(None),
+                    layout(),
+                    shell("t6", label.clone(), None),
+                ],
+                json!("next"),
+            ),
+            "none" => (
+                vec![hc_terminal("t3")],
+                vec![shell("t3", json!({}), None), associations(None), layout()],
+                no_stream.clone(),
+            ),
+            "missing-parent" => (
+                vec![hc_terminal("t5")],
+                vec![
+                    shell("t5", json!({}), Some("gone")),
+                    associations(None),
+                    layout(),
+                    Step(
+                        "terminal.get",
+                        json!({"terminal":"gone"}),
+                        Reply::Reject("not_found"),
+                    ),
+                ],
+                no_stream.clone(),
+            ),
+            "walk-fails" => (
+                vec![hc_terminal("t5")],
+                vec![
+                    shell("t5", json!({}), Some("t6")),
+                    associations(None),
+                    layout(),
+                    Step(
+                        "terminal.get",
+                        json!({"terminal":"t6"}),
+                        Reply::Reject("internal"),
+                    ),
+                ],
+                json!({"kind":"unavailable","message":"hc terminal routing is unavailable"}),
+            ),
+            // One presentation serves every terminal of the tab.
+            "two-terminals" => (
+                vec![hc_terminal("t4"), hc_terminal("t5")],
+                vec![
+                    shell("t4", json!({}), None),
+                    shell("t5", label.clone(), None),
+                    associations(None),
+                    layout(),
+                ],
+                json!("next"),
+            ),
+            // A terminal of another endpoint is skipped, never read and never an error.
+            "foreign-terminal" => (
+                vec![foreign.clone(), hc_terminal("t3")],
+                vec![
+                    shell("t3", json!({}), None),
+                    associations(Some("work")),
+                    layout(),
+                ],
+                json!("work"),
+            ),
+            "bad-associations" => (
+                vec![hc_terminal("t3")],
+                vec![
+                    shell("t3", json!({}), None),
+                    Step(
+                        "doc.get",
+                        json!({"name":"streams"}),
+                        Reply::Value(json!({"version":1,"value":{"version":2,"spaces":{}}})),
+                    ),
+                ],
+                json!({"kind":"unavailable","message":"hc presentation is unavailable"}),
+            ),
+            _ => (
+                vec![hc_terminal("t3")],
+                vec![],
+                json!({"kind":"unavailable"}),
+            ),
         };
         let expected_calls = steps.len() + 1;
         let core = FakeCore::new(steps);
         let mut request = fixture.envelope(json!({"kind":"read","selections":[
-            {"kind":"tab","terminals":[hc_terminal("t3")]},
+            {"kind":"tab","terminals":terminals},
             {"kind":"saved_stream","stream":"work"}
         ]}));
         if case != "wrong-endpoint" {
@@ -1966,17 +2070,28 @@ fn native_tab_reads_route_a_shell_by_its_space_then_its_work_label() {
         );
         let values = &reply["result"]["ok"]["values"];
         let tab = &values[0];
-        match case {
-            "space" => assert_eq!(tab["ok"]["context"]["stream"]["id"], "work"),
-            "label" => assert_eq!(tab["ok"]["context"]["stream"]["id"], "next"),
-            "none" => assert_eq!(
+        if stream.is_string() {
+            assert_eq!(tab["ok"]["context"]["stream"]["id"], stream, "{case}");
+        } else if stream.is_null() {
+            assert_eq!(tab["ok"]["context"]["kind"], "unassociated", "{case}");
+            assert_eq!(
                 tab["ok"]["context"]["streams"]["streams"]
                     .as_array()
                     .unwrap()
                     .len(),
                 3
-            ),
-            _ => assert_eq!(tab["error"]["kind"], "unavailable", "{case}"),
+            );
+        } else if case == "wrong-endpoint" {
+            assert_eq!(tab["error"]["kind"], "unavailable");
+            assert!(
+                tab["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("hc is unavailable: "),
+                "{tab}"
+            );
+        } else {
+            assert_eq!(tab["error"], stream, "{case}");
         }
         assert_eq!(values[1]["ok"]["kind"], "stream", "{case}");
         assert_eq!(core.finish().len(), expected_calls, "{case}");

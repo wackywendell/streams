@@ -194,36 +194,47 @@ impl App {
                         )
                     });
                     let observer = needs_native.then(frontend::hc::processes::OwnerProcesses::new);
-                    let mut terminals = None;
-                    if needs_native
-                        && let Ok(socket) =
-                            frontend::hc::HcEndpoint::resolve(&self.environment, &self.cwd)
-                        && let Ok(client) = frontend::hc::HcClient::connect(
-                            socket,
-                            Some(&request.endpoint),
-                            30.0,
-                            None,
-                        )
-                    {
-                        verified_endpoint = Some(client.endpoint().clone());
-                        if let Some(Ok(observer)) = &observer {
-                            terminals = Some(streams::runtime::hc::HcTerminals::new(
-                                streams::runtime::hc::HcOperation::new(client),
-                                observer,
-                                facade.scope().clone(),
-                            ));
+                    let observer = match &observer {
+                        Some(Ok(observer)) => {
+                            Ok(observer as &dyn frontend::hc::processes::ProcessObserver)
                         }
-                    }
-                    let values = match terminals.as_mut() {
-                        Some(native) => facade.read_views(
+                        _ => Err("host processes cannot be observed".to_owned()),
+                    };
+                    let mut terminals = if needs_native {
+                        frontend::hc::HcEndpoint::resolve(&self.environment, &self.cwd)
+                            .and_then(|socket| {
+                                frontend::hc::HcClient::connect(
+                                    socket,
+                                    Some(&request.endpoint),
+                                    30.0,
+                                    None,
+                                )
+                            })
+                            .map(|client| {
+                                verified_endpoint = Some(client.endpoint().clone());
+                                streams::runtime::hc::HcTerminals::new(
+                                    streams::runtime::hc::HcOperation::new(client),
+                                    observer,
+                                    facade.scope().clone(),
+                                )
+                            })
+                            .map_err(|error| format!("hc is unavailable: {}", error.message))
+                    } else {
+                        Err("no terminal context was requested".to_owned())
+                    };
+                    let values = facade
+                        .read_views(
                             selections.as_slice(),
-                            Access::Available {
-                                value: native as &mut dyn TerminalObservation,
+                            match terminals.as_mut() {
+                                Ok(native) => Access::Available {
+                                    value: native as &mut dyn TerminalObservation,
+                                },
+                                Err(reason) => Access::Unavailable {
+                                    reason: reason.clone(),
+                                },
                             },
-                        ),
-                        None => facade.read_saved_views(selections.as_slice()),
-                    }
-                    .map_err(|_| WireError::unavailable("saved views are unavailable"))?;
+                        )
+                        .map_err(|_| WireError::unavailable("saved views are unavailable"))?;
                     let herdr_config = self
                         .config
                         .load()

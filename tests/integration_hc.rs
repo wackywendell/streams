@@ -2072,6 +2072,67 @@ fn prepared_hc_terminal_start_keeps_exact_inputs_and_never_replays() {
 }
 
 #[test]
+fn terminal_routing_works_when_host_processes_cannot_be_observed() {
+    use streams::integration::{Access, ForegroundConversation, TerminalObservation};
+    let scope = WorkScope {
+        catalog: "catalog".into(),
+        host: "host".into(),
+    };
+    let terminal = NativeRef {
+        adapter: FrontendId::hc(),
+        endpoint: EndpointId("core".into()),
+        key: "t1".into(),
+    };
+    let space = NativeRef {
+        key: "space".into(),
+        ..terminal.clone()
+    };
+    let core = FakeCore::new(vec![
+        Step(
+            "doc.get",
+            json!({"name":"streams"}),
+            Reply::Value(
+                json!({"version":1,"value":{"version":1,"spaces":{"space":SpaceAssociation {
+                    scope: scope.clone(),
+                    stream: "work".into(),
+                    space,
+                }}}}),
+            ),
+        ),
+        Step(
+            "doc.get",
+            json!({"name":"herdr-app"}),
+            Reply::Value(
+                json!({"version":2,"value":{"spaces":[{"id":"space","tabs":[{"id":"tab","root":{"type":"block","content":{"terminal":"t1"}}}]}]}}),
+            ),
+        ),
+    ]);
+    let mut terminals = streams::runtime::hc::HcTerminals::new(
+        core.operation(),
+        Err("host processes cannot be observed".into()),
+        scope,
+    );
+    assert_eq!(
+        terminals.foreground_conversation(&terminal),
+        ForegroundConversation::Unknown {
+            reason: "host processes cannot be observed".into()
+        }
+    );
+    assert_eq!(
+        terminals.routed_stream(&terminal),
+        Access::Available {
+            value: Some("work".into())
+        }
+    );
+    drop(terminals);
+    assert_eq!(
+        core.finish().len(),
+        3,
+        "no terminal read without an observer"
+    );
+}
+
+#[test]
 fn registered_foreground_reads_only_the_requested_terminal() {
     use streams::integration::ForegroundConversation;
     struct NoProcesses;
@@ -2092,11 +2153,19 @@ fn registered_foreground_reads_only_the_requested_terminal() {
         endpoint: EndpointId("core".into()),
         key: "t1".into(),
     };
-    let mut operation = core.operation();
+    let mut terminals = streams::runtime::hc::HcTerminals::new(
+        core.operation(),
+        Ok(&NoProcesses),
+        WorkScope {
+            catalog: "catalog".into(),
+            host: "host".into(),
+        },
+    );
+    use streams::integration::TerminalObservation;
     assert_eq!(
-        operation.foreground(&terminal, &NoProcesses),
+        terminals.foreground_conversation(&terminal),
         ForegroundConversation::NotApplicable
     );
-    drop(operation);
+    drop(terminals);
     assert_eq!(core.finish().len(), 2);
 }

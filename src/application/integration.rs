@@ -347,13 +347,16 @@ impl<'a> Streams<'a> {
     pub fn read_views(
         &self,
         selections: &[crate::integration::ViewSelection],
-        terminals: crate::integration::Access<&mut dyn crate::integration::TerminalObservation>,
+        mut terminals: crate::integration::Access<&mut dyn crate::integration::TerminalObservation>,
     ) -> Result<Vec<crate::integration::WireResult<crate::integration::ModReadValue>>> {
         use crate::integration::{
             Access, CompanionVisibility, FrameContext, ModReadValue, TabContext, ViewSelection,
             WireError, WireResult,
         };
-        let mut terminals = terminals;
+        let unavailable = match &terminals {
+            Access::Unavailable { reason } => reason.clone(),
+            _ => "terminal context is unsupported".to_owned(),
+        };
         let mut enrolled = std::collections::HashMap::new();
         let mut expanded = selections.to_vec();
         let mut frames = std::collections::BTreeMap::new();
@@ -385,12 +388,12 @@ impl<'a> Streams<'a> {
                     frames.insert(
                         index,
                         FrameContext::Unavailable {
-                            reason: "frame context is unavailable".into(),
+                            reason: unavailable.clone(),
                         },
                     );
                 }
                 (ViewSelection::Tab { .. }, _) => {
-                    tab_errors.insert(index, WireError::unavailable("tab context is unavailable"));
+                    tab_errors.insert(index, WireError::unavailable(unavailable.clone()));
                 }
                 _ => {}
             }
