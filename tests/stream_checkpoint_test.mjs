@@ -19,6 +19,11 @@ let previewCli;
 /** Rust's real preview, for fakes whose panel adopts retained automatic reference input. */
 const rustPreview=input=>(previewCli??=childCli(mkdtempSync(join(tmpdir(),'streams-preview-')),'preview')).preview(input);
 test.after(async()=>{await previewCli?.stop();});
+/** A fake apply that refuses malformed references, as Rust does, and records what it accepts. */
+const validatingApply=writes=>async request=>{
+ for(const row of request.changes.reference_changes??[])if(row.desired!==null&&!isReferenceValue(row.desired))throw Error('invalid captured edit: invalid reference');
+ writes.push(request);return {save:{local:'persisted',domain:{outcome:'changes'}}};
+};
 const { runReport } = await load('report-workflow');
 const { checkpointContext, infer, changesSchema, buildInferencePayload, parseInferenceResponse } = await load('agent');
 const { chooseInitial } = await load('chooser');
@@ -266,12 +271,13 @@ test('a reset of a readable card discards nothing and says nothing',async()=>{
  assert.equal(discards,1);assert.deepEqual(notices,[]);
 });
 test('malformed deferred references leave saved progress and its receipt intact',async()=>{
- for(const proposals of [null,{}])for(const progress of [false,true]) {
+ for(const proposals of [null,{},[null],[{...proposedDocument,target:{...proposedDocument.target,commit:null}}]])for(const progress of [false,true]) {
   const catalog=context(),receipts=[],notices=[],requests=[],tasks=[];let captures=0;
   const saved=await runReport({kind:'report',force:true},{signal:new AbortController().signal,automaticEnrollment:true,
    capture:async()=>{captures++;return {native:'native',cwd:'/repo',evidence:{messages:[],leafId:null},catalog:structuredClone(catalog),valid:()=>true,attached:async()=>true};},
    generate:async request=>{tasks.push(request.type);return {changes:progress?{state:'Saved'}:{},reference_proposals:proposals};},
-   apply:async request=>{requests.push(request);return {save:{local:'persisted',domain:{outcome:'changes'}}};},enroll:assert.fail,
+   // Rust's preview refuses the malformed references; accepted requests save.
+   apply:async request=>{await rustPreview({catalog,action:'apply',request});requests.push(request);return {save:{local:'persisted',domain:{outcome:'changes'}}};},enroll:assert.fail,
    receipt:value=>receipts.push(value),notice:(text,level)=>notices.push({text,level}),
   });
   assert.equal(saved,progress);assert.deepEqual(tasks,['session']);assert.equal(captures,1);assert.equal(requests.length,progress?1:0);assert.equal(receipts.length,progress?1:0);
@@ -1333,10 +1339,15 @@ test('fallback reference manager selects identical metadata by exact keys for ed
  assert.equal(live.stream.references[0].name,'Renamed');assert.equal(live.stream.references[1].state,'dropped');assert.equal(receipts.length,2);assert.equal(choose.length,0);
 });
 /** A fake apply that refuses the reference values Rust refuses; the wire types mirror its validation. */
-const validatingApply=writes=>async request=>{
- for(const row of request.changes.reference_changes??[])if(row.desired!==null&&!isReferenceValue(row.desired))throw Error('invalid captured edit: invalid reference');
- writes.push(request);return {save:{local:'persisted',domain:{outcome:'changes'}}};
-};
+test('the fake patch schemas follow Rust for every title mode, title default and goal mode',async()=>{
+ const titleModes=['automatic','manual','inherit'],defaults=['automatic','manual'];
+ for(const streamTitle of titleModes)for(const sessionTitle of titleModes)for(const streamDefault of defaults)for(const sessionDefault of defaults)for(const goalMode of defaults){
+  const catalog=context();Object.assign(catalog.stream,{title_mode:streamTitle,goal_mode:goalMode});catalog.session.title_mode=sessionTitle;catalog.sessions=[structuredClone(catalog.session)];
+  catalog.title_defaults={stream:streamDefault,session:sessionDefault};
+  const {catalog:projected}=await rustPreview({catalog,action:'apply',request:editRequest(catalog,'session',{},'user')});
+  assert.deepEqual(patchSchemas(catalog),projected.patch_schemas,JSON.stringify({streamTitle,sessionTitle,streamDefault,sessionDefault,goalMode}));
+ }
+});
 test('new document form retains invalid input and resumes without repository aliases',async()=>{
  const live=context();live.stream.repositories={};const state={discussion:{input:'',messages:[]},edits:new Map()},writes=[],notices=[];
  const actions=['Stream · References…','Add reference…','Kind…','Document','Role…','Brief','Name…','Purpose…','Repository URL…','Path…','Ref…','Save reference','Keep input and close','Add reference…','Ref…','Save reference','Close','Close'];

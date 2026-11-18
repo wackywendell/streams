@@ -151,13 +151,20 @@ export function isSession(value: unknown): value is SessionWire {
       && (value.checkout.repository_url === undefined || value.checkout.repository_url === null || identity(value.checkout.repository_url)));
 }
 
+const fieldRows = (value: unknown) => Array.isArray(value) && value.every(row => object(row) && typeof row.field === 'string' && object(row.schema));
+const actorSchemas = (value: unknown) => object(value) && fieldRows(value.automatic) && fieldRows(value.user);
+/** Schemas for exactly the records the context holds. */
+const patchSchemas = (value: unknown, context: Record<string, unknown>) => object(value)
+  && (['stream', 'session'] as const).every(kind => context[kind] === null ? !Object.hasOwn(value, kind) : actorSchemas(value[kind]))
+  && Object.keys(value).every(kind => kind === 'stream' || kind === 'session');
+
 export function parseLocalContext(value: unknown): LocalContext & Record<string, unknown> {
   if (!object(value) || Object.hasOwn(value, 'error') || Object.hasOwn(value, 'authority')
     || !identity(value.catalog_source) || !identity(value.host_id)
     || !(value.stream === null || isStream(value.stream)) || !(value.session === null || isSession(value.session))
     || !Array.isArray(value.sessions) || !value.sessions.every(isSession)
     || !object(value.title_defaults) || !mode(value.title_defaults.stream) || !mode(value.title_defaults.session)
-    || !object(value.patch_schemas)) {
+    || !patchSchemas(value.patch_schemas, value)) {
     throw new Error('Invalid local catalog context');
   }
   const session = value.session;

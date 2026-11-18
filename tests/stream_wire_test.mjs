@@ -29,6 +29,24 @@ test('record-local context requires fresh title defaults and rejects Authority-b
   }
 });
 
+test('context requires patch schemas for exactly its records', () => {
+  for (const change of [
+    value => delete value.patch_schemas,
+    value => value.patch_schemas = [],
+    value => delete value.patch_schemas.stream,
+    value => value.patch_schemas.session.user = {},
+    value => value.patch_schemas.stream.automatic = [{field:'title'}],
+    value => value.patch_schemas.host = {automatic:[], user:[]},
+  ]) {
+    const invalid = structuredClone({...context()}); change(invalid);
+    assert.throws(() => parseLocalContext(invalid), /Invalid local catalog context/);
+  }
+  const unattached = structuredClone({...context(), session:null, sessions:[]});
+  assert.throws(() => parseLocalContext(unattached), /Invalid local catalog context/, 'no schemas for a missing Session');
+  delete unattached.patch_schemas.session;
+  assert.doesNotThrow(() => parseLocalContext(unattached));
+});
+
 test('addressed context rejects a roster and inconsistent host, membership or native identity', () => {
   for (const change of [
     value => value.stream.owner.host_id = 'foreign',
@@ -40,7 +58,7 @@ test('addressed context rejects a roster and inconsistent host, membership or na
     const invalid = context(); change(invalid);
     assert.throws(() => parseLocalContext(invalid), /Inconsistent addressed catalog context/);
   }
-  assert.doesNotThrow(() => parseLocalContext({...context(), session:null, sessions:[]}));
+  assert.doesNotThrow(() => parseLocalContext(withPatchSchemas({...context(), session:null, sessions:[]})));
   const foreign = context();
   foreign.stream.owner.host_id = foreign.session.host_id = 'foreign';
   assert.doesNotThrow(() => parseLocalContext(foreign));

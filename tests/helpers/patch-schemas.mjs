@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 const fixture = JSON.parse(readFileSync(new URL('../fixtures/agent-patch-schemas.json', import.meta.url), 'utf8'));
 const manualTitle = (record, fallback) => (record.title_mode === 'inherit' ? fallback : record.title_mode) === 'manual';
 
-/** A fake of Rust's patch schemas: automatic reports cannot write manual text. */
+/** A fake of Rust's patch schemas: automatic reports cannot write manual text. A Pi test checks it against Rust's preview. */
 export function patchSchemas({stream, session, title_defaults}) {
   const schemas = {};
   if (stream) schemas.stream = {
