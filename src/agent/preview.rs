@@ -10,7 +10,7 @@ use crate::{
         stream_from_data,
     },
     model::{Record, Session, Stream, TitleDefaults, ValidationError, check_text},
-    operations::Reconciliation,
+    operations::{Reconciliation, patches::agent_patch_schemas},
 };
 
 use super::{
@@ -42,6 +42,9 @@ struct ContextWire {
     _checkouts: Option<Value>,
     #[serde(default, rename = "document_locations")]
     _documents: Option<Value>,
+    // Derived from the records; the projection recomputes it.
+    #[serde(default, rename = "patch_schemas")]
+    _patch_schemas: Option<Value>,
 }
 
 struct Snapshot {
@@ -117,6 +120,10 @@ impl Snapshot {
         self.original.insert(
             "sessions".into(),
             json!(self.session.iter().collect::<Vec<_>>()),
+        );
+        self.original.insert(
+            "patch_schemas".into(),
+            agent_patch_schemas(self.stream.as_ref(), self.session.as_ref(), self.defaults),
         );
         Value::Object(self.original)
     }

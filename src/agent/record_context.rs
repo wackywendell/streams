@@ -2,10 +2,11 @@
 
 use std::collections::BTreeSet;
 
-use serde::Serialize;
+use serde::{Serialize, ser::SerializeStruct};
 
 use crate::{
     model::{Record, RecordKind, Session, Stream, TitleDefaults, ValidationError, check_text},
+    operations::patches::agent_patch_schemas,
     runtime::conversations::Harness,
     storage::{
         StorageError,
@@ -37,7 +38,7 @@ pub enum RecordContextError {
 }
 
 /// Captured inputs for this conversation, not an enumeration of the effort's contributors.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RecordContext {
     pub catalog_source: String,
     pub host_id: String,
@@ -45,6 +46,29 @@ pub struct RecordContext {
     pub stream: Option<Stream>,
     pub session: Option<Session>,
     pub sessions: Vec<Session>,
+}
+
+/// The wire form also carries `patch_schemas`, what an agent may change in these records,
+/// so a frontend builds its tools and forms without a field policy of its own.
+impl Serialize for RecordContext {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut wire = serializer.serialize_struct("RecordContext", 7)?;
+        wire.serialize_field("catalog_source", &self.catalog_source)?;
+        wire.serialize_field("host_id", &self.host_id)?;
+        wire.serialize_field("title_defaults", &self.title_defaults)?;
+        wire.serialize_field("stream", &self.stream)?;
+        wire.serialize_field("session", &self.session)?;
+        wire.serialize_field("sessions", &self.sessions)?;
+        wire.serialize_field(
+            "patch_schemas",
+            &agent_patch_schemas(
+                self.stream.as_ref(),
+                self.session.as_ref(),
+                self.title_defaults,
+            ),
+        )?;
+        wire.end()
+    }
 }
 
 /// The caller holds the admitted record reader; no discovery, history or native evidence.

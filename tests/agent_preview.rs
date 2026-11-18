@@ -51,6 +51,12 @@ fn envelope(context: &Value, action: &str, request: &Value) -> Value {
 fn project(context: &Value, action: &str, request: &Value) -> Value {
     preview(&envelope(context, action, request).to_string()).unwrap()
 }
+/// The projected records, without the patch schemas the projection derives from them.
+fn records(catalog: &Value) -> Value {
+    let mut records = catalog.clone();
+    records.as_object_mut().unwrap().remove("patch_schemas");
+    records
+}
 fn reject(context: &Value, action: &str, request: &Value) {
     let source = envelope(context, action, request).to_string();
     assert!(preview(&source).is_err(), "unexpectedly accepted {source}");
@@ -136,7 +142,7 @@ fn reference_preview_partial_correction_and_whole_refusal_keep_domain_rows() {
         result["receipt"]["save"]["domain"]["reference_results"][0]["reason"],
         "replacement target already exists"
     );
-    assert_eq!(result["catalog"], captured);
+    assert_eq!(records(&result["catalog"]), captured);
     let mut changed_context = captured.clone();
     changed_context["stream"]["title"] = json!("Changed capture");
     reject(&changed_context, "apply", &request);
@@ -170,7 +176,7 @@ fn reference_preview_session_revisit_and_automatic_restoration_are_receipted() {
         result["receipt"]["save"]["domain"]["reference_results"][0]["action"],
         "restore"
     );
-    assert_eq!(result["catalog"], captured);
+    assert_eq!(records(&result["catalog"]), captured);
     let mut revisited = captured.clone();
     revisited["session"]["membership_epoch"] = json!(2);
     revisited["sessions"] = json!([revisited["session"]]);
@@ -632,4 +638,41 @@ fn malformed_objects_unknown_fields_enum_maps_and_duplicate_json_are_rejected() 
     );
     assert_ne!(source, duplicate);
     assert!(preview(&duplicate).is_err());
+}
+
+#[test]
+fn projected_catalog_carries_patch_schemas_for_its_new_records() {
+    let captured = context();
+    let automatic = |catalog: &Value| {
+        let mut fields: Vec<_> = catalog["patch_schemas"]["stream"]["automatic"]["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        fields.sort();
+        fields
+    };
+    let request = update(
+        &captured,
+        "stream",
+        json!({"title_mode":"manual"}),
+        Actor::User,
+    );
+    let result = project(&captured, "apply", &request);
+    assert_eq!(automatic(&result["catalog"]), ["goal", "goal_short"]);
+    let unchanged = project(
+        &captured,
+        "apply",
+        &update(
+            &captured,
+            "stream",
+            json!({"title_mode":"automatic"}),
+            Actor::User,
+        ),
+    );
+    assert_eq!(
+        automatic(&unchanged["catalog"]),
+        ["goal", "goal_short", "title"]
+    );
 }
