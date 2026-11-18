@@ -1,40 +1,40 @@
 {
   "stream": {
     "automatic": [
-      {"field": "title", "schema": {"type": "string"}},
-      {"field": "goal", "schema": {"anyOf": [{"type": "string"}, {"type": "null"}]}},
-      {"field": "goal_short", "schema": {"anyOf": [{"type": "string"}, {"type": "null"}]}}
+      {"field": "title", "schema": {"type": "string", "minLength": 1}},
+      {"field": "goal", "schema": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]}},
+      {"field": "goal_short", "schema": {"anyOf": [{"type": "string", "minLength": 1, "maxLength": 24}, {"type": "null"}]}}
     ],
     "user": [
-      {"field": "title", "schema": {"type": "string"}},
+      {"field": "title", "schema": {"type": "string", "minLength": 1}},
       {"field": "title_mode", "schema": {"type": "string", "enum": ["automatic", "manual", "inherit"]}},
-      {"field": "goal", "schema": {"anyOf": [{"type": "string"}, {"type": "null"}]}},
-      {"field": "goal_short", "schema": {"anyOf": [{"type": "string"}, {"type": "null"}]}},
+      {"field": "goal", "schema": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]}},
+      {"field": "goal_short", "schema": {"anyOf": [{"type": "string", "minLength": 1, "maxLength": 24}, {"type": "null"}]}},
       {"field": "goal_mode", "schema": {"type": "string", "enum": ["automatic", "manual"]}},
       {"field": "status", "schema": {"type": "string", "enum": ["active", "waiting", "blocked", "parked", "done", "closed"]}}
     ]
   },
   "session": {
     "automatic": [
-      {"field": "title", "schema": {"type": "string"}},
+      {"field": "title", "schema": {"type": "string", "minLength": 1}},
       {"field": "status", "schema": {"type": "string", "enum": ["active", "waiting", "blocked", "parked", "done", "closed"]}},
       {"field": "recap", "schema": {"type": "string"}},
-      {"field": "recap_short", "schema": {"anyOf": [{"type": "string"}, {"type": "null"}]}},
+      {"field": "recap_short", "schema": {"anyOf": [{"type": "string", "minLength": 1, "maxLength": 24}, {"type": "null"}]}},
       {"field": "state", "schema": {"type": "string"}},
-      {"field": "state_short", "schema": {"anyOf": [{"type": "string"}, {"type": "null"}]}},
+      {"field": "state_short", "schema": {"anyOf": [{"type": "string", "minLength": 1, "maxLength": 24}, {"type": "null"}]}},
       {"field": "remaining", "schema": {"type": "string"}},
-      {"field": "remaining_short", "schema": {"anyOf": [{"type": "string"}, {"type": "null"}]}}
+      {"field": "remaining_short", "schema": {"anyOf": [{"type": "string", "minLength": 1, "maxLength": 24}, {"type": "null"}]}}
     ],
     "user": [
-      {"field": "title", "schema": {"type": "string"}},
+      {"field": "title", "schema": {"type": "string", "minLength": 1}},
       {"field": "title_mode", "schema": {"type": "string", "enum": ["automatic", "manual", "inherit"]}},
       {"field": "status", "schema": {"type": "string", "enum": ["active", "waiting", "blocked", "parked", "done", "closed"]}},
       {"field": "recap", "schema": {"type": "string"}},
-      {"field": "recap_short", "schema": {"anyOf": [{"type": "string"}, {"type": "null"}]}},
+      {"field": "recap_short", "schema": {"anyOf": [{"type": "string", "minLength": 1, "maxLength": 24}, {"type": "null"}]}},
       {"field": "state", "schema": {"type": "string"}},
-      {"field": "state_short", "schema": {"anyOf": [{"type": "string"}, {"type": "null"}]}},
+      {"field": "state_short", "schema": {"anyOf": [{"type": "string", "minLength": 1, "maxLength": 24}, {"type": "null"}]}},
       {"field": "remaining", "schema": {"type": "string"}},
-      {"field": "remaining_short", "schema": {"anyOf": [{"type": "string"}, {"type": "null"}]}}
+      {"field": "remaining_short", "schema": {"anyOf": [{"type": "string", "minLength": 1, "maxLength": 24}, {"type": "null"}]}}
     ]
   }
 }

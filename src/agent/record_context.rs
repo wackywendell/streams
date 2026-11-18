@@ -2,11 +2,11 @@
 
 use std::collections::BTreeSet;
 
-use serde::{Serialize, ser::SerializeStruct};
+use serde::Serialize;
 
 use crate::{
     model::{Record, RecordKind, Session, Stream, TitleDefaults, ValidationError, check_text},
-    operations::patches::agent_patch_schemas,
+    operations::patches::PatchSchemas,
     runtime::conversations::Harness,
     storage::{
         StorageError,
@@ -38,7 +38,7 @@ pub enum RecordContextError {
 }
 
 /// Captured inputs for this conversation, not an enumeration of the effort's contributors.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RecordContext {
     pub catalog_source: String,
     pub host_id: String,
@@ -48,26 +48,25 @@ pub struct RecordContext {
     pub sessions: Vec<Session>,
 }
 
-/// The wire form also carries `patch_schemas`, what an agent may change in these records,
-/// so a frontend builds its tools and forms without a field policy of its own.
-impl Serialize for RecordContext {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut wire = serializer.serialize_struct("RecordContext", 7)?;
-        wire.serialize_field("catalog_source", &self.catalog_source)?;
-        wire.serialize_field("host_id", &self.host_id)?;
-        wire.serialize_field("title_defaults", &self.title_defaults)?;
-        wire.serialize_field("stream", &self.stream)?;
-        wire.serialize_field("session", &self.session)?;
-        wire.serialize_field("sessions", &self.sessions)?;
-        wire.serialize_field(
-            "patch_schemas",
-            &agent_patch_schemas(
+/// The wire form of a context also carries `patch_schemas`, what an agent may change in
+/// these records, so a frontend builds its tools and forms without a field policy of its own.
+#[derive(Serialize)]
+pub struct RecordContextWire<'a> {
+    #[serde(flatten)]
+    context: &'a RecordContext,
+    patch_schemas: PatchSchemas,
+}
+
+impl RecordContext {
+    pub fn wire(&self) -> RecordContextWire<'_> {
+        RecordContextWire {
+            context: self,
+            patch_schemas: PatchSchemas::new(
                 self.stream.as_ref(),
                 self.session.as_ref(),
                 self.title_defaults,
             ),
-        )?;
-        wire.end()
+        }
     }
 }
 

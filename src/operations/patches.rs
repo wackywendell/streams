@@ -4,13 +4,12 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Deserializer, Serialize};
-use serde_json::{Map, Value, json};
 use strum::VariantNames;
 
 use super::Actor;
 use crate::model::{
-    NamingMode, Record, Repository, Session, Status, Stream, TitleDefaults, TitleMode,
-    ValidationError,
+    NamingMode, Record, Repository, SHORT_TEXT_CHARS, Session, Status, Stream, TitleDefaults,
+    TitleMode, ValidationError, short_text,
 };
 
 /// Who may set a field.
@@ -46,33 +45,86 @@ impl Access {
     }
 }
 
-/// The JSON schema an agent request's value for a field must match.
-trait FieldSchema {
-    fn schema() -> Value;
+/// A JSON value type a field schema names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum JsonType {
+    String,
+    Object,
+    Null,
 }
-impl FieldSchema for String {
-    fn schema() -> Value {
-        json!({"type": "string"})
+
+/// The JSON schema of one value: the subset of JSON Schema frontends read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct ValueSchema {
+    #[serde(rename = "type")]
+    pub kind: JsonType,
+    #[serde(rename = "enum", skip_serializing_if = "<[_]>::is_empty")]
+    pub choices: &'static [&'static str],
+    #[serde(rename = "minLength", skip_serializing_if = "Option::is_none")]
+    pub min_length: Option<usize>,
+    #[serde(rename = "maxLength", skip_serializing_if = "Option::is_none")]
+    pub max_length: Option<usize>,
+}
+
+impl ValueSchema {
+    const fn of(kind: JsonType) -> Self {
+        Self {
+            kind,
+            choices: &[],
+            min_length: None,
+            max_length: None,
+        }
     }
-}
-impl FieldSchema for Option<String> {
-    fn schema() -> Value {
-        json!({"anyOf": [{"type": "string"}, {"type": "null"}]})
-    }
-}
-macro_rules! choice_schema {
-    ($($ty:ty),*) => {
-        $(impl FieldSchema for $ty {
-            fn schema() -> Value {
-                json!({"type": "string", "enum": <$ty>::VARIANTS})
-            }
-        })*
+    /// Any text, including empty text.
+    pub const TEXT: Self = Self::of(JsonType::String);
+    pub const NONEMPTY: Self = Self {
+        min_length: Some(1),
+        ..Self::TEXT
     };
+    /// A short form, which names tabs and cards. Longer text is cut to fit.
+    pub const SHORT: Self = Self {
+        max_length: Some(SHORT_TEXT_CHARS),
+        ..Self::NONEMPTY
+    };
+    pub const OBJECT: Self = Self::of(JsonType::Object);
+    pub const NULL: Self = Self::of(JsonType::Null);
+    pub const fn choice(choices: &'static [&'static str]) -> Self {
+        Self {
+            choices,
+            ..Self::TEXT
+        }
+    }
 }
-choice_schema!(Status, TitleMode, NamingMode);
-impl FieldSchema for BTreeMap<String, Repository> {
-    fn schema() -> Value {
-        json!({"type": "object"})
+
+/// The JSON schema an agent request's value for a field must match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+pub enum FieldSchema {
+    Value(ValueSchema),
+    /// The value, or null to clear the field.
+    Nullable {
+        #[serde(rename = "anyOf")]
+        any_of: [ValueSchema; 2],
+    },
+}
+
+/// A field's schema is its value's, and also allows null when the field is optional.
+trait Optionality {
+    fn schema(value: ValueSchema) -> FieldSchema {
+        FieldSchema::Value(value)
+    }
+}
+impl Optionality for String {}
+impl Optionality for Status {}
+impl Optionality for TitleMode {}
+impl Optionality for NamingMode {}
+impl Optionality for BTreeMap<String, Repository> {}
+impl<T> Optionality for Option<T> {
+    fn schema(value: ValueSchema) -> FieldSchema {
+        FieldSchema::Nullable {
+            any_of: [value, ValueSchema::NULL],
+        }
     }
 }
 
@@ -89,7 +141,7 @@ pub trait PatchField: Copy + PartialEq + 'static {
     /// The wire name, as conflicts and agent requests spell it.
     fn name(self) -> &'static str;
     fn access(self) -> Access;
-    fn schema(self) -> Value;
+    fn schema(self) -> FieldSchema;
 }
 
 /// What edits need from either patch, so one reconciliation serves both record kinds.
@@ -119,7 +171,7 @@ macro_rules! patch {
     (
         $(#[$meta:meta])*
         $patch:ident, $field_enum:ident for $record:ident, check $check:ident {
-            $($field:ident => $variant:ident: $ty:ty, $access:ident;)*
+            $($field:ident => $variant:ident: $ty:ty, $access:ident, $schema:expr;)*
         }
     ) => {
         $(#[$meta])*
@@ -152,9 +204,9 @@ macro_rules! patch {
                 }
             }
 
-            fn schema(self) -> Value {
+            fn schema(self) -> FieldSchema {
                 match self {
-                    $(Self::$variant => <$ty as FieldSchema>::schema(),)*
+                    $(Self::$variant => <$ty as Optionality>::schema($schema),)*
                 }
             }
         }
@@ -207,28 +259,28 @@ macro_rules! patch {
 patch! {
     /// Changes to a Stream's own fields. References change through `ReferenceChanges`.
     StreamPatch, StreamField for Stream, check validate {
-        title => Title: String, Report;
-        title_mode => TitleMode: TitleMode, User;
-        goal => Goal: Option<String>, Report;
-        goal_short => GoalShort: Option<String>, Report;
-        goal_mode => GoalMode: NamingMode, User;
-        status => Status: Status, User;
-        repositories => Repositories: BTreeMap<String, Repository>, Cli;
+        title => Title: String, Report, ValueSchema::NONEMPTY;
+        title_mode => TitleMode: TitleMode, User, ValueSchema::choice(TitleMode::VARIANTS);
+        goal => Goal: Option<String>, Report, ValueSchema::NONEMPTY;
+        goal_short => GoalShort: Option<String>, Report, ValueSchema::SHORT;
+        goal_mode => GoalMode: NamingMode, User, ValueSchema::choice(NamingMode::VARIANTS);
+        status => Status: Status, User, ValueSchema::choice(Status::VARIANTS);
+        repositories => Repositories: BTreeMap<String, Repository>, Cli, ValueSchema::OBJECT;
     }
 }
 
 patch! {
     /// Changes to a Session's own fields. Membership changes through the move operation.
     SessionPatch, SessionField for Session, check validate_portable {
-        title => Title: String, Report;
-        title_mode => TitleMode: TitleMode, User;
-        status => Status: Status, Report;
-        recap => Recap: String, Report;
-        recap_short => RecapShort: Option<String>, Report;
-        state => State: String, Report;
-        state_short => StateShort: Option<String>, Report;
-        remaining => Remaining: String, Report;
-        remaining_short => RemainingShort: Option<String>, Report;
+        title => Title: String, Report, ValueSchema::NONEMPTY;
+        title_mode => TitleMode: TitleMode, User, ValueSchema::choice(TitleMode::VARIANTS);
+        status => Status: Status, Report, ValueSchema::choice(Status::VARIANTS);
+        recap => Recap: String, Report, ValueSchema::TEXT;
+        recap_short => RecapShort: Option<String>, Report, ValueSchema::SHORT;
+        state => State: String, Report, ValueSchema::TEXT;
+        state_short => StateShort: Option<String>, Report, ValueSchema::SHORT;
+        remaining => Remaining: String, Report, ValueSchema::TEXT;
+        remaining_short => RemainingShort: Option<String>, Report, ValueSchema::SHORT;
     }
 }
 
@@ -246,7 +298,8 @@ impl StreamPatch {
     }
 
     /// A user's text edit makes that text manual, and a changed goal clears its short form.
-    /// An explicitly supplied mode or short form is kept.
+    /// An explicitly supplied mode or short form is kept, cut to a short form's length. An
+    /// automatic report's short form of a missing goal is dropped.
     pub fn normalized(mut self, before: &Stream, actor: Actor) -> Self {
         if actor == Actor::User {
             if self.title.is_some() {
@@ -259,6 +312,11 @@ impl StreamPatch {
         if self.goal.as_ref().is_some_and(|goal| *goal != before.goal) {
             self.goal_short.get_or_insert(None);
         }
+        let goal = self.goal.as_ref().unwrap_or(&before.goal);
+        if actor == Actor::Automatic && goal.is_none() && matches!(self.goal_short, Some(Some(_))) {
+            self.goal_short = Some(None);
+        }
+        shorten(&mut self.goal_short);
         self
     }
 }
@@ -274,7 +332,7 @@ impl SessionPatch {
     }
 
     /// A user's title edit makes it manual, and changed prose clears its short form.
-    /// An explicitly supplied mode or short form is kept.
+    /// An explicitly supplied mode or short form is kept, cut to a short form's length.
     pub fn normalized(mut self, before: &Session, actor: Actor) -> Self {
         if actor == Actor::User && self.title.is_some() {
             self.title_mode.get_or_insert(TitleMode::Manual);
@@ -291,48 +349,79 @@ impl SessionPatch {
             if text.as_ref().is_some_and(|text| text != current) {
                 short.get_or_insert(None);
             }
+            shorten(short);
         }
         self
     }
 }
 
-/// The fields an agent request for `actor` may change, in declaration order, each with the
-/// JSON schema of its value, without the fields the record protects from automatic reports.
-/// A list keeps the order a frontend shows them in.
-fn agent_schema<F: PatchField>(actor: Actor, protected: &[F]) -> Value {
-    F::ALL
-        .iter()
-        .copied()
-        .filter(|field| field.access().permits(actor, Channel::Agent))
-        .filter(|field| actor != Actor::Automatic || !protected.contains(field))
-        .map(|field| json!({"field": field.name(), "schema": field.schema()}))
-        .collect()
+fn shorten(short: &mut Option<Option<String>>) {
+    if let Some(Some(text)) = short {
+        *text = short_text(text);
+    }
 }
 
-fn actor_schemas<F: PatchField>(protected: &[F]) -> Value {
-    json!({
-        "automatic": agent_schema(Actor::Automatic, protected),
-        "user": agent_schema(Actor::User, protected),
-    })
+/// One field an agent request may change, and the schema of its value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FieldRow {
+    pub field: &'static str,
+    pub schema: FieldSchema,
+}
+
+/// The fields each actor may change in one record, in declaration order. A list keeps the
+/// order a frontend shows them in.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ActorSchemas {
+    pub automatic: Vec<FieldRow>,
+    pub user: Vec<FieldRow>,
 }
 
 /// What an agent may change in the captured records, per record kind and actor. A frontend
 /// builds its model tools and edit forms from these; apply still checks every request.
-pub fn agent_patch_schemas(
-    stream: Option<&Stream>,
-    session: Option<&Session>,
-    defaults: TitleDefaults,
-) -> Value {
-    let mut schemas = Map::new();
-    if let Some(stream) = stream {
-        let protected = StreamPatch::protected(stream, defaults.stream);
-        schemas.insert("stream".into(), actor_schemas(&protected));
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PatchSchemas {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream: Option<ActorSchemas>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session: Option<ActorSchemas>,
+}
+
+impl ActorSchemas {
+    /// Automatic rows leave out the fields the record protects from automatic reports.
+    fn new<F: PatchField>(protected: &[F]) -> Self {
+        let rows = |actor: Actor| {
+            F::ALL
+                .iter()
+                .copied()
+                .filter(|field| field.access().permits(actor, Channel::Agent))
+                .filter(|field| actor != Actor::Automatic || !protected.contains(field))
+                .map(|field| FieldRow {
+                    field: field.name(),
+                    schema: field.schema(),
+                })
+                .collect()
+        };
+        Self {
+            automatic: rows(Actor::Automatic),
+            user: rows(Actor::User),
+        }
     }
-    if let Some(session) = session {
-        let protected = SessionPatch::protected(session, defaults.session);
-        schemas.insert("session".into(), actor_schemas(&protected));
+}
+
+impl PatchSchemas {
+    pub fn new(
+        stream: Option<&Stream>,
+        session: Option<&Session>,
+        defaults: TitleDefaults,
+    ) -> Self {
+        Self {
+            stream: stream
+                .map(|stream| ActorSchemas::new(&StreamPatch::protected(stream, defaults.stream))),
+            session: session.map(|session| {
+                ActorSchemas::new(&SessionPatch::protected(session, defaults.session))
+            }),
+        }
     }
-    Value::Object(schemas)
 }
 
 #[cfg(test)]

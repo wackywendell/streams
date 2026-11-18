@@ -199,7 +199,7 @@ fn completed_format_missing_session_is_unenrolled_but_a_missing_relationship_is_
         .unwrap();
     assert!(context.session.is_none() && context.stream.is_none() && context.sessions.is_empty());
     assert!(
-        serde_json::to_value(context)
+        serde_json::to_value(context.wire())
             .unwrap()
             .get("authority")
             .is_none()

@@ -10,7 +10,7 @@ use crate::{
         stream_from_data,
     },
     model::{Record, Session, Stream, TitleDefaults, ValidationError, check_text},
-    operations::{Reconciliation, patches::agent_patch_schemas},
+    operations::{Reconciliation, patches::PatchSchemas},
 };
 
 use super::{
@@ -123,7 +123,11 @@ impl Snapshot {
         );
         self.original.insert(
             "patch_schemas".into(),
-            agent_patch_schemas(self.stream.as_ref(), self.session.as_ref(), self.defaults),
+            json!(PatchSchemas::new(
+                self.stream.as_ref(),
+                self.session.as_ref(),
+                self.defaults
+            )),
         );
         Value::Object(self.original)
     }

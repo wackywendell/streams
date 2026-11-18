@@ -221,6 +221,16 @@ impl ValidationError {
     }
 }
 
+/// The most characters a short form keeps. Short forms name tabs and cards.
+pub const SHORT_TEXT_CHARS: usize = 24;
+
+/// A short form on one line, cut at a character boundary to `SHORT_TEXT_CHARS`.
+pub fn short_text(text: &str) -> String {
+    let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let short: String = line.chars().take(SHORT_TEXT_CHARS).collect();
+    short.trim_end().to_owned()
+}
+
 /// Rejects NULs and, unless allowed, empty or whitespace-only text; preserves input.
 pub fn check_text(value: &str, name: &str, empty_ok: bool) -> Result<(), ValidationError> {
     if value.contains('\0') || (!empty_ok && value.trim().is_empty()) {

@@ -213,6 +213,13 @@ fn enrollment_parser_and_constructors_share_typed_identity_and_naming_rules() {
     assert_eq!(stream["title_mode"], "manual");
     assert_eq!(stream["goal_mode"], "manual");
     assert_eq!(stream["goal_short"], "Compact");
+    wire["stream"]["goal_short"] = json!("A short goal far over the limit");
+    let long = EnrollmentRequest::parse(wire.clone(), "physical-source").unwrap();
+    let stream = long.stream("host", "chosen-id").unwrap();
+    assert_eq!(
+        stream.goal_short.as_deref(),
+        Some("A short goal far over th")
+    );
     let session = parsed.session("host", "chosen-id").unwrap();
     assert_eq!(session.id, session_id_for("host", Harness::Pi, "native"));
     assert_eq!(session.stream_id, "chosen-id");

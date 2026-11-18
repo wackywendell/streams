@@ -342,7 +342,7 @@ pub fn capture_inputs(
             (Some(stream), Some(session)) => document_hints(stream, session),
             _ => json!({"checkouts":[],"document_locations":[]}),
         };
-        let mut catalog = serde_json::to_value(&context).expect("typed capture context");
+        let mut catalog = serde_json::to_value(context.wire()).expect("typed capture context");
         catalog["checkouts"] = hints["checkouts"].clone();
         catalog["document_locations"] = hints["document_locations"].clone();
         samples.push(json!({"host_id":host,"harness":"pi","native_session_id":id,"open":true,"locations":locations,"catalog":catalog,"transcript_file":transcript,"unavailable":unavailable}));

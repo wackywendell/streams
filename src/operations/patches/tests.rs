@@ -1,5 +1,6 @@
 use super::*;
 use crate::model::{Session, Stream};
+use serde_json::{Value, json};
 
 fn stream() -> Stream {
     Stream::new("stream", "Title", Some("Goal".into()), "host").unwrap()
@@ -117,17 +118,61 @@ fn schemas_match_the_shared_fixture_and_omit_protected_text() {
         "../../../tests/fixtures/agent-patch-schemas.json"
     ))
     .unwrap();
-    assert_eq!(
-        agent_patch_schemas(Some(&stream()), Some(&session()), TitleDefaults::default()),
-        fixture
-    );
+    let schemas = PatchSchemas::new(Some(&stream()), Some(&session()), TitleDefaults::default());
+    assert_eq!(serde_json::to_value(&schemas).unwrap(), fixture);
     let mut manual = stream();
     manual.goal_mode = NamingMode::Manual;
     manual.title_mode = TitleMode::Manual;
-    let schemas = agent_patch_schemas(Some(&manual), None, TitleDefaults::default());
+    let schemas = serde_json::to_value(PatchSchemas::new(
+        Some(&manual),
+        None,
+        TitleDefaults::default(),
+    ))
+    .unwrap();
     assert_eq!(schemas["stream"]["automatic"], json!([]));
     assert_eq!(schemas["stream"]["user"], fixture["stream"]["user"]);
     assert!(schemas.get("session").is_none());
+}
+
+#[test]
+fn short_forms_are_cut_to_one_short_line() {
+    let long = "Ünïcödé  short\nform that runs well past the limit";
+    let patch: SessionPatch = serde_json::from_value(json!({"recap_short": long})).unwrap();
+    let short = patch.normalized(&session(), Actor::Automatic).recap_short;
+    assert_eq!(short, Some(Some("Ünïcödé short form that".into())));
+    assert_eq!(
+        crate::model::short_text("  exact  "),
+        "exact",
+        "a short form is trimmed"
+    );
+    let patch: StreamPatch = serde_json::from_value(json!({"goal_short": long})).unwrap();
+    let short = patch.normalized(&stream(), Actor::User).goal_short;
+    assert_eq!(short.flatten().map(|text| text.chars().count()), Some(23));
+}
+
+#[test]
+fn automatic_short_goal_without_a_goal_is_dropped() {
+    let mut goalless = stream();
+    goalless.goal = None;
+    let patch: StreamPatch = serde_json::from_value(json!({"goal_short": "Short"})).unwrap();
+    assert_eq!(
+        patch
+            .clone()
+            .normalized(&goalless, Actor::Automatic)
+            .goal_short,
+        Some(None)
+    );
+    assert_eq!(
+        patch.normalized(&goalless, Actor::User).goal_short,
+        Some(Some("Short".into())),
+        "a user's short goal reaches validation, which refuses it"
+    );
+    let patch: StreamPatch =
+        serde_json::from_value(json!({"goal": null, "goal_short": "Short"})).unwrap();
+    assert_eq!(
+        patch.normalized(&stream(), Actor::Automatic).goal_short,
+        Some(None)
+    );
 }
 
 #[test]

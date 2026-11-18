@@ -1159,7 +1159,7 @@ struct AgentObservation {
 }
 impl AgentObservation {
     fn output(self) -> Result<Output> {
-        let mut value = serde_json::to_value(&self.context)?;
+        let mut value = serde_json::to_value(self.context.wire())?;
         value.as_object_mut().expect("context object").extend(
             self.documents
                 .as_object()

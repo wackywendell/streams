@@ -5,6 +5,7 @@ use serde_json::Value;
 
 use crate::{
     codec::{ascii_json, object, optional_object, require_object},
+    model::short_text,
     model::{NamingMode, Session, Stream, TitleMode, ValidationError, check_text},
     operations::Actor,
     runtime::conversations::Harness,
@@ -151,7 +152,7 @@ impl EnrollmentRequest {
             .as_ref()
             .ok_or_else(|| ValidationError::new("new effort enrollment requires a stream title"))?;
         let mut stream = Stream::new(id, &proposal.title, proposal.goal.clone(), host_id)?;
-        stream.goal_short = proposal.goal_short.clone();
+        stream.goal_short = proposal.goal_short.as_deref().map(short_text);
         if self.actor == Actor::User {
             stream.title_mode = TitleMode::Manual;
             if stream.goal.is_some() {
