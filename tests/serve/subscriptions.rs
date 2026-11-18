@@ -1125,25 +1125,10 @@ fn a_workspace_marker_change_never_pulls_its_sessions_into_another_stream() {
 }
 
 #[test]
-fn a_pi_workspace_move_selects_the_exact_destination_and_moves_only_its_session() {
+fn a_pi_workspace_move_into_a_marked_workspace_leaves_membership_unchanged() {
     let f = NativeFixture::new();
     let original = f.session["stream_id"].as_str().unwrap();
     let before = f.fixture.ok(&["show", original], None)["stream"].clone();
-    let neighbor = f.fixture.ok(
-        &[
-            "session",
-            "attach",
-            original,
-            "--harness",
-            "pi",
-            "--session-id",
-            &uuid::Uuid::new_v4().to_string(),
-            "--title",
-            "Unaffected conversation",
-        ],
-        None,
-    )["session"]
-        .clone();
     let destination = f.fixture.ok(&["create", "Destination"], None)["stream"].clone();
     {
         let mut snapshot = f.snapshot.lock().unwrap();
@@ -1155,82 +1140,46 @@ fn a_pi_workspace_move_selects_the_exact_destination_and_moves_only_its_session(
             .unwrap()
             .push(workspace);
     }
+    let streams = f.fixture.ok(&["list"], None);
     let (mut child, _) = f.start();
     f.move_to_workspace("destination");
     assert_eq!(child.next()["view"]["desired_pi_name"], "Before");
+    let warning = child.next();
+    assert_eq!(warning["type"], "warning", "{warning}");
     child.request(1, json!({"kind":"context"}));
-    let moved = child.response(1);
+    let response = child.response(1);
+    let context = &response["outcome"]["result"];
+    assert_eq!(context["session"], f.session, "{response}");
+    assert_eq!(context["stream"], before);
+    assert_eq!(f.fixture.ok(&["list"], None), streams);
     assert_eq!(
-        moved["outcome"]["result"]["session"]["stream_id"],
+        f.snapshot.lock().unwrap()["workspaces"][1]["tokens"]["strm_stream"],
         destination["id"]
-    );
-    assert_eq!(
-        moved["outcome"]["result"]["session"]["membership_epoch"],
-        json!(1)
-    );
-    assert_eq!(
-        f.fixture
-            .ok(&["session", "show", neighbor["id"].as_str().unwrap()], None)["session"],
-        neighbor
-    );
-    assert_eq!(f.fixture.ok(&["show", original], None)["stream"], before);
-    assert_eq!(
-        f.snapshot.lock().unwrap()["panes"][0]["workspace_id"],
-        "destination"
-    );
-    assert_eq!(
-        f.snapshot.lock().unwrap()["panes"][0]["terminal_id"],
-        "terminal"
-    );
-    assert!(
-        !f.fixture
-            .directory
-            .path()
-            .join("state/streams/native")
-            .exists()
     );
     assert_eq!(child.finish(), (0, String::new()));
 }
 
 #[test]
-fn a_pi_workspace_move_into_an_unmarked_destination_creates_one_stream() {
+fn a_pi_workspace_move_into_an_unmarked_workspace_creates_no_stream() {
     let f = NativeFixture::new();
     f.snapshot.lock().unwrap()["workspaces"]
         .as_array_mut()
         .unwrap()
         .push(json!({"workspace_id":"destination","label":"Unmarked","number":2,"tokens":{}}));
+    let streams = f.fixture.ok(&["list"], None);
     let (mut child, _) = f.start();
     f.move_to_workspace("destination");
     assert_eq!(child.next()["view"]["desired_pi_name"], "Before");
     child.request(1, json!({"kind":"context"}));
-    let context = child.response(1)["outcome"]["result"].clone();
-    assert_eq!(context["stream"]["title"], "Untitled effort");
-    assert_ne!(context["session"]["stream_id"], f.session["stream_id"]);
+    let response = child.response(1);
     assert_eq!(
-        f.fixture.ok(&["list"], None)["streams"]
-            .as_array()
-            .unwrap()
-            .len(),
-        2
+        response["outcome"]["result"]["session"], f.session,
+        "{response}"
     );
+    assert_eq!(f.fixture.ok(&["list"], None), streams);
     assert_eq!(
         f.snapshot.lock().unwrap()["workspaces"][1]["tokens"]["strm_stream"],
-        context["stream"]["id"]
-    );
-    f.server.emit(json!({"event":"pane_updated","data":{"type":"pane_updated",
-        "pane":{"pane_id":"destination-pane","tab_id":"destination-tab","workspace_id":"destination"}}}));
-    assert_eq!(child.next()["type"], "view");
-    child.request(2, json!({"kind":"context"}));
-    assert_eq!(
-        child.response(2)["outcome"]["result"]["session"],
-        context["session"]
-    );
-    assert_eq!(
-        f.fixture.ok(&["list"], None)["streams"]
-            .as_array()
-            .unwrap()
-            .len(),
-        2
+        f.session["stream_id"]
     );
     assert_eq!(child.finish(), (0, String::new()));
 }

@@ -1,6 +1,6 @@
 # ADR: Verify reconciliation across Pi and Herdr
 
-Status: implemented and activated. This record owns move-versus-refresh, cross-host refusal and captured-target semantics. [Observe and act](native-observe-and-act.md) owns card lifetime, following and effects.
+Status: implemented and activated. This record owns layout-versus-membership, cross-host refusal and captured-target semantics. [Observe and act](native-observe-and-act.md) owns card lifetime, following and effects.
 
 ## Context
 
@@ -10,9 +10,9 @@ Streams and work cards should remain consistent and usable during ordinary Pi an
 
 Separate the conversation, its current Stream membership and its native location. A work card describes the conversation's own work across Stream moves. A stream card describes the shared effort. Names and pane addresses identify neither.
 
-The conversation follows an observed workspace move. A Pi pane-move event must match the same conversation's freshly observed destination in another workspace before the CLI changes its membership. A move into a workspace associated with Stream B joins B; an unmarked destination gets a new Stream. Other conversations remain where they are; the Streams are not merged or relocated. The conversation need not wait for the rest of its old working arrangement to move.
+Layout never changes membership, in every frontend. Moving a Pi pane, tab or terminal into another Herdr workspace or hc space leaves the Session in its saved Stream, and no Stream is created. Membership changes only through an explicit move. The child keeps the observed placement (the Stream that the owner's workspace names) in one place, its native pass, so a later change could show it to the agent to propose a move.
 
-A refresh is not a move. Startup, report completion, file changes, tab reordering and workspace marker changes preserve the saved Session's membership. In an unmarked workspace, project that Session's Stream association instead of creating another Stream. A conflicting marker warns without changing membership. This keeps an externally changed membership from being undone by its own file notification. `session attach` creates a new record; it is not a move command. A restarted child uses saved membership rather than guessing whether Pi moved while it was absent; it keeps no owner-location baseline or move journal.
+Startup, pane and tab moves, report completion, file changes and workspace marker changes all preserve the saved Session's membership. In an unmarked workspace, project that Session's Stream association instead of creating another Stream. A conflicting marker warns without changing membership. This keeps an externally changed membership from being undone by its own file notification. `session attach` creates a new record; it is not a move command. A restarted child uses saved membership rather than guessing whether Pi moved while it was absent; it keeps no owner-location baseline or move journal.
 
 Each pass compares the existing card's tab with Pi's current tab. If they differ, the Pi child moves the card below Pi with `split: "down"`. A user-moved card comes back on the next pass; no previous location or owner-move baseline is needed. The card only observes. Following never reopens a closed card or replaces a missing one.
 
@@ -34,7 +34,7 @@ Session identity is `(host, agent, native Session ID)`, where agent means the co
 
 ## CLI and Pi boundary
 
-The library owns reconciliation and result admission, exposed through the CLI. The Pi child is bound to its Session and collects native observations itself. A matching Pi workspace-move notification requests membership reconciliation; other refreshes project current records and return cards with their captured context. Ordinary catalog reads remain read-only.
+The library owns reconciliation and result admission, exposed through the CLI. The Pi child is bound to its Session and collects native observations itself. Native events, including Pi workspace moves, project current records and return cards with their captured context. Ordinary catalog reads remain read-only.
 
 Pi runs the model and returns its proposed updates with their original captured context. The library assesses conversation-local and Stream-shared updates separately against current records. A workspace move need not invalidate useful work-card updates, but results computed for the previous Stream must not be retargeted to the destination. Pi does not send caller proof or a native snapshot back to the child.
 
@@ -45,7 +45,7 @@ Pi carries request context without interpreting membership or orchestrating reco
 | Change | Intended response |
 | --- | --- |
 | Rename a native surface | Apply the saved Streams title when that surface's synchronization is enabled; see [name ownership](name-ownership.md). |
-| Reorder panes or change pane IDs | Follow verified live conversation and terminal identity, not inherited addresses. Membership changes only if the workspace changes. |
+| Reorder or move panes, or change pane IDs | Follow verified live conversation and terminal identity, not inherited addresses. Membership does not change, even when the workspace changes. |
 | Move a card independently | Retain its conversation association. On the next pass, bring it into Pi's tab if it is elsewhere. Do not close it or launch a replacement. |
 | Move an editor independently | Retain its conversation association. Do not automatically move it back, close it or launch a replacement. |
 | Close a display | Reporting continues. No background respawn; explicit reopen uses observed reuse and self-exiting duplicates. |
@@ -64,7 +64,7 @@ Native observations may inform status only when included in the captured evidenc
 
 ## Scope and verification
 
-Workspace moves intentionally change membership, but cannot change which conversation a captured result belongs to. The [record-local operations ADR](record-local-operations.md#membership-move-contract) owns the single-Session save and membership-period checks.
+An explicit move changes membership, but cannot change which conversation a captured result belongs to. The [record-local operations ADR](record-local-operations.md#membership-move-contract) owns the single-Session save and membership-period checks.
 
 There is no separate native resource or membership model to execute. Scripted tests exercise the [native controller](../tests/serve/subscriptions.rs) and [card effects](../src/runtime/native_cards/tests.rs) against actual fake resources. The separate [membership tests](../src/operations/membership/tests.rs), [record-update tests](../tests/record_updates.rs) and Pi branch-admission tests keep moves, membership revisits, captured targets and accepted-save receipts covered without a native proof protocol.
 

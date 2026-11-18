@@ -61,7 +61,7 @@ A move reads exactly 3 catalog inputs: the Session, the old Stream and the new S
 
 Pure apply returns only the updated Session, or no change/conflict. It changes membership and its epoch while preserving work text, conversation identity, checkout URL and directory intent. Storage writes the Session in one atomic file replacement. Neither Stream is written; their revisions remain unchanged. There is no roster, multi-file write set, recovery fence, rollback or other Session input.
 
-The catalog layer owns this function and persistence. Native reconciliation supplies verified movement input and calls it; it does not implement catalog reconciliation. Native relationship changes remain separate effect plans owned by the child/executor. They warn on failed effects without recording native launch history. They cannot expand this catalog action into a coordinated transaction.
+The catalog layer owns this function and persistence (`application::move_session_observed`). Only an explicit move calls it; native layout changes never do, in any frontend. No public command exposes it yet. Native relationship changes remain separate effect plans owned by the child/executor. They warn on failed effects without recording native launch history. They cannot expand this catalog action into a coordinated transaction.
 
 ### Durability without history as a journal
 

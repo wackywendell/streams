@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Moving a Pi pane into another Herdr workspace no longer moves its Session or creates an "Untitled effort" Stream. Layout never changes membership in any frontend
 - `/checkpoint` keeps the chooser's open or minimized state when drafting begins. Explicitly minimizing either stage keeps it closed after recommendations or a draft finish
 - Animated busy indicators now appear in the stream chooser and checkpoint card, including when the draft panel is minimized. Card frames do not add session entries; off-screen frames pause in regular terminal mode to avoid repeated scrollback redraws
 
