@@ -129,3 +129,11 @@ fn schemas_match_the_shared_fixture_and_omit_protected_text() {
     assert_eq!(schemas["stream"]["user"], fixture["stream"]["user"]);
     assert!(schemas.get("session").is_none());
 }
+
+#[test]
+fn title_modes_may_inherit_but_goal_modes_may_not() {
+    assert!(serde_json::from_value::<SessionPatch>(json!({"title_mode": "inherit"})).is_ok());
+    assert!(serde_json::from_value::<StreamPatch>(json!({"title_mode": "inherit"})).is_ok());
+    assert!(serde_json::from_value::<StreamPatch>(json!({"goal_mode": "inherit"})).is_err());
+    assert!(serde_json::from_value::<SessionPatch>(json!({"title_mode": "auto"})).is_err());
+}
