@@ -4,7 +4,7 @@
 mod tests;
 
 use super::args::StreamFields;
-use super::{CliError, Output, Result, fields, fold, printable, resolve, result_data};
+use super::{CliError, Output, Result, fields, printable, resolve, result_data};
 use serde_json::json;
 use std::{collections::BTreeSet, path::Path};
 use streams::{
@@ -29,63 +29,17 @@ pub(super) fn list_records(
     cutoff_ms: Option<u64>,
     publication: Option<serde_json::Value>,
 ) -> Result<Output> {
-    let query = query.map(fold);
-    let listing = opened.listing()?;
-    let records = listing.records;
-    let mut sessions_by_stream: std::collections::BTreeMap<
-        (String, String),
-        Vec<streams::model::Session>,
-    > = std::collections::BTreeMap::new();
-    for read in &records {
-        if let Record::Session(session) = &read.record {
-            sessions_by_stream
-                .entry((session.host_id.clone(), session.stream_id.clone()))
-                .or_default()
-                .push(session.clone());
-        }
-    }
-    let mut streams: Vec<_> = records
-        .into_iter()
-        .filter_map(|read| match read.record {
-            Record::Stream(mut stream) => {
-                let members = sessions_by_stream
-                    .get(&(stream.owner_host_id.clone(), stream.id.clone()))
-                    .map(Vec::as_slice)
-                    .unwrap_or(&[]);
-                let refs: Vec<&_> = members.iter().collect();
-                // Only this host's Streams decay.
-                let stream_cutoff =
-                    cutoff_ms.filter(|_| stream.owner_host_id == opened.host().as_str());
-                let last_updated_ms = streams::operations::stream_activity_ms(&stream, &refs);
-                stream.status = streams::operations::project_stream_status(
-                    stream.status,
-                    &refs,
-                    last_updated_ms,
-                    stream_cutoff,
-                );
-                Some(stream)
-            }
-            _ => None,
-        })
-        .filter(|stream| {
-            (all || if closed {
-                stream.status == Status::Closed
-            } else {
-                stream.status != Status::Closed || status.contains(&Status::Closed)
-            }) && (status.is_empty() || status.contains(&stream.status))
-                && query.as_ref().is_none_or(|query| {
-                    fold(&stream.title).contains(query)
-                        || fold(stream.goal.as_deref().unwrap_or("")).contains(query)
-                })
-        })
-        .collect();
-    streams.sort_by_cached_key(|stream| {
-        (
-            fold(&stream.title),
-            stream.owner_host_id.clone(),
-            stream.id.clone(),
-        )
-    });
+    let listing = application::list_streams(
+        opened,
+        application::StreamFilter {
+            query,
+            status,
+            closed,
+            all,
+        },
+        cutoff_ms,
+    )?;
+    let streams = listing.streams;
     let mut plain = String::from("HOST/ID  STATUS  TITLE");
     for stream in &streams {
         plain.push_str(&format!(
