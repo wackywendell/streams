@@ -866,9 +866,29 @@ fn saved_batch_distinguishes_empty_unavailable_and_a_broken_host_partition() {
             ViewSelection::SavedSession {
                 session: fixture.sessions[0].id.clone(),
             },
+            ViewSelection::HostStreams,
         ])
         .unwrap();
-    assert!(matches!(&values[0], WireResult::Error(_)));
+    let WireResult::Ok(ModReadValue::HostStreams { value: listing }) = &values[2] else {
+        panic!(
+            "the host listing survives an unreadable Session: {:?}",
+            values[2]
+        );
+    };
+    assert_eq!(listing.streams.len(), 3, "every readable Stream is listed");
+    assert_eq!(listing.unreadable.len(), 1);
+    assert_eq!(
+        listing.unreadable[0].path,
+        partition
+            .join("broken.yaml")
+            .strip_prefix(fixture.records.root())
+            .unwrap()
+    );
+    assert!(
+        matches!(&values[0], WireResult::Error(error) if error.message == listing.unreadable[0].to_string()),
+        "a Stream view needs every Session that might be its member: {:?}",
+        values[0]
+    );
     assert!(
         matches!(&values[1], WireResult::Ok(ModReadValue::Session { .. })),
         "an addressed read remains independent from unrelated corrupt Sessions"
@@ -3044,7 +3064,9 @@ fn host_streams_lists_all_streams_with_active_session_counts_and_recency() {
     let WireResult::Ok(ModReadValue::HostStreams { value }) = &values[0] else {
         panic!("host streams value")
     };
+    assert!(value.unreadable.is_empty());
     let by_id: BTreeMap<_, _> = value
+        .streams
         .iter()
         .map(|s| {
             (
@@ -3064,9 +3086,10 @@ fn host_streams_lists_all_streams_with_active_session_counts_and_recency() {
     assert_eq!((by_id["next"].1, by_id["next"].2), (1, 1));
     assert_eq!((by_id["empty"].1, by_id["empty"].2), (0, 0));
     assert_eq!(by_id["closed"].0, Status::Closed);
-    assert!(value.iter().all(|s| s.last_updated_ms > 0));
+    assert!(value.streams.iter().all(|s| s.last_updated_ms > 0));
     assert!(
         value
+            .streams
             .windows(2)
             .all(|w| w[0].last_updated_ms >= w[1].last_updated_ms)
     );
@@ -3092,8 +3115,13 @@ fn host_streams_lists_all_streams_with_active_session_counts_and_recency() {
     );
 
     // HostStreams and StreamView agree on projected Closed status under decay_days.
-    let future_now =
-        value.iter().map(|s| s.last_updated_ms).max().unwrap_or(0) + 20u64 * 86_400_000;
+    let future_now = value
+        .streams
+        .iter()
+        .map(|s| s.last_updated_ms)
+        .max()
+        .unwrap_or(0)
+        + 20u64 * 86_400_000;
     let decayed_facade =
         application::integration::Streams::new(&fixture.records).with_lifecycle(14, future_now);
     let decayed_replies = decayed_facade
@@ -3125,15 +3153,20 @@ fn host_streams_lists_all_streams_with_active_session_counts_and_recency() {
         panic!("expected StreamView");
     };
     assert_eq!(
-        decayed_list.iter().find(|s| s.id == "work").unwrap().status,
+        decayed_list
+            .streams
+            .iter()
+            .find(|s| s.id == "work")
+            .unwrap()
+            .status,
         Status::Closed
     );
     assert_eq!(decayed_view.status, Status::Closed);
 }
 
 #[test]
-fn unreadable_records_fail_host_listings_with_the_record_named() {
-    use streams::application;
+fn host_listings_show_readable_streams_and_name_unreadable_records() {
+    use streams::{application, integration::HostListing, model::RecordKind};
 
     let fixture = SavedFixture::new();
     let host = streams::yaml_store::encode_component(fixture.records.host().as_str());
@@ -3161,40 +3194,123 @@ fn unreadable_records_fail_host_listings_with_the_record_named() {
             )
             .unwrap()
     };
-    let error = |value: &WireResult<ModReadValue>| match value {
-        WireResult::Error(error) => error.message.clone(),
-        WireResult::Ok(value) => panic!("expected an unavailable view, got {value:?}"),
+    let listing = |value: &WireResult<ModReadValue>| match value {
+        WireResult::Ok(ModReadValue::HostStreams { value }) => value.clone(),
+        other => panic!("expected a host listing, got {other:?}"),
+    };
+    let rows = |listing: &HostListing| {
+        let mut rows: Vec<_> = listing
+            .streams
+            .iter()
+            .map(|summary| (summary.id.clone(), summary.total_sessions))
+            .collect();
+        rows.sort();
+        rows
+    };
+    let unreadable = |listing: &HostListing| {
+        for record in &listing.unreadable {
+            assert!(
+                record.cause.contains("unknown field `archived`"),
+                "{record}"
+            );
+        }
+        listing
+            .unreadable
+            .iter()
+            .map(|record| (record.kind, record.path.to_str().unwrap().to_owned()))
+            .collect::<Vec<_>>()
+    };
+    let list = || {
+        let output = fixture.command().args(["list", "--json"]).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
     };
 
     let stream = format!("hosts/{host}/streams/next.yaml");
     corrupt(&stream);
     let views = read();
-    let message = error(&views[0]);
-    assert!(
-        message.starts_with(&format!("Stream record {stream} is unreadable: ")),
-        "{message}"
+    let host_listing = listing(&views[0]);
+    assert_eq!(
+        rows(&host_listing),
+        [("empty".into(), 0), ("work".into(), 2)]
     );
-    assert!(message.contains("unknown field `archived`"), "{message}");
+    assert_eq!(
+        unreadable(&host_listing),
+        [(RecordKind::Stream, stream.clone())]
+    );
+    assert_eq!(
+        host_listing.unreadable[0].to_string(),
+        format!(
+            "Stream record {stream} is unreadable: {}",
+            host_listing.unreadable[0].cause
+        )
+    );
     assert!(matches!(
         views[1],
         WireResult::Ok(ModReadValue::Stream { .. })
     ));
-    let list = fixture.command().args(["list", "--json"]).output().unwrap();
-    assert!(!list.status.success());
-    let list: Value = serde_json::from_slice(&list.stdout).unwrap();
-    assert_eq!(list["error"]["message"], message.as_str());
+    let listed = list();
+    assert_eq!(
+        listed["streams"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|stream| stream["id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["empty", "work"]
+    );
+    assert_eq!(
+        listed["unreadable"],
+        serde_json::to_value(&host_listing.unreadable).unwrap()
+    );
+    let plain = fixture.command().arg("list").output().unwrap();
+    assert!(plain.status.success());
+    let stdout = String::from_utf8(plain.stdout).unwrap();
+    assert!(
+        stdout.contains("/work  ") && !stdout.contains("/next  "),
+        "{stdout}"
+    );
+    let stderr = String::from_utf8(plain.stderr).unwrap();
+    assert!(
+        stderr.contains(&host_listing.unreadable[0].to_string()),
+        "{stderr}"
+    );
+    assert!(stderr.contains("/streams reset"), "{stderr}");
 
+    // An unreadable Session's Stream is unknown: the listing names it and counts it nowhere,
+    // and a view of a Stream it might belong to names it as the reason the view is unavailable.
     let session = format!(
         "hosts/{host}/conversations/{}.yaml",
         streams::yaml_store::encode_component(&fixture.sessions[0].id)
     );
     corrupt(&session);
     let views = read();
-    for value in &views {
-        let message = error(value);
-        assert!(
-            message.starts_with(&format!("Session record {session} is unreadable: ")),
-            "{message}"
-        );
+    let host_listing = listing(&views[0]);
+    assert_eq!(
+        rows(&host_listing),
+        [("empty".into(), 0), ("work".into(), 1)]
+    );
+    assert_eq!(
+        unreadable(&host_listing),
+        [
+            (RecordKind::Session, session.clone()),
+            (RecordKind::Stream, stream)
+        ]
+    );
+    match &views[1] {
+        WireResult::Error(error) => assert_eq!(
+            error.message,
+            host_listing.unreadable[0].to_string(),
+            "{error:?}"
+        ),
+        other => panic!("expected an unavailable Stream view, got {other:?}"),
     }
+    assert_eq!(
+        list()["unreadable"],
+        serde_json::to_value(&host_listing.unreadable).unwrap()
+    );
 }

@@ -181,6 +181,13 @@ pub struct StreamArtifacts {
     pub producer: String,
     pub entries: Vec<ArtifactSummary>,
 }
+/// This host's readable Streams, and every record of its partitions that cannot be decoded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostListing {
+    pub streams: Vec<StreamSummary>,
+    pub unreadable: Vec<crate::storage::records::UnreadableRecord>,
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StreamSummary {
@@ -836,7 +843,7 @@ pub struct ModRequest {
 pub enum ModReadValue {
     Stream { value: StreamView },
     Session { value: SessionView },
-    HostStreams { value: Vec<StreamSummary> },
+    HostStreams { value: HostListing },
     Frame { context: FrameContext },
     Sidebar { value: SidebarContext },
 }

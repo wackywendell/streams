@@ -273,7 +273,10 @@ pub fn close_stream_sessions(
     operation_id_prefix: &str,
 ) -> CloseChildrenOutcome {
     let host = opened.host().as_str();
-    let session_reads = match opened.host_sessions() {
+    let session_reads = match opened
+        .host_sessions()
+        .and_then(|listing| Ok(listing.complete()?))
+    {
         Ok(reads) => reads,
         Err(error) => {
             return CloseChildrenOutcome {
@@ -466,8 +469,8 @@ pub(crate) fn plan_decay(
     };
 
     let host = opened.host().as_str();
-    let session_reads = opened.host_sessions()?;
-    let stream_reads = opened.host_streams()?;
+    let session_reads = opened.host_sessions()?.complete()?;
+    let stream_reads = opened.host_streams()?.complete()?;
 
     let mut sessions = Vec::with_capacity(session_reads.len());
     let mut streams = Vec::with_capacity(stream_reads.len());

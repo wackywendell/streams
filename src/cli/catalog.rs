@@ -16,6 +16,8 @@ use streams::{
     sync::records::RecordSync,
 };
 
+const UNREADABLE_REPAIR: &str = "Unreadable records are not listed. Run /streams reset in a conversation on that Stream, or delete or fix the file.";
+
 pub(super) fn list_records(
     opened: &streams::application::OpenedRecords,
     query: Option<&str>,
@@ -26,7 +28,8 @@ pub(super) fn list_records(
     publication: Option<serde_json::Value>,
 ) -> Result<Output> {
     let query = query.map(fold);
-    let records = opened.inventory()?;
+    let listing = opened.listing()?;
+    let records = listing.records;
     let mut sessions_by_stream: std::collections::BTreeMap<
         (String, String),
         Vec<streams::model::Session>,
@@ -161,7 +164,17 @@ pub(super) fn list_records(
             printable(&stream.title)
         ));
     }
-    let mut output = Output::plain(json!({"streams":streams}), plain);
+    let mut output = Output::plain(
+        json!({"streams":streams,"unreadable":listing.unreadable}),
+        plain,
+    );
+    // The listing still succeeds: it names each record it skipped, and how to repair it.
+    output
+        .notices
+        .extend(listing.unreadable.iter().map(ToString::to_string));
+    if !listing.unreadable.is_empty() {
+        output.notices.push(UNREADABLE_REPAIR.into());
+    }
     if let Some(publication) = publication {
         if let Some(detail) = publication["detail"]
             .as_str()

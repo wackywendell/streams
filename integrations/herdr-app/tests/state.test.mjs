@@ -9,6 +9,7 @@ import {
   effectiveSessionStatus,
   buildReferenceItems,
   filterHostStreams,
+  unreadableNotice,
   formatRelativeAge,
   liveStreamIds,
   dispatchViewerActions,
@@ -1037,16 +1038,19 @@ test("StreamsCoordinator captures hostStreams on unenrolled tabs, inspects strea
                   {
                     ok: {
                       kind: "host_streams",
-                      value: [
-                        {
-                          id: "st-active",
-                          title: "Active Effort",
-                          goal_short: "Keep going",
-                          status: "active",
-                          active_sessions: 1,
-                          total_sessions: 2,
-                        },
-                      ],
+                      value: {
+                        streams: [
+                          {
+                            id: "st-active",
+                            title: "Active Effort",
+                            goal_short: "Keep going",
+                            status: "active",
+                            active_sessions: 1,
+                            total_sessions: 2,
+                          },
+                        ],
+                        unreadable: [],
+                      },
                     },
                   },
                   { ok: { kind: "frame", context: { kind: "unenrolled" } } },
@@ -1114,8 +1118,11 @@ test("StreamsCoordinator captures hostStreams on unenrolled tabs, inspects strea
   assert.equal(actions[1].placement, "pane-right");
 });
 
-test("a failed host Stream listing keeps its error after the rest of the read succeeds", async () => {
-  let hostStreams = { error: { kind: "unavailable", message: "Stream record hosts/h/streams/x.yaml is unreadable: bad" } };
+test("a host Stream listing shows readable Streams, names unreadable records, and keeps a failure after the rest of the read succeeds", async () => {
+  const unreadable = { kind: "stream", path: "hosts/h/streams/x.yaml", cause: "unknown field `archived`" };
+  let hostStreams = {
+    ok: { kind: "host_streams", value: { streams: [{ id: "st", title: "T", status: "active" }], unreadable: [unreadable] } },
+  };
   const coordinator = new StreamsCoordinator({
     exec: async (_cmd, args) => {
       if (args[1] === "describe") {
@@ -1156,13 +1163,26 @@ test("a failed host Stream listing keeps its error after the rest of the read su
     focusedTerminal: "t1",
   };
   await coordinator.observe(snapshot);
-  assert.deepEqual(coordinator.hostStreams, []);
-  assert.equal(coordinator.hostStreamsError, "Stream record hosts/h/streams/x.yaml is unreadable: bad");
+  assert.equal(coordinator.hostStreamsError, null);
+  assert.deepEqual(coordinator.hostStreams.map((summary) => summary.id), ["st"]);
+  assert.deepEqual(coordinator.hostUnreadable, [unreadable]);
+  assert.deepEqual(unreadableNotice(coordinator.hostUnreadable), {
+    title: "1 unreadable record is not listed",
+    records: ["hosts/h/streams/x.yaml: unknown field `archived`"],
+    repair: "Run /streams reset in a conversation on that Stream, or delete or fix the file.",
+  });
 
-  hostStreams = { ok: { kind: "host_streams", value: [{ id: "st", title: "T", status: "active" }] } };
+  hostStreams = { error: { kind: "unavailable", message: "catalog is not initialized" } };
+  await coordinator.observe({ ...snapshot, force: true });
+  assert.deepEqual(coordinator.hostStreams, []);
+  assert.deepEqual(coordinator.hostUnreadable, []);
+  assert.equal(coordinator.hostStreamsError, "catalog is not initialized");
+
+  hostStreams = { ok: { kind: "host_streams", value: { streams: [], unreadable: [] } } };
   await coordinator.observe({ ...snapshot, force: true });
   assert.equal(coordinator.hostStreamsError, null);
-  assert.equal(coordinator.hostStreams[0].id, "st");
+  assert.deepEqual(coordinator.hostStreams, []);
+  assert.equal(unreadableNotice(coordinator.hostUnreadable), null);
 });
 
 test("filterHostStreams supports 5 status tabs, recent/alpha sorting, and text search", () => {

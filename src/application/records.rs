@@ -6,7 +6,7 @@ use crate::{
     config::{Config, HostIdentity, Strategy, source_id},
     model::{Record, RecordKind, Session, Stream},
     runtime::conversations::Harness,
-    storage::records::{RecordAddress, RecordInventory, RecordRead, RecordStore},
+    storage::records::{RecordAddress, RecordInventory, RecordListing, RecordRead, RecordStore},
     sync::records::RecordSync,
     yaml_store::records::{RecordIoEvent, YamlRecordStore},
 };
@@ -37,11 +37,11 @@ impl OpenedRecords {
         &self.records
     }
     /// Inspect only this admitted host's direct Session partition.
-    pub fn host_sessions(&self) -> Result<Vec<RecordRead>> {
+    pub fn host_sessions(&self) -> Result<RecordListing> {
         Ok(self.records.host_sessions(self.host.as_str())?)
     }
     /// Inspect only this admitted host's direct Stream partition.
-    pub fn host_streams(&self) -> Result<Vec<RecordRead>> {
+    pub fn host_streams(&self) -> Result<RecordListing> {
         Ok(self.records.host_streams(self.host.as_str())?)
     }
     /// Last-updated timestamps in Unix ms from the active catalog backend.
@@ -66,6 +66,10 @@ impl OpenedRecords {
     /// Explicit human discovery/inspection only; ordinary commands use `records()`.
     pub fn inventory(&self) -> Result<Vec<RecordRead>> {
         Ok(self.records.inventory()?)
+    }
+    /// Every host's readable records for display, naming the ones that cannot be decoded.
+    pub fn listing(&self) -> Result<RecordListing> {
+        Ok(self.records.listing()?)
     }
     /// Discard whichever records of a conversation's card cannot be decoded, so a reset can
     /// rebuild them. The card is the conversation's Session, found by its native identity, and

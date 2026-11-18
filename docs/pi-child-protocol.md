@@ -67,6 +67,10 @@ Session between `parked`/`closed` and `active` (reopening a `closed` Stream when
 `resume` activates the Session), returning `{"session_changed": bool,
 "stream_changed": bool, "saves": [...], "session": ..., "completion_error"?: ...}`
 and emitting save notifications when records change.
+`{"kind":"list_streams"}` returns `{"streams": [...], "unreadable": [...]}`:
+every Stream the catalog listing could read, and each record file it could not
+decode as `{"kind": "host" | "stream" | "session", "path": string, "cause": string}`.
+The chooser offers the readable Streams and names the unreadable records.
 `{"kind":"discard_unreadable_card"}` runs before a reset captures anything. It
 discards whichever records of the child's card cannot be decoded and returns
 `{"session": string | null, "stream": string | null}`, the decode error of each

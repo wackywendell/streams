@@ -109,12 +109,22 @@ test('StreamCli validates strict catalog fields and nullable document provenance
  ]) {const value=structuredClone(initial);change(value);await assert.rejects(read(value),StreamsCliError);}
 });
 test('catalog list accepts only the current object contract',async()=>{
- for(const value of [[],[stream],null,{}, {streams:[{...stream,title_mode:'other'}]}]) {
+ const unreadable=[{kind:'stream',path:'hosts/host/streams/broken.yaml',cause:'unknown field `archived`'}];
+ for(const value of [[],[stream],null,{},{streams:[stream]},{streams:[{...stream,title_mode:'other'}],unreadable:[]},{streams:[stream],unreadable:[{...unreadable[0],kind:'other'}]},{streams:[stream],unreadable:[{kind:'stream',path:'p'}]}]) {
   const cli=new StreamCli('/tmp',async()=>({status:'success',result:value}));
   await assert.rejects(cli.list(),StreamsCliError);
  }
- const cli=new StreamCli('/tmp',async()=>({status:'success',result:{streams:[stream]}}));
- assert.deepEqual(await cli.list(),[stream]);
+ const cli=new StreamCli('/tmp',async()=>({status:'success',result:{streams:[stream],unreadable}}));
+ assert.deepEqual(await cli.list(),{streams:[stream],unreadable});
+});
+test('the chooser offers readable Streams and names the records it could not read',async()=>{
+ const unreadable=[{kind:'stream',path:'hosts/host/streams/broken.yaml',cause:'unknown field `archived`'}];
+ const calls=[];const cli={context:async()=>({...context(),stream:null,session:null,sessions:[]}),list:async()=>({streams:[stream],unreadable})};
+ const ctx={hasUI:true,sessionManager:{getSessionId:()=> 'native'},ui:{select:async(title,rows)=>{calls.push({title,rows});return 'Cancel';}}};
+ assert.equal((await chooseInitial(ctx,cli,{},()=>assert.fail())).status,'cancelled');
+ assert.deepEqual(calls[0].rows,['effort · Work','Create…','Cancel']);
+ assert.equal(calls[0].title,'Initial work card attachment\n1 unreadable record is not listed:\nhosts/host/streams/broken.yaml: unknown field `archived`\nRun /streams reset in a conversation on that Stream, or delete or fix the file.');
+ await assert.rejects(chooseInitial(ctx,cli,{streamId:'broken'},()=>assert.fail()),/exact catalog stream ID[\s\S]*broken\.yaml: unknown field/);
 });
 test('context is bound to the child while the caller still admits only its own Session',async()=>{
  const calls=[];const cli=new StreamCli('/tmp',async request=>{calls.push(request);return {status:'success',result:context()};});
@@ -1008,7 +1018,7 @@ function commandFixture(options={}) {
  const commands=new Map(),tools=new Map(),handlers=new Map(),notices=[],requests=[],writes=[],receipts=[],activity=[],dialogs=[];
  const catalog=options.catalog??context();let reads=0;
  const actions=makeSnapshotActions(defaultConfigSnapshot());
- const cli={context:async()=>{reads++;return structuredClone(catalog);},discardUnreadableCard:async()=>({session:null,stream:null}),getConfig:async()=>structuredClone(actions.snap),setConfig:actions.setConfig,unsetConfig:actions.unsetConfig,cardSettings:async()=>({global:'automatic',session:'inherit',effective:'automatic'}),list:async()=>[stream],apply:async req=>{writes.push(req);Object.assign(catalog[req.kind],req.changes);return {save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}};},enroll:async req=>{writes.push(req);catalog.stream=stream;catalog.session=session;return {stream,session,saves:[]};}};
+ const cli={context:async()=>{reads++;return structuredClone(catalog);},discardUnreadableCard:async()=>({session:null,stream:null}),getConfig:async()=>structuredClone(actions.snap),setConfig:actions.setConfig,unsetConfig:actions.unsetConfig,cardSettings:async()=>({global:'automatic',session:'inherit',effective:'automatic'}),list:async()=>({streams:[stream],unreadable:[]}),apply:async req=>{writes.push(req);Object.assign(catalog[req.kind],req.changes);return {save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}};},enroll:async req=>{writes.push(req);catalog.stream=stream;catalog.session=session;return {stream,session,saves:[]};}};
  const ctx={mode:'tui',hasUI:true,cwd:'/repo',sessionManager:{getSessionId:()=> 'native',getLeafId:()=> 'leaf',getBranch:()=>[{id:'leaf'}],buildSessionProjection:()=>({messages:[{role:'user',content:'Build work cards',timestamp:0}]})},ui:{notify:(text,level)=>notices.push({text,level}),setStatus:(_key,text)=>activity.push(text),select:async(title,rows)=>{dialogs.push({title,rows});return options.select?.(title,rows)??'Close';},editor:async()=> 'Contribution',confirm:async()=>true}};
  registerWorkCard({on:(name,fn)=>handlers.set(name,fn),registerCommand:(name,value)=>commands.set(name,value),registerTool:value=>tools.set(value.name,value),registerShortcut:()=>assert.fail('no shortcuts'),appendEntry:(type,value)=>receipts.push({type,value})},{agentDir:options.agentDir,settings:{...defaults,reporting:'manual',enrollment:'manual',...options.settings},cli,infer:async(_ctx,req,_signal,_model,logging)=>{requests.push(req);return options.infer?await options.infer(req,logging):{changes:{}};}});
  return {commands,tools,handlers,ctx,notices,requests,writes,receipts,activity,dialogs,reads:()=>reads,run:args=>commands.get('streams').handler(args,ctx)};

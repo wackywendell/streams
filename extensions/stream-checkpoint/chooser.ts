@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { receiptCanContinue, type Receipt, type StreamCli } from "./streams.ts";
+import { receiptCanContinue, unreadableNotice, type Receipt, type StreamCli } from "./streams.ts";
 
 /** Only initial enrollment offers membership selection. No native focus or workspace calls. */
 export async function chooseInitial(ctx: ExtensionContext, cli: StreamCli, options: {streamId?: string; title?: string; reason?: string}, receipt: (value: Receipt) => void, signal?: AbortSignal): Promise<{status: string; stream_id?: string}> {
@@ -12,10 +12,12 @@ export async function chooseInitial(ctx: ExtensionContext, cli: StreamCli, optio
  let streamId = before.stream?.id ?? options.streamId;
  let title = options.title;
  if (!before.stream) {
-  const streams = (await cli.list()).filter(stream => stream.owner.host_id === before.host_id);
-  if (streamId && !streams.some((stream) => stream.id === streamId)) throw Error("Pass an exact catalog stream ID from streams list --json");
+  const listing = await cli.list();
+  const streams = listing.streams.filter(stream => stream.owner.host_id === before.host_id);
+  const unreadable = unreadableNotice(listing.unreadable);
+  if (streamId && !streams.some((stream) => stream.id === streamId)) throw Error(`Pass an exact catalog stream ID from streams list --json${unreadable ? `\n${unreadable}` : ""}`);
   const rows = streams.map((stream) => `${stream.id} · ${stream.title}`);
-  const chosen = title ? "Create…" : await ctx.ui.select(`Initial work card attachment${options.reason ? `\n${options.reason}` : ""}`, [...(streamId ? rows.filter((row) => row.startsWith(`${streamId} ·`)) : rows), "Create…", "Cancel"]);
+  const chosen = title ? "Create…" : await ctx.ui.select(`Initial work card attachment${options.reason ? `\n${options.reason}` : ""}${unreadable ? `\n${unreadable}` : ""}`, [...(streamId ? rows.filter((row) => row.startsWith(`${streamId} ·`)) : rows), "Create…", "Cancel"]);
   if (!chosen || chosen === "Cancel" || signal?.aborted) return {status: "cancelled"};
   if (chosen === "Create…") {
    title = await ctx.ui.editor("Stream title", title ?? "");if (!title?.trim()) return {status: "cancelled"};streamId = undefined;

@@ -61,6 +61,15 @@ export function receiptHasWarning(value: Receipt): boolean {
  return !!value.warnings?.length || !receiptCanContinue(value) || saves.some(resultNeedsAttention) || !!value.publication && resultNeedsAttention(value.publication);
 }
 export type DiscardedCard = {session: string | null; stream: string | null};
+/** A record file the catalog listing could not decode, named by kind and catalog path. */
+export type UnreadableRecord = {kind: "host" | "stream" | "session"; path: string; cause: string};
+export type StreamListing = {streams: StreamWire[]; unreadable: UnreadableRecord[]};
+const unreadableRecord = (value: unknown): value is UnreadableRecord => object(value) && ["host", "stream", "session"].includes(value.kind) && text(value.path) && text(value.cause);
+/** Names the records a listing skipped and how to repair them; empty when every record was read. */
+export function unreadableNotice(unreadable: UnreadableRecord[]): string {
+ if (!unreadable.length) return "";
+ return [`${unreadable.length} unreadable record${unreadable.length === 1 ? " is" : "s are"} not listed:`, ...unreadable.map(record => `${record.path}: ${record.cause}`), "Run /streams reset in a conversation on that Stream, or delete or fix the file."].join("\n");
+}
 export class StreamCli {
  constructor(readonly cwd: string, private readonly runner: Runner) {}
  private async run(request: ChildRequest, purpose: "read" | "save" | "publication" = "read", options?: {timeout: number; signal?: AbortSignal}): Promise<any> {
@@ -87,11 +96,11 @@ export class StreamCli {
   if (!object(value) || !reason(value.session) || !reason(value.stream)) throw new StreamsCliError("Invalid discarded card");
   return {session: value.session, stream: value.stream};
  }
- async list(): Promise<StreamWire[]> {
+ async list(): Promise<StreamListing> {
   const value = await this.run({kind:"list_streams"});
-  const rows = value?.streams;
-  if (!Array.isArray(rows) || !rows.every(stream)) throw new StreamsCliError("Invalid catalog list");
-  return rows;
+  const rows = value?.streams, unreadable = value?.unreadable;
+  if (!Array.isArray(rows) || !rows.every(stream) || !Array.isArray(unreadable) || !unreadable.every(unreadableRecord)) throw new StreamsCliError("Invalid catalog list");
+  return {streams: rows, unreadable};
  }
  async captureInputs(target?: {kind: "stream" | "workspace"; id: string}, signal?: AbortSignal): Promise<unknown> {
   return this.run({kind:"capture_inputs", target:target ? target.kind === "stream" ? {kind:"stream", stream_id:target.id} : {kind:"workspace", workspace_id:target.id} : {kind:"inventory"}}, "read", {timeout:10000, signal});

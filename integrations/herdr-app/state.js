@@ -85,6 +85,20 @@ export function filterHostStreams(
   return filtered;
 }
 
+/**
+ * The short sidebar notice for records a host listing could not read: one line per record,
+ * then how to repair them. Null when every record was read.
+ */
+export function unreadableNotice(unreadable) {
+  if (!Array.isArray(unreadable) || unreadable.length === 0) return null;
+  const count = unreadable.length;
+  return {
+    title: `${count} unreadable record${count === 1 ? " is" : "s are"} not listed`,
+    records: unreadable.map((record) => `${record.path}: ${record.cause}`),
+    repair: "Run /streams reset in a conversation on that Stream, or delete or fix the file.",
+  };
+}
+
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 /**
@@ -531,8 +545,10 @@ export class StreamsCoordinator {
     this.lastCompletedAt = 0;
 
     this.streams = new Map(); // streamId -> StreamView
-    this.hostStreams = []; // StreamSummary[]
-    this.hostStreamsError = null; // written only by the host_streams read, never cleared elsewhere
+    // Written only by the host_streams read, never cleared elsewhere.
+    this.hostStreams = []; // StreamSummary[] the listing could read
+    this.hostUnreadable = []; // UnreadableRecord[] { kind, path, cause } it could not
+    this.hostStreamsError = null; // the listing itself failed
     this.inspectedStreamId = null;
     this.frames = new Map(); // terminalKey -> FrameContext
     this.streamIdByTerminal = new Map(); // terminalKey -> streamId
@@ -833,10 +849,12 @@ export class StreamsCoordinator {
               }
             } else if (sel.kind === "host_streams") {
               if (item?.ok?.kind === "host_streams") {
-                this.hostStreams = item.ok.value ?? [];
+                this.hostStreams = item.ok.value?.streams ?? [];
+                this.hostUnreadable = item.ok.value?.unreadable ?? [];
                 this.hostStreamsError = null;
               } else if (item?.error) {
                 this.hostStreams = [];
+                this.hostUnreadable = [];
                 this.hostStreamsError = item.error.message || "host Streams are unavailable";
               }
             } else if (sel.kind === "frame") {

@@ -6,7 +6,7 @@ use crate::{
     model::{Record, RecordKind},
     storage::{
         StorageError,
-        records::{RecordAddress, RecordInventory, RecordRead},
+        records::{RecordAddress, RecordInventory, RecordListing, RecordRead},
     },
 };
 use std::{
@@ -186,17 +186,35 @@ impl YamlRecordStore {
 }
 
 impl RecordInventory for YamlRecordStore {
-    fn host_sessions(&self, host: &str) -> Result<Vec<RecordRead>, StorageError> {
+    fn host_sessions(&self, host: &str) -> Result<RecordListing, StorageError> {
         self.host_partition(host, RecordKind::Session, "Session")
     }
 
-    fn host_streams(&self, host: &str) -> Result<Vec<RecordRead>, StorageError> {
+    fn host_streams(&self, host: &str) -> Result<RecordListing, StorageError> {
         self.host_partition(host, RecordKind::Stream, "Stream")
     }
 
     fn inventory(&self) -> Result<Vec<RecordRead>, StorageError> {
         let _scope = self.scope(false)?;
         decode_record_tree(&self.read_locked_tree()?)
+    }
+
+    fn listing(&self) -> Result<RecordListing, StorageError> {
+        let _scope = self.scope(false)?;
+        let mut paths = Vec::new();
+        self.discover(&self.root.join("hosts"), &mut paths)?;
+        let mut listing = RecordListing::default();
+        for path in paths {
+            if super::artifacts::artifact_key_from_path(&path).is_ok() {
+                continue;
+            }
+            let address = address_from_relative_path(&path)?;
+            let bytes = self
+                .read_named(&path)?
+                .ok_or_else(|| StorageError::new("record disappeared during locked discovery"))?;
+            list(&mut listing, decode_record(&address, &bytes))?;
+        }
+        Ok(sorted(listing))
     }
 
     fn last_updated_ms(
@@ -240,7 +258,7 @@ impl YamlRecordStore {
         host: &str,
         kind: RecordKind,
         label: &str,
-    ) -> Result<Vec<RecordRead>, StorageError> {
+    ) -> Result<RecordListing, StorageError> {
         let _scope = self.scope(false)?;
         let sample = RecordAddress::new(host, kind, "entry")?;
         let relative = relative_record_path(&sample)?;
@@ -252,10 +270,12 @@ impl YamlRecordStore {
         self.observe(RecordIoEvent::List(directory.clone()));
         let entries = match fs::read_dir(&directory) {
             Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(RecordListing::default());
+            }
             Err(error) => return Err(invalid(error)),
         };
-        let mut records = Vec::new();
+        let mut listing = RecordListing::default();
         for entry in entries {
             let entry = entry.map_err(invalid)?;
             let file_type = entry.file_type().map_err(invalid)?;
@@ -280,11 +300,32 @@ impl YamlRecordStore {
             let bytes = self
                 .read_named(relative)?
                 .ok_or_else(|| invalid(format!("{label} disappeared during inspection")))?;
-            records.push(decode_record(&address, &bytes)?);
+            list(&mut listing, decode_record(&address, &bytes))?;
         }
-        records.sort_by(|left, right| left.record.key().id().cmp(right.record.key().id()));
-        Ok(records)
+        Ok(sorted(listing))
     }
+}
+
+/// A decode failure names its record in the listing; any other failure fails the listing.
+fn list(
+    listing: &mut RecordListing,
+    decoded: Result<RecordRead, StorageError>,
+) -> Result<(), StorageError> {
+    match decoded {
+        Ok(read) => listing.records.push(read),
+        Err(error) => listing.unreadable.push(error.into_unreadable()?),
+    }
+    Ok(())
+}
+
+fn sorted(mut listing: RecordListing) -> RecordListing {
+    listing
+        .records
+        .sort_by_cached_key(|read| RecordAddress::for_record(&read.record));
+    listing
+        .unreadable
+        .sort_by(|left, right| left.path.cmp(&right.path));
+    listing
 }
 
 #[cfg(test)]

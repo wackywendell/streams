@@ -33,6 +33,7 @@ import {
   resolveTabRenameTarget,
   buildReferenceItems,
   filterHostStreams,
+  unreadableNotice,
   formatRelativeAge,
   liveStreamIds,
   StreamsCoordinator,
@@ -1205,6 +1206,7 @@ export default class StreamsMod extends View {
       }
 
       const streamList = coordinator.hostStreams ?? [];
+      const unreadable = unreadableNotice(coordinator.hostUnreadable);
       const liveSet = liveStreamIds({
         panes: panes(),
         terminalList: snap.terminalList,
@@ -1347,6 +1349,26 @@ export default class StreamsMod extends View {
               .overflow_y_scrollbar()
               .track_scroll(this.scroll)
           )
+            .when(Boolean(unreadable), (el) =>
+              el.child(
+                v_flex()
+                  .id("streams-unreadable-notice")
+                  .p(8)
+                  .gap(4)
+                  .rounded(5)
+                  .bg(t.raised)
+                  .border(1)
+                  .border_color(t.border)
+                  .text_size(11.5)
+                  .child(div().text_color(t.blocked).child(unreadable.title))
+                  .children(
+                    unreadable.records.map((line) =>
+                      div().text_size(11).text_color(t.muted).child(line)
+                    )
+                  )
+                  .child(div().text_size(11).text_color(t.dim).child(unreadable.repair))
+              )
+            )
             .when(filteredStreams.length === 0, (el) =>
               el.child(
                 div()
@@ -1355,9 +1377,11 @@ export default class StreamsMod extends View {
                   .child(
                     coordinator.hostStreamsError
                       ? `Streams are unavailable: ${coordinator.hostStreamsError}`
-                      : streamList.length === 0
-                        ? "No Streams on this host."
-                        : "No matching Streams."
+                      : streamList.length > 0
+                        ? "No matching Streams."
+                        : unreadable
+                          ? "No readable Streams on this host."
+                          : "No Streams on this host."
                   )
               )
             )

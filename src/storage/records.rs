@@ -1,6 +1,8 @@
 //! Record-local persistence: exact addresses, one target and its embedded retry evidence.
 
-use serde::Serialize;
+use std::path::PathBuf;
+
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
@@ -103,6 +105,49 @@ pub struct RecordRead {
     pub revision: String,
 }
 
+/// A record file whose bytes cannot be decoded, named by kind and catalog path, with the cause.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UnreadableRecord {
+    pub kind: RecordKind,
+    pub path: PathBuf,
+    pub cause: String,
+}
+
+impl std::fmt::Display for UnreadableRecord {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let kind = match self.kind {
+            RecordKind::Host => "Host",
+            RecordKind::Stream => "Stream",
+            RecordKind::Session => "Session",
+        };
+        write!(
+            f,
+            "{kind} record {} is unreadable: {}",
+            self.path.display(),
+            self.cause
+        )
+    }
+}
+
+/// A listing holds every record it could decode and names each one it could not, so one
+/// unreadable file never hides the rest. The catalog layout itself must still be readable.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct RecordListing {
+    pub records: Vec<RecordRead>,
+    pub unreadable: Vec<UnreadableRecord>,
+}
+
+impl RecordListing {
+    /// For callers that act on every record: the first unreadable record fails the call.
+    pub fn complete(self) -> Result<Vec<RecordRead>, StorageError> {
+        match self.unreadable.into_iter().next() {
+            Some(unreadable) => Err(unreadable.into()),
+            None => Ok(self.records),
+        }
+    }
+}
+
 /// Only the target can be replaced. Domain rejection returns an error instead.
 pub struct RecordChange {
     pub record: Record,
@@ -124,8 +169,10 @@ pub trait RecordReader {
 /// Explicit human discovery, inspection and sync, separate from a point reader's capability.
 pub trait RecordInventory {
     fn inventory(&self) -> Result<Vec<RecordRead>, StorageError>;
-    fn host_sessions(&self, host: &str) -> Result<Vec<RecordRead>, StorageError>;
-    fn host_streams(&self, host: &str) -> Result<Vec<RecordRead>, StorageError>;
+    /// Every host's records, without the relationship checks `inventory` applies.
+    fn listing(&self) -> Result<RecordListing, StorageError>;
+    fn host_sessions(&self, host: &str) -> Result<RecordListing, StorageError>;
+    fn host_streams(&self, host: &str) -> Result<RecordListing, StorageError>;
     fn last_updated_ms(
         &self,
         addresses: &[RecordAddress],

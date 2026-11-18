@@ -27,7 +27,7 @@ use crate::{
         StorageError,
         records::{
             RecordAddress, RecordChange, RecordRead, RecordReader, RecordRequest, RecordSave,
-            RecordStore,
+            RecordStore, UnreadableRecord,
         },
     },
 };
@@ -275,16 +275,13 @@ fn decode_envelope(
     bytes: &[u8],
 ) -> Result<(Envelope, RecordRead), StorageError> {
     let path = relative_record_path(address)?;
-    let kind = match address.kind() {
-        RecordKind::Host => "Host",
-        RecordKind::Stream => "Stream",
-        RecordKind::Session => "Session",
-    };
     decode_envelope_bytes(address, bytes).map_err(|error| {
-        StorageError::new(format!(
-            "{kind} record {} is unreadable: {error}",
-            path.display()
-        ))
+        UnreadableRecord {
+            kind: address.kind(),
+            path,
+            cause: error.to_string(),
+        }
+        .into()
     })
 }
 

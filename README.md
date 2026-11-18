@@ -72,6 +72,8 @@ streams check
 
 Search is a case-insensitive literal substring of the title or goal. It has no operators or query language. Repeat `--status` to select several statuses. `list` projects live Session activity for `active`/`parked` Streams and excludes `closed` streams unless you use `--closed` or `--all`. Run `streams tidy [--days N]` to persist `closed` on inactive Sessions and Streams untouched past `lifecycle.decay_days`.
 
+`list` shows every Stream it can read. It names each record file it cannot decode, with its kind, catalog path and cause, on stderr, or under `unreadable` with `--json`, and still exits 0, because the listing itself succeeded. An unreadable Session counts toward no Stream, since its Stream is unknown. To repair one, run `/streams reset` in a conversation on that Stream, or delete or fix the file. `list` fails only when the catalog itself cannot be read.
+
 Stream selectors accept an exact ID, an exact title or a unique title substring. IDs take precedence; UUID prefixes are not supported. Ambiguous references fail and report candidate IDs; they never select the first result.
 
 `show` prints the complete logical stream and its sessions as YAML. `--json` gives the same structure. `check` validates saved records and relationships. It does not require saved conversations to be running or probe remote branches.

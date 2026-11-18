@@ -306,6 +306,24 @@ fn discarding_an_unreadable_card_replaces_the_stream_in_place_and_removes_the_se
             .contains("is unreadable: unknown field `archived`"),
         "{failed}"
     );
+    child.request(20, json!({"kind":"list_streams"}));
+    let listing = child.response(20)["outcome"].clone();
+    assert_eq!(listing["status"], "success", "the chooser still lists");
+    assert_eq!(listing["result"]["streams"], json!([]));
+    let unreadable = &listing["result"]["unreadable"];
+    assert_eq!(unreadable.as_array().unwrap().len(), 1, "{listing}");
+    assert_eq!(unreadable[0]["kind"], "stream");
+    assert_eq!(
+        unreadable[0]["path"],
+        json!(stream_path.strip_prefix(f.root()).unwrap())
+    );
+    assert!(
+        unreadable[0]["cause"]
+            .as_str()
+            .unwrap()
+            .starts_with("unknown field `archived`"),
+        "{listing}"
+    );
 
     child.request(3, json!({"kind":"discard_unreadable_card"}));
     let discarded = child.response(3)["outcome"]["result"].clone();

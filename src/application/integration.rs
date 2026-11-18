@@ -7,7 +7,7 @@ use crate::{
     },
     model::{Record, RecordKind, Session, Status, Stream, ValidationError},
     operations::{decay_cutoff_ms, project_stream_status},
-    storage::records::{RecordAddress, RecordReader, RecordStore},
+    storage::records::{RecordAddress, RecordRead, RecordReader, RecordStore, UnreadableRecord},
 };
 
 pub struct Streams<'a> {
@@ -66,6 +66,7 @@ impl<'a> Streams<'a> {
                 let mut sessions: Vec<_> = self
                     .records
                     .host_sessions()?
+                    .complete()?
                     .into_iter()
                     .filter_map(|value| {
                         let Record::Session(session) = value.record else {
@@ -176,12 +177,27 @@ impl<'a> Streams<'a> {
         let sessions = if streams.is_empty() && !needs_host_streams {
             None
         } else {
-            Some(self.sessions_by_id().map_err(unavailable))
+            Some(
+                self.records
+                    .host_sessions()
+                    .map(|listing| (sessions_by_id(listing.records), listing.unreadable))
+                    .map_err(unavailable),
+            )
         };
+        // A Stream view needs every Session that might be its member, so an unreadable Session
+        // fails it. The host listing names unreadable Sessions instead.
+        let members = sessions.as_ref().map(|sessions| match sessions {
+            Ok((sessions, unreadable)) => match unreadable.first() {
+                Some(record) => Err(WireError::unavailable(record.to_string())),
+                None => Ok(sessions),
+            },
+            Err(error) => Err(error.clone()),
+        });
         let host_streams_result = match &sessions {
-            Some(Ok(sessions)) if needs_host_streams => {
-                Some(self.host_stream_summaries(sessions).map_err(unavailable))
-            }
+            Some(Ok((sessions, unreadable))) if needs_host_streams => Some(
+                self.host_listing(sessions, unreadable.clone())
+                    .map_err(unavailable),
+            ),
             Some(Err(error)) if needs_host_streams => Some(Err(error.clone())),
             _ => None,
         };
@@ -190,7 +206,7 @@ impl<'a> Streams<'a> {
          -> Result<_> {
             let mut stream_views = BTreeMap::new();
             for stream in &streams {
-                let result = match (&sessions, artifacts) {
+                let result = match (&members, artifacts) {
                     (Some(Ok(sessions)), Some(artifacts)) => self
                         .stream_view(artifacts, stream, sessions)
                         .map(|value| WireResult::Ok(ModReadValue::Stream { value }))
@@ -210,7 +226,7 @@ impl<'a> Streams<'a> {
                     ViewSelection::SavedSession { session } => session_views
                         .entry(session.as_str())
                         .or_insert_with(|| {
-                            let value = match &sessions {
+                            let value = match &members {
                                 Some(Ok(sessions)) => Ok(sessions.get(session).cloned()),
                                 // An addressed read stays independent of unrelated Sessions.
                                 _ => self.session(reader, session).map_err(unavailable),
@@ -264,13 +280,18 @@ impl<'a> Streams<'a> {
         )
     }
 
-    fn host_stream_summaries(
+    /// Readable Sessions count toward their Stream's row. An unreadable Session's Stream is
+    /// unknown, so it is named among the listing's unreadable records and counted nowhere.
+    fn host_listing(
         &self,
         sessions: &std::collections::BTreeMap<String, Session>,
-    ) -> Result<Vec<crate::integration::StreamSummary>> {
-        use crate::integration::StreamSummary;
+        mut unreadable: Vec<UnreadableRecord>,
+    ) -> Result<crate::integration::HostListing> {
+        use crate::integration::{HostListing, StreamSummary};
         let host = self.records.host().as_str();
-        let stream_reads = self.records.host_streams()?;
+        let stream_listing = self.records.host_streams()?;
+        unreadable.extend(stream_listing.unreadable);
+        let stream_reads = stream_listing.records;
         let mut addresses = Vec::with_capacity(stream_reads.len() + sessions.len());
         let mut counts: std::collections::BTreeMap<String, (usize, usize)> =
             std::collections::BTreeMap::new();
@@ -340,7 +361,10 @@ impl<'a> Streams<'a> {
                 summary.id.clone(),
             )
         });
-        Ok(summaries)
+        Ok(HostListing {
+            streams: summaries,
+            unreadable,
+        })
     }
 
     /// Resolve native selectors first so saved and contextual views share the same read batch.
@@ -541,17 +565,7 @@ impl<'a> Streams<'a> {
     }
 
     fn sessions_by_id(&self) -> Result<std::collections::BTreeMap<String, Session>> {
-        Ok(self
-            .records
-            .host_sessions()?
-            .into_iter()
-            .map(|value| {
-                let Record::Session(session) = value.record else {
-                    unreachable!("Session partition");
-                };
-                (session.id.clone(), session)
-            })
-            .collect())
+        Ok(sessions_by_id(self.records.host_sessions()?.complete()?))
     }
 
     fn stream_view(
@@ -826,4 +840,16 @@ impl<'a> Streams<'a> {
             session
         }))
     }
+}
+
+fn sessions_by_id(reads: Vec<RecordRead>) -> std::collections::BTreeMap<String, Session> {
+    reads
+        .into_iter()
+        .map(|value| {
+            let Record::Session(session) = value.record else {
+                unreachable!("Session partition");
+            };
+            (session.id.clone(), session)
+        })
+        .collect()
 }

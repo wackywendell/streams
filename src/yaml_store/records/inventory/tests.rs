@@ -129,3 +129,40 @@ fn explicit_discovery_rejects_symlinks_unknown_directories_and_malformed_records
         assert!(store.inventory().is_err(), "{failure}");
     }
 }
+
+#[test]
+fn listings_name_undecodable_records_and_still_fail_on_unexpected_layout() {
+    use std::os::unix::fs::symlink;
+    let directory = tempfile::tempdir().unwrap();
+    let store = YamlRecordStore::new(directory.path(), "host").unwrap();
+    store.initialize().unwrap();
+    for (path, bytes) in &tree() {
+        let path = directory.path().join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, bytes).unwrap();
+    }
+    let broken = Path::new("hosts/host/streams/broken.yaml");
+    fs::write(directory.path().join(broken), "not a record").unwrap();
+
+    let listing = store.listing().unwrap();
+    assert_eq!(listing.records.len(), 4);
+    assert_eq!(listing.unreadable.len(), 1);
+    assert_eq!(listing.unreadable[0].kind, RecordKind::Stream);
+    assert_eq!(listing.unreadable[0].path, broken);
+    let streams = store.host_streams("host").unwrap();
+    assert_eq!(streams.records.len(), 1);
+    assert_eq!(streams.unreadable, listing.unreadable);
+    assert_eq!(
+        streams.complete().unwrap_err().to_string(),
+        listing.unreadable[0].to_string()
+    );
+    assert!(store.host_sessions("host").unwrap().unreadable.is_empty());
+
+    symlink(
+        directory.path().join("missing"),
+        directory.path().join("hosts/host/streams/link.yaml"),
+    )
+    .unwrap();
+    assert!(store.listing().is_err());
+    assert!(store.host_streams("host").is_err());
+}
