@@ -216,6 +216,9 @@ pub struct StreamView {
     pub documents: Vec<DocumentReference>,
     pub links: Vec<LinkReference>,
     pub artifacts: Vec<StreamArtifacts>,
+    /// This host's unreadable Sessions. Any of them may be a member the view cannot show, and
+    /// the view's status and recency reflect its readable members only.
+    pub unreadable: Vec<crate::storage::records::UnreadableRecord>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

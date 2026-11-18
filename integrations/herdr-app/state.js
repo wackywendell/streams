@@ -86,17 +86,32 @@ export function filterHostStreams(
 }
 
 /**
- * The short sidebar notice for records a host listing could not read: one line per record,
- * then how to repair them. Null when every record was read.
+ * The short sidebar notice for records a listing or Stream view could not read: one entry per
+ * record with the repair Streams chose for its kind. Null when every record was read.
  */
 export function unreadableNotice(unreadable) {
   if (!Array.isArray(unreadable) || unreadable.length === 0) return null;
   const count = unreadable.length;
   return {
-    title: `${count} unreadable record${count === 1 ? " is" : "s are"} not listed`,
-    records: unreadable.map((record) => `${record.path}: ${record.cause}`),
-    repair: "Run /streams reset in a conversation on that Stream, or delete or fix the file.",
+    title: `${count} unreadable record${count === 1 ? " is" : "s are"} not shown`,
+    records: unreadable.map((record) => ({
+      label: `${record.path}: ${record.cause}`,
+      repair: record.repair,
+    })),
   };
+}
+
+/**
+ * What the host Stream list says when it shows no rows, or null when it shows some. A failed
+ * listing names its error; otherwise the message says whether a filter, unreadable records or
+ * an empty catalog left the list empty.
+ */
+export function hostStreamsEmptyMessage({ error, streams, shown, unreadable }) {
+  if (error) return `Streams are unavailable: ${error}`;
+  if (shown.length > 0) return null;
+  if (streams.length > 0) return "No matching Streams.";
+  if (unreadable.length > 0) return "No readable Streams on this host.";
+  return "No Streams on this host.";
 }
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -848,10 +863,17 @@ export class StreamsCoordinator {
                 fetchedStreams.add(item.ok.value.id);
               }
             } else if (sel.kind === "host_streams") {
-              if (item?.ok?.kind === "host_streams") {
-                this.hostStreams = item.ok.value?.streams ?? [];
-                this.hostUnreadable = item.ok.value?.unreadable ?? [];
+              const value = item?.ok?.kind === "host_streams" ? item.ok.value : undefined;
+              if (Array.isArray(value?.streams) && Array.isArray(value?.unreadable)) {
+                this.hostStreams = value.streams;
+                this.hostUnreadable = value.unreadable;
                 this.hostStreamsError = null;
+              } else if (item?.ok?.kind === "host_streams") {
+                // Any other shape is a version mismatch, never an empty catalog.
+                this.hostStreams = [];
+                this.hostUnreadable = [];
+                this.hostStreamsError =
+                  "unexpected host listing from streams; reinstall the CLI and mod together";
               } else if (item?.error) {
                 this.hostStreams = [];
                 this.hostUnreadable = [];

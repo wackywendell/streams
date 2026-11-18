@@ -884,10 +884,20 @@ fn saved_batch_distinguishes_empty_unavailable_and_a_broken_host_partition() {
             .strip_prefix(fixture.records.root())
             .unwrap()
     );
+    let WireResult::Ok(ModReadValue::Stream { value: view }) = &values[0] else {
+        panic!(
+            "a Stream view survives an unreadable Session: {:?}",
+            values[0]
+        );
+    };
+    assert_eq!(view.sessions.len(), 2, "its readable members are shown");
+    assert_eq!(
+        view.unreadable, listing.unreadable,
+        "and the Sessions it cannot show are named as in the listing"
+    );
     assert!(
-        matches!(&values[0], WireResult::Error(error) if error.message == listing.unreadable[0].to_string()),
-        "a Stream view needs every Session that might be its member: {:?}",
-        values[0]
+        empty.view.unreadable.is_empty(),
+        "a clean partition names nothing"
     );
     assert!(
         matches!(&values[1], WireResult::Ok(ModReadValue::Session { .. })),
@@ -3279,10 +3289,22 @@ fn host_listings_show_readable_streams_and_name_unreadable_records() {
         stderr.contains(&host_listing.unreadable[0].to_string()),
         "{stderr}"
     );
-    assert!(stderr.contains("/streams reset"), "{stderr}");
+    assert_eq!(
+        host_listing.unreadable[0].host,
+        fixture.records.host().as_str()
+    );
+    assert_eq!(
+        host_listing.unreadable[0].repair,
+        "Run /streams reset in a conversation on that Stream, or delete or fix the file."
+    );
+    assert!(
+        stderr.contains(&host_listing.unreadable[0].repair),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("another host"), "{stderr}");
 
     // An unreadable Session's Stream is unknown: the listing names it and counts it nowhere,
-    // and a view of a Stream it might belong to names it as the reason the view is unavailable.
+    // and a view of a Stream it might belong to shows its readable members and names it.
     let session = format!(
         "hosts/{host}/conversations/{}.yaml",
         streams::yaml_store::encode_component(&fixture.sessions[0].id)
@@ -3301,16 +3323,68 @@ fn host_listings_show_readable_streams_and_name_unreadable_records() {
             (RecordKind::Stream, stream)
         ]
     );
+    assert_eq!(
+        host_listing.unreadable[0].repair,
+        "Run /streams reset in that conversation, or delete or fix the file."
+    );
     match &views[1] {
-        WireResult::Error(error) => assert_eq!(
-            error.message,
-            host_listing.unreadable[0].to_string(),
-            "{error:?}"
-        ),
-        other => panic!("expected an unavailable Stream view, got {other:?}"),
+        WireResult::Ok(ModReadValue::Stream { value }) => {
+            assert_eq!(value.sessions.len(), 1, "its readable member is shown");
+            assert_eq!(
+                value.unreadable,
+                host_listing.unreadable[..1],
+                "the Session it might hold is named"
+            );
+        }
+        other => panic!("expected a Stream view, got {other:?}"),
     }
     assert_eq!(
         list()["unreadable"],
         serde_json::to_value(&host_listing.unreadable).unwrap()
+    );
+
+    // Another host's replica records are listed by `streams list`, with their own host and a
+    // repair for their kind, but never in this host's listing.
+    let other = fixture.records.root().join("hosts/other");
+    std::fs::create_dir_all(other.join("streams")).unwrap();
+    std::fs::write(other.join("host.yaml"), "not a record").unwrap();
+    std::fs::write(other.join("streams/x.yaml"), "not a record").unwrap();
+    assert_eq!(listing(&read()[0]), host_listing);
+    let foreign: Vec<_> = list()["unreadable"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|record| record["host"] == "other")
+        .map(|record| {
+            (
+                record["kind"].as_str().unwrap().to_owned(),
+                record["path"].as_str().unwrap().to_owned(),
+                record["repair"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        foreign,
+        [
+            (
+                "host".into(),
+                "hosts/other/host.yaml".into(),
+                "Delete or fix the file.".into()
+            ),
+            (
+                "stream".into(),
+                "hosts/other/streams/x.yaml".into(),
+                "Run /streams reset in a conversation on that Stream, or delete or fix the file."
+                    .into()
+            ),
+        ]
+    );
+    let plain = fixture.command().arg("list").output().unwrap();
+    assert!(plain.status.success());
+    let stderr = String::from_utf8(plain.stderr).unwrap();
+    assert!(
+        stderr.contains("Host record hosts/other/host.yaml is unreadable")
+            && stderr.contains("/streams reset repairs only this host's records"),
+        "{stderr}"
     );
 }

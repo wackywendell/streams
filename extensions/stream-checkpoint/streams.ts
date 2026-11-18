@@ -61,14 +61,14 @@ export function receiptHasWarning(value: Receipt): boolean {
  return !!value.warnings?.length || !receiptCanContinue(value) || saves.some(resultNeedsAttention) || !!value.publication && resultNeedsAttention(value.publication);
 }
 export type DiscardedCard = {session: string | null; stream: string | null};
-/** A record file the catalog listing could not decode, named by kind and catalog path. */
-export type UnreadableRecord = {kind: "host" | "stream" | "session"; path: string; cause: string};
+/** A record file the catalog listing could not decode, with the repair Streams chose for its kind. */
+export type UnreadableRecord = {kind: "host" | "stream" | "session"; host: string; path: string; cause: string; repair: string};
 export type StreamListing = {streams: StreamWire[]; unreadable: UnreadableRecord[]};
-const unreadableRecord = (value: unknown): value is UnreadableRecord => object(value) && ["host", "stream", "session"].includes(value.kind) && text(value.path) && text(value.cause);
-/** Names the records a listing skipped and how to repair them; empty when every record was read. */
+const unreadableRecord = (value: unknown): value is UnreadableRecord => object(value) && ["host", "stream", "session"].includes(value.kind) && text(value.host) && text(value.path) && text(value.cause) && text(value.repair);
+/** Names the records a listing skipped, each with its repair; empty when every record was read. */
 export function unreadableNotice(unreadable: UnreadableRecord[]): string {
  if (!unreadable.length) return "";
- return [`${unreadable.length} unreadable record${unreadable.length === 1 ? " is" : "s are"} not listed:`, ...unreadable.map(record => `${record.path}: ${record.cause}`), "Run /streams reset in a conversation on that Stream, or delete or fix the file."].join("\n");
+ return [`${unreadable.length} unreadable record${unreadable.length === 1 ? " is" : "s are"} not listed:`, ...unreadable.map(record => `${record.path}: ${record.cause}\n ${record.repair}`)].join("\n");
 }
 export class StreamCli {
  constructor(readonly cwd: string, private readonly runner: Runner) {}

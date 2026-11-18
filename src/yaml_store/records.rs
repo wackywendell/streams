@@ -275,14 +275,8 @@ fn decode_envelope(
     bytes: &[u8],
 ) -> Result<(Envelope, RecordRead), StorageError> {
     let path = relative_record_path(address)?;
-    decode_envelope_bytes(address, bytes).map_err(|error| {
-        UnreadableRecord {
-            kind: address.kind(),
-            path,
-            cause: error.to_string(),
-        }
-        .into()
-    })
+    decode_envelope_bytes(address, bytes)
+        .map_err(|error| UnreadableRecord::new(address, path, error.to_string()).into())
 }
 
 fn decode_envelope_bytes(

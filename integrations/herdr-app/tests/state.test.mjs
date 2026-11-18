@@ -10,6 +10,7 @@ import {
   buildReferenceItems,
   filterHostStreams,
   unreadableNotice,
+  hostStreamsEmptyMessage,
   formatRelativeAge,
   liveStreamIds,
   dispatchViewerActions,
@@ -1119,7 +1120,13 @@ test("StreamsCoordinator captures hostStreams on unenrolled tabs, inspects strea
 });
 
 test("a host Stream listing shows readable Streams, names unreadable records, and keeps a failure after the rest of the read succeeds", async () => {
-  const unreadable = { kind: "stream", path: "hosts/h/streams/x.yaml", cause: "unknown field `archived`" };
+  const unreadable = {
+    kind: "stream",
+    host: "h",
+    path: "hosts/h/streams/x.yaml",
+    cause: "unknown field `archived`",
+    repair: "Run /streams reset in a conversation on that Stream, or delete or fix the file.",
+  };
   let hostStreams = {
     ok: { kind: "host_streams", value: { streams: [{ id: "st", title: "T", status: "active" }], unreadable: [unreadable] } },
   };
@@ -1167,10 +1174,21 @@ test("a host Stream listing shows readable Streams, names unreadable records, an
   assert.deepEqual(coordinator.hostStreams.map((summary) => summary.id), ["st"]);
   assert.deepEqual(coordinator.hostUnreadable, [unreadable]);
   assert.deepEqual(unreadableNotice(coordinator.hostUnreadable), {
-    title: "1 unreadable record is not listed",
-    records: ["hosts/h/streams/x.yaml: unknown field `archived`"],
-    repair: "Run /streams reset in a conversation on that Stream, or delete or fix the file.",
+    title: "1 unreadable record is not shown",
+    records: [{ label: "hosts/h/streams/x.yaml: unknown field `archived`", repair: unreadable.repair }],
   });
+
+  // An old CLI's bare array, or any other shape, is a mismatch and never an empty catalog.
+  for (const value of [[{ id: "st", title: "T", status: "active" }], { streams: [] }, null]) {
+    hostStreams = { ok: { kind: "host_streams", value } };
+    await coordinator.observe({ ...snapshot, force: true });
+    assert.deepEqual(coordinator.hostStreams, []);
+    assert.deepEqual(coordinator.hostUnreadable, []);
+    assert.equal(
+      coordinator.hostStreamsError,
+      "unexpected host listing from streams; reinstall the CLI and mod together"
+    );
+  }
 
   hostStreams = { error: { kind: "unavailable", message: "catalog is not initialized" } };
   await coordinator.observe({ ...snapshot, force: true });
@@ -1183,6 +1201,32 @@ test("a host Stream listing shows readable Streams, names unreadable records, an
   assert.equal(coordinator.hostStreamsError, null);
   assert.deepEqual(coordinator.hostStreams, []);
   assert.equal(unreadableNotice(coordinator.hostUnreadable), null);
+});
+
+test("hostStreamsEmptyMessage says why the host list is empty, in a fixed order", () => {
+  const stream = { id: "st", title: "T", status: "active" };
+  const record = { kind: "stream", host: "h", path: "p", cause: "c", repair: "r" };
+  const message = (fields) =>
+    hostStreamsEmptyMessage({ error: null, streams: [], shown: [], unreadable: [], ...fields });
+  assert.equal(message({ error: "catalog is not initialized", unreadable: [record] }), "Streams are unavailable: catalog is not initialized");
+  assert.equal(message({ streams: [stream], unreadable: [record] }), "No matching Streams.");
+  assert.equal(message({ unreadable: [record] }), "No readable Streams on this host.");
+  assert.equal(message({}), "No Streams on this host.");
+  assert.equal(message({ streams: [stream], shown: [stream], unreadable: [record] }), null);
+});
+
+test("unreadableNotice names each record with its own repair", () => {
+  assert.equal(unreadableNotice([]), null);
+  assert.equal(unreadableNotice(undefined), null);
+  const notice = unreadableNotice([
+    { kind: "session", host: "h", path: "hosts/h/conversations/a.yaml", cause: "bad", repair: "Run /streams reset in that conversation, or delete or fix the file." },
+    { kind: "host", host: "h", path: "hosts/h/host.yaml", cause: "worse", repair: "Delete or fix the file." },
+  ]);
+  assert.equal(notice.title, "2 unreadable records are not shown");
+  assert.deepEqual(notice.records, [
+    { label: "hosts/h/conversations/a.yaml: bad", repair: "Run /streams reset in that conversation, or delete or fix the file." },
+    { label: "hosts/h/host.yaml: worse", repair: "Delete or fix the file." },
+  ]);
 });
 
 test("filterHostStreams supports 5 status tabs, recent/alpha sorting, and text search", () => {

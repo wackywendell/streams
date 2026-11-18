@@ -14,7 +14,8 @@ export async function chooseInitial(ctx: ExtensionContext, cli: StreamCli, optio
  if (!before.stream) {
   const listing = await cli.list();
   const streams = listing.streams.filter(stream => stream.owner.host_id === before.host_id);
-  const unreadable = unreadableNotice(listing.unreadable);
+  // Like the Streams it offers, only this host's records are named: /streams reset cannot repair a replica.
+  const unreadable = unreadableNotice(listing.unreadable.filter(record => record.host === before.host_id));
   if (streamId && !streams.some((stream) => stream.id === streamId)) throw Error(`Pass an exact catalog stream ID from streams list --json${unreadable ? `\n${unreadable}` : ""}`);
   const rows = streams.map((stream) => `${stream.id} · ${stream.title}`);
   const chosen = title ? "Create…" : await ctx.ui.select(`Initial work card attachment${options.reason ? `\n${options.reason}` : ""}${unreadable ? `\n${unreadable}` : ""}`, [...(streamId ? rows.filter((row) => row.startsWith(`${streamId} ·`)) : rows), "Create…", "Cancel"]);

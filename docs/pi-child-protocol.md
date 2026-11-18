@@ -69,8 +69,10 @@ Session between `parked`/`closed` and `active` (reopening a `closed` Stream when
 and emitting save notifications when records change.
 `{"kind":"list_streams"}` returns `{"streams": [...], "unreadable": [...]}`:
 every Stream the catalog listing could read, and each record file it could not
-decode as `{"kind": "host" | "stream" | "session", "path": string, "cause": string}`.
-The chooser offers the readable Streams and names the unreadable records.
+decode as `{"kind": "host" | "stream" | "session", "host": string, "path": string,
+"cause": string, "repair": string}`. `repair` is chosen by kind in Rust; the
+extension only displays it. The chooser offers this host's readable Streams and
+names this host's unreadable records, since `/streams reset` cannot repair a replica.
 `{"kind":"discard_unreadable_card"}` runs before a reset captures anything. It
 discards whichever records of the child's card cannot be decoded and returns
 `{"session": string | null, "stream": string | null}`, the decode error of each

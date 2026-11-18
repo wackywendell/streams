@@ -16,8 +16,6 @@ use streams::{
     sync::records::RecordSync,
 };
 
-const UNREADABLE_REPAIR: &str = "Unreadable records are not listed. Run /streams reset in a conversation on that Stream, or delete or fix the file.";
-
 pub(super) fn list_records(
     opened: &streams::application::OpenedRecords,
     query: Option<&str>,
@@ -169,11 +167,20 @@ pub(super) fn list_records(
         plain,
     );
     // The listing still succeeds: it names each record it skipped, and how to repair it.
-    output
-        .notices
-        .extend(listing.unreadable.iter().map(ToString::to_string));
-    if !listing.unreadable.is_empty() {
-        output.notices.push(UNREADABLE_REPAIR.into());
+    output.notices.extend(
+        listing
+            .unreadable
+            .iter()
+            .map(|record| format!("{record}\n  {}", record.repair)),
+    );
+    if listing
+        .unreadable
+        .iter()
+        .any(|record| record.host != opened.host().as_str())
+    {
+        output.notices.push(
+            "/streams reset repairs only this host's records; repair another host's records on that host.".into(),
+        );
     }
     if let Some(publication) = publication {
         if let Some(detail) = publication["detail"]

@@ -72,7 +72,13 @@ streams check
 
 Search is a case-insensitive literal substring of the title or goal. It has no operators or query language. Repeat `--status` to select several statuses. `list` projects live Session activity for `active`/`parked` Streams and excludes `closed` streams unless you use `--closed` or `--all`. Run `streams tidy [--days N]` to persist `closed` on inactive Sessions and Streams untouched past `lifecycle.decay_days`.
 
-`list` shows every Stream it can read. It names each record file it cannot decode, with its kind, catalog path and cause, on stderr, or under `unreadable` with `--json`, and still exits 0, because the listing itself succeeded. An unreadable Session counts toward no Stream, since its Stream is unknown. To repair one, run `/streams reset` in a conversation on that Stream, or delete or fix the file. `list` fails only when the catalog itself cannot be read.
+`list` shows every Stream it can read. It names each record file it cannot decode, with its kind, host, catalog path, cause and repair, on stderr, or under `unreadable` with `--json`, and still exits 0, because the listing itself succeeded. `list` fails only when the catalog itself cannot be read. The repair depends on the kind of record:
+
+- Stream: run `/streams reset` in a conversation on that Stream, or delete or fix the file.
+- Session: run `/streams reset` in that conversation, or delete or fix the file.
+- Host: delete or fix the file.
+
+`/streams reset` repairs only this host's records; repair another host's records on that host. An unreadable Session's Stream is unknown, so it counts toward no Stream: a row's counts, status and recency reflect its readable Sessions only.
 
 Stream selectors accept an exact ID, an exact title or a unique title substring. IDs take precedence; UUID prefixes are not supported. Ambiguous references fail and report candidate IDs; they never select the first result.
 

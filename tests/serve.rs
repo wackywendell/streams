@@ -306,12 +306,28 @@ fn discarding_an_unreadable_card_replaces_the_stream_in_place_and_removes_the_se
             .contains("is unreadable: unknown field `archived`"),
         "{failed}"
     );
+    let foreign = f.root().join("hosts/other/streams");
+    fs::create_dir_all(&foreign).unwrap();
+    fs::write(foreign.join("x.yaml"), "not a record").unwrap();
     child.request(20, json!({"kind":"list_streams"}));
     let listing = child.response(20)["outcome"].clone();
     assert_eq!(listing["status"], "success", "the chooser still lists");
     assert_eq!(listing["result"]["streams"], json!([]));
-    let unreadable = &listing["result"]["unreadable"];
-    assert_eq!(unreadable.as_array().unwrap().len(), 1, "{listing}");
+    let (local, foreign): (Vec<_>, Vec<_>) = listing["result"]["unreadable"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .partition(|record| record["host"] == context["host_id"]);
+    assert_eq!(
+        foreign
+            .iter()
+            .map(|record| (&record["host"], &record["path"]))
+            .collect::<Vec<_>>(),
+        [(&json!("other"), &json!("hosts/other/streams/x.yaml"))],
+        "another host's record carries its host, so the chooser can leave it out"
+    );
+    let unreadable = local;
+    assert_eq!(unreadable.len(), 1, "{listing}");
     assert_eq!(unreadable[0]["kind"], "stream");
     assert_eq!(
         unreadable[0]["path"],
@@ -324,6 +340,7 @@ fn discarding_an_unreadable_card_replaces_the_stream_in_place_and_removes_the_se
             .starts_with("unknown field `archived`"),
         "{listing}"
     );
+    fs::remove_dir_all(f.root().join("hosts/other")).unwrap();
 
     child.request(3, json!({"kind":"discard_unreadable_card"}));
     let discarded = child.response(3)["outcome"]["result"].clone();

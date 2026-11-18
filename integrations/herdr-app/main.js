@@ -34,6 +34,7 @@ import {
   buildReferenceItems,
   filterHostStreams,
   unreadableNotice,
+  hostStreamsEmptyMessage,
   formatRelativeAge,
   liveStreamIds,
   StreamsCoordinator,
@@ -924,6 +925,26 @@ export default class StreamsMod extends View {
             )
         )
       );
+    // One notice for every view that skips unreadable records: the host list and Stream views.
+    const renderUnreadableNotice = (notice) =>
+      v_flex()
+        .id("streams-unreadable-notice")
+        .p(8)
+        .gap(4)
+        .rounded(5)
+        .bg(t.raised)
+        .border(1)
+        .border_color(t.border)
+        .text_size(11.5)
+        .child(div().text_color(t.blocked).child(notice.title))
+        .children(
+          notice.records.map((record) =>
+            v_flex()
+              .gap(1)
+              .child(div().text_size(11).text_color(t.muted).child(record.label))
+              .child(div().text_size(11).text_color(t.dim).child(record.repair))
+          )
+        );
     const renderReferencesSection = (references, monoFont) =>
       v_flex()
         .pt(4)
@@ -1132,6 +1153,7 @@ export default class StreamsMod extends View {
           viewingSessionId: inspectedStream.sessions?.[0]?.id ?? null,
         });
         const inspectedSessions = inspectedStream.sessions ?? [];
+        const inspectedUnreadable = unreadableNotice(inspectedStream.unreadable);
         return v_flex()
           .size_full()
           .bg(t.chrome)
@@ -1162,6 +1184,9 @@ export default class StreamsMod extends View {
                       coordinator.inspectStream(null);
                     })
                     .child("← All Streams")
+                )
+                .when(Boolean(inspectedUnreadable), (el) =>
+                  el.child(renderUnreadableNotice(inspectedUnreadable))
                 )
                 .child(
                   v_flex()
@@ -1216,6 +1241,12 @@ export default class StreamsMod extends View {
         filter: this.streamFilter,
         sort: this.streamSort,
         query: this.streamQuery,
+      });
+      const emptyMessage = hostStreamsEmptyMessage({
+        error: coordinator.hostStreamsError,
+        streams: streamList,
+        shown: filteredStreams,
+        unreadable: coordinator.hostUnreadable,
       });
       const toolbar = v_flex()
         .px(12)
@@ -1349,41 +1380,9 @@ export default class StreamsMod extends View {
               .overflow_y_scrollbar()
               .track_scroll(this.scroll)
           )
-            .when(Boolean(unreadable), (el) =>
-              el.child(
-                v_flex()
-                  .id("streams-unreadable-notice")
-                  .p(8)
-                  .gap(4)
-                  .rounded(5)
-                  .bg(t.raised)
-                  .border(1)
-                  .border_color(t.border)
-                  .text_size(11.5)
-                  .child(div().text_color(t.blocked).child(unreadable.title))
-                  .children(
-                    unreadable.records.map((line) =>
-                      div().text_size(11).text_color(t.muted).child(line)
-                    )
-                  )
-                  .child(div().text_size(11).text_color(t.dim).child(unreadable.repair))
-              )
-            )
-            .when(filteredStreams.length === 0, (el) =>
-              el.child(
-                div()
-                  .text_size(12)
-                  .text_color(t.dim)
-                  .child(
-                    coordinator.hostStreamsError
-                      ? `Streams are unavailable: ${coordinator.hostStreamsError}`
-                      : streamList.length > 0
-                        ? "No matching Streams."
-                        : unreadable
-                          ? "No readable Streams on this host."
-                          : "No Streams on this host."
-                  )
-              )
+            .when(Boolean(unreadable), (el) => el.child(renderUnreadableNotice(unreadable)))
+            .when(Boolean(emptyMessage), (el) =>
+              el.child(div().text_size(12).text_color(t.dim).child(emptyMessage))
             )
             .when(filteredStreams.length > 0, (el) =>
               el.child(
@@ -1523,6 +1522,7 @@ export default class StreamsMod extends View {
       viewingSessionId: enrolled.id,
     });
     const otherSessions = (stream.sessions ?? []).filter((s) => s.id !== enrolled.id);
+    const streamUnreadable = unreadableNotice(stream.unreadable);
 
     return v_flex()
       .size_full()
@@ -1540,6 +1540,7 @@ export default class StreamsMod extends View {
             .overflow_y_scrollbar()
             .track_scroll(this.scroll)
         )
+          .when(Boolean(streamUnreadable), (el) => el.child(renderUnreadableNotice(streamUnreadable)))
           .child(
             v_flex()
               .gap(8)

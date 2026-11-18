@@ -109,21 +109,22 @@ test('StreamCli validates strict catalog fields and nullable document provenance
  ]) {const value=structuredClone(initial);change(value);await assert.rejects(read(value),StreamsCliError);}
 });
 test('catalog list accepts only the current object contract',async()=>{
- const unreadable=[{kind:'stream',path:'hosts/host/streams/broken.yaml',cause:'unknown field `archived`'}];
- for(const value of [[],[stream],null,{},{streams:[stream]},{streams:[{...stream,title_mode:'other'}],unreadable:[]},{streams:[stream],unreadable:[{...unreadable[0],kind:'other'}]},{streams:[stream],unreadable:[{kind:'stream',path:'p'}]}]) {
+ const unreadable=[{kind:'stream',host:'host',path:'hosts/host/streams/broken.yaml',cause:'unknown field `archived`',repair:'Delete or fix the file.'}];
+ for(const value of [[],[stream],null,{},{streams:[stream]},{streams:[{...stream,title_mode:'other'}],unreadable:[]},{streams:[stream],unreadable:[{...unreadable[0],kind:'other'}]},{streams:[stream],unreadable:[{kind:'stream',path:'p'}]},{streams:[stream],unreadable:[{...unreadable[0],repair:undefined}]},{streams:[stream],unreadable:[{...unreadable[0],host:42}]}]) {
   const cli=new StreamCli('/tmp',async()=>({status:'success',result:value}));
   await assert.rejects(cli.list(),StreamsCliError);
  }
  const cli=new StreamCli('/tmp',async()=>({status:'success',result:{streams:[stream],unreadable}}));
  assert.deepEqual(await cli.list(),{streams:[stream],unreadable});
 });
-test('the chooser offers readable Streams and names the records it could not read',async()=>{
- const unreadable=[{kind:'stream',path:'hosts/host/streams/broken.yaml',cause:'unknown field `archived`'}];
+test('the chooser offers readable Streams and names this host\'s records it could not read',async()=>{
+ const repair='Run /streams reset in a conversation on that Stream, or delete or fix the file.';
+ const unreadable=[{kind:'stream',host:'host',path:'hosts/host/streams/broken.yaml',cause:'unknown field `archived`',repair},{kind:'host',host:'other',path:'hosts/other/host.yaml',cause:'newer format',repair:'Delete or fix the file.'}];
  const calls=[];const cli={context:async()=>({...context(),stream:null,session:null,sessions:[]}),list:async()=>({streams:[stream],unreadable})};
  const ctx={hasUI:true,sessionManager:{getSessionId:()=> 'native'},ui:{select:async(title,rows)=>{calls.push({title,rows});return 'Cancel';}}};
  assert.equal((await chooseInitial(ctx,cli,{},()=>assert.fail())).status,'cancelled');
  assert.deepEqual(calls[0].rows,['effort · Work','Create…','Cancel']);
- assert.equal(calls[0].title,'Initial work card attachment\n1 unreadable record is not listed:\nhosts/host/streams/broken.yaml: unknown field `archived`\nRun /streams reset in a conversation on that Stream, or delete or fix the file.');
+ assert.equal(calls[0].title,`Initial work card attachment\n1 unreadable record is not listed:\nhosts/host/streams/broken.yaml: unknown field \`archived\`\n ${repair}`);
  await assert.rejects(chooseInitial(ctx,cli,{streamId:'broken'},()=>assert.fail()),/exact catalog stream ID[\s\S]*broken\.yaml: unknown field/);
 });
 test('context is bound to the child while the caller still admits only its own Session',async()=>{

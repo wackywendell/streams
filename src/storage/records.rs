@@ -110,8 +110,33 @@ pub struct RecordRead {
 #[serde(deny_unknown_fields)]
 pub struct UnreadableRecord {
     pub kind: RecordKind,
+    /// The host whose partition holds the file; `/streams reset` repairs only local records.
+    pub host: String,
     pub path: PathBuf,
     pub cause: String,
+    /// How to repair it. Frontends display this text; they do not compose their own.
+    pub repair: String,
+}
+
+impl UnreadableRecord {
+    pub fn new(address: &RecordAddress, path: PathBuf, cause: String) -> Self {
+        let repair = match address.kind() {
+            RecordKind::Stream => {
+                "Run /streams reset in a conversation on that Stream, or delete or fix the file."
+            }
+            RecordKind::Session => {
+                "Run /streams reset in that conversation, or delete or fix the file."
+            }
+            RecordKind::Host => "Delete or fix the file.",
+        };
+        Self {
+            kind: address.kind(),
+            host: address.host().to_owned(),
+            path,
+            cause,
+            repair: repair.to_owned(),
+        }
+    }
 }
 
 impl std::fmt::Display for UnreadableRecord {
