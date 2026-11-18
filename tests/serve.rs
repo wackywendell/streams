@@ -110,7 +110,7 @@ impl Fixture {
             .as_object_mut()
             .unwrap()
             .remove("document_locations");
-        let request = json!({"version":2,"operation_id":"update", "catalog_source":context["catalog_source"],
+        let request = json!({"version":2,"catalog_source":context["catalog_source"],
             "actor":"user", "kind":"stream", "before":stream, "changes":{"goal":"Captured"}, "inputs":[],
             "title_default":context["title_defaults"]["stream"]});
         (context, request)
@@ -254,7 +254,7 @@ fn typed_preview_apply_and_enroll_keep_domain_packets_without_stdin() {
     );
     let id = context["stream"]["id"].as_str().unwrap();
     assert_eq!(f.ok(&["show", id], None)["stream"]["goal"], "Captured");
-    let enrollment = json!({"version":2,"operation_id":"enroll", "catalog_source":context["catalog_source"],
+    let enrollment = json!({"version":2,"catalog_source":context["catalog_source"],
         "harness":"pi", "harness_session_id":"pi-session", "actor":"user",
         "cwd":f.directory.path(), "stream_id":id, "session":{"title":"Session"}});
     child.request(3, json!({"kind":"enroll","request":enrollment}));
@@ -277,7 +277,7 @@ fn discarding_an_unreadable_card_replaces_the_stream_in_place_and_removes_the_se
     let (context, _) = f.capture();
     let id = context["stream"]["id"].as_str().unwrap();
     let mut child = f.start();
-    let enrollment = json!({"version":2,"operation_id":"enroll", "catalog_source":context["catalog_source"],
+    let enrollment = json!({"version":2,"catalog_source":context["catalog_source"],
         "harness":"pi", "harness_session_id":"pi-session", "actor":"user",
         "cwd":f.directory.path(), "stream_id":id, "session":{"title":"Session"}});
     child.request(1, json!({"kind":"enroll","request":enrollment}));
@@ -289,11 +289,11 @@ fn discarding_an_unreadable_card_replaces_the_stream_in_place_and_removes_the_se
             context["host_id"].as_str().unwrap(),
         ));
     let stream_path = partition.join("streams").join(format!(
-        "{}.yaml",
+        "{}.json",
         streams::yaml_store::encode_component(id)
     ));
     let mut stale: Value = serde_json::from_slice(&fs::read(&stream_path).unwrap()).unwrap();
-    stale["record"]["archived"] = json!(false);
+    stale["archived"] = json!(false);
     fs::write(&stream_path, stale.to_string()).unwrap();
 
     child.request(2, json!({"kind":"context"}));
@@ -308,7 +308,7 @@ fn discarding_an_unreadable_card_replaces_the_stream_in_place_and_removes_the_se
     );
     let foreign = f.root().join("hosts/other/streams");
     fs::create_dir_all(&foreign).unwrap();
-    fs::write(foreign.join("x.yaml"), "not a record").unwrap();
+    fs::write(foreign.join("x.json"), "not a record").unwrap();
     child.request(20, json!({"kind":"list_streams"}));
     let listing = child.response(20)["outcome"].clone();
     assert_eq!(listing["status"], "success", "the chooser still lists");
@@ -323,7 +323,7 @@ fn discarding_an_unreadable_card_replaces_the_stream_in_place_and_removes_the_se
             .iter()
             .map(|record| (&record["host"], &record["path"]))
             .collect::<Vec<_>>(),
-        [(&json!("other"), &json!("hosts/other/streams/x.yaml"))],
+        [(&json!("other"), &json!("hosts/other/streams/x.json"))],
         "another host's record carries its host, so the chooser can leave it out"
     );
     let unreadable = local;
@@ -368,7 +368,7 @@ fn discarding_an_unreadable_card_replaces_the_stream_in_place_and_removes_the_se
 
     let session_id = card["session"]["id"].as_str().unwrap();
     let session_path = partition.join("conversations").join(format!(
-        "{}.yaml",
+        "{}.json",
         streams::yaml_store::encode_component(session_id)
     ));
     fs::write(&session_path, "not a record").unwrap();
@@ -591,32 +591,25 @@ fn clean_eof_is_bounded_even_when_a_catalog_lock_never_releases() {
 }
 
 #[test]
-fn queued_saves_preserve_independent_changes_and_refuse_a_stale_change() {
+fn queued_saves_apply_in_order_and_refuse_a_second_save_from_the_same_capture() {
     let f = Fixture::new();
     let (context, request) = f.capture();
     let mut child = f.start();
     let mut title = request.clone();
-    title["operation_id"] = json!("title");
     title["changes"] = json!({"title":"Renamed"});
     child.request(1, json!({"kind":"apply","request":request}));
     child.request(2, json!({"kind":"apply","request":title}));
     assert_eq!(child.response(1)["outcome"]["status"], "success");
-    assert_eq!(child.response(2)["outcome"]["status"], "success");
-    let id = context["stream"]["id"].as_str().unwrap();
-    let stream = &f.ok(&["show", id], None)["stream"];
-    assert_eq!(stream["title"], "Renamed");
-    assert_eq!(stream["goal"], "Captured");
-    let mut stale = request;
-    stale["operation_id"] = json!("stale");
-    stale["changes"] = json!({"goal":"Conflicting"});
-    child.request(3, json!({"kind":"apply","request":stale}));
-    let refused = child.response(3);
+    let refused = child.response(2);
     assert_eq!(refused["outcome"]["status"], "success");
     assert_eq!(
         refused["outcome"]["result"]["save"]["domain"]["outcome"],
         "conflict"
     );
-    assert_eq!(f.ok(&["show", id], None)["stream"]["goal"], "Captured");
+    let id = context["stream"]["id"].as_str().unwrap();
+    let stream = &f.ok(&["show", id], None)["stream"];
+    assert_eq!(stream["title"], "Work");
+    assert_eq!(stream["goal"], "Captured");
     assert_eq!(child.finish(), (0, String::new()));
 }
 

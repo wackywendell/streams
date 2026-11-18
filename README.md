@@ -43,7 +43,9 @@ The supported core settings include `catalog.root`, `frontend.mode`, `naming.str
 Configuration is host-local at `$XDG_CONFIG_HOME/streams/config.toml`; each CLI process reads it anew. Unset XDG variables use `~/.local/share` and `~/.config`. Sync strategy, remote and branch belong to catalog setup, not these settings. Changing `catalog.root` selects another catalog; initialise it before use.
 
 Catalog records use host-partitioned addresses:
-`hosts/<host>/streams/<id>.yaml` and `hosts/<host>/conversations/<id>.yaml`.
+`hosts/<host>/streams/<id>.json` and `hosts/<host>/conversations/<id>.json`.
+Each file is the record itself. A record carries its own `revision` and
+`updated_at_ms`, which change only when a save changes the record.
 A Session owns its membership; moving it changes that Session alone. Checkout
 URLs and host-local Session directory selections remain with the conversation.
 
@@ -52,6 +54,23 @@ creating it; initialization does not adopt an existing repository or convert old
 records. The alpha switch uses the [manual shutdown and backup
 checklist](docs/record-local-operations.md), followed by fresh initialization and
 re-enrollment. The shared reference format requires a fresh catalog and, when sharing, a fresh compatible destination. Follow the [offline activation steps](docs/stream-reference-implementation.md#offline-activation) before using the new binary with live data.
+
+### Resetting the catalog
+
+A binary that changes the record format cannot read an older catalog. Commands
+then fail with an error that names the record and says to reset. Runtime code
+never converts old records. To reset:
+
+1. Stop Pi Streams children, card viewers and the herdr-app mod.
+2. Move the catalog directory aside, for example
+   `mv ~/.local/share/streams/catalog ~/.local/share/streams/catalog.old`
+   (use `streams config get catalog.root` for its location).
+3. Initialise an empty catalog with `streams init --sync none` or
+   `streams init --sync git` (with a fresh remote branch when sharing).
+4. Restart Pi and re-enroll the wanted work with `/streams attach` or
+   `streams create` and `streams session attach`.
+
+The old directory stays as a backup; delete it once you no longer need it.
 
 Saving a record is local. Publication is a separate transport operation, so a
 network failure cannot turn an accepted local save into a failed save.
@@ -301,7 +320,7 @@ Local directories and native bindings live under `$XDG_STATE_HOME/streams/catalo
 
 ## Understand saving and sharing
 
-A save succeeds when its target record and embedded receipt are persisted locally, for either storage mode. Git commits and publication happen separately:
+A save succeeds when its target record is persisted locally, for either storage mode. A save that changes nothing writes nothing. Git commits and publication happen separately:
 
 ```sh
 streams sync --json
@@ -315,7 +334,7 @@ Ordinary reads are local. Explicit `--refresh` runs sync before reading, includi
 
 Pi startup and shutdown request the same sync operation through the Rust child. Shutdown cancels inference first and does not generate a report. Lifecycle requests have a 10-second total deadline; ordinary Git subprocesses retain a 30-second deadline. Failures warn and produce a durable `stream-catalog-sync` Pi entry without undoing local saves.
 
-A lost reply may leave an uncertain save or push. Preserve accepted receipts and inspect the actual state rather than blindly retrying. See [saving and sync](docs/catalog-sync-usage.md) for outcomes and manual inspection.
+A lost reply may leave an uncertain push. Retrying an edit, report, enrollment or move is safe: one that already landed is recognised from the record and changes nothing, and one overtaken by a later edit is refused. See [saving and sync](docs/catalog-sync-usage.md) for outcomes and manual inspection.
 
 ## Develop
 

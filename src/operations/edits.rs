@@ -7,10 +7,10 @@ use serde_json::{Map, Value};
 
 use super::{
     Actor, Reconciliation, agent_field_allowed, apply_changes, copy_field, field_eq, field_policy,
-    filter_automatic_changes, record_field_names, text_group_guards,
+    filter_automatic_changes, record_field_names,
 };
 use crate::model::{
-    NamingMode, Record, Session, Stream, TitleDefaults, TitleMode, ValidationError, check_text,
+    NamingMode, Record, Session, Stream, TitleDefaults, TitleMode, ValidationError,
 };
 
 /// What a captured automatic report observes about its target when it is applied.
@@ -64,7 +64,6 @@ enum AdmissionTarget {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SessionEdit {
-    operation_id: String,
     before: Session,
     after: Session,
     actor: Actor,
@@ -73,7 +72,6 @@ pub struct SessionEdit {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct StreamEdit {
-    operation_id: String,
     before: Stream,
     after: Stream,
     actor: Actor,
@@ -83,14 +81,12 @@ pub struct StreamEdit {
 
 impl SessionEdit {
     pub fn new(
-        operation_id: &str,
         before: &Session,
         changes: &Map<String, Value>,
         actor: Actor,
         title_default: NamingMode,
     ) -> Result<Self, ValidationError> {
         let Record::Session(after) = prepare(
-            operation_id,
             &Record::Session(before.clone()),
             changes,
             actor,
@@ -100,15 +96,11 @@ impl SessionEdit {
             unreachable!("normalization preserves record kind")
         };
         Ok(Self {
-            operation_id: operation_id.into(),
             before: before.clone(),
             after,
             actor,
             title_default,
         })
-    }
-    pub fn operation_id(&self) -> &str {
-        &self.operation_id
     }
     pub fn before(&self) -> &Session {
         &self.before
@@ -127,7 +119,6 @@ impl SessionEdit {
             || current.host_id != stream.owner_host_id
         {
             return refuse(
-                &self.operation_id,
                 self.actor,
                 "current conversation/Stream relationship is invalid",
                 &["relationships"],
@@ -135,13 +126,7 @@ impl SessionEdit {
             );
         }
         if let Err(error) = stream.validate() {
-            return refuse(
-                &self.operation_id,
-                self.actor,
-                &error.to_string(),
-                &["relationships"],
-                false,
-            );
+            return refuse(self.actor, &error.to_string(), &["relationships"], false);
         }
         let before = Record::Session(self.before.clone());
         let after = Record::Session(self.after.clone());
@@ -156,7 +141,6 @@ impl SessionEdit {
                 title_default,
             );
             apply_automatic(
-                &self.operation_id,
                 &before,
                 &after,
                 &current_record,
@@ -166,13 +150,7 @@ impl SessionEdit {
                 protection,
             )
         } else {
-            apply_user_fields(
-                &self.operation_id,
-                &before,
-                &after,
-                &current_record,
-                &changed,
-            )
+            apply_user_fields(&before, &after, &current_record, &changed)
         }
     }
 
@@ -220,7 +198,6 @@ impl SessionEdit {
 
 impl StreamEdit {
     pub fn new(
-        operation_id: &str,
         before: &Stream,
         changes: &Map<String, Value>,
         actor: Actor,
@@ -228,7 +205,6 @@ impl StreamEdit {
         title_default: NamingMode,
     ) -> Result<Self, ValidationError> {
         let Record::Stream(after) = prepare(
-            operation_id,
             &Record::Stream(before.clone()),
             changes,
             actor,
@@ -256,16 +232,12 @@ impl StreamEdit {
             }
         }
         Ok(Self {
-            operation_id: operation_id.into(),
             before: before.clone(),
             after,
             actor,
             captured_session,
             title_default,
         })
-    }
-    pub fn operation_id(&self) -> &str {
-        &self.operation_id
     }
     pub fn before(&self) -> &Stream {
         &self.before
@@ -283,7 +255,6 @@ impl StreamEdit {
     ) -> Reconciliation {
         if current.id != self.before.id || current.owner_host_id != self.before.owner_host_id {
             return refuse(
-                &self.operation_id,
                 self.actor,
                 "target Stream identity changed",
                 &["identity"],
@@ -303,7 +274,6 @@ impl StreamEdit {
                 title_default,
             );
             apply_automatic(
-                &self.operation_id,
                 &before,
                 &after,
                 &current_record,
@@ -313,13 +283,7 @@ impl StreamEdit {
                 protection,
             )
         } else {
-            apply_user_fields(
-                &self.operation_id,
-                &before,
-                &after,
-                &current_record,
-                &changed,
-            )
+            apply_user_fields(&before, &after, &current_record, &changed)
         }
     }
 
@@ -391,13 +355,11 @@ pub fn report_admission_context(
 }
 
 fn prepare(
-    id: &str,
     before: &Record,
     changes: &Map<String, Value>,
     actor: Actor,
     title_default: NamingMode,
 ) -> Result<Record, ValidationError> {
-    check_text(id, "operation_id", false)?;
     before.validate_portable()?;
     if actor == Actor::Native {
         return Err(ValidationError::new(
@@ -405,7 +367,7 @@ fn prepare(
         ));
     }
     for field in changes.keys() {
-        if ["owner_host_id", "stream_id", "previous_stream_ids"].contains(&field.as_str())
+        if ["owner_host_id", "stream_id", "membership_epoch"].contains(&field.as_str())
             || field_policy(before.kind(), field)
                 .is_none_or(|policy| actor == Actor::Automatic && !policy.automatic)
         {
@@ -424,17 +386,15 @@ fn prepare(
     Ok(after)
 }
 
-fn refuse(id: &str, actor: Actor, reason: &str, fields: &[&str], stale: bool) -> Reconciliation {
+fn refuse(actor: Actor, reason: &str, fields: &[&str], stale: bool) -> Reconciliation {
     let conflicts = fields.iter().map(|field| (*field).into()).collect();
     if stale && actor == Actor::Automatic {
         Reconciliation::Superseded {
-            operation_id: id.into(),
             conflicts,
             reason: reason.into(),
         }
     } else {
         Reconciliation::Conflict {
-            operation_id: id.into(),
             conflicts,
             reason: reason.into(),
         }
@@ -460,8 +420,7 @@ fn same_captured_stream(captured: &Session, current: Option<&Session>) -> bool {
 
 fn same_membership_period(captured: &Session, current: Option<&Session>) -> bool {
     same_captured_stream(captured, current)
-        && current
-            .is_some_and(|session| session.previous_stream_ids == captured.previous_stream_ids)
+        && current.is_some_and(|session| session.membership_epoch == captured.membership_epoch)
 }
 
 fn prose_inputs_clean(before: &Record, current: &Record, changed: &BTreeSet<&'static str>) -> bool {
@@ -507,7 +466,6 @@ fn automatic_protection_conflict(
 
 #[allow(clippy::too_many_arguments)]
 fn apply_automatic(
-    id: &str,
     _before: &Record,
     after: &Record,
     current: &Record,
@@ -518,16 +476,21 @@ fn apply_automatic(
 ) -> Reconciliation {
     if let Err(error) = current.validate_portable() {
         return refuse(
-            id,
             Actor::Automatic,
             &error.to_string(),
             &["relationships"],
             false,
         );
     }
+    // A retried report that already landed, or one the record already holds, is no change.
+    if changed
+        .iter()
+        .all(|field| field_eq(current, after, field) == Some(true))
+    {
+        return Reconciliation::no_change("");
+    }
     if target == AdmissionTarget::Stream && !admission.membership_unchanged {
         return refuse(
-            id,
             Actor::Automatic,
             "captured conversation or membership period changed",
             &["inputs"],
@@ -535,17 +498,10 @@ fn apply_automatic(
         );
     }
     if let Some((reason, fields)) = protection {
-        return refuse(id, Actor::Automatic, reason, fields, true);
-    }
-    if changed
-        .iter()
-        .all(|field| field_eq(current, after, field) == Some(true))
-    {
-        return Reconciliation::no_change(id, "");
+        return refuse(Actor::Automatic, reason, fields, true);
     }
     if !admission.admits(target) {
         return refuse(
-            id,
             Actor::Automatic,
             "generated description inputs changed",
             &["inputs"],
@@ -558,7 +514,6 @@ fn apply_automatic(
     }
     if let Err(error) = candidate.validate_portable() {
         return refuse(
-            id,
             Actor::Automatic,
             &error.to_string(),
             &["relationships"],
@@ -566,75 +521,53 @@ fn apply_automatic(
         );
     }
     if &candidate == current {
-        Reconciliation::no_change(id, "")
+        Reconciliation::no_change("")
     } else {
         Reconciliation::Changes {
-            operation_id: id.into(),
             record: Box::new(candidate),
         }
     }
 }
 
+/// User edits compare and swap on the captured revision. A retry that already landed, or
+/// intent the record already holds, is no change.
 fn apply_user_fields(
-    id: &str,
     before: &Record,
     after: &Record,
     current: &Record,
     changed: &BTreeSet<&'static str>,
 ) -> Reconciliation {
     if let Err(error) = current.validate_portable() {
-        return refuse(
-            id,
-            Actor::User,
-            &error.to_string(),
-            &["relationships"],
-            false,
-        );
+        return refuse(Actor::User, &error.to_string(), &["relationships"], false);
     }
     if changed
         .iter()
         .all(|field| field_eq(current, after, field) == Some(true))
     {
-        return Reconciliation::no_change(id, "");
+        return Reconciliation::no_change("");
     }
-    let mut candidate = current.clone();
-    let mut conflicts = Vec::new();
-    for field in text_group_guards(after.kind(), changed.clone()) {
-        if field_eq(current, before, field) == Some(true)
-            || field_eq(current, after, field) == Some(true)
-        {
-            if changed.contains(field) {
-                copy_field(&mut candidate, after, field);
-            }
-            continue;
-        }
-        conflicts.push(field);
-    }
-    if !conflicts.is_empty() {
+    if current.stamps() != before.stamps() {
+        let conflicts: Vec<&str> = record_field_names(before)
+            .iter()
+            .copied()
+            .filter(|field| field_eq(current, before, field) == Some(false))
+            .collect();
         return refuse(
-            id,
             Actor::User,
-            "concurrent intent conflicts with captured base",
+            "record changed since capture; capture fresh inputs",
             &conflicts,
             false,
         );
     }
-    if let Err(error) = candidate.validate_portable() {
-        return refuse(
-            id,
-            Actor::User,
-            &error.to_string(),
-            &["relationships"],
-            false,
-        );
+    let mut candidate = current.clone();
+    for field in changed {
+        copy_field(&mut candidate, after, field);
     }
-    if &candidate == current {
-        Reconciliation::no_change(id, "")
-    } else {
-        Reconciliation::Changes {
-            operation_id: id.into(),
-            record: Box::new(candidate),
-        }
+    if let Err(error) = candidate.validate_portable() {
+        return refuse(Actor::User, &error.to_string(), &["relationships"], false);
+    }
+    Reconciliation::Changes {
+        record: Box::new(candidate),
     }
 }
 

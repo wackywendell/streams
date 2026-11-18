@@ -10,9 +10,10 @@ use streams::{
     application,
     config::Config,
     model::{Record, RecordKind, Session, Stream, TitleDefaults},
+    operations::DomainOutcome,
     storage::{
         StorageError,
-        records::{RecordAddress, RecordChange, RecordRequest, RecordStore},
+        records::{RecordAddress, RecordChange, RecordStore},
     },
     yaml_store::records::{RecordIoEvent, YamlRecordStore, relative_record_path},
 };
@@ -21,7 +22,7 @@ const HOST: &str = "01234567-89ab-4def-8123-456789abcdef";
 const OTHER: &str = "11234567-89ab-4def-8123-456789abcdef";
 
 #[test]
-fn one_record_creation_reads_only_its_target_and_membership_then_retries_against_actual_current() {
+fn one_record_creation_reads_only_its_target_and_membership_and_a_retry_writes_nothing() {
     for unrelated in [0, 64] {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path();
@@ -32,12 +33,12 @@ fn one_record_creation_reads_only_its_target_and_membership_then_retries_against
             .with_io_observer(move |event| observed.lock().unwrap().push(event));
         store.initialize().unwrap();
         for index in 0..unrelated {
-            let path = root.join(format!("hosts/unrelated-{index}/conversations/bad.yaml"));
+            let path = root.join(format!("hosts/unrelated-{index}/conversations/bad.json"));
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(path, "not a record").unwrap();
         }
         let stream = Record::Stream(Stream::new("work", "Work", None, HOST).unwrap());
-        application::create_record(&store, "create-stream", &stream).unwrap();
+        application::create_record(&store, &stream).unwrap();
         let session = Record::Session(
             Session::new(
                 Session::id_for(HOST, "pi", "native"),
@@ -54,7 +55,7 @@ fn one_record_creation_reads_only_its_target_and_membership_then_retries_against
             root.join(relative_record_path(&RecordAddress::for_record(&stream)).unwrap());
         let marker = root.join(".catalog-local/records.json");
         events.lock().unwrap().clear();
-        let created = application::create_record(&store, "create-session", &session).unwrap();
+        let created = application::create_record(&store, &session).unwrap();
         let trace = events.lock().unwrap().clone();
         assert_eq!(
             record_io::accesses(&trace),
@@ -77,20 +78,12 @@ fn one_record_creation_reads_only_its_target_and_membership_then_retries_against
                 fs::metadata(&target).unwrap().len() as usize
             )]
         );
-        let later = application::save_user_edit(
-            &store,
-            "later",
-            &created.current.record,
-            json!({"state":"Later progress"}).as_object().unwrap(),
-            TitleDefaults::default(),
-        )
-        .unwrap();
         let bytes = fs::read(&target).unwrap();
         events.lock().unwrap().clear();
-        let retry = application::create_record(&store, "create-session", &session).unwrap();
-        assert!(retry.repeated);
-        assert_eq!(retry.outcome, created.outcome);
-        assert_eq!(retry.current, later.current);
+        let retry = application::create_record(&store, &session).unwrap();
+        assert!(!retry.written);
+        assert_eq!(retry.outcome, DomainOutcome::NoChange);
+        assert_eq!(retry.current, created.current);
         assert_eq!(fs::read(&target).unwrap(), bytes);
         let trace = events.lock().unwrap().clone();
         assert_eq!(
@@ -106,7 +99,15 @@ fn one_record_creation_reads_only_its_target_and_membership_then_retries_against
             fs::metadata(marker).unwrap().len() as usize + bytes.len()
         );
         assert!(record_io::writes(&trace).is_empty());
-        assert!(application::create_record(&store, "duplicate", &session).is_err());
+        application::save_user_edit(
+            &store,
+            &created.current.record,
+            json!({"state":"Later progress"}).as_object().unwrap(),
+            TitleDefaults::default(),
+        )
+        .unwrap();
+        let bytes = fs::read(&target).unwrap();
+        assert!(application::create_record(&store, &session).is_err());
         assert_eq!(fs::read(target).unwrap(), bytes);
     }
 }
@@ -127,7 +128,7 @@ fn session_creation_refuses_a_missing_same_host_stream_without_installing_a_targ
         )
         .unwrap(),
     );
-    assert!(application::create_record(&store, "create-session", &session).is_err());
+    assert!(application::create_record(&store, &session).is_err());
     assert!(
         !directory
             .path()
@@ -170,7 +171,7 @@ fn record_factory_opens_only_fixed_metadata_and_retains_source_identity() {
     // Neither unrelated bad records nor old history can enter a point-read dependency set.
     fs::create_dir_all(root.join("hosts/unrelated/streams")).unwrap();
     fs::write(
-        root.join("hosts/unrelated/streams/bad.yaml"),
+        root.join("hosts/unrelated/streams/bad.json"),
         "not a record",
     )
     .unwrap();
@@ -206,11 +207,10 @@ fn record_factory_opens_only_fixed_metadata_and_retains_source_identity() {
     let source = opened.source_id().to_owned();
     let record = Record::Stream(Stream::new("work", "Work", None, HOST).unwrap());
     let address = RecordAddress::new(HOST, RecordKind::Stream, "work").unwrap();
-    let request =
-        RecordRequest::new(address.clone(), "create", &json!({"record": record})).unwrap();
+
     opened
         .records()
-        .save::<StorageError>(&request, |_, _| {
+        .save::<_, StorageError>(&address.clone(), |_, _| {
             Ok(RecordChange {
                 record,
                 outcome: serde_json::Map::new(),

@@ -42,7 +42,6 @@ impl Fixture {
         for id in ["effort", "other"] {
             application::create_record(
                 opened.records(),
-                id,
                 &Record::Stream(
                     Stream::new(id, format!("Title {id}"), None, opened.host().as_str()).unwrap(),
                 ),
@@ -73,12 +72,8 @@ impl Fixture {
             format!("Lane {native}"),
         )
         .unwrap();
-        application::create_record(
-            self.opened.records(),
-            native,
-            &Record::Session(session.clone()),
-        )
-        .unwrap();
+        application::create_record(self.opened.records(), &Record::Session(session.clone()))
+            .unwrap();
         session
     }
     fn transcript(&self, native: &str) -> PathBuf {
@@ -189,7 +184,7 @@ fn exact_capture_reads_only_its_target_and_observed_native_keys_at_zero_or_64_un
             let path = f
                 .opened
                 .root()
-                .join(format!("hosts/foreign-{index}/conversations/bad.yaml"));
+                .join(format!("hosts/foreign-{index}/conversations/bad.json"));
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(path, "malformed unrelated record").unwrap();
         }

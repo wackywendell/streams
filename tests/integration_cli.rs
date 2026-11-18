@@ -495,59 +495,50 @@ impl SavedFixture {
                 stream.references = ["z.md", "a.md"]
                     .into_iter()
                     .map(|path| {
-                        streams::model::Reference::new(
-                            streams::model::ReferenceValue {
-                                name: path.into(),
-                                purpose: format!("Saved {path}"),
-                                role: streams::model::ReferenceRole::Deliverable,
-                                state: streams::model::ReferenceState::Active,
-                                target: streams::model::ReferenceTarget::Document(
-                                    streams::model::RepositoryDocument {
-                                        repository_url: "https://example.test/source.git".into(),
-                                        path: path.into(),
-                                        r#ref: Some("saved-ref".into()),
-                                        commit: Some("saved-commit".into()),
-                                        source_session_id: None,
-                                    },
-                                ),
-                            },
-                            format!("rev-{path}"),
-                        )
+                        streams::model::Reference::new(streams::model::ReferenceValue {
+                            name: path.into(),
+                            purpose: format!("Saved {path}"),
+                            role: streams::model::ReferenceRole::Deliverable,
+                            state: streams::model::ReferenceState::Active,
+                            target: streams::model::ReferenceTarget::Document(
+                                streams::model::RepositoryDocument {
+                                    repository_url: "https://example.test/source.git".into(),
+                                    path: path.into(),
+                                    r#ref: Some("saved-ref".into()),
+                                    commit: Some("saved-commit".into()),
+                                    source_session_id: None,
+                                },
+                            ),
+                        })
                         .unwrap()
                     })
                     .collect();
                 stream.references.push(
-                    streams::model::Reference::new(
-                        streams::model::ReferenceValue {
-                            name: "Saved issue".into(),
-                            purpose: "Saved issue".into(),
-                            role: streams::model::ReferenceRole::Dependency,
-                            state: streams::model::ReferenceState::Active,
-                            target: streams::model::ReferenceTarget::Issue {
-                                url: "https://example.test/shared-issue".into(),
-                            },
+                    streams::model::Reference::new(streams::model::ReferenceValue {
+                        name: "Saved issue".into(),
+                        purpose: "Saved issue".into(),
+                        role: streams::model::ReferenceRole::Dependency,
+                        state: streams::model::ReferenceState::Active,
+                        target: streams::model::ReferenceTarget::Issue {
+                            url: "https://example.test/shared-issue".into(),
                         },
-                        "rev-issue",
-                    )
+                    })
                     .unwrap(),
                 );
                 stream.references.push(
-                    streams::model::Reference::new(
-                        streams::model::ReferenceValue {
-                            name: "Saved PR".into(),
-                            purpose: "Saved PR".into(),
-                            role: streams::model::ReferenceRole::Deliverable,
-                            state: streams::model::ReferenceState::Active,
-                            target: streams::model::ReferenceTarget::Pr {
-                                url: "https://example.test/shared-pr".into(),
-                            },
+                    streams::model::Reference::new(streams::model::ReferenceValue {
+                        name: "Saved PR".into(),
+                        purpose: "Saved PR".into(),
+                        role: streams::model::ReferenceRole::Deliverable,
+                        state: streams::model::ReferenceState::Active,
+                        target: streams::model::ReferenceTarget::Pr {
+                            url: "https://example.test/shared-pr".into(),
                         },
-                        "rev-pr",
-                    )
+                    })
                     .unwrap(),
                 );
             }
-            application::create_record(records.records(), id, &Record::Stream(stream)).unwrap();
+            application::create_record(records.records(), &Record::Stream(stream)).unwrap();
         }
         let mut sessions = vec![];
         for (native, title) in [("one", "Straße"), ("two", "STRASSE"), ("moved", "Moved")] {
@@ -568,17 +559,18 @@ impl SavedFixture {
                     description: "Saved output".into(),
                 }],
             );
-            application::create_record(
-                records.records(),
-                native,
-                &Record::Session(session.clone()),
-            )
-            .unwrap();
+            let Record::Session(session) =
+                application::create_record(records.records(), &Record::Session(session))
+                    .unwrap()
+                    .current
+                    .record
+            else {
+                unreachable!()
+            };
             sessions.push(session);
         }
         application::move_session_observed(
             records.records(),
-            "move",
             &streams::operations::membership::MoveIntent::new(host, "pi", "moved", "next").unwrap(),
         )
         .unwrap();
@@ -611,12 +603,7 @@ fn work_selection_uses_exact_members_or_active_local_sessions() {
     )
     .unwrap();
     done.status = Status::Done;
-    application::create_record(
-        fixture.records.records(),
-        "done",
-        &Record::Session(done.clone()),
-    )
-    .unwrap();
+    application::create_record(fixture.records.records(), &Record::Session(done.clone())).unwrap();
     let events = Arc::new(Mutex::new(Vec::new()));
     let observed = events.clone();
     let records = application::open_records_observed(&fixture.config, move |event| {
@@ -726,8 +713,8 @@ fn saved_batch_shares_host_decodes_and_producer_lists_with_standalone_artifact_p
     fs::create_dir_all(producer("leftover-without-record")).unwrap();
     let foreign = fixture.records.root().join("hosts/other/conversations");
     fs::create_dir_all(&foreign).unwrap();
-    fs::write(foreign.join("broken.yaml"), "not a record").unwrap();
-    fs::write(partition.join("streams/unrequested.yaml"), "not a record").unwrap();
+    fs::write(foreign.join("broken.json"), "not a record").unwrap();
+    fs::write(partition.join("streams/unrequested.json"), "not a record").unwrap();
     let events = Arc::new(Mutex::new(vec![]));
     let observed = events.clone();
     let records = application::open_records_observed(&fixture.config, move |event| {
@@ -857,7 +844,7 @@ fn saved_batch_distinguishes_empty_unavailable_and_a_broken_host_partition() {
             fixture.records.host().as_str(),
         ))
         .join("conversations");
-    std::fs::write(partition.join("broken.yaml"), "not a record").unwrap();
+    std::fs::write(partition.join("broken.json"), "not a record").unwrap();
     let values = facade
         .read_saved_views(&[
             ViewSelection::SavedStream {
@@ -880,7 +867,7 @@ fn saved_batch_distinguishes_empty_unavailable_and_a_broken_host_partition() {
     assert_eq!(
         listing.unreadable[0].path,
         partition
-            .join("broken.yaml")
+            .join("broken.json")
             .strip_prefix(fixture.records.root())
             .unwrap()
     );
@@ -1288,7 +1275,6 @@ fn hc_resume_checks_registered_presence_before_replacing_the_process() {
         .unwrap();
         streams::application::create_record(
             fixture.records.records(),
-            native,
             &streams::model::Record::Session(other.clone()),
         )
         .unwrap();
@@ -1425,7 +1411,6 @@ fn document_cli_resolves_saved_keys_and_pipes_only_owner_bytes_to_the_secure_pag
     drop(terminal);
     streams::application::move_session_observed(
         fixture.records.records(),
-        "move-viewer",
         &streams::operations::membership::MoveIntent::new(host, "pi", "one", "next").unwrap(),
     )
     .unwrap();
@@ -1543,26 +1528,25 @@ fn link_actions_revalidate_saved_kind_and_url_without_native_or_owner_path_discl
         "file:///owner-private/file",
     ];
     stream.references.push(
-        Reference::new(
-            ReferenceValue {
-                name: "Issue".into(),
-                purpose: "Issue".into(),
-                role: ReferenceRole::Dependency,
-                state: ReferenceState::Active,
-                target: ReferenceTarget::Issue {
-                    url: urls[0].into(),
-                },
+        Reference::new(ReferenceValue {
+            name: "Issue".into(),
+            purpose: "Issue".into(),
+            role: ReferenceRole::Dependency,
+            state: ReferenceState::Active,
+            target: ReferenceTarget::Issue {
+                url: urls[0].into(),
             },
-            "rev-1",
-        )
+        })
         .unwrap(),
     );
-    application::create_record(
-        fixture.records.records(),
-        "create-links",
-        &Record::Stream(stream.clone()),
-    )
-    .unwrap();
+    let Record::Stream(stream) =
+        application::create_record(fixture.records.records(), &Record::Stream(stream.clone()))
+            .unwrap()
+            .current
+            .record
+    else {
+        unreachable!()
+    };
     let socket = fixture._directory.path().join("no-native.socket");
     let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
     listener.set_nonblocking(true).unwrap();
@@ -1638,7 +1622,6 @@ fn link_actions_revalidate_saved_kind_and_url_without_native_or_owner_path_discl
     }
     application::save_user_references(
         fixture.records.records(),
-        "remove-painted-link",
         &stream,
         vec![ReferenceChange::UserDelete {
             key: streams::model::ResourceKey::Url {
@@ -1682,7 +1665,6 @@ fn shared_sidebar_policy_uses_only_point_foreground_and_keeps_inactive_pinned_me
     inactive.status = Status::Done;
     application::create_record(
         fixture.records.records(),
-        "inactive-member",
         &Record::Session(inactive.clone()),
     )
     .unwrap();
@@ -2059,7 +2041,7 @@ fn bind_space_uses_only_the_saved_stream_and_one_verified_native_write() {
         .join("hosts")
         .join(streams::yaml_store::encode_component(&scope.host))
         .join("conversations");
-    std::fs::write(partition.join("unrelated-broken.yaml"), "not a record").unwrap();
+    std::fs::write(partition.join("unrelated-broken.json"), "not a record").unwrap();
     for case in ["accepted", "conflict", "lost", "unpublished"] {
         let layout = if case == "unpublished" {
             json!({})
@@ -2313,12 +2295,8 @@ fn oversized_cli_reply_fails_before_any_stdout_is_written() {
     )
     .unwrap();
     session.recap = "x".repeat(600_000);
-    application::create_record(
-        fixture.records.records(),
-        "large",
-        &Record::Session(session.clone()),
-    )
-    .unwrap();
+    application::create_record(fixture.records.records(), &Record::Session(session.clone()))
+        .unwrap();
     let selection = json!({"kind":"saved_session","session":session.id});
     let request = fixture.envelope(json!({"kind":"read","selections":vec![selection;9]}));
     let output = fixture.invoke(&request.to_string(), true);
@@ -2565,7 +2543,7 @@ fn frame_reads_and_reference_opening_resolve_enrolled_sessions_and_viewer_termin
         .join(streams::yaml_store::encode_component(&scope.host))
         .join("conversations")
         .join(format!(
-            "{}.yaml",
+            "{}.json",
             streams::yaml_store::encode_component(&fixture.sessions[0].id)
         ));
     let saved_yaml = std::fs::read(&session_file).unwrap();
@@ -2639,7 +2617,6 @@ fn frame_reads_and_reference_opening_resolve_enrolled_sessions_and_viewer_termin
     streams::application::artifacts::write_artifact(
         fixture.records.artifacts(),
         &scope.host,
-        "write-result-md",
         &streams::application::artifacts::WriteArtifact {
             session_id: fixture.sessions[0].id.clone(),
             stream_id: Some("work".into()),
@@ -3052,8 +3029,7 @@ fn host_streams_lists_all_streams_with_active_session_counts_and_recency() {
     std::fs::create_dir_all(&artifact_dir).unwrap();
     let mut closed = Stream::new("closed", "Closed", None, host).unwrap();
     closed.status = Status::Closed;
-    application::create_record(fixture.records.records(), "close", &Record::Stream(closed))
-        .unwrap();
+    application::create_record(fixture.records.records(), &Record::Stream(closed)).unwrap();
 
     let mut req = fixture.envelope(json!({
         "kind": "read",
@@ -3109,7 +3085,6 @@ fn host_streams_lists_all_streams_with_active_session_counts_and_recency() {
     parked_session.status = Status::Parked;
     application::save_user_edit(
         fixture.records.records(),
-        "park-for-select-open",
         &Record::Session(fixture.sessions[0].clone()),
         &json!({"status": "parked"}).as_object().unwrap().clone(),
         streams::model::TitleDefaults::default(),
@@ -3183,7 +3158,7 @@ fn host_listings_show_readable_streams_and_name_unreadable_records() {
     let corrupt = |relative: &str| {
         let path = fixture.records.root().join(relative);
         let mut value: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        value["record"]["archived"] = json!(false);
+        value["archived"] = json!(false);
         std::fs::write(&path, value.to_string()).unwrap();
     };
     let read = || {
@@ -3240,7 +3215,7 @@ fn host_listings_show_readable_streams_and_name_unreadable_records() {
         serde_json::from_slice::<Value>(&output.stdout).unwrap()
     };
 
-    let stream = format!("hosts/{host}/streams/next.yaml");
+    let stream = format!("hosts/{host}/streams/next.json");
     corrupt(&stream);
     let views = read();
     let host_listing = listing(&views[0]);
@@ -3306,7 +3281,7 @@ fn host_listings_show_readable_streams_and_name_unreadable_records() {
     // An unreadable Session's Stream is unknown: the listing names it and counts it nowhere,
     // and a view of a Stream it might belong to shows its readable members and names it.
     let session = format!(
-        "hosts/{host}/conversations/{}.yaml",
+        "hosts/{host}/conversations/{}.json",
         streams::yaml_store::encode_component(&fixture.sessions[0].id)
     );
     corrupt(&session);
@@ -3347,8 +3322,8 @@ fn host_listings_show_readable_streams_and_name_unreadable_records() {
     // repair for their kind, but never in this host's listing.
     let other = fixture.records.root().join("hosts/other");
     std::fs::create_dir_all(other.join("streams")).unwrap();
-    std::fs::write(other.join("host.yaml"), "not a record").unwrap();
-    std::fs::write(other.join("streams/x.yaml"), "not a record").unwrap();
+    std::fs::write(other.join("host.json"), "not a record").unwrap();
+    std::fs::write(other.join("streams/x.json"), "not a record").unwrap();
     assert_eq!(listing(&read()[0]), host_listing);
     let foreign: Vec<_> = list()["unreadable"]
         .as_array()
@@ -3368,12 +3343,12 @@ fn host_listings_show_readable_streams_and_name_unreadable_records() {
         [
             (
                 "host".into(),
-                "hosts/other/host.yaml".into(),
+                "hosts/other/host.json".into(),
                 "Delete or fix the file.".into()
             ),
             (
                 "stream".into(),
-                "hosts/other/streams/x.yaml".into(),
+                "hosts/other/streams/x.json".into(),
                 "Run /streams reset in a conversation on that Stream, or delete or fix the file."
                     .into()
             ),
@@ -3383,7 +3358,7 @@ fn host_listings_show_readable_streams_and_name_unreadable_records() {
     assert!(plain.status.success());
     let stderr = String::from_utf8(plain.stderr).unwrap();
     assert!(
-        stderr.contains("Host record hosts/other/host.yaml is unreadable")
+        stderr.contains("Host record hosts/other/host.json is unreadable")
             && stderr.contains("/streams reset repairs only this host's records"),
         "{stderr}"
     );

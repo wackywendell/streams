@@ -3,7 +3,7 @@
 Status: implemented. This record owns field meaning and lifecycle.
 [Record-local operations](record-local-operations.md) owns fixed-host storage and
 transport; [native cards](native-herdr-work-cards.md) owns presentation. Examples
-illustrate logical fields, not record envelopes.
+illustrate logical fields, not the stored JSON.
 
 ## Decision and rationale
 
@@ -42,6 +42,8 @@ goal_short: Understand ongoing work
 goal_mode: automatic
 status: active
 archived: false
+revision: 4
+updated_at_ms: 1767225600000
 
 owner:
   host_id: host_laptop
@@ -62,12 +64,11 @@ references:
       ref: lifecycle-design
       commit: immutable-commit-id
       source_session_id: bc26a2a9-d12f-59cc-9a80-b9efbf910ff1
-    revision: reference-operation-id
 ```
 
 The naming modes distinguish automatic text from protected manual choices. `goal` describes the intended outcome and may be null while that outcome is unspecified. In that case `goal_short` is also null; creation must not invent placeholder text. An overall progress view can be assembled from session descriptions and reference documents when needed, rather than maintained as another record. Scope not assigned to a session belongs in the goal or a referenced plan.
 
-Repository aliases configure the Stream's repositories. Document references identify an exact repository URL and portable relative path. PR, Issue and Link share exact URL identity. Name, purpose, role, state and recovery metadata remain outside that identity. Each Stream holds one relationship per exact resource key, with a revision token guarding captured edits.
+Repository aliases configure the Stream's repositories. Document references identify an exact repository URL and portable relative path. PR, Issue and Link share exact URL identity. Name, purpose, role, state and recovery metadata remain outside that identity. Each Stream holds one relationship per exact resource key.
 
 Optional ref, commit and source Session hints support explicit document recovery. Missing hints, files or local checkout mappings leave the saved reference intact. Non-repository work may have an empty repository map.
 
@@ -81,7 +82,7 @@ A session belongs to a host and references one stream. Its native identity is `(
 id: bc26a2a9-d12f-59cc-9a80-b9efbf910ff1
 host_id: host_laptop
 stream_id: str_catalog
-previous_stream_ids: []
+membership_epoch: 0
 harness: pi
 harness_session_id: native-session-uuid
 title: Lifecycle design
@@ -93,6 +94,8 @@ state: Reviewing the record fields.
 state_short: Field review
 remaining: Agree the record fields.
 remaining_short: Agree fields
+revision: 7
+updated_at_ms: 1767225600000
 
 checkout:
   repository: streams
@@ -103,7 +106,7 @@ checkout:
 
 `title` concisely names the contribution. `recap` describes this conversation's cumulative scope and achievements in a sentence or two. Rewrite it only when the scope or main outcome changes. `state`, labelled Status, describes what it is doing right now in one short sentence. `remaining` describes unfinished work; reports select one concrete next action or blocking decision. These are descriptions, not a growing journal or task backlog. Session text is always report-writable; title modes protect only titles. New fields default to empty text or absent short forms, so older records remain readable without a reset. The session's status concerns its assignment, not whether its process is running or the stream is complete. Recovery uses the named remote ref's pushed state; it does not require a pinned commit.
 
-Session IDs derive deterministically from host, harness and native ID, as in this example. `stream_id` is current membership; ordered `previous_stream_ids` records ended memberships and distinguishes a return to the same Stream. A move changes only this Session and preserves its work and checkout. A historical membership grants no write authority.
+Session IDs derive deterministically from host, harness and native ID, as in this example. `stream_id` is current membership; `membership_epoch` counts moves, so it distinguishes a return to the same Stream. A move changes only this Session and preserves its work and checkout. A historical membership grants no write authority.
 
 Portable `checkout` can be null, especially after automatic enrollment. When supplied it includes an explicit URL and ref. Host-local directory selection is separate and does not populate it. Each Session normally updates only its own record; progress reporting does not rewrite the Stream.
 
@@ -131,7 +134,7 @@ These naming mappings are authoritative when their synchronization switches are 
 
 ### Freshness and host state
 
-Storage may report when a record was last edited. Display this as “record last updated,” not “progress last verified.” A description may combine information from several times, so there is no single evidence timestamp for the prose.
+Each record carries `revision` and `updated_at_ms`, which the save path sets only when the record changes. A Stream's activity time is the latest `updated_at_ms` of the Stream and its member Sessions, computed by one function for listing, the sidebar, cards, decay and tidy. Display this as “record last updated,” not “progress last verified.” A description may combine information from several times, so there is no single evidence timestamp for the prose.
 
 Runtime inspection returns process state with its check time, separately from the session description. An unavailable host means unknown, not stopped. A host check-in contains host identity, display label and check-in time: a concrete observation that does not freshen its sessions' descriptions. Publication, fetch and user priority-review times likewise remain distinct from record updates.
 
@@ -141,9 +144,9 @@ Current portable records are host-partitioned:
 
 ```text
 <catalog>/
-  hosts/<host>/host.yaml
-  hosts/<host>/streams/<stream-id>.yaml
-  hosts/<host>/conversations/<deterministic-session-id>.yaml
+  hosts/<host>/host.json
+  hosts/<host>/streams/<stream-id>.json
+  hosts/<host>/conversations/<deterministic-session-id>.json
 
 <host-local state>/                    # not synchronized
   installation identity
@@ -151,7 +154,7 @@ Current portable records are host-partitioned:
   per-Session directory bindings and exact transcript locators
 ```
 
-Versioned envelopes hold one logical record and its retry receipts. The physical
+Each file holds one record as JSON, with no envelope. The physical
 host address is part of identity and is checked against the record. Stable IDs
 keep renames, archive and membership moves from moving files. No saved native
 addresses, arrangement, ownership-transfer period or legacy layout is read.
@@ -171,7 +174,7 @@ with visible uncertainty and rare duplicates rather than a durable launch journa
 
 The `streams` CLI is the primary interface for listing, searching, inspecting and managing work, with human-readable and structured output. Pi tools and any future picker use the same operations. Catalog access does not require a live workspace; runtime actions use the relevant harness or frontend adapter. A custom browser is not needed initially.
 
-Pure apply checks typed captured inputs, manual protection, host and membership. Storage atomically replaces one target and its receipt. Stable operation IDs reject changed-intent reuse and recognize identical retries after intervening edits. Generated descriptions still need input checks because save order alone cannot prevent old inference from finishing late.
+Pure apply checks typed captured inputs, manual protection, host and membership. Storage atomically replaces one target when it changes. The record revision guards captured edits, and a retry that already landed is recognised from the record. Generated descriptions still need input checks because save order alone cannot prevent old inference from finishing late.
 
 Both storage modes acknowledge local record persistence without Git or network activity. Explicit sync or Pi lifecycle sync commits and transports files separately. Disjoint host paths combine; same-file concurrent changes fail without text or domain merge. Publication failure cannot undo an accepted save. There are no interval settings, scheduled read projections or background daemon.
 

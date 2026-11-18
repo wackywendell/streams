@@ -4,7 +4,7 @@ use crate::{
     model::{Session, ValidationError, check_text},
     storage::{
         StorageError,
-        records::{RecordChange, RecordRead, RecordReader, RecordRequest, RecordSave, RecordStore},
+        records::{RecordAddress, RecordChange, RecordRead, RecordReader, RecordSave, RecordStore},
     },
 };
 use serde::{Deserialize, Serialize};
@@ -209,8 +209,8 @@ pub enum ContentChange {
     Delete,
 }
 
-pub struct ArtifactSave {
-    pub save: RecordSave,
+pub struct ArtifactSave<T> {
+    pub save: RecordSave<T>,
     pub warnings: Vec<String>,
 }
 
@@ -224,15 +224,15 @@ pub trait ArtifactStore: RecordStore {
         &self,
         read: impl FnOnce(&dyn ArtifactReader) -> Result<T, E>,
     ) -> Result<T, E>;
-    fn save_artifact<E: From<StorageError> + std::fmt::Display>(
+    fn save_artifact<T, E: From<StorageError> + std::fmt::Display>(
         &self,
-        request: &RecordRequest,
+        target: &RecordAddress,
         content: ContentChange,
         apply: impl FnOnce(
             &dyn RecordReader,
             Option<&RecordRead>,
-        ) -> Result<(RecordChange, ArtifactKey), E>,
-    ) -> Result<ArtifactSave, E>;
+        ) -> Result<(RecordChange<T>, ArtifactKey), E>,
+    ) -> Result<ArtifactSave<T>, E>;
 }
 
 /// Pure metadata change. Moving a Session leaves all producing-Stream groups intact.

@@ -15,14 +15,12 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-fn put(store: &YamlRecordStore, id: &str, record: Record) {
-    let request =
-        RecordRequest::new(RecordAddress::for_record(&record), id, &json!({"id":id})).unwrap();
+fn put(store: &YamlRecordStore, record: Record) {
     store
-        .save::<StorageError>(&request, |_, _| {
+        .save::<_, StorageError>(&RecordAddress::for_record(&record), |_, _| {
             Ok(RecordChange {
                 record,
-                outcome: Default::default(),
+                outcome: (),
             })
         })
         .unwrap();
@@ -43,7 +41,6 @@ fn setup() -> (
     store.initialize().unwrap();
     put(
         &store,
-        "stream",
         Record::Stream(Stream::new("stream", "Work", None, "host").unwrap()),
     );
     let session = Session::new(
@@ -55,7 +52,7 @@ fn setup() -> (
         "Assessment",
     )
     .unwrap();
-    put(&store, "session", Record::Session(session.clone()));
+    put(&store, Record::Session(session.clone()));
     events.lock().unwrap().clear();
     (root, store, session, events)
 }
@@ -85,7 +82,6 @@ fn crud_keeps_metadata_only_in_session_and_emits_original_text() {
     let saved = write_artifact(
         &store,
         "host",
-        "write",
         &intent(&session, Some("# Findings\nUseful output\n")),
     )
     .unwrap();
@@ -101,21 +97,16 @@ fn crud_keeps_metadata_only_in_session_and_emits_original_text() {
     );
     let mut update = intent(&session, None);
     update.description = "Revised description".into();
-    write_artifact(&store, "host", "description", &update).unwrap();
+    write_artifact(&store, "host", &update).unwrap();
     let output = read_artifact(&store, &key).unwrap();
     assert_eq!(output.content, "# Findings\nUseful output\n");
     assert_eq!(output.artifact.description, "Revised description");
-    write_artifact(&store, "host", "update", &intent(&session, Some("new"))).unwrap();
-    let retry = write_artifact(
-        &store,
-        "host",
-        "write",
-        &intent(&session, Some("# Findings\nUseful output\n")),
-    )
-    .unwrap();
-    assert!(retry.save.repeated);
+    write_artifact(&store, "host", &intent(&session, Some("new"))).unwrap();
+    // A retried write finds its metadata already saved and leaves the Session as it is.
+    let retry = write_artifact(&store, "host", &intent(&session, Some("new"))).unwrap();
+    assert!(!retry.save.written);
     assert_eq!(read_artifact(&store, &key).unwrap().content, "new");
-    delete_artifact(&store, "delete", &key).unwrap();
+    delete_artifact(&store, &key).unwrap();
     assert!(
         !root
             .path()
@@ -129,26 +120,16 @@ fn crud_keeps_metadata_only_in_session_and_emits_original_text() {
             .is_empty()
     );
     assert!(store.inventory().is_ok());
-    write_artifact(
-        &store,
-        "host",
-        "recreate",
-        &intent(&session, Some("recreated")),
-    )
-    .unwrap();
-    assert!(
-        delete_artifact(&store, "delete", &key)
-            .unwrap()
-            .save
-            .repeated
-    );
+    // Deleting again finds nothing to remove and writes no Session.
+    assert!(!delete_artifact(&store, &key).unwrap().save.written);
+    write_artifact(&store, "host", &intent(&session, Some("recreated"))).unwrap();
     assert_eq!(read_artifact(&store, &key).unwrap().content, "recreated");
 }
 
 #[test]
 fn reads_and_scoped_lists_pin_io_without_reading_contents_for_descriptions() {
     let (_root, store, session, events) = setup();
-    write_artifact(&store, "host", "write", &intent(&session, Some("output"))).unwrap();
+    write_artifact(&store, "host", &intent(&session, Some("output"))).unwrap();
     let key = key(&session);
     let session_path = relative_record_path(
         &RecordAddress::new("host", RecordKind::Session, &session.id).unwrap(),
@@ -218,19 +199,18 @@ fn reads_and_scoped_lists_pin_io_without_reading_contents_for_descriptions() {
 #[test]
 fn membership_moves_keep_old_outputs_and_cross_session_reads_use_exact_keys() {
     let (_root, store, session, _) = setup();
-    write_artifact(&store, "host", "write", &intent(&session, Some("old work"))).unwrap();
+    write_artifact(&store, "host", &intent(&session, Some("old work"))).unwrap();
     let old_key = key(&session);
     put(
         &store,
-        "second-stream",
         Record::Stream(Stream::new("destination", "Other work", None, "host").unwrap()),
     );
     let mut moved = store
         .with_artifacts(|reader| super::session(reader, "host", &session.id))
         .unwrap();
-    moved.previous_stream_ids.push(moved.stream_id.clone());
+    moved.membership_epoch += 1;
     moved.stream_id = "destination".into();
-    put(&store, "move", Record::Session(moved.clone()));
+    put(&store, Record::Session(moved.clone()));
     assert!(
         list_session_artifacts(&store, "host", &session.id, None)
             .unwrap()
@@ -243,13 +223,7 @@ fn membership_moves_keep_old_outputs_and_cross_session_reads_use_exact_keys() {
         1
     );
     assert_eq!(read_artifact(&store, &old_key).unwrap().content, "old work");
-    write_artifact(
-        &store,
-        "host",
-        "new-work",
-        &intent(&moved, Some("new work")),
-    )
-    .unwrap();
+    write_artifact(&store, "host", &intent(&moved, Some("new work"))).unwrap();
     assert_eq!(
         read_artifact(&store, &key(&moved)).unwrap().content,
         "new work"
@@ -269,7 +243,7 @@ fn membership_moves_keep_old_outputs_and_cross_session_reads_use_exact_keys() {
         "Reader",
     )
     .unwrap();
-    put(&store, "reader", Record::Session(other.clone()));
+    put(&store, Record::Session(other.clone()));
     assert!(
         list_session_artifacts(&store, "host", &other.id, None)
             .unwrap()
@@ -285,25 +259,17 @@ fn refuses_unsafe_names_descriptions_content_and_foreign_writes() {
     for name in ["", "../bad", ".", "x/y", "UPPER", "bad name"] {
         let mut write = intent(&session, Some("output"));
         write.name = name.into();
-        assert!(write_artifact(&store, "host", name, &write).is_err());
+        assert!(write_artifact(&store, "host", &write).is_err());
     }
     for description in ["".into(), "two\nlines".into(), "x".repeat(241)] {
         let mut write = intent(&session, Some("output"));
         write.description = description;
-        assert!(write_artifact(&store, "host", "description", &write).is_err());
+        assert!(write_artifact(&store, "host", &write).is_err());
     }
     let text = "x".repeat(artifacts::MAX_CONTENT_BYTES + 1);
-    assert!(write_artifact(&store, "host", "large", &intent(&session, Some(&text))).is_err());
-    assert!(write_artifact(&store, "host", "no-content", &intent(&session, None)).is_err());
-    assert!(
-        write_artifact(
-            &store,
-            "foreign",
-            "foreign",
-            &intent(&session, Some("output"))
-        )
-        .is_err()
-    );
+    assert!(write_artifact(&store, "host", &intent(&session, Some(&text))).is_err());
+    assert!(write_artifact(&store, "host", &intent(&session, None)).is_err());
+    assert!(write_artifact(&store, "foreign", &intent(&session, Some("output"))).is_err());
     let entry = ArtifactEntry {
         name: "ok.md".into(),
         description: "Valid".into(),
@@ -327,14 +293,9 @@ fn metadata_save_failure_leaves_unattached_content_and_reports_partial_save() {
             fs::write(&blocked, "block next metadata replacement").unwrap();
         }
     });
-    let error = write_artifact(
-        &store,
-        "host",
-        "partial",
-        &intent(&session, Some("durable output")),
-    )
-    .err()
-    .unwrap();
+    let error = write_artifact(&store, "host", &intent(&session, Some("durable output")))
+        .err()
+        .unwrap();
     assert!(error.to_string().contains("content was saved"));
     assert!(
         list_session_artifacts(&store, "host", &session.id, None)
@@ -355,13 +316,7 @@ fn metadata_save_failure_leaves_unattached_content_and_reports_partial_save() {
         "unattached output is valid transport data"
     );
     fs::remove_file(staging).unwrap();
-    write_artifact(
-        &store,
-        "host",
-        "partial",
-        &intent(&session, Some("durable output")),
-    )
-    .unwrap();
+    write_artifact(&store, "host", &intent(&session, Some("durable output"))).unwrap();
     assert_eq!(
         read_artifact(&store, &key(&session)).unwrap().content,
         "durable output"
@@ -375,7 +330,7 @@ fn failed_unlink_keeps_the_reference_deleted_without_following_a_symlink() {
         sync::atomic::{AtomicBool, Ordering},
     };
     let (root, store, session, _) = setup();
-    write_artifact(&store, "host", "write", &intent(&session, Some("output"))).unwrap();
+    write_artifact(&store, "host", &intent(&session, Some("output"))).unwrap();
     let content = root
         .path()
         .join(relative_artifact_path(&key(&session)).unwrap());
@@ -396,7 +351,7 @@ fn failed_unlink_keeps_the_reference_deleted_without_following_a_symlink() {
             symlink(&outside, &content).unwrap();
         }
     });
-    let saved = delete_artifact(&store, "delete", &key(&session)).unwrap();
+    let saved = delete_artifact(&store, &key(&session)).unwrap();
     assert_eq!(saved.warnings.len(), 1);
     assert!(saved.warnings[0].contains("reference removed"));
     assert!(
@@ -438,12 +393,11 @@ fn source_files_limits_and_reference_encoding_are_explicit() {
 }
 
 #[test]
-fn session_artifact_groups_reject_positional_entries_duplicates_and_unknown_membership() {
+fn session_artifact_groups_reject_positional_entries_and_duplicates() {
     let (_root, _store, session, _) = setup();
     for artifacts in [
-        json!({"stream":[["assessment.md", "description"]]}),
-        json!({"stream":[{"name":"assessment.md","description":"one"},{"name":"assessment.md","description":"two"}]}),
-        json!({"unknown":[{"name":"assessment.md","description":"one"}]}),
+        serde_json::json!({"stream":[["assessment.md", "description"]]}),
+        serde_json::json!({"stream":[{"name":"assessment.md","description":"one"},{"name":"assessment.md","description":"two"}]}),
     ] {
         let mut value = serde_json::to_value(&session).unwrap();
         value["artifacts"] = artifacts;

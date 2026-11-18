@@ -36,29 +36,27 @@ pub enum ApplicationError {
 
 pub type Result<T> = std::result::Result<T, ApplicationError>;
 
-/// Same-pass data, never serialized into the retained decision.
+/// Same-pass data, never serialized into the saved record.
 pub struct MoveSave {
-    pub save: crate::storage::records::RecordSave,
-    /// Fresh decisions supply their resulting Stream. Retried decisions read no dependencies.
-    pub stream: Option<crate::model::Stream>,
+    pub save: crate::storage::records::RecordSave<crate::operations::DomainOutcome>,
+    /// The destination Stream read during apply.
+    pub stream: crate::model::Stream,
 }
 
 /// Reuse the Stream read during apply when constructing the resulting native context.
-/// A retained retry leaves the caller's already-observed current Stream in use.
+/// A retried move finds the Session already in its destination and changes nothing.
 pub fn move_session_observed(
     store: &impl crate::storage::records::RecordStore,
-    operation_id: &str,
     intent: &crate::operations::membership::MoveIntent,
 ) -> Result<MoveSave> {
     use crate::{
         model::{Record, RecordKind},
         operations::{DomainOutcome, membership::apply_move},
-        storage::records::{RecordAddress, RecordChange, RecordRequest},
+        storage::records::{RecordAddress, RecordChange},
     };
     let address = RecordAddress::new(intent.host_id(), RecordKind::Session, intent.session_id())?;
-    let request = RecordRequest::new(address, operation_id, &serde_json::json!(intent))?;
     let mut stream = None;
-    let save = store.save::<ApplicationError>(&request, |reader, before| {
+    let save = store.save::<_, ApplicationError>(&address, |reader, before| {
         let Some(before) = before else {
             return Err(ValidationError::new("native conversation is not enrolled").into());
         };
@@ -103,17 +101,13 @@ pub fn move_session_observed(
         };
         let after = moved.unwrap_or_else(|| session.clone());
         stream = Some(destination);
-        let receipt = serde_json::json!({
-            "outcome": outcome,
-            "session_id": after.id,
-            "from_stream_id": session.stream_id,
-            "stream_id": after.stream_id,
-            "membership_period": after.previous_stream_ids.len(),
-        });
         Ok(RecordChange {
             record: Record::Session(after),
-            outcome: receipt.as_object().expect("receipt object").clone(),
+            outcome,
         })
     })?;
-    Ok(MoveSave { save, stream })
+    Ok(MoveSave {
+        save,
+        stream: stream.expect("a successful move read its destination"),
+    })
 }

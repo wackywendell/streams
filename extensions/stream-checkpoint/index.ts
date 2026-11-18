@@ -1,6 +1,5 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { randomUUID } from "node:crypto";
 import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { StreamCli, receiptText, receiptCanContinue, receiptHasWarning, resultNeedsAttention } from "./streams.ts";
@@ -198,7 +197,6 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
      const capture = await captureInputs(ctx, client, settings().context, fence);
      if (!capture.valid()) return;
      const {catalog, evidence} = capture;
-     const operation = randomUUID();
      const prospective = structuredClone([...state.discussion.messages, {role: "user" as const, text: input}]);
      clearStatusTimer();
      ctx.ui.setStatus?.("stream-reporting", "Streams · Thinking…");
@@ -212,7 +210,7 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
      if (typeof response.reply !== "string") throw Error("Discussion model did not return a typed reply");
      const edit = response.edit;
      if (edit?.kind === "references" && state.referenceEdits?.size) throw Error("Finish or discard retained reference edits before applying discussion reference changes.");
-     const request = !edit ? undefined : edit.kind === "references" ? referenceRequest(catalog, edit.actor, edit.changes, operation) : editRequest(catalog, edit.kind, edit.changes, edit.actor, operation);
+     const request = !edit ? undefined : edit.kind === "references" ? referenceRequest(catalog, edit.actor, edit.changes) : editRequest(catalog, edit.kind, edit.changes, edit.actor);
      if (!await capture.attached()) return;
      if (request) {
       const value = await client.apply(request);

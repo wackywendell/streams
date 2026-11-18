@@ -130,6 +130,7 @@ impl CardFixture {
         let mut session: streams::model::Session =
             serde_json::from_value(self.native.session.clone()).unwrap();
         session.recap = recap.into();
+        session.revision += 1;
         let value = serde_json::to_value(&session).unwrap();
         let record = Record::Session(session);
         let path = self
@@ -138,10 +139,7 @@ impl CardFixture {
             .root()
             .join(relative_record_path(&RecordAddress::for_record(&record)).unwrap());
         let staging = path.with_extension("staging");
-        let mut envelope: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        envelope["record"] = value;
-        envelope["revision"] = json!(uuid::Uuid::new_v4().to_string());
-        fs::write(&staging, serde_json::to_vec(&envelope).unwrap()).unwrap();
+        fs::write(&staging, serde_json::to_vec(&value).unwrap()).unwrap();
         fs::rename(staging, path).unwrap();
     }
     fn move_owner(&self, pane: &str) {
@@ -509,7 +507,7 @@ fn a_real_card_can_refresh_after_its_initial_session_read_failed() {
         .join("hosts")
         .join(&f.launch.scope.host_id)
         .join("conversations")
-        .join(format!("{}.yaml", f.native.session["id"].as_str().unwrap()));
+        .join(format!("{}.json", f.native.session["id"].as_str().unwrap()));
     let original = fs::read(&path).unwrap();
     fs::write(&path, b"not a record").unwrap();
     let mut pty = f.spawn();
@@ -540,12 +538,12 @@ fn a_real_card_refuses_a_rekey_instead_of_discovering_a_neighbor_session() {
         .join(&f.launch.scope.host_id)
         .join("conversations");
     let mut value: Value =
-        serde_json::from_slice(&fs::read(directory.join(format!("{old}.yaml"))).unwrap()).unwrap();
+        serde_json::from_slice(&fs::read(directory.join(format!("{old}.json"))).unwrap()).unwrap();
     let new = "22222222-2222-4222-8222-222222222222";
-    value["record"]["id"] = new.into();
-    value["record"]["title"] = "Must not be discovered".into();
-    fs::write(directory.join(format!("{new}.yaml")), value.to_string()).unwrap();
-    fs::remove_file(directory.join(format!("{old}.yaml"))).unwrap();
+    value["id"] = new.into();
+    value["title"] = "Must not be discovered".into();
+    fs::write(directory.join(format!("{new}.json")), value.to_string()).unwrap();
+    fs::remove_file(directory.join(format!("{old}.json"))).unwrap();
     pty.until(|p| p.screen().contains("Card unavailable"));
     assert!(!pty.screen().contains("Must not be discovered"));
     pty.send(b"q");

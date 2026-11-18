@@ -37,7 +37,7 @@ async function project({catalog,action,request}) {
  assert.equal(action,'apply');
  const target = catalog[request.kind];Object.assign(target,request.changes);
  if (request.kind==='session') catalog.sessions = catalog.sessions.map(s=>s.id===target.id&&s.host_id===target.host_id?structuredClone(target):s);
- return {catalog,receipt:{operation_id:request.operation_id,save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}},simulated:true}};
+ return {catalog,receipt:{save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}},simulated:true}};
 }
 test('pure payload construction and strict parsing share schemas without mutating frozen inputs',()=>{
  const request = {type:'stream',catalog:context(),messages:[]},before = structuredClone(request);
@@ -322,7 +322,7 @@ test('refused simulated saves fail the sample and retain earlier accepted update
   const f=fixture();try {
    const {capture}=captureSessions(f.inventory,f.root);let previews=0;
    const rt=runtime(async(_model,payload)=>response({changes:JSON.parse(payload.messages.at(-1).content).task==='session'?{state:'Accepted update'}:{goal:'Refused goal'}}));
-   const {run}=await replayCapture(capture,f.root,rt,model,update,async input=>++previews===failAt?{catalog:input.catalog,receipt:{operation_id:input.request.operation_id,save:{local:'unchanged',sharing:'local-only',domain:{outcome:'conflict'},detail:'Synthetic refusal'},simulated:true}}:project(input),new AbortController().signal);
+   const {run}=await replayCapture(capture,f.root,rt,model,update,async input=>++previews===failAt?{catalog:input.catalog,receipt:{save:{local:'unchanged',sharing:'local-only',domain:{outcome:'conflict'},detail:'Synthetic refusal'},simulated:true}}:project(input),new AbortController().signal);
    const sample=run.samples[0];assert.equal(sample.status,'failed');assert.match(sample.error,/Simulated save refused.*conflict/);
    assert.equal(sample.tasks.length,failAt);assert.equal(sample.receipts.length,failAt);
    assert.equal(sample.after.session.state,failAt===2?'Accepted update':'Original state');assert.equal(sample.after.stream.goal,'Original goal');

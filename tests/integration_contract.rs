@@ -561,39 +561,32 @@ fn saved_reference_resolution_checks_link_kind_and_retains_moved_artifact_proven
     let host = records.host().as_str();
     let mut stream = Stream::new("work", "Work", None, host).unwrap();
     stream.references.push(
-        ModelReference::new(
-            ReferenceValue {
-                name: "Issue".into(),
-                purpose: "Issue".into(),
-                role: ReferenceRole::Dependency,
-                state: ReferenceState::Active,
-                target: ReferenceTarget::Issue {
-                    url: "https://example.test/issue/1".into(),
-                },
+        ModelReference::new(ReferenceValue {
+            name: "Issue".into(),
+            purpose: "Issue".into(),
+            role: ReferenceRole::Dependency,
+            state: ReferenceState::Active,
+            target: ReferenceTarget::Issue {
+                url: "https://example.test/issue/1".into(),
             },
-            "rev-issue",
-        )
+        })
         .unwrap(),
     );
     stream.references.push(
-        ModelReference::new(
-            ReferenceValue {
-                name: "Review".into(),
-                purpose: "Review".into(),
-                role: ReferenceRole::Deliverable,
-                state: ReferenceState::Active,
-                target: ReferenceTarget::Pr {
-                    url: "https://example.test/pull/2".into(),
-                },
+        ModelReference::new(ReferenceValue {
+            name: "Review".into(),
+            purpose: "Review".into(),
+            role: ReferenceRole::Deliverable,
+            state: ReferenceState::Active,
+            target: ReferenceTarget::Pr {
+                url: "https://example.test/pull/2".into(),
             },
-            "rev-pr",
-        )
+        })
         .unwrap(),
     );
-    application::create_record(records.records(), "stream", &Record::Stream(stream)).unwrap();
+    application::create_record(records.records(), &Record::Stream(stream)).unwrap();
     application::create_record(
         records.records(),
-        "destination",
         &Record::Stream(Stream::new("next", "Next", None, host).unwrap()),
     )
     .unwrap();
@@ -613,12 +606,7 @@ fn saved_reference_resolution_checks_link_kind_and_retains_moved_artifact_proven
             description: "Result".into(),
         }],
     );
-    application::create_record(
-        records.records(),
-        "session",
-        &Record::Session(session.clone()),
-    )
-    .unwrap();
+    application::create_record(records.records(), &Record::Session(session.clone())).unwrap();
     let registry = CheckoutRegistry::new(root.join("registry"), host).unwrap();
     let locations = DirectoryBindings::new(root.join("bindings"), registry.clone());
     let facade = Streams::new(&records);
@@ -654,7 +642,7 @@ fn saved_reference_resolution_checks_link_kind_and_retains_moved_artifact_proven
         name: "result.md".into(),
     };
     let moved = MoveIntent::new(host, "pi", "native", "next").unwrap();
-    application::move_session_observed(records.records(), "move", &moved).unwrap();
+    application::move_session_observed(records.records(), &moved).unwrap();
     let resolved = facade
         .resolve_saved_reference(
             &Reference::Artifact { key: key.clone() },
@@ -709,7 +697,6 @@ fn admitted_session_reads_are_saved_only_and_scope_is_not_a_catalog_selector() {
     let host = records.host().as_str();
     application::create_record(
         records.records(),
-        "stream",
         &Record::Stream(Stream::new("work", "Work", None, host).unwrap()),
     )
     .unwrap();
@@ -722,12 +709,7 @@ fn admitted_session_reads_are_saved_only_and_scope_is_not_a_catalog_selector() {
         "Saved title",
     )
     .unwrap();
-    application::create_record(
-        records.records(),
-        "session",
-        &Record::Session(session.clone()),
-    )
-    .unwrap();
+    application::create_record(records.records(), &Record::Session(session.clone())).unwrap();
     let events = Arc::new(Mutex::new(Vec::new()));
     let observed = events.clone();
     let records = application::open_records_observed(&config, move |event| {

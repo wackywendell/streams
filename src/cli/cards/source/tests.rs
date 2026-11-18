@@ -9,7 +9,7 @@ use streams::{
     model::{Record, Reference, Session, Stream},
     storage::{
         StorageError,
-        records::{RecordAddress, RecordChange, RecordRequest, RecordStore},
+        records::{RecordAddress, RecordChange, RecordStore},
     },
     yaml_store::records::{RecordIoEvent, YamlRecordStore, relative_record_path},
 };
@@ -70,10 +70,13 @@ impl Hints {
         self.registry.register(&path, Some(url)).unwrap()
     }
     fn document(&mut self, url: &str, path: &str) {
-        self.stream.references.push(serde_json::from_value(json!({
-            "name":path,"purpose":"Guide work","role":"brief","state":"active",
-            "target":{"kind":"document","repository_url":url,"path":path},"revision":format!("fixture-{path}")
-        })).unwrap());
+        self.stream.references.push(
+            serde_json::from_value(json!({
+                "name":path,"purpose":"Guide work","role":"brief","state":"active",
+                "target":{"kind":"document","repository_url":url,"path":path}
+            }))
+            .unwrap(),
+        );
     }
     fn context(&self) -> serde_json::Value {
         documents::context(&self.registry, &self.locations, &self.stream, &self.session)
@@ -229,19 +232,13 @@ fn broken_explicit_selection_and_unregistered_vcs_never_fall_back_to_a_valid_def
     }
 }
 
-fn save(records: &application::OpenedRecords, operation: &str, record: Record) {
-    let request = RecordRequest::new(
-        RecordAddress::for_record(&record),
-        operation,
-        &json!({"record":record}),
-    )
-    .unwrap();
+fn save(records: &application::OpenedRecords, record: Record) {
     records
         .records()
-        .save::<StorageError>(&request, |_, _| {
+        .save::<_, StorageError>(&RecordAddress::for_record(&record), |_, _| {
             Ok(RecordChange {
                 record,
-                outcome: json!({"outcome":"changes"}).as_object().unwrap().clone(),
+                outcome: (),
             })
         })
         .unwrap();
@@ -283,8 +280,7 @@ fn source_reuses_supplied_records_and_each_later_read_addresses_only_its_session
         for index in 0..4 {
             stream.references.push(serde_json::from_value::<Reference>(json!({
                 "name":"Missing document","purpose":"Guide the work","role":"brief","state":"active",
-                "target":{"kind":"document","repository_url":format!("unavailable-{index}"),"path":"not-present.md","ref":"main"},
-                "revision":format!("fixture-{index}")
+                "target":{"kind":"document","repository_url":format!("unavailable-{index}"),"path":"not-present.md","ref":"main"}
             })).unwrap());
         }
         let mut session = Session::new(
@@ -296,8 +292,8 @@ fn source_reuses_supplied_records_and_each_later_read_addresses_only_its_session
             "Conversation",
         )
         .unwrap();
-        save(&records, "stream", Record::Stream(stream.clone()));
-        save(&records, "session", Record::Session(session.clone()));
+        save(&records, Record::Stream(stream.clone()));
+        save(&records, Record::Session(session.clone()));
         let neighbor = records.root().join("hosts/unrelated/streams");
         fs::create_dir_all(&neighbor).unwrap();
         for index in 0..unrelated {
@@ -347,7 +343,7 @@ fn source_reuses_supplied_records_and_each_later_read_addresses_only_its_session
             "provided context must not reopen or reread catalog records"
         );
         session.title = "New title".into();
-        save(&records, "rename", Record::Session(session.clone()));
+        save(&records, Record::Session(session.clone()));
         events.lock().unwrap().clear();
         assert_eq!(
             source.read_records(&owner).unwrap().session().title,
@@ -386,7 +382,7 @@ fn source_reuses_supplied_records_and_each_later_read_addresses_only_its_session
                 .any(|event| matches!(event, RecordIoEvent::List(_)))
         );
         let destination = Stream::new("destination", "Destination", None, host.as_str()).unwrap();
-        save(&records, "destination", Record::Stream(destination));
+        save(&records, Record::Stream(destination));
         let intent = streams::operations::membership::MoveIntent::new(
             host.as_str(),
             "pi",
@@ -394,7 +390,7 @@ fn source_reuses_supplied_records_and_each_later_read_addresses_only_its_session
             "destination",
         )
         .unwrap();
-        application::move_session_observed(records.records(), "move", &intent).unwrap();
+        application::move_session_observed(records.records(), &intent).unwrap();
         let mut source = ApplicationSource::new(
             app,
             records,

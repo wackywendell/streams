@@ -4,48 +4,52 @@
 mod artifacts;
 mod inventory;
 pub use artifacts::{artifact_key_from_path, decode_artifact_content, relative_artifact_path};
-pub(crate) use inventory::record_mtime_ms;
 pub use inventory::{address_from_relative_path, catalog_path_host, decode_record_tree};
 
-use std::{
-    collections::BTreeMap,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
-use uuid::Uuid;
 
 use crate::{
-    codec::{record_from_data, record_to_data},
+    codec::{load_json, record_from_data, record_to_data},
     file_io::{
         atomic_write, decode_json, ensure_directory, existing_write_lock, inspection_lock, lock,
         read_bytes, write_json,
     },
-    model::{Record, RecordKind, check_text},
+    model::{Record, RecordKind, Stamps, check_text},
     storage::{
         StorageError,
         records::{
-            RecordAddress, RecordChange, RecordRead, RecordReader, RecordRequest, RecordSave,
-            RecordStore, UnreadableRecord,
+            RecordAddress, RecordChange, RecordRead, RecordReader, RecordSave, RecordStore,
+            UnreadableRecord,
         },
     },
 };
 
-use super::{encode_component, yaml_to_json};
+use super::encode_component;
 
 const FORMAT: &str = ".catalog-local/records.json";
+/// Bumped whenever record files change shape. Older catalogs are reset, never read.
+const FORMAT_VERSION: u32 = 3;
+/// What a user with a catalog from an older format does. The README documents it.
+pub(crate) const RESET_HINT: &str =
+    "move the catalog directory aside and re-enroll (README: \"Resetting the catalog\")";
 
 /// Canonical relative paths for the new format; callers never probe legacy locations.
 pub fn relative_record_path(address: &RecordAddress) -> Result<PathBuf, StorageError> {
     address.validate()?;
+    Ok(record_path(address))
+}
+
+/// The path an address names; encoding keeps every component inside its partition.
+fn record_path(address: &RecordAddress) -> PathBuf {
     let partition = PathBuf::from("hosts").join(encode_component(address.host()));
-    let name = format!("{}.yaml", encode_component(address.id()));
-    Ok(match address.kind() {
-        RecordKind::Host => partition.join("host.yaml"),
+    let name = format!("{}.json", encode_component(address.id()));
+    match address.kind() {
+        RecordKind::Host => partition.join("host.json"),
         RecordKind::Stream => partition.join("streams").join(name),
         RecordKind::Session => partition.join("conversations").join(name),
-    })
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -53,36 +57,6 @@ pub fn relative_record_path(address: &RecordAddress) -> Result<PathBuf, StorageE
 struct Format {
     version: u32,
     host: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Receipt {
-    fingerprint: String,
-    outcome: Map<String, Value>,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Envelope {
-    version: u32,
-    revision: String,
-    kind: RecordKind,
-    record: Value,
-    #[serde(deserialize_with = "crate::codec::object_map")]
-    receipts: BTreeMap<String, Receipt>,
-}
-
-fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, StorageError> {
-    let text = std::str::from_utf8(bytes).map_err(invalid)?;
-    let yaml = saneyaml::LoadOptions::yaml_1_1()
-        .from_str(text)
-        .map_err(invalid)?;
-    let json = yaml_to_json(yaml).map_err(invalid)?;
-    if !json.is_object() {
-        return Err(StorageError::new("expected a record object"));
-    }
-    serde_json::from_value(json).map_err(invalid)
 }
 
 fn invalid(error: impl std::fmt::Display) -> StorageError {
@@ -169,7 +143,7 @@ impl YamlRecordStore {
         }
     }
 
-    /// Explicit initialization only. A populated old catalog requires offline cutover.
+    /// Explicit initialization only. A populated catalog is never adopted.
     pub fn initialize(&self) -> Result<(), StorageError> {
         ensure_directory(&self.root, true)?;
         let path = self.root.join(".catalog.lock");
@@ -177,15 +151,15 @@ impl YamlRecordStore {
         let _lock = lock(&path)?;
         for entry in self.list_directory()? {
             if entry.map_err(invalid)?.file_name() != ".catalog.lock" {
-                return Err(StorageError::new(
-                    "new-format initialization requires an empty catalog; run offline cutover",
-                ));
+                return Err(StorageError::new(format!(
+                    "catalog initialization requires an empty directory; {RESET_HINT}"
+                )));
             }
         }
         write_json(
             &self.root.join(FORMAT),
             &Format {
-                version: 2,
+                version: FORMAT_VERSION,
                 host: self.host.clone(),
             },
         )
@@ -202,12 +176,20 @@ impl YamlRecordStore {
         };
         let bytes = self
             .read_named(Path::new(FORMAT))?
-            .ok_or_else(|| StorageError::new("record format is incomplete; run offline cutover"))?;
+            .ok_or_else(|| StorageError::new(format!("catalog has no {FORMAT}; {RESET_HINT}")))?;
         let format: Format = decode_json(&bytes)?;
-        if format.version != 2 || format.host != self.host {
-            return Err(StorageError::new(
-                "record format or producer mismatch; run offline cutover",
-            ));
+        if format.version != FORMAT_VERSION {
+            return Err(StorageError::new(format!(
+                "catalog records use format {} from another Streams version, not {FORMAT_VERSION} \
+                 ({FORMAT}); {RESET_HINT}",
+                format.version
+            )));
+        }
+        if format.host != self.host {
+            return Err(StorageError::new(format!(
+                "catalog belongs to host {}, not {} ({FORMAT})",
+                format.host, self.host
+            )));
         }
         Ok(Reader {
             store: self,
@@ -251,71 +233,36 @@ struct Reader<'a> {
     _lock: crate::file_io::FileLock,
 }
 
-impl Reader<'_> {
-    fn envelope(
-        &self,
-        address: &RecordAddress,
-    ) -> Result<Option<(Envelope, RecordRead)>, StorageError> {
-        let Some(bytes) = self.store.read_named(&relative_record_path(address)?)? else {
-            return Ok(None);
-        };
-        decode_envelope(address, &bytes).map(Some)
-    }
-}
-
 /// Decode already-observed bytes with exactly the same strict checks as a store read.
 /// Watchers can establish the Stream watch before requesting context, without another read.
-pub fn decode_record(address: &RecordAddress, bytes: &[u8]) -> Result<RecordRead, StorageError> {
-    Ok(decode_envelope(address, bytes)?.1)
-}
-
 /// Every reader reports an undecodable record by kind and catalog path, with the cause.
-fn decode_envelope(
+pub fn decode_record(
     address: &RecordAddress,
     bytes: &[u8],
-) -> Result<(Envelope, RecordRead), StorageError> {
-    let path = relative_record_path(address)?;
-    decode_envelope_bytes(address, bytes)
-        .map_err(|error| UnreadableRecord::new(address, path, error.to_string()).into())
+) -> Result<RecordRead, UnreadableRecord> {
+    decode_record_bytes(address, bytes)
+        .map_err(|error| UnreadableRecord::new(address, record_path(address), error.to_string()))
 }
 
-fn decode_envelope_bytes(
-    address: &RecordAddress,
-    bytes: &[u8],
-) -> Result<(Envelope, RecordRead), StorageError> {
-    let envelope: Envelope = decode(bytes)?;
-    if envelope.version != 2 || envelope.kind != address.kind() {
-        return Err(StorageError::new("unsupported or mismatched record schema"));
-    }
-    check_text(&envelope.revision, "record revision", false).map_err(invalid)?;
-    let record = record_from_data(envelope.kind, &envelope.record).map_err(invalid)?;
+fn decode_record_bytes(address: &RecordAddress, bytes: &[u8]) -> Result<RecordRead, StorageError> {
+    let text = std::str::from_utf8(bytes).map_err(invalid)?;
+    let record =
+        record_from_data(address.kind(), &load_json(text).map_err(invalid)?).map_err(invalid)?;
     record.validate_portable().map_err(invalid)?;
     if RecordAddress::for_record(&record) != *address {
         return Err(StorageError::new(
             "record identity does not match its physical location",
         ));
     }
-    for (id, receipt) in &envelope.receipts {
-        check_text(id, "receipt operation ID", false).map_err(invalid)?;
-        if receipt.fingerprint.len() != 64
-            || !receipt
-                .fingerprint
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-        {
-            return Err(StorageError::new("invalid receipt fingerprint"));
-        }
-    }
-    let current = RecordRead {
-        record,
-        revision: envelope.revision.clone(),
-    };
-    Ok((envelope, current))
+    Ok(RecordRead { record })
 }
 
 impl RecordReader for Reader<'_> {
     fn read(&self, address: &RecordAddress) -> Result<Option<RecordRead>, StorageError> {
-        Ok(self.envelope(address)?.map(|(_, current)| current))
+        let Some(bytes) = self.store.read_named(&relative_record_path(address)?)? else {
+            return Ok(None);
+        };
+        Ok(Some(decode_record(address, &bytes)?))
     }
 }
 
@@ -327,91 +274,65 @@ impl RecordStore for YamlRecordStore {
         read(&self.scope(false)?)
     }
 
-    fn save<E: From<StorageError>>(
+    fn save<T, E: From<StorageError>>(
         &self,
-        request: &RecordRequest,
-        apply: impl FnOnce(&dyn RecordReader, Option<&RecordRead>) -> Result<RecordChange, E>,
-    ) -> Result<RecordSave, E> {
-        if request.target.host() != self.host {
+        target: &RecordAddress,
+        apply: impl FnOnce(&dyn RecordReader, Option<&RecordRead>) -> Result<RecordChange<T>, E>,
+    ) -> Result<RecordSave<T>, E> {
+        if target.host() != self.host {
             return Err(StorageError::new("cannot write another host's partition").into());
         }
         let scope = self.scope(true)?;
-        self.save_scoped(&scope, request, apply)
+        self.save_scoped(&scope, target, apply)
     }
 }
 
 impl YamlRecordStore {
-    fn save_scoped<E: From<StorageError>>(
+    /// The single place that sets a record's revision and update time.
+    fn save_scoped<T, E: From<StorageError>>(
         &self,
         scope: &Reader<'_>,
-        request: &RecordRequest,
-        apply: impl FnOnce(&dyn RecordReader, Option<&RecordRead>) -> Result<RecordChange, E>,
-    ) -> Result<RecordSave, E> {
-        let previous = scope.envelope(&request.target)?;
-        if let Some((envelope, current)) = &previous
-            && let Some(receipt) = envelope.receipts.get(&request.operation_id)
-        {
-            if receipt.fingerprint != request.fingerprint {
-                return Err(StorageError::new("operation ID reused with changed intent").into());
-            }
-            return Ok(RecordSave {
-                current: current.clone(),
-                outcome: receipt.outcome.clone(),
-                repeated: true,
-            });
-        }
-        let change = apply(scope, previous.as_ref().map(|(_, current)| current))?;
-        change.record.validate_portable().map_err(invalid)?;
-        if RecordAddress::for_record(&change.record) != request.target {
+        target: &RecordAddress,
+        apply: impl FnOnce(&dyn RecordReader, Option<&RecordRead>) -> Result<RecordChange<T>, E>,
+    ) -> Result<RecordSave<T>, E> {
+        let previous = scope.read(target)?;
+        let RecordChange {
+            mut record,
+            outcome,
+        } = apply(scope, previous.as_ref())?;
+        record.validate_portable().map_err(invalid)?;
+        if RecordAddress::for_record(&record) != *target {
             return Err(StorageError::new("save cannot change target identity or host").into());
         }
-        let unchanged = previous
+        // Stamps are the store's; compare the content the callback chose.
+        let stamps = previous
             .as_ref()
-            .is_some_and(|(_, current)| current.record == change.record);
-        let revision = if unchanged {
-            previous
-                .as_ref()
-                .expect("unchanged record exists")
-                .1
-                .revision
-                .clone()
-        } else {
-            Uuid::new_v4().to_string()
-        };
-        let mut receipts = previous
-            .map(|(envelope, _)| envelope.receipts)
+            .and_then(|read| read.record.stamps())
             .unwrap_or_default();
-        receipts.insert(
-            request.operation_id.clone(),
-            Receipt {
-                fingerprint: request.fingerprint.clone(),
-                outcome: change.outcome.clone(),
-            },
-        );
-        let envelope = Envelope {
-            version: 2,
-            revision: revision.clone(),
-            kind: request.target.kind(),
-            record: record_to_data(&change.record),
-            receipts,
-        };
-        self.write_envelope(&request.target, &envelope)?;
+        record.set_stamps(stamps);
+        if let Some(current) = previous
+            && current.record == record
+        {
+            return Ok(RecordSave {
+                current,
+                outcome,
+                written: false,
+            });
+        }
+        record.set_stamps(Stamps {
+            revision: stamps.revision + 1,
+            updated_at_ms: now_ms(),
+        });
+        self.write_record(target, &record)?;
         Ok(RecordSave {
-            current: RecordRead {
-                record: change.record,
-                revision,
-            },
-            outcome: change.outcome,
-            repeated: false,
+            current: RecordRead { record },
+            outcome,
+            written: true,
         })
     }
 
-    fn write_envelope(
-        &self,
-        target: &RecordAddress,
-        envelope: &Envelope,
-    ) -> Result<(), StorageError> {
-        let bytes = serde_json::to_vec_pretty(envelope).map_err(invalid)?;
+    fn write_record(&self, target: &RecordAddress, record: &Record) -> Result<(), StorageError> {
+        let bytes = serde_json::to_vec_pretty(&record_to_data(record)).map_err(invalid)?;
         let relative = relative_record_path(target)?;
         check_parents(&self.root, &relative)?;
         let path = self.root.join(relative);
@@ -421,7 +342,7 @@ impl YamlRecordStore {
     }
 
     /// Discard the target when its file exists but cannot be decoded: install `replacement`
-    /// with a fresh revision and no receipts, or remove the file when there is none.
+    /// as a first revision, or remove the file when there is none.
     /// A readable or missing target is left alone. Returns the decode error it discarded.
     pub fn discard_unreadable(
         &self,
@@ -436,32 +357,34 @@ impl YamlRecordStore {
         let Some(bytes) = self.read_named(&relative)? else {
             return Ok(None);
         };
-        let Err(unreadable) = decode_envelope(target, &bytes) else {
+        let Err(unreadable) = decode_record(target, &bytes) else {
             return Ok(None);
         };
         match replacement {
-            Some(record) => {
+            Some(mut record) => {
                 record.validate_portable().map_err(invalid)?;
                 if RecordAddress::for_record(&record) != *target {
                     return Err(StorageError::new(
                         "a replacement must keep the target's identity",
                     ));
                 }
-                self.write_envelope(
-                    target,
-                    &Envelope {
-                        version: 2,
-                        revision: Uuid::new_v4().to_string(),
-                        kind: target.kind(),
-                        record: record_to_data(&record),
-                        receipts: BTreeMap::new(),
-                    },
-                )?;
+                record.set_stamps(Stamps {
+                    revision: 1,
+                    updated_at_ms: now_ms(),
+                });
+                self.write_record(target, &record)?;
             }
             None => std::fs::remove_file(self.root.join(relative)).map_err(invalid)?,
         }
         Ok(Some(unreadable.to_string()))
     }
+}
+
+fn now_ms() -> u64 {
+    let elapsed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]

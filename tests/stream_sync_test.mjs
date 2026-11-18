@@ -163,7 +163,7 @@ test('Pi/CLI reports publish across two isolated Git catalogs, remain saved offl
  for(const run of [a,b])await command(run,'config','set','frontend.mode','none');
  const initialized=await command(a,'init','--sync','git','--remote',remote);
  let cli=childCli(checkout,'native',a.env);clients.push(cli);const empty=await cli.context('native');
- const enrollment=await cli.enroll({version:2,catalog_source:empty.catalog_source,operation_id:'enrollment',harness:'pi',harness_session_id:'native',stream:{title:'Shared effort'},session:{title:'Implement sharing'},actor:'automatic',cwd:checkout});
+ const enrollment=await cli.enroll({version:2,catalog_source:empty.catalog_source,harness:'pi',harness_session_id:'native',stream:{title:'Shared effort'},session:{title:'Implement sharing'},actor:'automatic',cwd:checkout});
  assert.equal(enrollment.publication,undefined);assert.ok(enrollment.saves.every(item=>item.save.local==='persisted'));
  assert.equal((await cli.sync()).sharing,'confirmed');
  await command(b,'init','--sync','git','--remote',remote);
@@ -193,7 +193,7 @@ test('Pi/CLI reports publish across two isolated Git catalogs, remain saved offl
  renameSync(unavailable,remote);
  // A new session child loses all in-memory state.
  await cli.stop();cli=childCli(checkout,'native',a.env);clients.push(cli);
- const retained=await cli.apply(offlineIntent);assert.equal(retained.save.local,'unchanged');assert.deepEqual(retained.save.domain,offline.save.domain);
+ const retained=await cli.apply(offlineIntent);assert.equal(retained.save.local,'unchanged');assert.equal(retained.save.domain.outcome,'no-change');
  assert.equal(git(remote,'rev-parse','main'),published,'retained catalog retries do not publish');
  f=hooks(cli);await f.handlers.get('session_start')({},f.ctx);assert.deepEqual(f.warnings,[]);
  assert.equal((await command(b,'show',enrollment.stream.id,'--refresh')).sessions[0].state,'Saved while offline');
@@ -215,7 +215,7 @@ test('Pi/CLI refuses adoption and keeps captured membership and receipts valid w
  await command('config','set','frontend.mode','none');
  const initialized=await command('init','--sync','none');
  let cli=childCli(checkout,'native',env);clients.push(cli);const empty=await cli.context('native');
- const enrollment=await cli.enroll({version:2,catalog_source:empty.catalog_source,operation_id:'local-enrollment',harness:'pi',harness_session_id:'native',stream:{title:'Existing effort'},session:{title:'Continue work'},actor:'automatic',cwd:checkout});
+ const enrollment=await cli.enroll({version:2,catalog_source:empty.catalog_source,harness:'pi',harness_session_id:'native',stream:{title:'Existing effort'},session:{title:'Continue work'},actor:'automatic',cwd:checkout});
  assert.equal(enrollment.publication,undefined);assert.ok(enrollment.saves.every(item=>item.save.local==='persisted'));
  const captured=await cli.context('native');
  const transport=join(initialized.catalog,'.catalog-local/transport.json'),before=readFileSync(transport,'utf8');
@@ -229,7 +229,7 @@ test('Pi/CLI refuses adoption and keeps captured membership and receipts valid w
  assert.deepEqual(JSON.parse(readFileSync(transport,'utf8')),{version:2,mode:{strategy:'none'}});
  await cli.stop();cli=childCli(checkout,'native',env);clients.push(cli);const f=hooks(cli);await f.handlers.get('session_start')({},f.ctx);await f.handlers.get('session_shutdown')({reason:'quit'},f.ctx);
  assert.deepEqual(f.warnings,[]);assert.deepEqual(f.entries,[]);
- const retained=await cli.apply(intent);assert.equal(retained.save.local,'unchanged');assert.deepEqual(retained.save.domain,report.save.domain);
+ const retained=await cli.apply(intent);assert.equal(retained.save.local,'unchanged');assert.equal(retained.save.domain.outcome,'no-change');
  const shown=await command('show',enrollment.stream.id,'--refresh');assert.equal(shown.sessions[0].id,enrollment.session.id);assert.equal(shown.sessions[0].state,'Reported after refused adoption');
  assert.equal((await command('sync')).sharing,'local-only');assert.equal(readFileSync(transport,'utf8'),before);
  assert.equal(existsSync(join(initialized.catalog,'.git')),false);assert.equal(existsSync(join(initialized.catalog,'.catalog-sync')),false);

@@ -208,7 +208,7 @@ test('Pi reuses one real v2 child; catalog UI facts never trigger a TypeScript n
  t.after(async()=>{controller.stop();await controller.idle();});
  await controller.start();await until(()=>f.name()==='Real Rust lane');assert.deepEqual(requests,[{kind:'session_started'}]);
  const outcome=await child.run({kind:'context'});assert.equal(outcome.status,'success');const catalog=outcome.result;
- const intent={version:2,operation_id:'child-title',catalog_source:catalog.catalog_source,actor:'user',kind:'session',before:catalog.session,changes:{title:'Child title'},title_default:catalog.title_defaults.session,inputs:[]};
+ const intent={version:2,catalog_source:catalog.catalog_source,actor:'user',kind:'session',before:catalog.session,changes:{title:'Child title'},title_default:catalog.title_defaults.session,inputs:[]};
  const saved=await child.run({kind:'apply',request:intent});assert.notEqual(saved.status,'error',JSON.stringify(saved));
  await until(()=>f.name()==='Child title');assert.deepEqual(requests.map(request=>request.kind),['session_started','context','apply']);assert.equal(spawns,1);
  assert.ok(f.commands().some(([method])=>method.endsWith('report_metadata')));assert.deepEqual(notices,[]);

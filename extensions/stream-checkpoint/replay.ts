@@ -28,7 +28,7 @@ export async function replayCapture(capture: Capture, root: string, runtime: Inf
    const result = run.samples[index];
    if (signal.aborted) break;
    if (sample.unavailable || !sample.evidence) {result.status = "unavailable";result.error = sample.unavailable ?? "No frozen evidence";continue;}
-   let catalog = structuredClone(sample.catalog), operation = 0;
+   let catalog = structuredClone(sample.catalog);
    const generate = async <T extends EnrollmentInference | ReportInference>(request: T): Promise<InferenceResult<T>> => {
     const task: ReplayTask = {task: request.type, input_file: `sample-${index}-task-${result.tasks.length}.json`, status: "running"};
     result.tasks.push(task);
@@ -56,7 +56,7 @@ export async function replayCapture(capture: Capture, root: string, runtime: Inf
    };
    try {
     const saved = await runReport(action, {
-     signal, automaticEnrollment: true, operationId: () => `replay:${capture.id}:${index}:${operation++}`,
+     signal, automaticEnrollment: true,
      capture: async () => ({native: sample.native_session_id, cwd: sample.cwd!, evidence: structuredClone(sample.evidence!), catalog: structuredClone(catalog), valid: () => !signal.aborted, attached: async () => !signal.aborted}),
      generate,
      // A captured card was decoded when it was captured; there is nothing to discard.

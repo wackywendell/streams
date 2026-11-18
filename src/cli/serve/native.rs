@@ -324,11 +324,7 @@ impl Controller {
                     let id = uuid::Uuid::new_v4().to_string();
                     let stream =
                         Stream::new(&id, "Untitled effort", None, records.host().as_str())?;
-                    application::create_record(
-                        records.records(),
-                        &uuid::Uuid::new_v4().to_string(),
-                        &Record::Stream(stream),
-                    )?;
+                    application::create_record(records.records(), &Record::Stream(stream))?;
                     native_markers::associate_workspace(
                         &client,
                         &workspace,
@@ -363,17 +359,11 @@ impl Controller {
                     &self.session_id,
                     &destination,
                 )?;
-                let moved = application::move_session_observed(
-                    records.records(),
-                    &uuid::Uuid::new_v4().to_string(),
-                    &intent,
-                )?;
+                let moved = application::move_session_observed(records.records(), &intent)?;
                 let Record::Session(session) = moved.save.current.record else {
                     unreachable!("move saves Session")
                 };
-                let stream = moved.stream.ok_or_else(|| {
-                    crate::cli::CliError::message("native move has no current Stream dependency")
-                })?;
+                let stream = moved.stream;
                 context.session = Some(session.clone());
                 context.sessions = vec![session];
                 context.stream = Some(stream);

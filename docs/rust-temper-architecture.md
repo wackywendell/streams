@@ -27,7 +27,7 @@ A Rust child cannot observe a branch switch while inference is running inside Pi
 TypeScript therefore retains conversation lifetime, cancellation and active-branch
 prefix admission. An appended conversation can accept an older captured prefix;
 rewind, replacement and branch changes cannot. Versioned requests carry the
-original target, operation ID, catalog source and captured fields. Rust checks
+original target, catalog source and captured fields, including the record revision. Rust checks
 record-local intent and manual protection; neither side substitutes a fresh base
 after inference.
 
@@ -36,9 +36,10 @@ after inference.
 The domain depends on no filesystem, Git or frontend. Pure operations receive
 their typed inputs and produce one target decision. Application code uses the
 `RecordStore`, `RecordReader` and `RecordWriter` interfaces; YAML and memory
-implementations exercise the same contracts. Receipts and the current record share
-one target envelope and one atomic replacement. A possible write is reported as
-uncertain, not disguised as a definite refusal.
+implementations exercise the same contracts. A save replaces one record file atomically,
+and only when the record changed. A retry that already landed is recognised from
+the record. A possible write is reported as uncertain, not disguised as a definite
+refusal.
 
 Sync transports host-partitioned files and has its own outcome. It does not control
 local save admission or replay domain operations. Domain, local and sharing
@@ -105,7 +106,7 @@ The Rust migration used differential traces and extracted fixtures before
 retiring Python and the duplicate TypeScript coordinator. Those historical gates
 are not current build dependencies or compatibility requirements.
 
-Current tests exercise record stores, captured reports, receipts, file transport,
+Current tests exercise record stores, captured reports, retries, file transport,
 path checks, native fakes with outside changes, real OS locks, process termination
 and isolated PTYs. Pi/replay acceptance runs the real Rust CLI in disposable homes.
 The removed formal model described old save/publication markers and had no

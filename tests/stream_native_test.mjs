@@ -163,12 +163,12 @@ function paneFixture(t,options={}) {
   sync:async()=>({local:'unchanged',sharing:'local-only',domain:null}),
   enroll:async request=>{
    steps.push('enroll');enrollments.push(structuredClone(request));
-   if(options.rejectEnrollment)return {saves:[{operation_id:request.operation_id,save:{local:'repair-required',sharing:'local-only',domain:null}}]};
-   attach();return {stream:catalog.stream,session:catalog.session,saves:[{operation_id:request.operation_id,save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}}]};
+   if(options.rejectEnrollment)return {saves:[{target:'session:native',save:{local:'repair-required',sharing:'local-only',domain:null}}]};
+   attach();return {stream:catalog.stream,session:catalog.session,saves:[{target:'session:native',save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}}]};
   },
   apply:async request=>{
    steps.push(`apply-${request.kind}`);Object.assign(catalog[request.kind],request.changes);
-   return {operation_id:request.operation_id,save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}};
+   return {save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}};
   },
  };
  register({...f.pi,on:(key,value)=>handlers.set(key,value),registerCommand:(key,value)=>commands.set(key,value),registerTool:tool=>tools.set(tool.name,tool)},

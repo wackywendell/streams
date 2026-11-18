@@ -5,22 +5,16 @@ mod regressions;
 use super::*;
 use crate::{
     model::{Record, RecordKind, Session, Stream},
-    storage::records::{RecordAddress, RecordChange, RecordRequest, RecordStore},
+    storage::records::{RecordAddress, RecordChange, RecordStore},
 };
 use serde_json::json;
 
-fn put(store: &YamlRecordStore, id: &str, record: Record) {
-    let request = RecordRequest::new(
-        RecordAddress::for_record(&record),
-        id,
-        &json!({"record":record}),
-    )
-    .unwrap();
+fn put(store: &YamlRecordStore, record: Record) {
     store
-        .save::<StorageError>(&request, |_, _| {
+        .save::<_, StorageError>(&RecordAddress::for_record(&record), |_, _| {
             Ok(RecordChange {
                 record,
-                outcome: Default::default(),
+                outcome: (),
             })
         })
         .unwrap();
@@ -30,12 +24,10 @@ fn setup(path: &Path, host: &str) -> YamlRecordStore {
     store.initialize().unwrap();
     put(
         &store,
-        "stream",
         Record::Stream(Stream::new("work", "Work", None, host).unwrap()),
     );
     put(
         &store,
-        "session",
         Record::Session(
             Session::new(
                 Session::id_for(host, "pi", "native"),
@@ -99,7 +91,7 @@ fn local_only_transport_is_explicit_versioned_and_does_not_create_git_or_history
 }
 
 #[test]
-fn git_checkpoints_embedded_receipts_but_never_opens_legacy_operation_history() {
+fn git_checkpoints_changed_records_but_never_opens_legacy_operation_history() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();
     let records = setup(root, "host");
@@ -111,11 +103,9 @@ fn git_checkpoints_embedded_receipts_but_never_opens_legacy_operation_history() 
         "malformed obsolete history",
     )
     .unwrap();
-    put(
-        &records,
-        "receipt-only",
-        Record::Stream(stream(&records, "host")),
-    );
+    let mut changed = stream(&records, "host");
+    changed.goal = Some("checkpointed".into());
+    put(&records, Record::Stream(changed));
     let result = sync.sync();
     assert_eq!(result.sharing, SharingStatus::LocalOnly);
     assert_eq!(result.local, LocalStatus::Committed);
@@ -176,24 +166,23 @@ fn foreign_working_tree_edits_are_not_published_or_repaired() {
         )
         .unwrap(),
     );
-    let mut envelope: serde_json::Value =
-        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    envelope["record"]["goal"] = json!("foreign edit");
-    fs::write(&path, serde_json::to_vec(&envelope).unwrap()).unwrap();
+    let mut record: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    record["goal"] = json!("foreign edit");
+    fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
     let result = a_sync.sync();
     assert_eq!(result.sharing, SharingStatus::Blocked);
     assert!(result.detail.contains("another producer"));
     assert_eq!(a_sync.git.head().unwrap(), head);
     let mut own = stream(&a_records, "a-host");
     own.goal = Some("local remains writable".into());
-    put(&a_records, "own-write", Record::Stream(own));
+    put(&a_records, Record::Stream(own));
     assert_eq!(
         stream(&a_records, "a-host").goal.as_deref(),
         Some("local remains writable")
     );
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&fs::read(path).unwrap()).unwrap(),
-        envelope
+        record
     );
 }
 
@@ -245,10 +234,10 @@ fn same_record_divergence_refuses_even_when_text_fields_do_not_overlap() {
     let b_records = YamlRecordStore::new(&b, "owner").unwrap();
     let mut left = stream(&a_records, "owner");
     left.goal = Some("left".into());
-    put(&a_records, "left", Record::Stream(left));
+    put(&a_records, Record::Stream(left));
     let mut right = stream(&b_records, "owner");
     right.title = "right".into();
-    put(&b_records, "right", Record::Stream(right));
+    put(&b_records, Record::Stream(right));
     assert_eq!(a_sync.sync().sharing, SharingStatus::Confirmed);
     let result = b_sync.sync();
     assert_eq!(result.sharing, SharingStatus::Blocked);
@@ -256,89 +245,4 @@ fn same_record_divergence_refuses_even_when_text_fields_do_not_overlap() {
     assert_eq!(stream(&b_records, "owner").title, "right");
     assert!(stream(&b_records, "owner").goal.is_none());
     assert!(!b.join(".git/MERGE_HEAD").exists());
-}
-
-#[test]
-fn last_updated_ms_uses_mtime_for_local_and_cached_git_times_plus_dirty_mtime_for_git() {
-    use crate::storage::records::RecordAddress;
-    use std::time::{Duration, SystemTime};
-
-    // Local-only backend uses file mtime.
-    let local_dir = tempfile::tempdir().unwrap();
-    let local_root = local_dir.path();
-    let local_records = YamlRecordStore::new(local_root, "owner").unwrap();
-    local_records.initialize().unwrap();
-    let local_sync =
-        RecordSync::initialize(local_root, "owner", Strategy::None, None, "main").unwrap();
-    put(
-        &local_records,
-        "init",
-        Record::Stream(Stream::new("work", "Work", None, "owner").unwrap()),
-    );
-    let work_addr = RecordAddress::new("owner", crate::model::RecordKind::Stream, "work").unwrap();
-    let local_times = local_sync
-        .last_updated_ms(std::slice::from_ref(&work_addr))
-        .unwrap();
-    assert!(local_times[&work_addr] > 0);
-
-    // Git backend uses committed Git timestamp, caches it, and updates incrementally + for dirty files.
-    let git_dir = tempfile::tempdir().unwrap();
-    let git_root = git_dir.path();
-    let git_records = YamlRecordStore::new(git_root, "owner").unwrap();
-    git_records.initialize().unwrap();
-    put(
-        &git_records,
-        "s1",
-        Record::Stream(Stream::new("one", "One", None, "owner").unwrap()),
-    );
-    let git_sync = RecordSync::initialize(git_root, "owner", Strategy::Git, None, "main").unwrap();
-    let one_addr = RecordAddress::new("owner", crate::model::RecordKind::Stream, "one").unwrap();
-    let two_addr = RecordAddress::new("owner", crate::model::RecordKind::Stream, "two").unwrap();
-    let first = git_sync
-        .last_updated_ms(std::slice::from_ref(&one_addr))
-        .unwrap();
-    let committed_one = first[&one_addr];
-    assert!(committed_one > 0);
-    assert!(git_root.join(GIT_TIMES_CACHE).exists());
-
-    // Cache hit returns the exact committed timestamp even if on-disk mtime is altered when clean?
-    // Actually Git times are in seconds (* 1000), while dirty files get on-disk mtime.
-    let second_cached = git_sync
-        .last_updated_ms(std::slice::from_ref(&one_addr))
-        .unwrap();
-    assert_eq!(second_cached[&one_addr], committed_one);
-
-    // Uncommitted dirty/untracked record uses local file mtime instead of missing/old Git time.
-    let future_mtime = SystemTime::now() + Duration::from_secs(120);
-    let mut two = Stream::new("two", "Two", None, "owner").unwrap();
-    two.goal = Some("dirty".into());
-    put(&git_records, "s2", Record::Stream(two));
-    let two_file = git_root.join(relative_record_path(&two_addr).unwrap());
-    fs::File::options()
-        .write(true)
-        .open(&two_file)
-        .unwrap()
-        .set_modified(future_mtime)
-        .unwrap();
-    let dirty_times = git_sync
-        .last_updated_ms(&[one_addr.clone(), two_addr.clone()])
-        .unwrap();
-    assert_eq!(dirty_times[&one_addr], committed_one);
-    assert!(dirty_times[&two_addr] > committed_one + 60_000);
-
-    // Syncing commits "two" and incremental cache update captures its new HEAD timestamp.
-    assert_eq!(git_sync.sync().sharing, SharingStatus::LocalOnly);
-    let synced_times = git_sync
-        .last_updated_ms(&[one_addr.clone(), two_addr.clone()])
-        .unwrap();
-    assert_eq!(synced_times[&one_addr], committed_one);
-    assert!(synced_times[&two_addr] >= committed_one);
-    let cache: GitTimesCache = decode_json(
-        &read_bytes(&git_root.join(GIT_TIMES_CACHE))
-            .unwrap()
-            .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(cache.head, git_sync.local_head().unwrap());
-    assert!(cache.times.contains_key("hosts/owner/streams/two.yaml"));
 }

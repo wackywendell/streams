@@ -35,7 +35,6 @@ unicode-width = "0.2"
 url = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
-saneyaml = "0.3.1"
 sha2 = "0.10"
 tempfile = "3"
 thiserror = "2"

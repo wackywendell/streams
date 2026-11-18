@@ -3,12 +3,12 @@
 use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value, json};
+use serde_json::json;
 
 use super::{Actor, DomainOutcome, Reconciliation};
 use crate::model::{
     Record, Reference, ReferenceRole, ReferenceState, ReferenceTarget, ReferenceValue,
-    RepositoryDocument, ResourceKey, Session, Stream, ValidationError, check_text,
+    RepositoryDocument, ResourceKey, Session, Stream, ValidationError,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -89,12 +89,10 @@ pub enum ReferenceChange {
     Automatic {
         key: ResourceKey,
         desired: AutomaticReferenceValue,
-        next_revision: String,
     },
     UserSet {
         key: ResourceKey,
         desired: ReferenceValue,
-        next_revision: String,
     },
     UserDelete {
         key: ResourceKey,
@@ -104,16 +102,8 @@ pub enum ReferenceChange {
 impl Serialize for ReferenceChange {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
-            Self::Automatic {
-                key,
-                desired,
-                next_revision,
-            } => json!({"key":key,"desired":desired,"next_revision":next_revision}),
-            Self::UserSet {
-                key,
-                desired,
-                next_revision,
-            } => json!({"key":key,"desired":desired,"next_revision":next_revision}),
+            Self::Automatic { key, desired } => json!({"key":key,"desired":desired}),
+            Self::UserSet { key, desired } => json!({"key":key,"desired":desired}),
             Self::UserDelete { key } => json!({"key":key,"desired":null}),
         }
         .serialize(serializer)
@@ -153,7 +143,6 @@ pub struct ReferenceResult {
 
 #[derive(Debug, Clone)]
 pub struct ReferenceChanges {
-    operation_id: String,
     before: Stream,
     actor: Actor,
     session: Option<Session>,
@@ -162,13 +151,11 @@ pub struct ReferenceChanges {
 
 impl ReferenceChanges {
     pub fn new(
-        operation_id: &str,
         before: &Stream,
         actor: Actor,
         captured_session: Option<&Session>,
         changes: Vec<ReferenceChange>,
     ) -> Result<Self, ValidationError> {
-        check_text(operation_id, "operation_id", false)?;
         before.validate()?;
         match (actor, captured_session) {
             (Actor::Automatic, Some(session)) => {
@@ -197,15 +184,8 @@ impl ReferenceChanges {
                 .references
                 .iter()
                 .find(|reference| reference.target.key() == *key);
-            let (desired, revision) = match (actor, change) {
-                (
-                    Actor::Automatic,
-                    ReferenceChange::Automatic {
-                        desired,
-                        next_revision,
-                        ..
-                    },
-                ) => {
+            let desired = match (actor, change) {
+                (Actor::Automatic, ReferenceChange::Automatic { desired, .. }) => {
                     let desired = desired
                         .materialize(old, captured_session.expect("automatic Session checked"));
                     if desired.target.key() != *key {
@@ -213,17 +193,10 @@ impl ReferenceChanges {
                             "automatic reference cannot change resource key",
                         ));
                     }
-                    (Some(desired), Some(next_revision))
+                    Some(desired)
                 }
-                (
-                    Actor::User,
-                    ReferenceChange::UserSet {
-                        desired,
-                        next_revision,
-                        ..
-                    },
-                ) => (Some(desired.clone()), Some(next_revision)),
-                (Actor::User, ReferenceChange::UserDelete { .. }) if old.is_some() => (None, None),
+                (Actor::User, ReferenceChange::UserSet { desired, .. }) => Some(desired.clone()),
+                (Actor::User, ReferenceChange::UserDelete { .. }) if old.is_some() => None,
                 _ => {
                     return Err(ValidationError::new(
                         "reference change does not match actor or captured presence",
@@ -241,14 +214,6 @@ impl ReferenceChanges {
                 }
                 row_keys.insert(next_key);
             }
-            if let Some(revision) = revision {
-                check_text(revision, "next_revision", false)?;
-                if revision != operation_id || old.is_some_and(|old| old.revision == *revision) {
-                    return Err(ValidationError::new(
-                        "next_revision must be operation_id and differ from captured revision",
-                    ));
-                }
-            }
             for key in row_keys {
                 if !batch_keys.insert(key) {
                     return Err(ValidationError::new("reference proposals overlap"));
@@ -256,7 +221,6 @@ impl ReferenceChanges {
             }
         }
         Ok(Self {
-            operation_id: operation_id.into(),
             before: before.clone(),
             actor,
             session: captured_session.cloned(),
@@ -264,9 +228,6 @@ impl ReferenceChanges {
         })
     }
 
-    pub fn operation_id(&self) -> &str {
-        &self.operation_id
-    }
     pub fn before(&self) -> &Stream {
         &self.before
     }
@@ -274,6 +235,9 @@ impl ReferenceChanges {
         self.session.as_ref()
     }
 
+    /// A row whose desired value the Stream already holds is no change, so a retried save
+    /// that already landed is recognized from the record. User rows compare and swap on the
+    /// captured Stream revision; automatic rows compare the captured reference values.
     pub fn apply(
         &self,
         current: &Stream,
@@ -282,6 +246,8 @@ impl ReferenceChanges {
         let guard =
             if current.id != self.before.id || current.owner_host_id != self.before.owner_host_id {
                 Some("captured Stream identity or ownership changed")
+            } else if self.actor == Actor::User && current.revision != self.before.revision {
+                Some("Stream changed since capture; capture fresh inputs")
             } else if self.actor == Actor::Automatic
                 && !self
                     .session
@@ -291,7 +257,7 @@ impl ReferenceChanges {
                         current.id == captured.id
                             && current.native_identity() == captured.native_identity()
                             && current.stream_id == captured.stream_id
-                            && current.previous_stream_ids == captured.previous_stream_ids
+                            && current.membership_epoch == captured.membership_epoch
                     })
             {
                 Some("captured Session identity or membership period changed")
@@ -316,24 +282,14 @@ impl ReferenceChanges {
                 .references
                 .iter()
                 .find(|reference| reference.target.key() == *key);
-            let (desired, revision) = match change {
-                ReferenceChange::Automatic {
-                    desired,
-                    next_revision,
-                    ..
-                } => (
-                    Some(
-                        desired.materialize(old, self.session.as_ref().expect("validated Session")),
-                    ),
-                    Some(next_revision),
+            let desired = match change {
+                ReferenceChange::Automatic { desired, .. } => Some(
+                    desired.materialize(old, self.session.as_ref().expect("validated Session")),
                 ),
-                ReferenceChange::UserSet {
-                    desired,
-                    next_revision,
-                    ..
-                } => (Some(desired.clone()), Some(next_revision)),
-                ReferenceChange::UserDelete { .. } => (None, None),
+                ReferenceChange::UserSet { desired, .. } => Some(desired.clone()),
+                ReferenceChange::UserDelete { .. } => None,
             };
+            let landed = desired.as_ref() == actual.map(Reference::value).as_ref();
             let action = match (old, &desired) {
                 (None, _) => ReferenceAction::Add,
                 (_, None) => ReferenceAction::Delete,
@@ -374,10 +330,11 @@ impl ReferenceChanges {
                                 .any(|reference| reference.target.key() == destination))
                         .then_some("replacement target already exists")
                     })
-                });
+                })
+                .filter(|_| !landed);
             let outcome = if reason.is_some() {
                 refused
-            } else if desired.as_ref() == actual.map(Reference::value).as_ref() {
+            } else if landed {
                 DomainOutcome::NoChange
             } else {
                 let index = next
@@ -386,10 +343,7 @@ impl ReferenceChanges {
                     .position(|reference| reference.target.key() == *key);
                 match desired {
                     Some(desired) => {
-                        let reference = Reference::new(
-                            desired,
-                            revision.expect("set revision checked").clone(),
-                        )?;
+                        let reference = Reference::new(desired)?;
                         if let Some(index) = index {
                             next.references[index] = reference;
                         } else {
@@ -436,19 +390,14 @@ impl ReferenceChanges {
         }];
         let reconciliation = match outcome {
             DomainOutcome::Changes => Reconciliation::Changes {
-                operation_id: self.operation_id.clone(),
                 record: Box::new(Record::Stream(next)),
             },
-            DomainOutcome::NoChange => {
-                Reconciliation::no_change(&self.operation_id, "no effective reference changes")
-            }
+            DomainOutcome::NoChange => Reconciliation::no_change("no effective reference changes"),
             DomainOutcome::Conflict => Reconciliation::Conflict {
-                operation_id: self.operation_id.clone(),
                 conflicts,
                 reason: guard.unwrap_or("reference proposals conflict").into(),
             },
             DomainOutcome::Superseded => Reconciliation::Superseded {
-                operation_id: self.operation_id.clone(),
                 conflicts,
                 reason: guard
                     .unwrap_or("reference proposals were superseded")
@@ -469,11 +418,10 @@ pub struct ReferenceReconciliation {
 }
 
 impl ReferenceReconciliation {
-    pub fn domain(&self) -> Map<String, Value> {
-        json!({"outcome":self.reconciliation.outcome(), "conflicts":self.reconciliation.conflicts(),
-            "reason":self.reconciliation.reason(), "reference_results":self.reference_results})
-        .as_object()
-        .expect("domain object")
-        .clone()
+    pub fn outcome(&self) -> super::EditOutcome {
+        super::EditOutcome {
+            reference_results: Some(self.reference_results.clone()),
+            ..super::EditOutcome::of(&self.reconciliation)
+        }
     }
 }

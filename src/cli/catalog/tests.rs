@@ -4,7 +4,7 @@ use std::{cell::Cell, collections::BTreeMap};
 use streams::{
     config::{Config, Strategy},
     model::TitleDefaults,
-    storage::records::{RecordAddress, RecordChange, RecordRequest, RecordStore},
+    storage::records::{RecordAddress, RecordChange, RecordStore},
 };
 mod apply;
 mod publication;
@@ -16,7 +16,6 @@ fn record_selector_discovers_host_qualified_identity_and_refuses_duplicate_uuid_
         .into_iter()
         .map(|host| streams::storage::records::RecordRead {
             record: Record::Stream(Stream::new(id, "Shared", None, host).unwrap()),
-            revision: "observed".into(),
         })
         .collect();
     assert!(select_stream(&records, id).is_err());
@@ -54,14 +53,14 @@ impl Fixture {
             sequence: Cell::new(0),
         }
     }
-    fn operation_id(&self) -> String {
+    fn next_id(&self) -> usize {
         let next = self.sequence.get() + 1;
         self.sequence.set(next);
-        format!("operation-{next}")
+        next
     }
     fn create(&self, title: &str, goal: Option<&str>, status: Status) -> Value {
         let mut stream = Stream::new(
-            format!("stream-{}", self.sequence.get()),
+            format!("stream-{}", self.next_id()),
             title,
             goal.map(str::to_owned),
             self.opened.host().as_str(),
@@ -69,22 +68,19 @@ impl Fixture {
         .unwrap();
         stream.status = status;
         let record = Record::Stream(stream);
-        let request = RecordRequest::new(
-            RecordAddress::for_record(&record),
-            self.operation_id(),
-            &json!({"create":record_to_data(&record)}),
-        )
-        .unwrap();
         let saved = self
             .opened
             .records()
-            .save::<application::ApplicationError>(&request, |_, current| {
-                assert!(current.is_none());
-                Ok(RecordChange {
-                    record: record.clone(),
-                    outcome: json!({"outcome":"changes"}).as_object().unwrap().clone(),
-                })
-            })
+            .save::<_, application::ApplicationError>(
+                &RecordAddress::for_record(&record),
+                |_, current| {
+                    assert!(current.is_none());
+                    Ok(RecordChange {
+                        record: record.clone(),
+                        outcome: (),
+                    })
+                },
+            )
             .unwrap();
         record_to_data(&saved.current.record)
     }
@@ -116,7 +112,6 @@ impl Fixture {
             &intent,
             TitleDefaults::default(),
             |_| panic!("unexpected text read"),
-            || self.operation_id(),
         )
     }
     fn set_status(&self, reference: &str, status: Status) -> Result<Output> {
@@ -125,7 +120,6 @@ impl Fixture {
             &self.select(reference),
             json!({"status": status}).as_object().unwrap().clone(),
             TitleDefaults::default(),
-            &self.operation_id(),
         )
     }
     fn snapshot(&self) -> Value {
@@ -134,7 +128,7 @@ impl Fixture {
                 .inventory()
                 .unwrap()
                 .into_iter()
-                .map(|read| (read.revision, record_to_data(&read.record)))
+                .map(|read| record_to_data(&read.record))
                 .collect::<Vec<_>>()
         )
     }
@@ -177,7 +171,6 @@ fn local_catalog_manages_fields_visibility_and_full_unicode_literal_selection() 
                 reads.push(path.to_path_buf());
                 Ok("line one\nline two\n".into())
             },
-            || f.operation_id(),
         ));
         assert_eq!(value["stream"]["goal"], "line one\nline two\n");
     }
@@ -246,7 +239,6 @@ fn repositories_keep_identity_and_reject_invalid_intent_before_save() {
         "https://example.test/repo"
     );
     let before = f.snapshot();
-    let sequence = f.sequence.get();
     let error = f
         .update(
             id,
@@ -259,11 +251,6 @@ fn repositories_keep_identity_and_reject_invalid_intent_before_save() {
         .unwrap()
         .data();
     assert!(error.get("error").is_some());
-    assert_eq!(
-        f.sequence.get(),
-        sequence,
-        "validation precedes operation ID generation"
-    );
     assert_eq!(f.snapshot(), before);
     assert_eq!(ok(f.show(id))["stream"], changed["stream"]);
     let removed = ok(f.update(

@@ -1,4 +1,3 @@
-use super::super::Envelope;
 use super::*;
 use crate::{
     codec::record_to_data,
@@ -6,14 +5,7 @@ use crate::{
 };
 
 fn bytes(record: &Record) -> Vec<u8> {
-    serde_json::to_vec_pretty(&Envelope {
-        version: 2,
-        revision: uuid::Uuid::new_v4().to_string(),
-        kind: record.kind(),
-        record: record_to_data(record),
-        receipts: BTreeMap::new(),
-    })
-    .unwrap()
+    serde_json::to_vec_pretty(&record_to_data(record)).unwrap()
 }
 fn tree() -> BTreeMap<PathBuf, Vec<u8>> {
     let mut tree = BTreeMap::new();
@@ -55,15 +47,15 @@ fn canonical_paths_decode_exact_host_qualified_identities() {
         );
     }
     for path in [
-        "/hosts/host/streams/a.yaml",
-        "hosts/host/streams/../a.yaml",
-        "hosts/host/streams/./a.yaml",
-        "hosts//host/streams/a.yaml",
-        "hosts/host/streams/%4a.yaml",
-        "hosts/host/streams/UPPER.yaml",
-        "hosts/host/streams/a.json",
-        "streams/a.yaml",
-        "hosts/host/a.yaml",
+        "/hosts/host/streams/a.json",
+        "hosts/host/streams/../a.json",
+        "hosts/host/streams/./a.json",
+        "hosts//host/streams/a.json",
+        "hosts/host/streams/%4a.json",
+        "hosts/host/streams/UPPER.json",
+        "hosts/host/streams/a.yaml",
+        "streams/a.json",
+        "hosts/host/a.json",
     ] {
         assert!(
             address_from_relative_path(Path::new(path)).is_err(),
@@ -141,7 +133,7 @@ fn listings_name_undecodable_records_and_still_fail_on_unexpected_layout() {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, bytes).unwrap();
     }
-    let broken = Path::new("hosts/host/streams/broken.yaml");
+    let broken = Path::new("hosts/host/streams/broken.json");
     fs::write(directory.path().join(broken), "not a record").unwrap();
 
     let listing = store.listing().unwrap();
@@ -160,7 +152,7 @@ fn listings_name_undecodable_records_and_still_fail_on_unexpected_layout() {
 
     symlink(
         directory.path().join("missing"),
-        directory.path().join("hosts/host/streams/link.yaml"),
+        directory.path().join("hosts/host/streams/link.json"),
     )
     .unwrap();
     assert!(store.listing().is_err());

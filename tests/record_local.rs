@@ -1,29 +1,28 @@
-//! Real YAML I/O observation is available to integration fixtures, not only unit tests.
+//! Real record I/O observation is available to integration fixtures, not only unit tests.
 
 use crate::support::record_io;
 use std::sync::{Arc, Mutex};
 
-use serde_json::{Map, json};
 use streams::{
     application::move_session_observed,
     model::{Record, RecordKind, Session, Stream},
-    operations::membership::MoveIntent,
+    operations::{DomainOutcome, membership::MoveIntent},
     storage::{
         StorageError,
-        records::{RecordAddress, RecordChange, RecordRequest, RecordStore},
+        records::{RecordAddress, RecordChange, RecordStore},
     },
     yaml_store::records::{RecordIoEvent, YamlRecordStore, decode_record, relative_record_path},
 };
 
 #[test]
-fn reference_partial_receipt_replays_after_deletion_and_refuses_changed_intent() {
+fn user_reference_edits_swap_on_the_stream_revision_and_a_landed_retry_writes_nothing() {
     use streams::{
         application::save_user_references,
         model::{
             Reference, ReferenceRole, ReferenceState, ReferenceTarget, ReferenceValue,
             TitleDefaults,
         },
-        operations::references::ReferenceChange,
+        operations::{DomainOutcome, references::ReferenceChange},
     };
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();
@@ -36,67 +35,50 @@ fn reference_partial_receipt_replays_after_deletion_and_refuses_changed_intent()
         state: ReferenceState::Active,
         target: ReferenceTarget::Link { url: url.into() },
     };
-    let a = Reference::new(value("https://example.test/a"), "a").unwrap();
-    let b = Reference::new(value("https://example.test/b"), "b").unwrap();
-    let mut before = Stream::new("stream", "Stream", None, "host").unwrap();
-    before.references = vec![a.clone(), b.clone()];
-    let mut current = before.clone();
-    current.references[0].purpose = "Newer purpose".into();
-    let record = Record::Stream(current.clone());
+    let a = Reference::new(value("https://example.test/a")).unwrap();
+    let b = Reference::new(value("https://example.test/b")).unwrap();
+    let mut stream = Stream::new("stream", "Stream", None, "host").unwrap();
+    stream.references = vec![a.clone(), b.clone()];
+    let record = Record::Stream(stream);
     let address = RecordAddress::for_record(&record);
-    let request = RecordRequest::new(address.clone(), "setup", &json!({"record":record})).unwrap();
-    store
-        .save::<StorageError>(&request, |_, _| {
+    let saved = store
+        .save::<_, StorageError>(&address, |_, _| {
             Ok(RecordChange {
                 record,
-                outcome: Map::new(),
+                outcome: (),
             })
         })
         .unwrap();
+    let Record::Stream(before) = saved.current.record else {
+        unreachable!()
+    };
+    let mut desired = value("https://example.test/a");
+    desired.purpose = "Newer purpose".into();
     let changes = vec![
         ReferenceChange::UserSet {
             key: a.target.key(),
-            desired: value("https://example.test/a"),
-            next_revision: "partial".into(),
+            desired,
         },
         ReferenceChange::UserDelete {
             key: b.target.key(),
         },
     ];
-    let first = save_user_references(
-        &store,
-        "partial",
-        &before,
-        changes.clone(),
-        TitleDefaults::default(),
-    )
-    .unwrap();
-    assert_eq!(first.outcome["outcome"], "changes");
-    assert_eq!(first.outcome["reference_results"][0]["outcome"], "conflict");
-    assert_eq!(first.outcome["reference_results"][1]["outcome"], "changes");
+    let first =
+        save_user_references(&store, &before, changes.clone(), TitleDefaults::default()).unwrap();
+    assert_eq!(first.outcome.outcome, DomainOutcome::Changes);
     let Record::Stream(after) = &first.current.record else {
         unreachable!()
     };
-    assert_eq!(after.references, [current.references[0].clone()]);
-    let delete = vec![ReferenceChange::UserDelete {
-        key: a.target.key(),
-    }];
-    let deleted =
-        save_user_references(&store, "delete", after, delete, TitleDefaults::default()).unwrap();
+    assert_eq!(after.references.len(), 1);
+    assert_eq!(after.references[0].purpose, "Newer purpose");
     let events = Arc::new(Mutex::new(Vec::new()));
     let observed = events.clone();
     let store = store.with_io_observer(move |event| observed.lock().unwrap().push(event));
-    let retry = save_user_references(
-        &store,
-        "partial",
-        &before,
-        changes.clone(),
-        TitleDefaults::default(),
-    )
-    .unwrap();
-    assert!(retry.repeated);
-    assert_eq!(retry.current, deleted.current);
-    assert_eq!(retry.outcome, first.outcome);
+    let retry =
+        save_user_references(&store, &before, changes.clone(), TitleDefaults::default()).unwrap();
+    assert!(!retry.written);
+    assert_eq!(retry.outcome.outcome, DomainOutcome::NoChange);
+    assert_eq!(retry.current, first.current);
     let trace = events.lock().unwrap().clone();
     assert_eq!(
         record_io::accesses(&trace),
@@ -107,21 +89,17 @@ fn reference_partial_receipt_replays_after_deletion_and_refuses_changed_intent()
         ]
     );
     assert!(record_io::writes(&trace).is_empty());
-    let mut changed = changes;
-    let ReferenceChange::UserSet { desired, .. } = &mut changed[0] else {
-        unreachable!()
-    };
-    desired.purpose = "Different intent".into();
-    assert!(
-        save_user_references(
-            &store,
-            "partial",
-            &before,
-            changed,
-            TitleDefaults::default()
-        )
-        .is_err()
-    );
+    let delete = vec![ReferenceChange::UserDelete {
+        key: a.target.key(),
+    }];
+    let deleted = save_user_references(&store, after, delete, TitleDefaults::default()).unwrap();
+    events.lock().unwrap().clear();
+    // A stale capture whose rows no longer match the record conflicts and writes nothing.
+    let stale = save_user_references(&store, &before, changes, TitleDefaults::default()).unwrap();
+    assert!(!stale.written);
+    assert_eq!(stale.outcome.outcome, DomainOutcome::Conflict);
+    assert_eq!(stale.current, deleted.current);
+    assert!(record_io::writes(&events.lock().unwrap()).is_empty());
 }
 
 #[test]
@@ -159,13 +137,11 @@ fn public_observer_names_actual_session_stream_and_fixed_file_reads() {
     let session_key = RecordAddress::for_record(&session);
     let stream_key = RecordAddress::for_record(&stream);
     for record in [stream, session] {
-        let request =
-            RecordRequest::new(RecordAddress::for_record(&record), "create", &json!({})).unwrap();
         store
-            .save::<StorageError>(&request, |_, _| {
+            .save::<_, StorageError>(&RecordAddress::for_record(&record), |_, _| {
                 Ok(RecordChange {
                     record,
-                    outcome: Map::new(),
+                    outcome: (),
                 })
             })
             .unwrap();
@@ -203,7 +179,7 @@ fn public_observer_names_actual_session_stream_and_fixed_file_reads() {
 }
 
 #[test]
-fn membership_save_reads_only_three_records_and_retries_do_not_reapply_after_revisit() {
+fn membership_save_reads_only_three_records_and_a_repeated_move_writes_nothing() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();
     let events = Arc::new(Mutex::new(Vec::new()));
@@ -229,13 +205,11 @@ fn membership_save_reads_only_three_records_and_retries_do_not_reapply_after_rev
     let a_path = root.join(relative_record_path(&RecordAddress::for_record(&a)).unwrap());
     let b_path = root.join(relative_record_path(&RecordAddress::for_record(&b)).unwrap());
     for record in [a, b, session] {
-        let request =
-            RecordRequest::new(RecordAddress::for_record(&record), "create", &json!({})).unwrap();
         store
-            .save::<StorageError>(&request, |_, _| {
+            .save::<_, StorageError>(&RecordAddress::for_record(&record), |_, _| {
                 Ok(RecordChange {
                     record,
-                    outcome: Map::new(),
+                    outcome: (),
                 })
             })
             .unwrap();
@@ -244,10 +218,10 @@ fn membership_save_reads_only_three_records_and_retries_do_not_reapply_after_rev
     let b_bytes = std::fs::read(&b_path).unwrap();
     events.lock().unwrap().clear();
     let to_b = MoveIntent::new("host", "pi", "native", "b").unwrap();
-    let observed = move_session_observed(&store, "move-b", &to_b).unwrap();
-    assert_eq!(observed.stream.unwrap().id, "b");
+    let observed = move_session_observed(&store, &to_b).unwrap();
+    assert_eq!(observed.stream.id, "b");
     let first = observed.save;
-    assert!(!first.repeated);
+    assert!(first.written);
     assert_eq!(
         record_io::accesses(&events.lock().unwrap()),
         vec![
@@ -258,38 +232,36 @@ fn membership_save_reads_only_three_records_and_retries_do_not_reapply_after_rev
             RecordIoEvent::Read(b_path.clone()),
         ]
     );
-    let to_a = MoveIntent::new("host", "pi", "native", "a").unwrap();
-    let returned = move_session_observed(&store, "move-a", &to_a).unwrap().save;
     events.lock().unwrap().clear();
-    let observed = move_session_observed(&store, "move-b", &to_b).unwrap();
-    assert!(observed.stream.is_none());
+    let observed = move_session_observed(&store, &to_b).unwrap();
+    assert_eq!(observed.stream.id, "b");
     let retry = observed.save;
-    assert!(retry.repeated);
-    assert_eq!(retry.current, returned.current);
-    assert_eq!(retry.outcome, first.outcome);
-    assert_eq!(retry.outcome["membership_period"], 1);
+    assert!(!retry.written);
+    assert_eq!(retry.current, first.current);
+    assert_eq!(retry.outcome, DomainOutcome::NoChange);
     assert_eq!(
         record_io::accesses(&events.lock().unwrap()),
         vec![
             RecordIoEvent::Lock(root.join(".catalog.lock")),
             RecordIoEvent::Read(root.join(".catalog-local/records.json")),
             RecordIoEvent::Read(root.join(relative_record_path(&session_key).unwrap())),
+            RecordIoEvent::Read(b_path.clone()),
         ]
     );
     let Record::Session(current) = retry.current.record else {
         unreachable!()
     };
-    assert_eq!(current.stream_id, "a");
-    assert_eq!(current.previous_stream_ids, ["a", "b"]);
+    assert_eq!(current.stream_id, "b");
+    assert_eq!(current.membership_epoch, 1);
     assert_eq!(std::fs::read(a_path).unwrap(), a_bytes);
     assert_eq!(std::fs::read(b_path).unwrap(), b_bytes);
     let missing = MoveIntent::new("host", "pi", "native", "missing").unwrap();
     assert!(
-        move_session_observed(&store, "missing", &missing)
+        move_session_observed(&store, &missing)
             .err()
             .unwrap()
             .to_string()
             .contains("create it before moving")
     );
-    assert!(!root.join("hosts/host/streams/missing.yaml").exists());
+    assert!(!root.join("hosts/host/streams/missing.json").exists());
 }

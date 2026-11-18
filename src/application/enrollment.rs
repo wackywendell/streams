@@ -4,16 +4,16 @@ use crate::{
     agent::{EnrollmentRequest, effort_id_for},
     model::{Record, RecordKind, Stream, ValidationError},
     operations::DomainOutcome,
-    storage::records::{RecordAddress, RecordChange, RecordRequest, RecordSave, RecordStore},
+    storage::records::{RecordAddress, RecordChange, RecordSave, RecordStore},
 };
-use serde_json::json;
 
-/// A retained receipt proves this invocation created the effort; an unrelated existing key refuses.
+/// The effort ID derives from the conversation, so an existing effort with the requested
+/// content is this enrollment retried; any other existing effort refuses.
 pub fn enroll_stream(
     store: &impl RecordStore,
     host: &str,
     request: &EnrollmentRequest,
-) -> Result<RecordSave> {
+) -> Result<RecordSave<DomainOutcome>> {
     if request.stream_id().is_some() {
         return Err(
             ValidationError::new("existing Stream enrollment does not create an effort").into(),
@@ -21,18 +21,20 @@ pub fn enroll_stream(
     }
     let id = effort_id_for(host, request.harness(), request.harness_session_id());
     let stream = request.stream(host, &id)?;
-    let operation = format!("{}:stream", request.operation_id());
-    let save = RecordRequest::new(
-        RecordAddress::new(host, RecordKind::Stream, &id)?,
-        &operation,
-        &json!({"enrollment":request}),
-    )?;
-    store.save(&save, |reader, before| {
-        if before.is_some() {
-            return Err(ValidationError::new(
-                "effort already exists; attach to it or create work in another conversation",
-            )
-            .into());
+    let address = RecordAddress::new(host, RecordKind::Stream, &id)?;
+    let requested = Record::Stream(stream);
+    store.save(&address, |reader, before| {
+        if let Some(before) = before {
+            if !before.record.same_content(&requested) {
+                return Err(ValidationError::new(
+                    "effort already exists; attach to it or create work in another conversation",
+                )
+                .into());
+            }
+            return Ok(RecordChange {
+                record: before.record.clone(),
+                outcome: DomainOutcome::NoChange,
+            });
         }
         let session = request.session(host, &id)?;
         if reader
@@ -45,11 +47,8 @@ pub fn enroll_stream(
             .into());
         }
         Ok(RecordChange {
-            record: Record::Stream(stream.clone()),
-            outcome: json!({"operation_id":operation,"outcome":DomainOutcome::Changes})
-                .as_object()
-                .unwrap()
-                .clone(),
+            record: requested.clone(),
+            outcome: DomainOutcome::Changes,
         })
     })
 }
@@ -59,14 +58,14 @@ pub fn enroll_session(
     store: &impl RecordStore,
     host: &str,
     request: &EnrollmentRequest,
-) -> Result<RecordSave> {
+) -> Result<RecordSave<DomainOutcome>> {
     Ok(enroll_session_observed(store, host, request)?.save)
 }
 
-/// The dependency belongs to this fresh decision, never to a historical receipt.
+/// The Stream read while admitting the Session.
 pub struct EnrollmentSave {
-    pub save: RecordSave,
-    pub stream: Option<Stream>,
+    pub save: RecordSave<DomainOutcome>,
+    pub stream: Stream,
 }
 
 pub fn enroll_session_observed(
@@ -79,14 +78,9 @@ pub fn enroll_session_observed(
         .map(str::to_owned)
         .unwrap_or_else(|| effort_id_for(host, request.harness(), request.harness_session_id()));
     let proposed = request.session(host, &selected)?;
-    let operation = format!("{}:session", request.operation_id());
-    let save = RecordRequest::new(
-        RecordAddress::for_record(&Record::Session(proposed.clone())),
-        &operation,
-        &json!({"enrollment":request}),
-    )?;
+    let address = RecordAddress::for_record(&Record::Session(proposed.clone()));
     let mut observed_stream = None;
-    let saved = store.save::<super::ApplicationError>(&save, |reader, before| {
+    let saved = store.save::<_, super::ApplicationError>(&address, |reader, before| {
         let session = match before {
             Some(current) => {
                 let Record::Session(current) = &current.record else {
@@ -142,15 +136,12 @@ pub fn enroll_session_observed(
         observed_stream = Some(stream.clone());
         Ok(RecordChange {
             record: Record::Session(session),
-            outcome: json!({"operation_id":operation,"outcome":outcome,"stream_id":stream.id})
-                .as_object()
-                .unwrap()
-                .clone(),
+            outcome,
         })
     })?;
     Ok(EnrollmentSave {
         save: saved,
-        stream: observed_stream,
+        stream: observed_stream.expect("a successful enrollment read its Stream"),
     })
 }
 

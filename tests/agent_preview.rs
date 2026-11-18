@@ -35,11 +35,11 @@ fn empty() -> Value {
     value
 }
 fn enrollment() -> Value {
-    json!({"version":2,"operation_id":"enroll","catalog_source":"physical-source","harness":"pi","harness_session_id":"native",
+    json!({"version":2,"catalog_source":"physical-source","harness":"pi","harness_session_id":"native",
         "session":{"title":"Contribution"},"actor":"automatic","cwd":"/does/not/exist/and/is/not/read"})
 }
 fn update(context: &Value, kind: &str, changes: Value, actor: Actor) -> Value {
-    json!({"version":2,"operation_id":"update","catalog_source":context["catalog_source"],"kind":kind,"actor":actor,
+    json!({"version":2,"catalog_source":context["catalog_source"],"kind":kind,"actor":actor,
         "before":context[kind],"changes":changes,"title_default":context["title_defaults"][kind],
         "inputs":if kind=="stream" && actor==Actor::Automatic {
             json!([{"kind":"session","record":context["session"]}])
@@ -70,7 +70,7 @@ fn reference_preview_uses_the_same_membership_guard_after_its_own_session_report
     let request = update(
         &captured,
         "stream",
-        json!({"reference_changes":[{"key":{"kind":"document","repository_url":"https://example.test/repo","path":"docs/design.md"},"desired":{"name":"Design","purpose":"Guide work","role":"brief","state":"active","target":{"kind":"document","repository_url":"https://example.test/repo","ref":"main","path":"docs/design.md"}},"next_revision":"update"}]}),
+        json!({"reference_changes":[{"key":{"kind":"document","repository_url":"https://example.test/repo","path":"docs/design.md"},"desired":{"name":"Design","purpose":"Guide work","role":"brief","state":"active","target":{"kind":"document","repository_url":"https://example.test/repo","ref":"main","path":"docs/design.md"}}}]}),
         Actor::Automatic,
     );
     let progress = update(
@@ -92,7 +92,7 @@ fn reference_preview_uses_the_same_membership_guard_after_its_own_session_report
 
 fn preview_reference(url: &str) -> Value {
     json!({"name":"Reference","purpose":"Guide work","role":"brief","state":"active",
-        "target":{"kind":"link","url":url},"revision":url})
+        "target":{"kind":"link","url":url}})
 }
 
 #[test]
@@ -103,13 +103,12 @@ fn reference_preview_partial_correction_and_whole_refusal_keep_domain_rows() {
         preview_reference("https://example.test/b"),
         preview_reference("https://example.test/c")
     ]);
-    let mut desired = preview_reference("https://example.test/b");
-    desired.as_object_mut().unwrap().remove("revision");
+    let desired = preview_reference("https://example.test/b");
     let request = update(
         &captured,
         "stream",
         json!({"reference_changes":[
-            {"key":{"kind":"url","url":"https://example.test/a"},"desired":desired,"next_revision":"update"},
+            {"key":{"kind":"url","url":"https://example.test/a"},"desired":desired},
             {"key":{"kind":"url","url":"https://example.test/c"},"desired":null}
         ]}),
         Actor::User,
@@ -156,13 +155,12 @@ fn reference_preview_session_revisit_and_automatic_restoration_are_receipted() {
     let mut saved = preview_reference("https://example.test/dropped");
     saved["state"] = json!("dropped");
     captured["stream"]["references"] = json!([saved]);
-    let mut desired = preview_reference("https://example.test/dropped");
-    desired.as_object_mut().unwrap().remove("revision");
+    let desired = preview_reference("https://example.test/dropped");
     let request = update(
         &captured,
         "stream",
         json!({"reference_changes":[
-            {"key":{"kind":"url","url":"https://example.test/dropped"},"desired":desired,"next_revision":"update"}
+            {"key":{"kind":"url","url":"https://example.test/dropped"},"desired":desired}
         ]}),
         Actor::Automatic,
     );
@@ -174,7 +172,7 @@ fn reference_preview_session_revisit_and_automatic_restoration_are_receipted() {
     );
     assert_eq!(result["catalog"], captured);
     let mut revisited = captured.clone();
-    revisited["session"]["previous_stream_ids"] = json!(["effort", "elsewhere"]);
+    revisited["session"]["membership_epoch"] = json!(2);
     revisited["sessions"] = json!([revisited["session"]]);
     let result = project(&revisited, "apply", &request);
     assert_eq!(
@@ -189,7 +187,6 @@ fn enrollment_parser_and_constructors_share_typed_identity_and_naming_rules() {
     wire["actor"] = json!("user");
     wire["stream"] = json!({"title": "New", "goal": "Goal", "goal_short": "Compact"});
     let parsed = EnrollmentRequest::parse(&wire.to_string(), "physical-source").unwrap();
-    assert_eq!(parsed.operation_id(), "enroll");
     assert_eq!(parsed.catalog_source(), "physical-source");
     assert_eq!(parsed.harness(), Harness::Pi);
     assert_eq!(parsed.harness_session_id(), "native");
@@ -245,11 +242,11 @@ fn effort_and_preview_ids_use_python_ascii_json_and_separate_namespaces() {
     let mut capture = empty();
     capture["host_id"] = json!(host);
     let mut request = enrollment();
-    request["operation_id"] = json!("op/😀");
     request["harness_session_id"] = json!(native);
     request["stream"] = json!({"title": "New"});
     let result = project(&capture, "enroll", &request);
-    let preview_name = r#"streams:preview:effort:["op/\ud83d\ude00", "h\u00f8st", "pi", "n\u00e2tive/\ud83d\ude00\u007f"]"#;
+    let preview_name =
+        r#"streams:preview:effort:["h\u00f8st", "pi", "n\u00e2tive/\ud83d\ude00\u007f"]"#;
     let expected_preview =
         uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, preview_name.as_bytes()).to_string();
     assert_eq!(result["catalog"]["stream"]["id"], expected_preview);
@@ -261,7 +258,6 @@ fn enrollment_request_shape_and_text_validation_match_the_live_boundary() {
     let base = enrollment();
     for field in [
         "version",
-        "operation_id",
         "catalog_source",
         "harness",
         "harness_session_id",
@@ -367,7 +363,7 @@ fn v2_enrollment_and_follow_on_edits_use_addressed_records_without_storage_or_au
 #[test]
 fn current_membership_history_is_preserved_without_loading_past_streams() {
     let mut capture = context();
-    capture["session"]["previous_stream_ids"] = json!(["old-primary"]);
+    capture["session"]["membership_epoch"] = json!(3);
     capture["sessions"] = json!([capture["session"]]);
     let source = envelope(
         &capture,
@@ -384,10 +380,7 @@ fn current_membership_history_is_preserved_without_loading_past_streams() {
     let result = preview(&source).unwrap();
     assert_eq!(source, original);
     assert_eq!(result["catalog"]["session"]["remaining"], "Next");
-    assert_eq!(
-        result["catalog"]["session"]["previous_stream_ids"],
-        json!(["old-primary"])
-    );
+    assert_eq!(result["catalog"]["session"]["membership_epoch"], json!(3));
     assert_eq!(
         result["catalog"]["sessions"],
         json!([result["catalog"]["session"]])

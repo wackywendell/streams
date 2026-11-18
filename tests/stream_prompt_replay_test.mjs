@@ -52,7 +52,7 @@ function previewFixture(onRequest=()=>{}) {
    next.stream ??= {...structuredClone(stream),...request.stream};
    next.session = {...structuredClone(session),...request.session,id:sessionId('host',request.harness,request.harness_session_id),harness_session_id:request.harness_session_id};next.sessions=[structuredClone(next.session)];
   }
-  return {catalog:next,receipt:{operation_id:request.operation_id,save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}},simulated:true}};
+  return {catalog:next,receipt:{save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}},simulated:true}};
  };
 }
 
@@ -132,12 +132,12 @@ test('reset replay uses frozen successful and unavailable location hints',async(
 }));
 test('partial reference replay completes with attention and full receipt, without add/drop notices',async()=>temporary(async root=>{
  const {inventory}=setup(root),base=inventory.samples[0].catalog;
- const dropped={name:'Retired',purpose:'Old',role:'dependency',state:'dropped',target:{kind:'link',url:'https://example.org/retired'},revision:'r1'};
- const active={name:'Brief',purpose:'Old',role:'brief',state:'active',target:{kind:'issue',url:'https://example.org/brief'},revision:'r2'};
+ const dropped={name:'Retired',purpose:'Old',role:'dependency',state:'dropped',target:{kind:'link',url:'https://example.org/retired'}};
+ const active={name:'Brief',purpose:'Old',role:'brief',state:'active',target:{kind:'issue',url:'https://example.org/brief'}};
  base.stream.references=[dropped,active];base.stream.title_mode='manual';base.stream.goal_mode='manual';
- const {revision:_old,...restore}=dropped,{revision:_current,...update}=active;restore.state='active';update.purpose='Updated';
+ const restore={...dropped},update={...active};restore.state='active';update.purpose='Updated';
  const {capture}=captureSessions(inventory,join(root,'partial'));
- const preview=async input=>{const rows=input.request.changes.reference_changes,next=structuredClone(input.catalog);next.stream.references[1]={...update,revision:input.request.operation_id};return {catalog:next,receipt:{operation_id:input.request.operation_id,simulated:true,save:{local:'unchanged',domain:{outcome:'changes',reference_results:[{key:rows[0].key,action:'restore',outcome:'superseded',reason:'reference is Dropped; explicit restoration is required'},{key:rows[1].key,action:'update',outcome:'changes',reason:''}]}}}};};
+ const preview=async input=>{const rows=input.request.changes.reference_changes,next=structuredClone(input.catalog);next.stream.references[1]={...update};return {catalog:next,receipt:{simulated:true,save:{local:'unchanged',domain:{outcome:'changes',reference_results:[{key:rows[0].key,action:'restore',outcome:'superseded',reason:'reference is Dropped; explicit restoration is required'},{key:rows[1].key,action:'update',outcome:'changes',reason:''}]}}}};};
  const {run}=await replayCapture(capture,join(root,'partial'),runtime(async()=>response({changes:{},reference_proposals:[restore,update]})),model,{kind:'report',force:true},preview,new AbortController().signal);
  const sample=run.samples[0];assert.equal(sample.status,'completed',sample.error);assert.equal(sample.after.stream.references[1].purpose,'Updated');
  assert.deepEqual(sample.receipts[0].save.domain.reference_results.map(row=>row.outcome),['superseded','changes']);
@@ -225,11 +225,11 @@ test('tampered capture paths, snapshot hashes, card identity, and live tokens ar
 }));
 
 test('StreamCli debug boundary sends typed capture-inputs and pure preview',async()=>{
- const calls=[], base=catalog('native');const receipt={operation_id:'sim',save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}},simulated:true};
+ const calls=[], base=catalog('native');const receipt={save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}},simulated:true};
  const cli=new StreamCli('/repo',async request=>{calls.push(request);return {status:'success',result:request.kind==='preview'?{catalog:base,receipt}:{version:1}};});
  await cli.captureInputs({kind:'workspace',id:'workspace'},new AbortController().signal);
- await cli.preview({catalog:base,action:'apply',request:{operation_id:'sim'}});
- assert.deepEqual(calls,[{kind:'capture_inputs',target:{kind:'workspace',workspace_id:'workspace'}},{kind:'preview',catalog:base,action:'apply',request:{operation_id:'sim'}}]);
+ await cli.preview({catalog:base,action:'apply',request:{}});
+ assert.deepEqual(calls,[{kind:'capture_inputs',target:{kind:'workspace',workspace_id:'workspace'}},{kind:'preview',catalog:base,action:'apply',request:{}}]);
 });
 
 test('opt-in helper logging saves a private Pi transcript with response and parse error',async()=>temporary(async root=>{
@@ -367,7 +367,7 @@ test('unattached reset is skipped with its notice and zero inference or preview 
 
 test('refused projection after inference is failed rather than completed',async()=>temporary(async root=>{
  const {capture}=setup(root);
- const {run}=await replayCapture(capture,join(root,'private'),runtime(async()=>response({changes:{state:'Refused'}})),model,{kind:'report',force:true},async input=>({catalog:input.catalog,receipt:{operation_id:'refused',save:{local:'unchanged',sharing:'local-only',domain:{outcome:'superseded'}}}}),new AbortController().signal);
+ const {run}=await replayCapture(capture,join(root,'private'),runtime(async()=>response({changes:{state:'Refused'}})),model,{kind:'report',force:true},async input=>({catalog:input.catalog,receipt:{save:{local:'unchanged',sharing:'local-only',domain:{outcome:'superseded'}}}}),new AbortController().signal);
  assert.equal(run.samples[0].status,'failed');assert.equal(run.samples[0].tasks.length,1);assert.equal(run.samples[0].after.session.state,'Old state');
 }));
 

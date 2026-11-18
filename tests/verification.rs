@@ -124,7 +124,6 @@ impl ConcreteWorld {
         stream_a.title_mode = initial_title_mode;
 
         let session_report = SessionEdit::new(
-            "report-session",
             &session,
             &changes(json!({
                 "title": "Generated session title",
@@ -136,7 +135,6 @@ impl ConcreteWorld {
         )
         .unwrap();
         let stream_report = StreamEdit::new(
-            "report-stream",
             &stream_a,
             &changes(json!({
                 "title": "Generated stream title",
@@ -194,7 +192,6 @@ impl ConcreteWorld {
             }
             "DirtySessionInputs" => {
                 let edit = SessionEdit::new(
-                    "user-session-input",
                     &self.session,
                     &changes(json!({"remaining": "User updated remaining"})),
                     Actor::User,
@@ -214,7 +211,6 @@ impl ConcreteWorld {
             }
             "DirtyStreamInputs" => {
                 let edit = StreamEdit::new(
-                    "user-stream-input",
                     &self.stream_a,
                     &changes(json!({
                         "goal": "User updated goal",
@@ -237,7 +233,6 @@ impl ConcreteWorld {
             "ProtectSessionText" => match self.protection_kind {
                 StreamProtectionKind::TitleModeManual | StreamProtectionKind::GoalModeManual => {
                     let edit = SessionEdit::new(
-                        "protect-session-title",
                         &self.session,
                         &changes(json!({"title_mode": "manual"})),
                         Actor::User,
@@ -267,7 +262,6 @@ impl ConcreteWorld {
                         StreamProtectionKind::InheritedDefaultFlip => unreachable!(),
                     };
                     let edit = StreamEdit::new(
-                        "protect-stream-text",
                         &self.stream_a,
                         &changes(patch),
                         Actor::User,
@@ -393,10 +387,7 @@ fn concrete_operations_commute_with_ioa_and_agree_on_admission_across_reachable_
                     unreachable!()
                 };
                 assert_eq!(applied.stream_id, world.session.stream_id);
-                assert_eq!(
-                    applied.previous_stream_ids,
-                    world.session.previous_stream_ids
-                );
+                assert_eq!(applied.membership_epoch, world.session.membership_epoch);
                 assert_eq!(
                     world
                         .session_report
@@ -504,18 +495,15 @@ fn non_prose_metadata_edits_and_session_work_remain_orthogonal_to_stream_admissi
     world.stream_a.title_mode = TitleMode::Automatic;
     world.stream_a.status = Status::Closed;
     world.stream_a.references.push(
-        Reference::new(
-            ReferenceValue {
-                name: "Issue 1".into(),
-                purpose: "Supply context".into(),
-                role: ReferenceRole::Background,
-                state: ReferenceState::Active,
-                target: ReferenceTarget::Issue {
-                    url: "https://example.com/issue/1".into(),
-                },
+        Reference::new(ReferenceValue {
+            name: "Issue 1".into(),
+            purpose: "Supply context".into(),
+            role: ReferenceRole::Background,
+            state: ReferenceState::Active,
+            target: ReferenceTarget::Issue {
+                url: "https://example.com/issue/1".into(),
             },
-            "fixture",
-        )
+        })
         .unwrap(),
     );
     assert_eq!(world.project().booleans, baseline);

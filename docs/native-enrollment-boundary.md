@@ -10,11 +10,11 @@ The local result must include its save receipts, the actual current Session, any
 
 An explicit Stream target or new-effort proposal keeps its captured target. A different native association is a reason to refuse, not to retarget that request. Native creation of a destination effort after an owner move is a separate operation, not permission to reinterpret an earlier model proposal.
 
-## Reuse current records, not historical receipts
+## Reuse current records, not earlier results
 
-A fresh Session save returns the Stream dependency it already read, in memory. It does not serialize a second copy into the receipt or read it again to construct a response. A retained retry must preserve its target-only read budget. Its receipt describes the original result; `save.current` describes the Session now.
+A fresh Session save returns the Stream dependency it already read, in memory. It does not serialize a second copy into the result or read it again to construct a response. A retry that already landed returns no change; `save.current` describes the Session now.
 
-The driver may reuse its earlier Stream only when that record matches the returned Session's actual current membership and immutable host. If no matching dependency is available, the result must say so and native completion must stop. It must not combine the current Session with the historical receipt destination or perform a hidden context refresh.
+The driver may reuse its earlier Stream only when that record matches the returned Session's actual current membership and immutable host. If no matching dependency is available, the result must say so and native completion must stop. It must not combine the current Session with an earlier result's destination or perform a hidden context refresh.
 
 ## Observe workspace markers
 

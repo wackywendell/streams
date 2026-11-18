@@ -7,7 +7,6 @@ use streams::{
     model::{Checkout, Record, RecordKind, Session, Stream, TitleMode, ValidationError},
     storage::records::{RecordAddress, RecordStore},
 };
-use uuid::Uuid;
 
 fn select_session(
     records: &[streams::storage::records::RecordRead],
@@ -100,22 +99,13 @@ impl App {
                 )?;
                 session.title_mode = TitleMode::Manual;
                 session.checkout = checkout;
-                let operation = Uuid::new_v4().to_string();
-                let saved = application::create_record(
-                    opened.records(),
-                    &operation,
-                    &Record::Session(session),
-                );
-                let actual = saved
-                    .as_ref()
-                    .ok()
-                    .map(|saved| match &saved.current.record {
-                        Record::Session(session) => session.clone(),
-                        _ => unreachable!("Session creation target"),
-                    });
-                let mut output = catalog::finish_save(&operation, saved)?;
+                let saved =
+                    application::create_record(opened.records(), &Record::Session(session))?;
+                let Record::Session(session) = saved.current.record.clone() else {
+                    unreachable!("Session creation target")
+                };
+                let mut output = catalog::finish_created(saved);
                 if output.accepted_save {
-                    let session = actual.expect("accepted creation returns its actual Session");
                     let completion = (|| -> Result<()> {
                         let directory = self.path(cwd.as_deref().unwrap_or(&self.cwd))?;
                         let url = session
@@ -131,11 +121,7 @@ impl App {
                             None,
                         )?;
                         if stream.status == streams::model::Status::Closed {
-                            application::lifecycle::reopen_closed_stream(
-                                &opened,
-                                &stream.id,
-                                &format!("{operation}:reopen"),
-                            )?;
+                            application::lifecycle::reopen_closed_stream(&opened, &stream.id)?;
                         }
                         Ok(())
                     })();
@@ -168,17 +154,12 @@ impl App {
                         "session update requires at least one field change",
                     ));
                 }
-                let operation = Uuid::new_v4().to_string();
-                catalog::finish_save(
-                    &operation,
-                    application::save_user_edit(
-                        opened.records(),
-                        &operation,
-                        &Record::Session(before),
-                        &changes,
-                        settings.naming,
-                    ),
-                )
+                Ok(catalog::finish_record(application::save_user_edit(
+                    opened.records(),
+                    &Record::Session(before),
+                    &changes,
+                    settings.naming,
+                )?))
             }
             SessionCommand::Directory {
                 reference,
@@ -275,13 +256,12 @@ impl App {
                 harness,
                 session_id,
             } => {
-                let op = Uuid::new_v4().to_string();
                 let update = match action {
                     streams::child_protocol::LifecycleAction::Resume => {
-                        application::lifecycle::resume_session(&opened, harness, &session_id, &op)?
+                        application::lifecycle::resume_session(&opened, harness, &session_id)?
                     }
                     streams::child_protocol::LifecycleAction::Park => {
-                        application::lifecycle::park_session(&opened, harness, &session_id, &op)?
+                        application::lifecycle::park_session(&opened, harness, &session_id)?
                     }
                 };
                 let mut output = Output::value(update.to_json());

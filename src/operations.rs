@@ -11,7 +11,7 @@ use serde_json::{Map, Value};
 use strum::{AsRefStr, Display, EnumString, VariantNames};
 
 use crate::codec::{record_from_data, record_to_data};
-use crate::model::{NamingMode, Record, RecordKind, Session, Status, ValidationError};
+use crate::model::{NamingMode, Record, RecordKind, Session, Status, Stream, ValidationError};
 
 const DAY_MS: u64 = 86_400_000;
 
@@ -29,6 +29,15 @@ pub fn decay_cutoff_ms(decay_days: u32, now_ms: u64) -> Option<u64> {
 /// Whether `last_updated_ms` falls strictly before an active staleness cutoff.
 pub fn is_stale_ms(last_updated_ms: u64, cutoff_ms: Option<u64>) -> bool {
     cutoff_ms.is_some_and(|cutoff| last_updated_ms > 0 && last_updated_ms < cutoff)
+}
+
+/// When a Stream last changed: its own last save or its newest member Session's. Every
+/// listing and decay reads this one value.
+pub fn stream_activity_ms(stream: &Stream, members: &[&Session]) -> u64 {
+    members
+        .iter()
+        .map(|session| session.updated_at_ms)
+        .fold(stream.updated_at_ms, u64::max)
 }
 
 /// Read-time Stream activity projection: preserves explicit effort lifecycle states
@@ -211,39 +220,25 @@ pub fn apply_changes(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reconciliation {
     Changes {
-        operation_id: String,
         record: Box<Record>,
     },
     NoChange {
-        operation_id: String,
         reason: String,
     },
     Superseded {
-        operation_id: String,
         conflicts: Vec<String>,
         reason: String,
     },
     Conflict {
-        operation_id: String,
         conflicts: Vec<String>,
         reason: String,
     },
 }
 
 impl Reconciliation {
-    pub fn no_change(operation_id: impl Into<String>, reason: impl Into<String>) -> Self {
+    pub fn no_change(reason: impl Into<String>) -> Self {
         Self::NoChange {
-            operation_id: operation_id.into(),
             reason: reason.into(),
-        }
-    }
-
-    pub fn operation_id(&self) -> &str {
-        match self {
-            Self::Changes { operation_id, .. }
-            | Self::NoChange { operation_id, .. }
-            | Self::Superseded { operation_id, .. }
-            | Self::Conflict { operation_id, .. } => operation_id,
         }
     }
 
@@ -273,18 +268,45 @@ impl Reconciliation {
     }
 }
 
+/// What a captured edit's save reports. Reference saves add a result for each row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct EditOutcome {
+    pub outcome: DomainOutcome,
+    pub conflicts: Vec<String>,
+    pub reason: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reference_results: Option<Vec<references::ReferenceResult>>,
+}
+
+impl EditOutcome {
+    pub fn of(decision: &Reconciliation) -> Self {
+        Self {
+            outcome: decision.outcome(),
+            conflicts: decision.conflicts().to_vec(),
+            reason: decision.reason().into(),
+            reference_results: None,
+        }
+    }
+
+    /// Accepted outcomes; refusals keep the caller's input for inspection.
+    pub fn accepted(&self) -> bool {
+        matches!(
+            self.outcome,
+            DomainOutcome::Changes | DomainOutcome::NoChange
+        )
+    }
+}
+
 impl Serialize for Reconciliation {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         #[derive(Serialize)]
-        struct Receipt<'a> {
-            operation_id: &'a str,
+        struct Decision<'a> {
             outcome: DomainOutcome,
             record: Option<&'a Record>,
             conflicts: &'a [String],
             reason: &'a str,
         }
-        Receipt {
-            operation_id: self.operation_id(),
+        Decision {
             outcome: self.outcome(),
             record: match self {
                 Self::Changes { record, .. } => Some(record),
@@ -388,7 +410,7 @@ record_fields! {
         immutable: [id, host_id, harness, harness_session_id],
         editable: [
             stream_id: (false, None),
-            previous_stream_ids: (false, None),
+            membership_epoch: (false, None),
             title: (true, Automatic),
             title_mode: (false, User),
             status: (true, Automatic),
@@ -405,42 +427,6 @@ record_fields! {
         immutable: [id],
         editable: [label: (true, None), checked_at: (true, None)]
     },
-}
-
-const TITLE_GROUP: [&str; 2] = ["title", "title_mode"];
-const STREAM_GOAL_GROUP: [&str; 3] = ["goal", "goal_short", "goal_mode"];
-
-// A concurrent edit to any member invalidates intent captured from the whole text group.
-fn text_group_guards(
-    kind: RecordKind,
-    mut fields: BTreeSet<&'static str>,
-) -> BTreeSet<&'static str> {
-    if fields.iter().any(|f| TITLE_GROUP.contains(f)) {
-        fields.extend(TITLE_GROUP);
-    }
-    match kind {
-        RecordKind::Stream => {
-            if fields.iter().any(|f| STREAM_GOAL_GROUP.contains(f)) {
-                fields.extend(STREAM_GOAL_GROUP);
-            }
-        }
-        RecordKind::Session => {
-            let state_group = [
-                "recap",
-                "recap_short",
-                "state",
-                "state_short",
-                "remaining",
-                "remaining_short",
-                "status",
-            ];
-            if fields.iter().any(|f| state_group.contains(f)) {
-                fields.extend(state_group);
-            }
-        }
-        RecordKind::Host => {}
-    }
-    fields
 }
 
 #[cfg(test)]
@@ -482,7 +468,7 @@ mod field_policy_tests {
             (RecordKind::Session, "checkout", true, false, false),
             (
                 RecordKind::Session,
-                "stream_id previous_stream_ids",
+                "stream_id membership_epoch",
                 false,
                 false,
                 false,
@@ -500,10 +486,13 @@ mod field_policy_tests {
             }
         }
         for (kind, names) in [
-            (RecordKind::Stream, "id unknown owner"),
+            (
+                RecordKind::Stream,
+                "id unknown owner revision updated_at_ms",
+            ),
             (
                 RecordKind::Session,
-                "id host_id harness harness_session_id unknown",
+                "id host_id harness harness_session_id unknown revision updated_at_ms",
             ),
             (RecordKind::Host, "id unknown"),
         ] {

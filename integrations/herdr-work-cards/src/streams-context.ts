@@ -19,7 +19,8 @@ export type ResourceKey =
 export type ReferenceValue = {
   name: string; purpose: string; role: ReferenceRole; state: ReferenceState; target: ReferenceTarget;
 };
-export type Reference = ReferenceValue & {revision: string};
+/** A saved reference row; the Stream revision covers its concurrency. */
+export type Reference = ReferenceValue;
 
 export type StreamWire = {
   id: string; title: string; title_mode: TitleMode; goal: string | null; goal_short: string | null;
@@ -28,7 +29,7 @@ export type StreamWire = {
 };
 export type SessionWire = {
   id: string; host_id: string; stream_id: string; harness: string; harness_session_id: string;
-  previous_stream_ids?: string[];
+  membership_epoch?: number;
   artifacts?: Record<string, { name: string; description: string }[]>;
   title: string; title_mode: TitleMode; status: Status;
   recap?: string; recap_short?: string | null;
@@ -111,18 +112,13 @@ export function isReferenceValue(value: unknown): value is ReferenceValue {
   return object(value) && onlyFields(value, referenceFields) && referenceValueFields(value);
 }
 
-export function isReference(value: unknown): value is Reference {
-  return object(value) && onlyFields(value, [...referenceFields, 'revision']) && referenceValueFields(value)
-    && isReferenceText(value.revision);
-}
-
 export function isStream(value: unknown): value is StreamWire {
   if (!object(value) || !identity(value.id) || !text(value.title) || !titleMode(value.title_mode)
     || !nullableText(value.goal) || !nullableText(value.goal_short) || !mode(value.goal_mode)
     || !status(value.status) || !object(value.owner) || !identity(value.owner.host_id)
     || !object(value.repositories) || !Object.entries(value.repositories).every(([alias, repo]) => identity(alias) && object(repo) && identity(repo.url))
     || ['documents', 'issues', 'prs'].some(key => Object.hasOwn(value, key))
-    || !Array.isArray(value.references) || !value.references.every(isReference)) return false;
+    || !Array.isArray(value.references) || !value.references.every(isReferenceValue)) return false;
   return new Set(value.references.map(ref => {
     const key = resourceKey(ref.target);
     return JSON.stringify(key.kind === 'url' ? ['url', key.url] : ['document', key.repository_url, key.path]);
@@ -136,12 +132,9 @@ export function isSession(value: unknown): value is SessionWire {
     && (value.recap === undefined || text(value.recap))
     && (value.recap_short === undefined || nullableText(value.recap_short))
     && (value.remaining_short === undefined || nullableText(value.remaining_short))
-    && (value.previous_stream_ids === undefined || Array.isArray(value.previous_stream_ids)
-      && value.previous_stream_ids.every(identity)
-      && value.previous_stream_ids.every((id, i, ids) => id !== (i + 1 < ids.length ? ids[i + 1] : value.stream_id)))
+    && (value.membership_epoch === undefined || Number.isSafeInteger(value.membership_epoch) && (value.membership_epoch as number) >= 0)
     && (value.artifacts === undefined || object(value.artifacts) && Object.entries(value.artifacts).every(([stream, entries]) =>
-      (stream === value.stream_id || Array.isArray(value.previous_stream_ids) && value.previous_stream_ids.includes(stream))
-      && Array.isArray(entries) && entries.every(entry => object(entry) && identity(entry.name) && identity(entry.description))
+      identity(stream) && Array.isArray(entries) && entries.every(entry => object(entry) && identity(entry.name) && identity(entry.description))
       && new Set(entries.map(entry => entry.name)).size === entries.length))
     && (value.checkout === null || object(value.checkout)
       && identity(value.checkout.repository) && identity(value.checkout.ref) && text(value.checkout.directory_within_checkout)

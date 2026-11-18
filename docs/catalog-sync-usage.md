@@ -1,8 +1,7 @@
 # Catalog saving and sync
 
 Local saves and publication are separate operations. A report reads its addressed
-records and saves one target envelope, including its retry receipt. It neither
-commits nor contacts the network. [Record-local operations](record-local-operations.md)
+records and saves one target record. It neither commits nor contacts the network. [Record-local operations](record-local-operations.md)
 owns this contract; [RecordSync](../src/sync/records.rs) transports files.
 
 ## Initialize an empty catalog
@@ -22,7 +21,8 @@ records or remote URLs.
 
 Ordinary commands never initialize, convert or adopt a catalog. Changing strategy
 or replacing an old format requires an explicit offline reset, not an in-place
-import. Keep the host identity stable across processes.
+import; the README's "Resetting the catalog" section gives the steps. Keep the
+host identity stable across processes.
 
 ## Save locally
 
@@ -31,15 +31,15 @@ streams create "Indexing" --goal "Find the source of slow indexing" --json
 streams session attach STREAM_ID --harness pi --session-id NATIVE_ID --title "Investigation" --json
 ```
 
-These are separate single-record saves. If creating the Session fails, retain the
-accepted Stream and its receipt; there is no rollback transaction.
+These are separate single-record saves. If creating the Session fails, keep the
+accepted Stream; there is no rollback transaction.
 
-Receipts live in the target envelope. An identical operation ID and intent return
-the original decision alongside the current record, without applying it again
-after intervening edits. Reusing an ID for changed intent is refused. Preserve
-original IDs and inputs when inspecting an uncertain result; do not invent a new
-intent merely to hide it. Pi stops on save uncertainty rather than automatically
-resubmitting.
+Each record carries its `revision` and `updated_at_ms`. The save path sets both,
+and only when the record changes, so a save that changes nothing writes nothing.
+A captured edit names the revision it read: a user edit applies only to that
+revision, and an automatic report refuses fields changed since then. A retried
+save that already landed is recognised from the record itself and returns no
+change. There are no operation IDs or retry receipts.
 
 ## Sync explicitly or at Pi lifecycle boundaries
 
@@ -78,8 +78,7 @@ Domain decisions, local persistence and sharing have different meanings:
 - `failed` or `uncertain` sharing leaves accepted local records intact.
 - `blocked` or `repair-required` needs inspection, not a blind overwrite or retry.
 
-Exit code 2 can include accepted saves and a later warning or failure. Preserve
-those receipts. A timeout does not prove whether a push succeeded. Lifecycle
+Exit code 2 can include accepted saves and a later warning or failure. A timeout does not prove whether a push succeeded. Lifecycle
 failures produce a warning and a durable `stream-catalog-sync` Pi entry.
 A later explicit sync observes the current state; it does not resume a saved
 publication phase or retry a captured native effect.

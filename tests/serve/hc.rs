@@ -80,7 +80,7 @@ fn sdk_locator_is_verified_after_enrollment_and_on_a_later_read() {
     let f = Fixture::new();
     let (saved, _) = f.capture();
     let stream = saved["stream"]["id"].as_str().unwrap();
-    let enrollment = json!({"version":2,"operation_id":"locator-enroll","catalog_source":saved["catalog_source"],"harness":"pi","harness_session_id":"pi-session","actor":"user","cwd":f.directory.path(),"stream_id":stream,"session":{"title":"Session"}});
+    let enrollment = json!({"version":2,"catalog_source":saved["catalog_source"],"harness":"pi","harness_session_id":"pi-session","actor":"user","cwd":f.directory.path(),"stream_id":stream,"session":{"title":"Session"}});
     let file = f.directory.path().join("session.jsonl");
     let mut pi = context();
     pi["session_file"] = json!(file);
@@ -572,7 +572,6 @@ fn hc_enrollment_and_apply_bind_space_route_terminal_project_name_and_emit_save_
 
     let enrollment = json!({
         "version": 2,
-        "operation_id": "hc-enroll-op",
         "catalog_source": catalog_source,
         "harness": "pi",
         "harness_session_id": "pi-session",
@@ -594,7 +593,6 @@ fn hc_enrollment_and_apply_bind_space_route_terminal_project_name_and_emit_save_
 
     let apply_req = json!({
         "version": 2,
-        "operation_id": "hc-apply-op",
         "catalog_source": catalog_source,
         "actor": "user",
         "kind": "session",
@@ -856,7 +854,6 @@ fn hc_lifecycle_emits_save_notice_when_changed_and_none_on_noop() {
 
     let enrollment = json!({
         "version": 2,
-        "operation_id": "hc-life-enroll",
         "catalog_source": catalog_source,
         "harness": "pi",
         "harness_session_id": "pi-session",

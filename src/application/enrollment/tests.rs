@@ -4,8 +4,9 @@ use crate::{
     storage::StorageError,
     yaml_store::records::YamlRecordStore,
 };
-fn request(id: &str, stream: Option<&str>) -> EnrollmentRequest {
-    let mut wire = json!({"version":2,"catalog_source":"source","operation_id":id,"harness":"pi","harness_session_id":"native","session":{"title":"Conversation"},"actor":"automatic","cwd":"/fixture"});
+use serde_json::json;
+fn request(stream: Option<&str>) -> EnrollmentRequest {
+    let mut wire = json!({"version":2,"catalog_source":"source","harness":"pi","harness_session_id":"native","session":{"title":"Conversation"},"actor":"automatic","cwd":"/fixture"});
     if let Some(id) = stream {
         wire["stream_id"] = json!(id);
     } else {
@@ -34,17 +35,11 @@ fn read_session(store: &YamlRecordStore) -> Option<Session> {
 }
 fn put_stream(store: &YamlRecordStore, stream: Stream) {
     let record = Record::Stream(stream);
-    let request = RecordRequest::new(
-        RecordAddress::for_record(&record),
-        "setup",
-        &json!({"record":record}),
-    )
-    .unwrap();
     store
-        .save::<StorageError>(&request, |_, _| {
+        .save::<_, StorageError>(&RecordAddress::for_record(&record), |_, _| {
             Ok(RecordChange {
                 record,
-                outcome: Default::default(),
+                outcome: (),
             })
         })
         .unwrap();
@@ -54,15 +49,18 @@ fn interrupted_enrollment_leaves_only_its_effort_and_retries_each_record_indepen
     let directory = tempfile::tempdir().unwrap();
     let store = YamlRecordStore::new(directory.path(), "host").unwrap();
     store.initialize().unwrap();
-    let request = request("enroll", None);
+    let request = request(None);
     let stream = enroll_stream(&store, "host", &request).unwrap();
-    assert!(!stream.repeated);
+    assert!(stream.written);
+    assert_eq!(stream.outcome, DomainOutcome::Changes);
     assert!(read_session(&store).is_none());
-    assert!(enroll_stream(&store, "host", &request).unwrap().repeated);
+    let retry = enroll_stream(&store, "host", &request).unwrap();
+    assert!(!retry.written);
+    assert_eq!(retry.outcome, DomainOutcome::NoChange);
     let session = enroll_session_observed(&store, "host", &request).unwrap();
-    assert!(!session.save.repeated);
+    assert!(session.save.written);
     assert_eq!(
-        session.stream.as_ref().unwrap().id,
+        session.stream.id,
         effort_id_for("host", request.harness(), "native")
     );
     assert_eq!(
@@ -70,53 +68,41 @@ fn interrupted_enrollment_leaves_only_its_effort_and_retries_each_record_indepen
         effort_id_for("host", request.harness(), "native")
     );
     let repeated = enroll_session_observed(&store, "host", &request).unwrap();
-    assert!(repeated.save.repeated);
-    assert!(repeated.stream.is_none());
-    assert_eq!(
-        enroll_stream(&store, "host", &request).unwrap().outcome,
-        stream.outcome
-    );
+    assert!(!repeated.save.written);
+    assert_eq!(repeated.save.outcome, DomainOutcome::NoChange);
 }
 #[test]
 fn existing_enrollment_does_not_edit_text_or_replace_membership() {
     let directory = tempfile::tempdir().unwrap();
     let store = YamlRecordStore::new(directory.path(), "host").unwrap();
     store.initialize().unwrap();
-    let initial = request("initial", None);
+    let initial = request(None);
     enroll_stream(&store, "host", &initial).unwrap();
-    let original = enroll_session(&store, "host", &initial).unwrap();
+    enroll_session(&store, "host", &initial).unwrap();
     let id = read_session(&store).unwrap().id;
     put_stream(&store, Stream::new("b", "B", None, "host").unwrap());
     crate::application::move_session_observed(
         &store,
-        "move",
         &crate::operations::membership::MoveIntent::new("host", "pi", "native", "b").unwrap(),
     )
     .unwrap();
-    let fresh = request("fresh", None);
-    let saved = enroll_session(&store, "host", &fresh).unwrap();
-    assert_eq!(saved.outcome["outcome"], "no-change");
+    let saved = enroll_session(&store, "host", &initial).unwrap();
+    assert_eq!(saved.outcome, DomainOutcome::NoChange);
+    assert!(!saved.written);
     let current = read_session(&store).unwrap();
     assert_eq!(current.id, id);
     assert_eq!(current.stream_id, "b");
     assert_eq!(current.title, "Conversation");
-    assert!(enroll_session(&store, "host", &request("other", Some("missing"))).is_err());
+    assert!(enroll_session(&store, "host", &request(Some("missing"))).is_err());
     let observed = enroll_session_observed(&store, "host", &initial).unwrap();
-    assert!(observed.stream.is_none());
-    let repeated = observed.save;
-    assert!(repeated.repeated);
-    assert_eq!(repeated.outcome, original.outcome);
-    assert_eq!(
-        repeated.outcome["stream_id"],
-        effort_id_for("host", initial.harness(), "native")
-    );
-    let Record::Session(current) = repeated.current.record else {
+    assert_eq!(observed.stream.id, "b");
+    let Record::Session(current) = observed.save.current.record else {
         unreachable!()
     };
     assert_eq!(current.stream_id, "b");
 }
 #[test]
-fn enrollment_receipt_size_is_independent_of_stream_prose() {
+fn enrolled_session_size_is_independent_of_stream_prose() {
     fn session_bytes(goal: &str) -> Vec<u8> {
         let directory = tempfile::tempdir().unwrap();
         let store = YamlRecordStore::new(directory.path(), "host").unwrap();
@@ -124,20 +110,10 @@ fn enrollment_receipt_size_is_independent_of_stream_prose() {
         let mut stream = Stream::new("a", "A", None, "host").unwrap();
         stream.goal = Some(goal.into());
         put_stream(&store, stream);
-        let observed =
-            enroll_session_observed(&store, "host", &request("enroll", Some("a"))).unwrap();
-        assert_eq!(
-            observed.stream.as_ref().unwrap().goal.as_deref(),
-            Some(goal)
-        );
+        let observed = enroll_session_observed(&store, "host", &request(Some("a"))).unwrap();
+        assert_eq!(observed.stream.goal.as_deref(), Some(goal));
         let saved = observed.save;
-        assert_eq!(
-            saved.outcome,
-            json!({"operation_id":"enroll:session","outcome":"changes","stream_id":"a"})
-                .as_object()
-                .unwrap()
-                .clone()
-        );
+        assert_eq!(saved.outcome, DomainOutcome::Changes);
         let path = crate::yaml_store::records::relative_record_path(&RecordAddress::for_record(
             &saved.current.record,
         ))
@@ -155,22 +131,24 @@ fn missing_stream_changed_intent_and_unrelated_existing_effort_refuse_without_im
     let directory = tempfile::tempdir().unwrap();
     let store = YamlRecordStore::new(directory.path(), "host").unwrap();
     store.initialize().unwrap();
-    assert!(enroll_session(&store, "host", &request("missing", Some("missing"))).is_err());
+    assert!(enroll_session(&store, "host", &request(Some("missing"))).is_err());
     assert!(read_session(&store).is_none());
-    let initial = request("initial", None);
+    let initial = request(None);
     enroll_stream(&store, "host", &initial).unwrap();
-    assert!(enroll_stream(&store, "host", &request("different invocation", None)).is_err());
-    let changed=EnrollmentRequest::parse(&json!({"version":2,"catalog_source":"source","operation_id":"initial","harness":"pi","harness_session_id":"native","stream":{"title":"Changed"},"session":{"title":"Conversation"},"actor":"automatic","cwd":"/fixture"}).to_string(),"source").unwrap();
+    let changed=EnrollmentRequest::parse(&json!({"version":2,"catalog_source":"source","harness":"pi","harness_session_id":"native","stream":{"title":"Changed"},"session":{"title":"Conversation"},"actor":"automatic","cwd":"/fixture"}).to_string(),"source").unwrap();
     assert!(enroll_stream(&store, "host", &changed).is_err());
     assert!(read_session(&store).is_none());
 }
 #[test]
 fn enrollment_requests_require_version_two_and_reject_old_permission_fields() {
-    let wire = json!({"version":2,"catalog_source":"source","operation_id":"initial","harness":"pi","harness_session_id":"native","stream":{"title":"Effort"},"session":{"title":"Conversation"},"actor":"automatic","cwd":"/fixture"});
+    let wire = json!({"version":2,"catalog_source":"source","harness":"pi","harness_session_id":"native","stream":{"title":"Effort"},"session":{"title":"Conversation"},"actor":"automatic","cwd":"/fixture"});
     let mut old = wire.clone();
     old["version"] = json!(1);
     assert!(EnrollmentRequest::parse(&old.to_string(), "source").is_err());
-    old = wire;
+    old = wire.clone();
     old["authority"] = json!({"host_id":"host","token":"old"});
+    assert!(EnrollmentRequest::parse(&old.to_string(), "source").is_err());
+    old = wire.clone();
+    old["operation_id"] = json!("old");
     assert!(EnrollmentRequest::parse(&old.to_string(), "source").is_err());
 }

@@ -81,7 +81,6 @@ fn progress_group_guards_cover_all_long_and_short_fields() {
             "status",
         ] {
             let edit = SessionEdit::new(
-                "report",
                 &before,
                 &changes(json!({"recap":"Scope", "recap_short":"Scope", "remaining_short":"Next"})),
                 actor,
@@ -101,6 +100,8 @@ fn progress_group_guards_cover_all_long_and_short_fields() {
             .unwrap() else {
                 unreachable!()
             };
+            let mut current = current;
+            current.revision += 1;
             let result = edit.apply(&current, &stream("a"), NamingMode::Automatic);
             assert_eq!(
                 result.outcome(),
@@ -119,24 +120,23 @@ fn progress_group_guards_cover_all_long_and_short_fields() {
 fn conversation_report_survives_move_and_return_without_restoring_old_membership() {
     let before = session();
     let edit = SessionEdit::new(
-        "report",
         &before,
         &changes(json!({"state":"progress", "remaining":"next"})),
         Actor::Automatic,
         NamingMode::Automatic,
     )
     .unwrap();
-    for (id, history) in [("b", vec!["a".into()]), ("a", vec!["a".into(), "b".into()])] {
+    for (id, epoch) in [("b", 1), ("a", 2)] {
         let mut current = before.clone();
         current.stream_id = id.into();
-        current.previous_stream_ids = history;
+        current.membership_epoch = epoch;
         let Record::Session(after) =
             changed(edit.apply(&current, &stream(id), NamingMode::Automatic))
         else {
             unreachable!()
         };
         assert_eq!(after.stream_id, current.stream_id);
-        assert_eq!(after.previous_stream_ids, current.previous_stream_ids);
+        assert_eq!(after.membership_epoch, current.membership_epoch);
         assert_eq!(after.id, before.id);
         assert_eq!(after.state, "progress");
         assert_eq!(after.remaining, "next");
@@ -148,7 +148,6 @@ fn effort_prose_cannot_cross_a_move_or_reenter_after_a_return() {
     let before = session();
     let target = stream("a");
     let edit = StreamEdit::new(
-        "report",
         &target,
         &changes(json!({"goal":"old effort prose"})),
         Actor::Automatic,
@@ -160,10 +159,10 @@ fn effort_prose_cannot_cross_a_move_or_reenter_after_a_return() {
         edit.apply(&target, Some(&before), NamingMode::Automatic),
         Reconciliation::Changes { .. }
     ));
-    for (id, history) in [("b", vec!["a".into()]), ("a", vec!["a".into(), "b".into()])] {
+    for (id, epoch) in [("b", 1), ("a", 2)] {
         let mut current = before.clone();
         current.stream_id = id.into();
-        current.previous_stream_ids = history;
+        current.membership_epoch = epoch;
         assert!(matches!(
             edit.apply(&target, Some(&current), NamingMode::Automatic),
             Reconciliation::Superseded { .. }
@@ -179,7 +178,6 @@ fn effort_prose_cannot_cross_a_move_or_reenter_after_a_return() {
 fn local_work_and_stream_input_changes_supersede_old_inference() {
     let before = session();
     let edit = SessionEdit::new(
-        "session",
         &before,
         &changes(json!({"state":"old generated work"})),
         Actor::Automatic,
@@ -194,7 +192,6 @@ fn local_work_and_stream_input_changes_supersede_old_inference() {
     ));
     let target = stream("a");
     let edit = StreamEdit::new(
-        "stream",
         &target,
         &changes(json!({"goal":"old goal"})),
         Actor::Automatic,
@@ -229,7 +226,6 @@ fn local_work_and_stream_input_changes_supersede_old_inference() {
 fn manual_text_and_grouped_conversation_fields_remain_protected() {
     let before = session();
     let edit = SessionEdit::new(
-        "automatic",
         &before,
         &changes(json!({"title":"generated"})),
         Actor::Automatic,
@@ -244,7 +240,6 @@ fn manual_text_and_grouped_conversation_fields_remain_protected() {
         Reconciliation::Superseded { .. }
     ));
     let edit = SessionEdit::new(
-        "user",
         &before,
         &changes(json!({"state":"edited state"})),
         Actor::User,
@@ -253,13 +248,13 @@ fn manual_text_and_grouped_conversation_fields_remain_protected() {
     .unwrap();
     let mut current = before.clone();
     current.remaining = "concurrent remaining".into();
+    current.revision += 1;
     assert!(matches!(
         edit.apply(&current, &stream("a"), NamingMode::Automatic),
         Reconciliation::Conflict { .. }
     ));
     let edit = SessionEdit::new(
-        "rename",
-        &before,
+        &current,
         &changes(json!({"title":"User name"})),
         Actor::User,
         NamingMode::Automatic,
@@ -280,7 +275,6 @@ fn effective_title_modes_control_generation_without_changing_saved_modes() {
             let mut before = session();
             before.title_mode = mode;
             let edit = SessionEdit::new(
-                "report",
                 &before,
                 &changes(json!({"title":"Generated name","state":"progress"})),
                 Actor::Automatic,
@@ -304,7 +298,6 @@ fn effective_title_modes_control_generation_without_changing_saved_modes() {
             let mut before = stream("a");
             before.title_mode = mode;
             let edit = StreamEdit::new(
-                "report",
                 &before,
                 &changes(json!({"title":"Generated effort","goal":"Goal"})),
                 Actor::Automatic,
@@ -335,7 +328,6 @@ fn user_mode_changes_do_not_generate_a_new_title_and_ignore_default_drift() {
     let before = session();
     for mode in ["automatic", "manual", "inherit"] {
         let edit = SessionEdit::new(
-            "policy",
             &before,
             &changes(json!({"title_mode":mode})),
             Actor::User,
@@ -369,7 +361,6 @@ fn ordinary_edits_reject_reference_collections() {
         ] {
             assert!(
                 StreamEdit::new(
-                    "edit",
                     &stream("a"),
                     &changes(json!({field:[]})),
                     actor,
@@ -389,23 +380,16 @@ fn constructors_reject_membership_identity_lifecycle_and_unscoped_generated_effo
     for value in [
         json!({"id":"other"}),
         json!({"stream_id":"b"}),
-        json!({"previous_stream_ids":["b"]}),
+        json!({"membership_epoch":2}),
+        json!({"revision":2}),
         json!({"harness":"claude"}),
     ] {
         assert!(
-            SessionEdit::new(
-                "op",
-                &before,
-                &changes(value),
-                Actor::User,
-                NamingMode::Automatic
-            )
-            .is_err()
+            SessionEdit::new(&before, &changes(value), Actor::User, NamingMode::Automatic).is_err()
         );
     }
     assert!(
         SessionEdit::new(
-            "op",
             &before,
             &changes(json!({"title_mode":"manual"})),
             Actor::Automatic,
@@ -415,7 +399,6 @@ fn constructors_reject_membership_identity_lifecycle_and_unscoped_generated_effo
     );
     assert!(
         SessionEdit::new(
-            "op",
             &before,
             &changes(json!({"state":"native"})),
             Actor::Native,
@@ -426,7 +409,6 @@ fn constructors_reject_membership_identity_lifecycle_and_unscoped_generated_effo
     let target = stream("a");
     assert!(
         StreamEdit::new(
-            "op",
             &target,
             &changes(json!({"goal":"generated"})),
             Actor::Automatic,
@@ -437,7 +419,6 @@ fn constructors_reject_membership_identity_lifecycle_and_unscoped_generated_effo
     );
     assert!(
         StreamEdit::new(
-            "user",
             &target,
             &changes(json!({"goal":"manual"})),
             Actor::User,
@@ -450,7 +431,6 @@ fn constructors_reject_membership_identity_lifecycle_and_unscoped_generated_effo
     foreign.owner_host_id = "other".into();
     assert!(
         StreamEdit::new(
-            "op",
             &foreign,
             &changes(json!({"goal":"generated"})),
             Actor::Automatic,
@@ -465,7 +445,6 @@ fn constructors_reject_membership_identity_lifecycle_and_unscoped_generated_effo
 fn foreign_or_mismatched_current_relationships_never_admit_a_local_edit() {
     let before = session();
     let edit = SessionEdit::new(
-        "op",
         &before,
         &changes(json!({"status":"waiting"})),
         Actor::User,

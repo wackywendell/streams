@@ -50,7 +50,7 @@ changed repository URL also supersedes proposals that depended on it. Unrelated
 Session progress, including the report's own preceding save, does not invalidate
 the reading list.
 
-Each save keeps its own receipt. Successful Session progress remains saved if
+Each save has its own outcome. Successful Session progress remains saved if
 the document save is refused; neither a retry loop nor a multi-record transaction
 is introduced. Frozen replay uses the same pure addition and membership rules.
 An explicit removal prevents an in-flight result from restoring a captured link;

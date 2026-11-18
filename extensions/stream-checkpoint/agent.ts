@@ -214,9 +214,7 @@ export function parseInferenceResponse<T extends Inference>(request: T, response
  if (request.type === "discussion") {
   const result = rawArgs as DiscussionResult;
   if (result.edit?.kind === "references") {
-   let operation = "validate-reference-discussion";
-   while (request.catalog.stream?.references.some(row => row.revision === operation)) operation += ":next";
-   referenceRequest(request.catalog, result.edit.actor, result.edit.changes, operation);
+   referenceRequest(request.catalog, result.edit.actor, result.edit.changes);
   } else if (result.edit) validateChanges(result.edit.kind, request.catalog[result.edit.kind]!, result.edit.changes, result.edit.actor, request.catalog.title_defaults[result.edit.kind]);
  } else if (request.type === "session" || request.type === "stream") {
   const result = rawArgs as ReportResult;

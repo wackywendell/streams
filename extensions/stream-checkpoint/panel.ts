@@ -27,7 +27,7 @@ export async function compose(ctx: ExtensionContext, state: DiscussionState): Pr
 const referenceLabels: Record<string, string> = {document:"Document", pr:"PR", issue:"Issue", link:"Link", deliverable:"Deliverable", dependency:"Dependency", brief:"Brief", background:"Background", active:"Active", fulfilled:"Fulfilled", dropped:"Dropped"};
 const referenceByKey = (catalog: LocalContext, key: ResourceKey) => catalog.stream?.references.find(row => referenceSelector(resourceKey(row.target)) === referenceSelector(key));
 const referenceKeyJson = (key: ResourceKey) => safeReferenceJson(key.kind === "url" ? {kind:key.kind, url:key.url} : {kind:key.kind, repository_url:key.repository_url, path:key.path});
-const referenceValue = (reference: Reference): ReferenceValue => {const {revision: _revision, ...value} = structuredClone(reference);return value;};
+const referenceValue = (reference: Reference): ReferenceValue => structuredClone(reference);
 
 async function selectReference(ctx: ExtensionContext, items: SelectItem[]): Promise<string | undefined> {
  if (!ctx.ui.custom) {

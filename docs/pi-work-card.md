@@ -53,7 +53,7 @@ Settings use an in-place list for reporting mode, enrollment, frequency and cont
 ## Persistence boundary
 
 Rust owns record validation, immutable host checks and persistence. TypeScript
-exchanges versioned requests and receipts; it never writes catalog YAML. Report
+exchanges versioned requests and receipts; it never writes catalog files. Report
 bases are addressed persisted records, not a remote display projection.
 
 Context returns `catalog_source`, resolved title defaults, the selected Session
@@ -61,10 +61,11 @@ and its Stream. Source identity is the configured host and canonical catalog pat
 not an inode or directory-replacement generation. An offline reset stops writers;
 ordinary requests do not detect replacement with copied IDs at the same path.
 
-A version-2 apply carries the original target, stable operation ID, allowlisted
-changes and captured title default. Session edits have no extra captured inputs;
+A version-2 apply carries the original target, including its record revision,
+allowlisted changes and captured title default. It has no operation ID: a retry
+that already landed is recognised from the record. Session edits have no extra captured inputs;
 automatic Stream edits name their single captured Session. Pure apply separately
-checks conversation-local fields and Stream membership/history. Pi owns live
+checks conversation-local fields and Stream membership epoch. Pi owns live
 branch admission. Omit protected fields before constructing an automatic edit so
 a manual title does not discard otherwise valid progress.
 

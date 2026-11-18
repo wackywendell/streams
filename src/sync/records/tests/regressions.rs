@@ -79,7 +79,7 @@ fn pull_only_and_noop_sync_never_push_and_noop_does_not_fetch() {
     // Subsequent foreign changes are still fetched and installed without publication.
     let mut changed = stream(&b_records, "b-host");
     changed.goal = Some("new remote work".into());
-    put(&b_records, "remote-change", Record::Stream(changed));
+    put(&b_records, Record::Stream(changed));
     assert_eq!(b_sync.sync().sharing, SharingStatus::Confirmed);
     assert_eq!(a_sync.sync().sharing, SharingStatus::Confirmed);
     assert!(!calls.lock().unwrap().iter().any(|call| call == "push"));
@@ -114,7 +114,6 @@ fn git_ignore_rules_cannot_hide_records_or_unexpected_physical_entries() {
         .unwrap();
     put(
         &records,
-        "ignored-record",
         Record::Stream(Stream::new("added", "Added", None, "host").unwrap()),
     );
     assert_eq!(sync.sync().sharing, SharingStatus::LocalOnly);
@@ -122,7 +121,7 @@ fn git_ignore_rules_cannot_hide_records_or_unexpected_physical_entries() {
         sync.git
             .files(&sync.git.head().unwrap())
             .unwrap()
-            .contains_key("hosts/host/streams/added.yaml")
+            .contains_key("hosts/host/streams/added.json")
     );
     let head = sync.git.head().unwrap();
     let unexpected = root.join("hosts/host/unexpected");
@@ -167,7 +166,7 @@ fn remote_deletion_combines_with_an_independent_local_change() {
     fs::remove_file(b.join(&relative)).unwrap();
     let mut own = stream(&a_records, "a-host");
     own.goal = Some("independent local edit".into());
-    put(&a_records, "local-change", Record::Stream(own));
+    put(&a_records, Record::Stream(own));
     assert_eq!(b_sync.sync().sharing, SharingStatus::Confirmed);
     let result = a_sync.sync();
     assert_eq!(
@@ -216,9 +215,9 @@ fn incoming_broken_membership_is_rejected_before_install_or_ref_advance() {
     .unwrap();
     let original = fs::read(a.join(&relative)).unwrap();
     let head = a_sync.git.head().unwrap();
-    let mut envelope: serde_json::Value = serde_json::from_slice(&original).unwrap();
-    envelope["record"]["stream_id"] = json!("missing");
-    fs::write(b.join(&relative), serde_json::to_vec(&envelope).unwrap()).unwrap();
+    let mut record: serde_json::Value = serde_json::from_slice(&original).unwrap();
+    record["stream_id"] = json!("missing");
+    fs::write(b.join(&relative), serde_json::to_vec(&record).unwrap()).unwrap();
     // Simulate an invalid remote producer; do not pass through the validating save/sync API.
     for args in [
         vec!["add", "-A", "--", "hosts"],
@@ -246,13 +245,13 @@ fn install_refuses_symlinked_ancestors_and_leaf_for_both_replacement_and_deletio
         "hosts",
         "hosts/host",
         "hosts/host/streams",
-        "hosts/host/streams/work.yaml",
+        "hosts/host/streams/work.json",
     ] {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().join("catalog");
         setup(&root, "host");
         let sync = transport(&root, "host", None);
-        let relative = PathBuf::from("hosts/host/streams/work.yaml");
+        let relative = PathBuf::from("hosts/host/streams/work.json");
         let old = fs::read(root.join(&relative)).unwrap();
         let mut new = old.clone();
         new.push(b'\n');

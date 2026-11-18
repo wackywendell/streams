@@ -42,18 +42,26 @@ fn selected_session_key_reads_only_its_record_without_catalog_discovery() {
         )
         .unwrap();
         member.status = Status::Done;
-        application::create_record(opened.records(), "stream", &Record::Stream(stream.clone()))
-            .unwrap();
-        application::create_record(
-            opened.records(),
-            "session",
-            &Record::Session(member.clone()),
-        )
-        .unwrap();
+        let Record::Stream(stream) =
+            application::create_record(opened.records(), &Record::Stream(stream.clone()))
+                .unwrap()
+                .current
+                .record
+        else {
+            unreachable!()
+        };
+        let Record::Session(member) =
+            application::create_record(opened.records(), &Record::Session(member.clone()))
+                .unwrap()
+                .current
+                .record
+        else {
+            unreachable!()
+        };
         let neighbor = opened.root().join("hosts/unrelated/streams");
         fs::create_dir_all(&neighbor).unwrap();
         for index in 0..unrelated {
-            fs::write(neighbor.join(format!("bad-{index}.yaml")), "not a record").unwrap();
+            fs::write(neighbor.join(format!("bad-{index}.json")), "not a record").unwrap();
         }
         let selection = SessionSelection {
             reference: None,
@@ -62,7 +70,7 @@ fn selected_session_key_reads_only_its_record_without_catalog_discovery() {
         events.lock().unwrap().clear();
         assert_eq!(
             selected_sessions(&opened, &stream, &selection, None).unwrap(),
-            [member.clone()]
+            std::slice::from_ref(&member)
         );
         let reads: Vec<_> = events
             .lock()
@@ -126,7 +134,6 @@ fn session(host: &str, stream: &str, native: &str, status: Status) -> RecordRead
     session.status = status;
     RecordRead {
         record: Record::Session(session),
-        revision: "observed".into(),
     }
 }
 
@@ -142,7 +149,6 @@ fn reopen_selects_current_active_local_members_not_native_or_saved_layout_state(
         session("local", "work", "second", Status::Active),
         RecordRead {
             record: Record::Stream(stream.clone()),
-            revision: "observed".into(),
         },
     ];
     let selected = requested_sessions(&stream, &records, None).unwrap();

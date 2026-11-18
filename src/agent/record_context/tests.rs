@@ -1,26 +1,25 @@
 use super::*;
 use crate::{
     runtime::conversations::Harness,
-    storage::records::{RecordChange, RecordRequest, RecordStore},
+    storage::records::{RecordChange, RecordStore},
     yaml_store::records::{RecordIoEvent, YamlRecordStore, relative_record_path},
 };
-use serde_json::json;
 use std::{
     fs,
     sync::{Arc, Mutex},
 };
 
-fn put(store: &YamlRecordStore, record: Record) {
-    let target = RecordAddress::for_record(&record);
-    let request = RecordRequest::new(target, "setup", &json!({"record":record})).unwrap();
+fn put(store: &YamlRecordStore, record: Record) -> Record {
     store
-        .save::<StorageError>(&request, |_, _| {
+        .save::<_, StorageError>(&RecordAddress::for_record(&record), |_, _| {
             Ok(RecordChange {
                 record,
-                outcome: serde_json::Map::new(),
+                outcome: (),
             })
         })
-        .unwrap();
+        .unwrap()
+        .current
+        .record
 }
 
 fn request(native_id: &str) -> ContextRequest<'_> {
@@ -53,7 +52,9 @@ fn addressed_context_reads_only_this_session_and_stream_despite_unrelated_growth
             &store,
             Record::Stream(Stream::new("effort", "Effort", None, "host").unwrap()),
         );
-        put(&store, Record::Session(session.clone()));
+        let Record::Session(session) = put(&store, Record::Session(session)) else {
+            unreachable!()
+        };
         for index in 0..size {
             let address =
                 RecordAddress::new("host", RecordKind::Stream, format!("unrelated-{index}"))
@@ -149,7 +150,7 @@ fn valid_membership_wins_over_stale_ambient_associations_but_explicit_mismatch_r
         "Work",
     )
     .unwrap();
-    session.previous_stream_ids.push("source".into());
+    session.membership_epoch = 1;
     put(&store, Record::Session(session));
     let mut input = request("native");
     input.environment_stream_id = Some("source");

@@ -446,8 +446,7 @@ fn opening_a_document_rereads_display_inputs_and_refuses_a_removed_reference() {
         owner: engine.card.owner().clone(),
         reference: serde_json::from_value(json!({
             "name":"Removed","purpose":"Guide the work","role":"brief","state":"active",
-            "target":{"kind":"document","repository_url":"repository","path":"removed.md","ref":"main"},
-            "revision":"fixture"
+            "target":{"kind":"document","repository_url":"repository","path":"removed.md","ref":"main"}
         })).unwrap(),
         location: crate::tui::ResolvedDocument::Unavailable {
             selection: None,

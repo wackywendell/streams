@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-  isReference, isReferenceTarget, isReferenceText, isReferenceValue, isRepositoryDocument,
+  isReferenceTarget, isReferenceText, isReferenceValue, isRepositoryDocument,
   isResourceKey, isSession, isStream, parseLocalContext, referenceUrl, resourceKey,
 } from '../dist/streams-context.js';
 
@@ -11,7 +11,7 @@ const stream = {
 };
 const session = {
   id:'ab441ac4-d600-5fd6-babf-fc43ab65623d', host_id:'host', stream_id:'effort', harness:'pi', harness_session_id:'native',
-  previous_stream_ids:[], title:'Catalog', title_mode:'inherit', status:'active', state:'', state_short:null, remaining:'', checkout:null,
+  membership_epoch:0, title:'Catalog', title_mode:'inherit', status:'active', state:'', state_short:null, remaining:'', checkout:null,
 };
 const context = () => structuredClone({
   catalog_source:'source', host_id:'host', title_defaults:{stream:'automatic', session:'manual'}, stream, session, sessions:[session],
@@ -46,7 +46,7 @@ test('addressed context rejects a roster and inconsistent host, membership or na
 
 const reference = () => ({
   name:'Reference', purpose:'Define acceptance', role:'brief', state:'active',
-  target:{kind:'link', url:'https://EXAMPLE.test/brief'}, revision:'replay:capture:0:1',
+  target:{kind:'link', url:'https://EXAMPLE.test/brief'},
 });
 
 test('standalone references preserve exact values, roles, states and resource keys', () => {
@@ -58,10 +58,10 @@ test('standalone references preserve exact values, roles, states and resource ke
     const original = structuredClone(value);
     for (const role of ['deliverable', 'dependency', 'brief', 'background']) {
       for (const state of ['active', 'fulfilled', 'dropped']) {
-        assert.equal(isReference({...value, role, state}), true);
+        assert.equal(isReferenceValue({...value, role, state}), true);
       }
     }
-    assert.equal(isReference(value), true);
+    assert.equal(isReferenceValue(value), true);
     assert.deepEqual(value, original);
     const key = resourceKey(value.target);
     assert.equal(isResourceKey(key), true);
@@ -73,19 +73,17 @@ test('standalone references preserve exact values, roles, states and resource ke
       }
       assert.notDeepEqual(resourceKey({...value.target, url:'https://example.test/item'}), key);
     }
-    const {revision, ...desired} = value;
-    assert.equal(isReferenceValue(desired), true);
-    assert.equal(isReferenceValue(value), false);
-    assert.equal(isReference({...value, extra:true}), false);
+    assert.equal(isReferenceValue({...value, revision:'old'}), false);
+    assert.equal(isReferenceValue({...value, extra:true}), false);
     assert.equal(isResourceKey({...key, extra:true}), false);
-    assert.equal(isReference({...value, target:{...value.target, extra:true}}), false);
-    for (const field of ['name', 'purpose', 'role', 'state', 'target', 'revision']) {
+    assert.equal(isReferenceValue({...value, target:{...value.target, extra:true}}), false);
+    for (const field of ['name', 'purpose', 'role', 'state', 'target']) {
       const invalid = structuredClone(value);
       delete invalid[field];
-      assert.equal(isReference(invalid), false, field);
+      assert.equal(isReferenceValue(invalid), false, field);
     }
-    assert.equal(isReference({...value, role:'Brief'}), false);
-    assert.equal(isReference({...value, state:'unknown'}), false);
+    assert.equal(isReferenceValue({...value, role:'Brief'}), false);
+    assert.equal(isReferenceValue({...value, state:'unknown'}), false);
     assert.equal(isReferenceTarget({...value.target, kind:'unknown'}), false);
   }
 });
@@ -93,16 +91,16 @@ test('standalone references preserve exact values, roles, states and resource ke
 test('reference text matches Rust whitespace and Unicode scalar validity without trimming', () => {
   for (const text of ['\ufeff', '😀', 'leading\nnewline', "--value='exact'", '\u001b']) {
     assert.equal(isReferenceText(text), true, JSON.stringify(text));
-    for (const field of ['name', 'purpose', 'revision']) {
+    for (const field of ['name', 'purpose']) {
       const value = {...reference(), [field]:text};
-      assert.equal(isReference(value), true, field);
+      assert.equal(isReferenceValue(value), true, field);
       assert.equal(value[field], text);
     }
   }
   for (const text of ['', ' \n', '\u0085', '\u00a0\u3000', 'bad\0text', '\ud800', '\udfff', 'bad\ud800text']) {
     assert.equal(isReferenceText(text), false, JSON.stringify(text));
-    for (const field of ['name', 'purpose', 'revision']) {
-      assert.equal(isReference({...reference(), [field]:text}), false, field);
+    for (const field of ['name', 'purpose']) {
+      assert.equal(isReferenceValue({...reference(), [field]:text}), false, field);
     }
   }
   for (const value of [null, undefined, 1, true, [], {}]) assert.equal(isReferenceText(value), false);
@@ -140,7 +138,7 @@ test('reference web targets share raw and decoded safety without normalising key
     'https://example.test/%F0%9F%98%80',
   ]) {
     assert.ok(referenceUrl(url), url);
-    assert.equal(isReference({...reference(), target:{kind:'link', url}}), true);
+    assert.equal(isReferenceValue({...reference(), target:{kind:'link', url}}), true);
     assert.deepEqual(resourceKey({kind:'link', url}), {kind:'url', url});
   }
   for (const url of [

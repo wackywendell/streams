@@ -189,16 +189,15 @@ fn apply(snapshot: &mut Snapshot, source: &str) -> Result<Value, ValidationError
                     ValidationError::new("captured target does not match supplied context")
                 })?;
             let result = edit.apply(current, snapshot.session.as_ref())?;
-            reference_domain = Some(Value::Object(result.domain()));
+            reference_domain = Some(json!(result.outcome()));
             result.reconciliation
         }
     };
     let is_reference = reference_domain.is_some();
-    let mut domain = reference_domain.unwrap_or_else(|| {
+    let domain = reference_domain.unwrap_or_else(|| {
         json!({"outcome":decision.outcome(),
         "conflicts":decision.conflicts(),"reason":decision.reason()})
     });
-    domain["operation_id"] = json!(update.operation_id());
     let save = simulated(domain);
     match decision {
         Reconciliation::Changes { record, .. } => match *record {
@@ -213,7 +212,7 @@ fn apply(snapshot: &mut Snapshot, source: &str) -> Result<Value, ValidationError
             }
         }
     }
-    let mut receipt = json!({"simulated":true,"local":"unchanged","operation_id":update.operation_id(),"save":save});
+    let mut receipt = json!({"simulated":true,"local":"unchanged","save":save});
     match &update.edit {
         CapturedEdit::Session(_) => receipt["session"] = json!(snapshot.session),
         CapturedEdit::Stream(_) | CapturedEdit::References(_) => {
@@ -225,8 +224,7 @@ fn apply(snapshot: &mut Snapshot, source: &str) -> Result<Value, ValidationError
 
 fn preview_effort_id(request: &EnrollmentRequest, host: &str) -> String {
     let name = format!(
-        "streams:preview:effort:[{}, {}, {}, {}]",
-        ascii_json(request.operation_id()),
+        "streams:preview:effort:[{}, {}, {}]",
         ascii_json(host),
         ascii_json(request.harness().as_ref()),
         ascii_json(request.harness_session_id())
@@ -263,14 +261,13 @@ fn enroll(snapshot: &mut Snapshot, source: &str) -> Result<Value, ValidationErro
     if request.stream_proposal().is_some() {
         if snapshot.stream.is_some() {
             return Err(ValidationError::new(
-                "effort already exists; preview has no retained creation receipt",
+                "effort already exists; attach to it or create work in another conversation",
             ));
         }
-        snapshot.stream =
-            Some(request.stream(&snapshot.host, &preview_effort_id(&request, &snapshot.host))?);
+        let id = preview_effort_id(&request, &snapshot.host);
+        snapshot.stream = Some(request.stream(&snapshot.host, &id)?);
         saves.push(
-            json!({"operation_id":format!("{}:stream",request.operation_id()),
-            "save":simulated(json!({"outcome":"changes"}))}),
+            json!({"target":format!("stream:{id}"), "save":simulated(json!({"outcome":"changes"}))}),
         );
     } else if request.stream_id().is_none() && snapshot.session.is_none() {
         return Err(ValidationError::new(
@@ -287,10 +284,9 @@ fn enroll(snapshot: &mut Snapshot, source: &str) -> Result<Value, ValidationErro
         snapshot.session = Some(request.session(&snapshot.host, &stream.id)?);
         "changes"
     };
-    saves.push(
-        json!({"operation_id":format!("{}:session",request.operation_id()),
-        "save":simulated(json!({"outcome":outcome,"stream_id":stream.id}))}),
-    );
+    let session = snapshot.session.as_ref().expect("Session set above");
+    saves.push(json!({"target":format!("session:{}", session.id),
+        "save":simulated(json!({"outcome":outcome}))}));
     Ok(
         json!({"simulated":true,"local":"unchanged","catalog_source":snapshot.source,"saves":saves,
         "stream":snapshot.stream,"session":snapshot.session}),

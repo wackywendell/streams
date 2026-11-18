@@ -104,7 +104,6 @@ impl App {
                 operations::write_artifact(
                     opened.artifacts(),
                     host,
-                    &uuid::Uuid::new_v4().to_string(),
                     &operations::WriteArtifact {
                         session_id,
                         stream_id,
@@ -124,11 +123,7 @@ impl App {
                         "Pi may delete artifacts only for its bound Session",
                     ));
                 }
-                operations::delete_artifact(
-                    opened.artifacts(),
-                    &uuid::Uuid::new_v4().to_string(),
-                    &key,
-                )?
+                operations::delete_artifact(opened.artifacts(), &key)?
             }
             ArtifactRequest::Read {
                 reference,
@@ -198,7 +193,7 @@ impl App {
                 return Ok(Output::value(json!({"artifacts":artifacts})));
             }
         };
-        let mut output = Output::value(serde_json::Value::Object(saved.save.outcome));
+        let mut output = Output::value(json!(saved.save.outcome));
         output.accepted_save = true;
         output.notices = saved.warnings;
         if !output.notices.is_empty() {

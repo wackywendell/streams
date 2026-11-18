@@ -14,12 +14,12 @@ use crate::{
             ReferenceChange, ReferenceChanges,
         },
     },
-    storage::records::{RecordAddress, RecordRequest},
+    storage::records::RecordAddress,
 };
 
 #[derive(Debug, Clone)]
 pub struct RecordUpdate {
-    pub(crate) request: RecordRequest,
+    pub(crate) target: RecordAddress,
     pub(crate) edit: CapturedEdit,
     pub(crate) title_defaults: TitleDefaults,
 }
@@ -30,15 +30,8 @@ pub(crate) enum CapturedEdit {
     References(ReferenceChanges),
 }
 impl RecordUpdate {
-    pub fn operation_id(&self) -> &str {
-        match &self.edit {
-            CapturedEdit::Session(edit) => edit.operation_id(),
-            CapturedEdit::Stream(edit) => edit.operation_id(),
-            CapturedEdit::References(edit) => edit.operation_id(),
-        }
-    }
     pub fn target(&self) -> &RecordAddress {
-        &self.request.target
+        &self.target
     }
 }
 
@@ -53,7 +46,6 @@ struct Input {
 struct Wire {
     version: u64,
     catalog_source: String,
-    operation_id: String,
     kind: RecordKind,
     actor: Actor,
     before: Value,
@@ -103,22 +95,14 @@ fn parse_reference_changes(
                 })?;
                 return Ok(ReferenceChange::UserDelete { key });
             }
-            exact_keys(row, &["key", "desired", "next_revision"], &[])?;
+            exact_keys(row, &["key", "desired"], &[])?;
             let key = serde_json::from_value(row["key"].clone())
                 .map_err(|error| ValidationError::new(format!("invalid reference key: {error}")))?;
-            let next_revision = row["next_revision"]
-                .as_str()
-                .ok_or_else(|| ValidationError::new("next_revision must be a string"))?
-                .to_owned();
             if actor == Actor::User {
                 let desired = serde_json::from_value(desired.clone()).map_err(|error| {
                     ValidationError::new(format!("invalid reference value: {error}"))
                 })?;
-                return Ok(ReferenceChange::UserSet {
-                    key,
-                    desired,
-                    next_revision,
-                });
+                return Ok(ReferenceChange::UserSet { key, desired });
             }
             let object = require_object(desired, "automatic reference value")?;
             exact_keys(object, &["name", "purpose", "role", "state", "target"], &[])?;
@@ -167,11 +151,7 @@ fn parse_reference_changes(
                     .map_err(|error| ValidationError::new(error.to_string()))?,
                 target,
             };
-            Ok(ReferenceChange::Automatic {
-                key,
-                desired,
-                next_revision,
-            })
+            Ok(ReferenceChange::Automatic { key, desired })
         })
         .collect()
 }
@@ -219,7 +199,6 @@ pub fn parse_record_update(
                 ));
             }
             CapturedEdit::Session(SessionEdit::new(
-                &wire.operation_id,
                 &session,
                 &wire.changes,
                 wire.actor,
@@ -246,7 +225,6 @@ pub fn parse_record_update(
                 let changes =
                     parse_reference_changes(wire.actor, &wire.changes["reference_changes"])?;
                 CapturedEdit::References(ReferenceChanges::new(
-                    &wire.operation_id,
                     &stream,
                     wire.actor,
                     captured_session.as_ref(),
@@ -254,7 +232,6 @@ pub fn parse_record_update(
                 )?)
             } else {
                 CapturedEdit::Stream(StreamEdit::new(
-                    &wire.operation_id,
                     &stream,
                     &wire.changes,
                     wire.actor,
@@ -265,11 +242,8 @@ pub fn parse_record_update(
         }
         Record::Host(_) => unreachable!("Host edits refused above"),
     };
-    // Fingerprint the original wire intent, including fields normalization declines to apply.
-    let request = RecordRequest::new(target, wire.operation_id, &value)
-        .map_err(|error| ValidationError::new(error.to_string()))?;
     Ok(RecordUpdate {
-        request,
+        target,
         edit,
         title_defaults,
     })

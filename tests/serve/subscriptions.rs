@@ -1165,8 +1165,8 @@ fn a_pi_workspace_move_selects_the_exact_destination_and_moves_only_its_session(
         destination["id"]
     );
     assert_eq!(
-        moved["outcome"]["result"]["session"]["previous_stream_ids"],
-        json!([original])
+        moved["outcome"]["result"]["session"]["membership_epoch"],
+        json!(1)
     );
     assert_eq!(
         f.fixture
@@ -1259,12 +1259,15 @@ fn workspace_markers_select_the_existing_stream_for_unenrolled_lifecycle_and_enr
         assert_eq!(context["stream"], before, "{captured}");
         assert!(context["session"].is_null());
         assert_eq!(context["sessions"], json!([]));
-        child.request(3, json!({"kind":"enroll","request":{
-            "version":2,"operation_id":"enroll-second","catalog_source":context["catalog_source"],
-            "harness":"pi","harness_session_id":id,"actor":"user",
-            "cwd":f.fixture.directory.path(),"stream_id":context["stream"]["id"],
-            "session":{"title":"Second conversation"}
-        }}));
+        child.request(
+            3,
+            json!({"kind":"enroll","request":{
+                "version":2,"catalog_source":context["catalog_source"],
+                "harness":"pi","harness_session_id":id,"actor":"user",
+                "cwd":f.fixture.directory.path(),"stream_id":context["stream"]["id"],
+                "session":{"title":"Second conversation"}
+            }}),
+        );
         let enrolled = child.response(3);
         assert_eq!(enrolled["outcome"]["status"], "success", "{enrolled}");
         assert_eq!(
@@ -1339,7 +1342,7 @@ fn fresh_pi_defers_observation_until_its_transcript_exists_and_keeps_the_workspa
             None,
         )["catalog_source"]
             .clone();
-        let mut request = json!({"version":2,"operation_id":"fresh-enrollment","catalog_source":source,
+        let mut request = json!({"version":2,"catalog_source":source,
             "harness":"pi","harness_session_id":id,"actor":"automatic",
             "cwd":f.fixture.directory.path(),"session":{"title":"Fresh conversation"}});
         if early_startup {
@@ -1508,7 +1511,7 @@ fn accepted_save_with_native_completion_failure_retains_the_result_and_warns_onc
     let context = child.response(2);
     assert_eq!(context["outcome"]["status"], "success", "{context}");
     let context = &context["outcome"]["result"];
-    let request = json!({"version":2,"operation_id":"native-warning","catalog_source":context["catalog_source"],"actor":"user",
+    let request = json!({"version":2,"catalog_source":context["catalog_source"],"actor":"user",
         "kind":"session","before":context["session"],"changes":{"title":"Saved despite native failure"},
         "title_default":context["title_defaults"]["session"],"inputs":[]});
     f.fail_next_snapshot.store(true, Ordering::Release);

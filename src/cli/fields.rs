@@ -334,8 +334,7 @@ mod tests {
         let mut current = current_stream();
         current.references.push(serde_json::from_value(json!({
             "name":"Plan", "purpose":"Guide work", "role":"brief", "state":"active",
-            "target":{"kind":"document","repository_url":"git@example.test:tools","path":"plan.md"},
-            "revision":"original"
+            "target":{"kind":"document","repository_url":"git@example.test:tools","path":"plan.md"}
         })).unwrap());
         let references = current.references.clone();
         let input = StreamFields {

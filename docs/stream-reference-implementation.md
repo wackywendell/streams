@@ -9,7 +9,7 @@ The [behavioural contract](stream-references.md) defines the required reference 
 ### Implemented boundary
 
 The Stream stores one required references collection. Each entry has a name,
-purpose, role, state, structured target and revision. Document targets use exact
+purpose, role, state and structured target. Document targets use exact
 repository URLs and relative paths; PR, Issue and Link targets share exact URL
 identity.
 
@@ -19,9 +19,9 @@ identity.
 | [`agent.ts`](../extensions/stream-checkpoint/agent.ts) | Projects conversation evidence and infers Session progress and reference proposals |
 | [`core.ts`](../extensions/stream-checkpoint/core.ts) | Captures reference requests, exact selectors and retained editor intent |
 | [`report-workflow.ts`](../extensions/stream-checkpoint/report-workflow.ts) | Saves Session progress before validating and applying reference proposals |
-| [`src/operations/references.rs`](../src/operations/references.rs) | Applies independent rows with captured identity, membership, revision and Dropped guards |
+| [`src/operations/references.rs`](../src/operations/references.rs) | Applies independent rows with captured identity, membership, Stream revision and Dropped guards |
 | [`src/application/record_update.rs`](../src/application/record_update.rs) | Reads the automatic operation's named Session dependency; user reference saves read only their Stream target |
-| [`src/storage/records.rs`](../src/storage/records.rs) | Defines single-target saves, named dependency reads and stored operation outcomes |
+| [`src/storage/records.rs`](../src/storage/records.rs) | Defines single-target saves, named dependency reads and typed save outcomes |
 
 Reference maintenance has a separate captured operation within the shared save
 path.
@@ -45,7 +45,7 @@ Captured conversation, Stream and Session
       Saved receipt and updated card
 ```
 
-An automatic reference operation reads its Stream target and named Session dependency. A user operation reads only its Stream target. Pure apply compares affected references and returns one replacement Stream with accepted and unapplied outcomes. The storage layer saves that target once, including its receipt. References outside the proposals remain intact.
+An automatic reference operation reads its Stream target and named Session dependency. A user operation reads only its Stream target. Pure apply compares affected references and returns one replacement Stream with accepted and unapplied outcomes. The storage layer saves that target once when it changed. References outside the proposals remain intact.
 
 Construct and save the Session progress request first, then construct reference intent from the original captured catalog. Later reference validation or save refusal leaves earlier saved progress intact. Keep already-collected receipts and the record of prior accepted saves when stopping that stage; report a construction or application error without retrying. Accepted reference receipts keep per-reference outcomes alongside the aggregate decision.
 
@@ -81,7 +81,7 @@ type ReferenceValue = {
   state: ReferenceState;
   target: ReferenceTarget;
 };
-type Reference = ReferenceValue & {revision: string};
+type Reference = ReferenceValue;
 
 type AutomaticDocumentTarget = {
   kind: "document";
@@ -94,9 +94,9 @@ type AutomaticReferenceValue = Omit<ReferenceValue, "target"> & {
 };
 ```
 
-Every object rejects extra properties. Name, purpose, revision and present recovery strings must pass the existing Rust nonempty text check. Revision is an opaque operation ID; replay IDs remain valid and need no UUID-only validator.
+Every object rejects extra properties. Name, purpose and present recovery strings must pass the existing Rust nonempty text check.
 
-Export isReferenceText from streams-context.ts and re-export it from streams.ts for core callers. Use it for every new reference-owned string check, including repository locators, portable paths, resource-key strings and next_revision/operation_id validation for reference requests. Its acceptance matches Rust check_text with empty_ok=false. Preserve the original string and apply the existing relative-path and URL rules after this check. Keep unrelated existing validators unchanged.
+Export isReferenceText from streams-context.ts and re-export it from streams.ts for core callers. Use it for every new reference-owned string check, including repository locators, portable paths, and resource-key strings. Its acceptance matches Rust check_text with empty_ok=false. Preserve the original string and apply the existing relative-path and URL rules after this check. Keep unrelated existing validators unchanged.
 
 ```ts
 export function isReferenceText(value: unknown): value is string {
@@ -178,9 +178,7 @@ code compares the selected exact identifiers.
 
 ### Comparison and cleanup meanings
 
-A stale captured mutation leaves a newer supported reference edit intact, even when its visible fields return to earlier values. This guarantee assumes distinct effective operations use distinct IDs. Each effective reference change uses its operation ID as next_revision, including recreation. A no-op keeps the saved revision. The Stream remains the single save target.
-
-Compare the complete captured reference value, including revision. This detects an outside edit with an unchanged revision when its current body differs from capture. An outside writer that restores the complete original body and token leaves no observable difference. Unrelated reference and Session progress changes remain outside that entry's comparison.
+References carry no revision of their own. A user reference save compares and swaps on the captured Stream `revision`, so any Stream change since capture refuses the whole user request. An automatic reference row compares the complete captured reference value with the current one; an outside writer that restores the complete original value leaves no observable difference. Unrelated reference and Session progress changes remain outside that entry's comparison. A row whose desired value the Stream already holds is no change, so a retried save that already landed is recognised from the record. The Stream remains the single save target.
 
 Drop retains an exact identity in Dropped state and suppresses automatic restoration. Delete forgets the relationship and permits rediscovery, including through a report already underway. A captured mutation still needs its original reference to match. Deletion never turns that mutation into an addition.
 
@@ -194,7 +192,6 @@ StreamWire, SessionWire and Mode retain their existing meanings.
 type SetReference<V> = {
   key: ResourceKey;
   desired: V;
-  next_revision: string;
 };
 type DeleteReference = {
   key: ResourceKey;
@@ -206,7 +203,6 @@ type UserReferenceChange = SetReference<ReferenceValue> | DeleteReference;
 type ReferenceEnvelope<C> = {
   version: 2;
   catalog_source: string;
-  operation_id: string;
   kind: "stream";
   before: StreamWire;
   changes: {reference_changes: C[]};
@@ -222,15 +218,15 @@ type UserReferenceRequest = ReferenceEnvelope<UserReferenceChange> & {
 };
 ```
 
-Require changes to contain only the reference_changes property, whose value is a nonempty array. Reject mixed ordinary field edits. Every non-null row requires next_revision equal to operation_id. For a captured existing reference, next_revision must also differ from its captured revision. An identical request retry retains its original before value and remains eligible for stored-receipt replay.
+Require changes to contain only the reference_changes property, whose value is a nonempty array. Reject mixed ordinary field edits. A retried request keeps its original before value; record state decides its outcome.
 
-A key present in before selects an existing reference. A key absent from before denotes an addition and must equal the desired target key. A deletion requires an existing captured reference and omits next_revision. Automatic rows must keep the same old and desired key. User rows may correct a captured target.
+A key present in before selects an existing reference. A key absent from before denotes an addition and must equal the desired target key. A deletion requires an existing captured reference. Automatic rows must keep the same old and desired key. User rows may correct a captured target.
 
 For correction, key identifies the old resource and desired.target supplies the new one. Across the batch, each old or new key belongs to one proposal only. A row can use the same old and new key. Reject overlaps between different rows during request validation. An occupied destination belonging to an untouched reference is an apply-time conflict for that row.
 
 ### Discussion edit
 
-Keep the existing stream and session discussion variants. Add this variant. Runtime supplies its revisions.
+Keep the existing stream and session discussion variants. Add this variant.
 
 ```ts
 type ReferenceDraft<V> = {key: ResourceKey; desired: V};
@@ -253,7 +249,7 @@ type ReferenceDiscussionResult = {
 
 The full discussion edit schema allows one response variant from the two existing ordinary variants and ReferenceDiscussionEdit. A reference edit contains nonempty changes and uses the captured-request target/key checks. User-authority edits require explicit user direction, including an explicit restoration request for a Dropped reference.
 
-The core builder is `referenceRequest(context, actor, drafts, operationId): ApplyRequest | undefined`. It validates and clones the capture, removes effective no-ops, fills next_revision on non-null values, and returns undefined when no rows remain. Compute automatic no-ops after applying the captured recovery-metadata preservation rules, so excluded provenance fields do not create spurious changes. It supplies exactly one Session input for automatic requests and none for user requests. It must preserve the original capture while building the separate progress and reference requests.
+The core builder is `referenceRequest(context, actor, drafts): ApplyRequest | undefined`. It validates and clones the capture, removes effective no-ops, and returns undefined when no rows remain. Compute automatic no-ops after applying the captured recovery-metadata preservation rules, so excluded provenance fields do not create spurious changes. It supplies exactly one Session input for automatic requests and none for user requests. It must preserve the original capture while building the separate progress and reference requests.
 
 ### Example request construction
 
@@ -269,7 +265,6 @@ declare const captured: {
 const automatic: AutomaticReferenceRequest = {
   version: 2,
   catalog_source: captured.catalog_source,
-  operation_id: "report-reference-42",
   kind: "stream",
   actor: "automatic",
   before: captured.stream,
@@ -284,7 +279,6 @@ const automatic: AutomaticReferenceRequest = {
       state: "active",
       target: {kind: "pr", url: "https://github.com/example/tools/pull/42"},
     },
-    next_revision: "report-reference-42",
   }]},
 };
 
@@ -292,7 +286,6 @@ const automatic: AutomaticReferenceRequest = {
 const user: UserReferenceRequest = {
   version: 2,
   catalog_source: captured.catalog_source,
-  operation_id: "user-reference-43",
   kind: "stream",
   actor: "user",
   before: captured.stream,
@@ -307,7 +300,6 @@ const user: UserReferenceRequest = {
       state: "active",
       target: {kind: "link", url: "https://example.org/brief#accepted"},
     },
-    next_revision: "user-reference-43",
   }, {
     key: {kind: "url", url: "https://example.org/obsolete"},
     desired: null,
@@ -319,7 +311,7 @@ const user: UserReferenceRequest = {
 
 Add the following public Rust boundary to operations/references.rs. The signatures show the interface with method bodies omitted. Saved/user values and result types derive strict serde forms matching the wire declarations. ReferenceChanges owns validated, cloned capture and intent.
 
-Decode reference intent in parse_record_update before any optional-field deserialization loses property presence. Keep each change as a JSON object while checking its exact required and allowed keys, then dispatch by the envelope actor. For automatic document targets, allow only kind, repository_url, path and optional ref. A present ref must be a nonempty string; commit and source_session_id are unknown properties even when null. User targets use the saved nullable recovery-field rules. Delete requires a present null desired and forbids next_revision; set requires non-null desired and a string next_revision.
+Decode reference intent in parse_record_update before any optional-field deserialization loses property presence. Keep each change as a JSON object while checking its exact required and allowed keys, then dispatch by the envelope actor. For automatic document targets, allow only kind, repository_url, path and optional ref. A present ref must be a nonempty string; commit and source_session_id are unknown properties even when null. User targets use the saved nullable recovery-field rules. Delete requires a present null desired; set requires a non-null desired.
 
 Construct the following in-memory variants after those checks. ReferenceChange and automatic intent types have no Deserialize implementation. The parser constructs them from validated raw objects; direct Rust callers construct typed intent. `ReferenceChanges::new` requires Automatic variants for an automatic actor, UserSet/UserDelete for a user actor, and rejects native authority. This representation adds no wire tags.
 
@@ -328,12 +320,10 @@ pub enum ReferenceChange {
     Automatic {
         key: ResourceKey,
         desired: AutomaticReferenceValue,
-        next_revision: String,
     },
     UserSet {
         key: ResourceKey,
         desired: ReferenceValue,
-        next_revision: String,
     },
     UserDelete { key: ResourceKey },
 }
@@ -344,14 +334,12 @@ pub struct ReferenceChanges { /* private validated fields */ }
 
 impl ReferenceChanges {
     pub fn new(
-        operation_id: &str,
         before: &Stream,
         actor: Actor,
         captured_session: Option<&Session>,
         changes: Vec<ReferenceChange>,
     ) -> Result<Self, ValidationError>;
 
-    pub fn operation_id(&self) -> &str;
     pub fn before(&self) -> &Stream;
     pub fn captured_session(&self) -> Option<&Session>;
 
@@ -368,36 +356,37 @@ pub struct ReferenceReconciliation {
 }
 
 impl ReferenceReconciliation {
-    pub fn domain(&self) -> serde_json::Map<String, serde_json::Value>;
+    pub fn outcome(&self) -> EditOutcome;
 }
 ```
 
-Constructor checks cover capture validity, actor/input shape, complete proposed values, operation IDs, next revisions and batch independence. For automatic requests, require captured_session.stream_id=before.id and captured_session.host_id=before.owner_host_id, preserving the current addition operation's admission rule. Native actor is invalid. Leave semantic stale-state and Dropped checks to apply, so one refused proposal does not discard independent changes.
+Constructor checks cover capture validity, actor/input shape, complete proposed values and batch independence. For automatic requests, require captured_session.stream_id=before.id and captured_session.host_id=before.owner_host_id, preserving the current addition operation's admission rule. Native actor is invalid. Leave semantic stale-state and Dropped checks to apply, so one refused proposal does not discard independent changes.
 
-Apply checks current Stream identity and ownership first. Automatic changes compare the captured and current Session ID, native identity, stream_id and previous_stream_ids using the existing membership-period rule. Ordinary progress fields are outside that comparison. User changes require no Session. Pure apply performs no reads, generates no IDs and changes no external state.
+Apply checks current Stream identity and ownership first. User changes then require the current Stream `revision` to equal the captured one. Automatic changes compare the captured and current Session ID, native identity, stream_id and membership_epoch. Ordinary progress fields are outside that comparison. User changes require no Session. Pure apply performs no reads, generates no IDs and changes no external state.
 
 ### Refusal mapping
 
-Check the two whole-operation guards first. If they pass, apply the first matching remaining condition independently to each proposal. The current reference comparison includes every captured field and its revision. Preconditions run before effective-value equality.
+A row whose desired value already equals the current one is NoChange before any other check, so a landed retry writes nothing. Otherwise check the whole-operation guards first. If they pass, apply the first matching remaining condition independently to each proposal. The current reference comparison includes every captured field.
 
 | Condition | Automatic result | User result | Effect |
 | --- | --- | --- | --- |
 | Current Stream identity or ownership differs | All rows Superseded | All rows Conflict | Preserve the entire current Stream |
+| Current Stream revision differs from the user capture | Not applicable | All rows Conflict | Preserve the entire current Stream |
 | Captured Session is missing or its native identity or membership period changed | All rows Superseded | Not applicable | Preserve the entire current Stream |
 | A captured reference is now absent | That row Superseded | That row Conflict | Preserve deletion |
-| A captured reference differs from its current value or revision | That row Superseded | That row Conflict | Preserve the current reference |
+| A captured reference differs from its current value | That row Superseded | That row Conflict | Preserve the current reference |
 | An addition's key is occupied now | That row Superseded | That row Conflict | Preserve the current reference |
 | A captured Dropped reference is proposed in a visible state | That row Superseded | Continue normal user checks | Preserve Dropped on automatic reports |
 | A correction's destination key is occupied by another current reference | Invalid automatic request | That row Conflict | Preserve both references |
-| Preconditions match and effective desired value equals current value | NoChange | NoChange | Keep the saved revision |
 | Preconditions match and desired is null | Invalid automatic request | Changes | Remove that reference |
-| Preconditions match and desired changes a value or adds a reference | Changes | Changes | Install the desired value with next_revision |
+| Preconditions match and desired changes a value or adds a reference | Changes | Changes | Install the desired value |
 
 Use these concrete refusal reasons for the corresponding row conditions.
 
 | Condition | Reason |
 | --- | --- |
 | Stream identity or ownership changed | captured Stream identity or ownership changed |
+| User capture is stale | Stream changed since capture; capture fresh inputs |
 | Session guard failed | captured Session identity or membership period changed |
 | Reference absent | reference no longer exists |
 | Reference changed | reference changed since capture |
@@ -458,9 +447,9 @@ For example, a stale automatic update plus an independent addition produces this
 }
 ```
 
-Use ReferenceReconciliation.domain() for both real saves and preview. The application installs the reconciliation's replacement Record when present, retains the current Record otherwise, and stores this domain map in RecordChange.outcome. Preserve the existing projection for other operation kinds.
+Use ReferenceReconciliation.outcome() for both real saves and preview. The application installs the reconciliation's replacement Record when present, retains the current Record otherwise, and stores this typed outcome in RecordChange.outcome. Preserve the existing projection for other operation kinds.
 
-Record-save receipts replay the stored result for identical operations after deletion. New reference proposals compare the current collection with their captured preconditions.
+There is no stored result to replay. Every request, including a retry, compares the current collection with its captured preconditions.
 
 ### Application and preview integration
 
@@ -469,14 +458,13 @@ Add the following application entry point. It constructs user intent with no Ses
 ```rust
 pub fn save_user_references(
     store: &impl RecordStore,
-    operation_id: &str,
     before: &Stream,
     changes: Vec<ReferenceChange>,
     defaults: TitleDefaults,
-) -> crate::application::Result<RecordSave>;
+) -> crate::application::Result<RecordSave<EditOutcome>>;
 ```
 
-Replace `CapturedEdit::Documents` with `CapturedEdit::References`. Automatic application reads the named captured Session; user application reads only its Stream target. The single-target store and embedded receipt contract remain unchanged.
+Replace `CapturedEdit::Documents` with `CapturedEdit::References`. Automatic application reads the named captured Session; user application reads only its Stream target. The single-target store contract remains unchanged.
 
 Preview in src/agent/preview.rs integrates the shared reference operation into simulated record updates. Preserve its exact captured-Stream/supplied-snapshot admission check. Automatic reference apply uses the supplied current Session and the membership-period comparison, allowing earlier simulated progress changes. User reference apply has no Session requirement.
 
@@ -805,8 +793,8 @@ Keep offline activation as an explicit later action requiring user approval. Sto
 
 | Action | File | Change and reason |
 | --- | --- | --- |
-| Modify | `src/model.rs` | Replace the three saved collections with required `references`; define reference, role, state, target and exact resource-key types. Validate nonempty name and purpose, targets, revision tokens and unique keys across URL kinds. Keep document recovery metadata separate from identity and own the shared URL validation policy. |
-| Create | `src/operations/references.rs` | Define captured `ReferenceChanges` and its pure result with per-reference outcomes. Derive expected revisions from the captured Stream; apply independent proposals while preserving newer data and automatic Dropped protection. |
+| Modify | `src/model.rs` | Replace the three saved collections with required `references`; define reference, role, state, target and exact resource-key types. Validate nonempty name and purpose, targets and unique keys across URL kinds. Keep document recovery metadata separate from identity and own the shared URL validation policy. |
+| Create | `src/operations/references.rs` | Define captured `ReferenceChanges` and its pure result with per-reference outcomes. Compare user requests with the captured Stream revision; apply independent proposals while preserving newer data and automatic Dropped protection. |
 | Delete | `src/operations/documents.rs` | Remove the superseded addition-only operation after its callers use the shared operation. |
 | Modify | `src/operations.rs` | Export the shared operation and remove the old reference field policies. Keep references outside ordinary Stream field edits; remove the additive-merge function once its last reference caller is removed. |
 | Modify | `src/operations/edits.rs` | Remove the three collection-merge branches. Preserve title, goal, lifecycle and Session field reconciliation. |
@@ -839,7 +827,7 @@ Keep offline activation as an explicit later action requiring user approval. Sto
 
 The checkout registry, record-store interface, YAML atomic-save adapter, file transport and child protocol retain their existing contracts. Use existing dependencies and build tasks. Keep document shortcut-map names where they describe navigation.
 
-Use current test harnesses and fakes. Register the new CLI test module inside its source module and retain existing verification models. Generated fixtures must keep deterministic revision tokens.
+Use current test harnesses and fakes. Register the new CLI test module inside its source module and retain existing verification models. Generated fixtures must be deterministic.
 
 ### Tests and fixtures
 
@@ -850,7 +838,7 @@ Use the existing UI harness and native fakes. Move the six unsafe URL snapshot c
 | Modify | `tests/codec.rs` | Cover new target shapes, required fields, unknown-field refusal, exact-key uniqueness, document recovery round trips and the unsafe URL cases moved out of renderer snapshots. For names, purposes, revisions, present recovery fields and document locator/path text, accept U+FEFF and valid supplementary characters, reject whitespace-only U+0085 and any NUL, and preserve accepted strings unchanged. Reject malformed-surrogate JSON through decoding. Reject the old Stream reference fields. |
 | Modify | `tests/enum_values.rs` | Add exhaustive role and reference-state wire-value checks. |
 | Modify | `tests/record_updates.rs` | Replace addition-only tests with shared operation cases for partial acceptance, all roles and states, target correction, ownership, membership revisits, stale edits and exact read/write budgets. |
-| Modify | `tests/record_local.rs` | Exercise stored partial outcomes, identical retries after later edits and changed-intent refusal with reference changes. Keep current record data intact on receipt replay. |
+| Modify | `tests/record_local.rs` | Exercise partial outcomes, landed retries and retries after later edits with reference changes. Keep current record data intact on retry. |
 | Modify | `src/operations/edits/tests.rs` | Replace old collection-merge coverage with refusal of generic reference-list edits. Retain unrelated ordinary-edit coverage. |
 | Modify | `tests/agent_capture.rs` | Assert one hint callback per typed Stream/Session sample, empty arrays with missing records, no calls for inventory-only capture and retained successful/unavailable hint payloads. |
 | Modify | `tests/agent_preview.rs` | Exercise reference proposals and partial outcomes through the real pure preview adapter without live persistence. Preserve exact captured-Stream admission; use an occupied correction target to demonstrate a partial result. |
@@ -892,7 +880,7 @@ Use the existing UI harness and native fakes. Move the six unsafe URL snapshot c
 
 Stop old clients and obtain approval for a fresh catalog root and, when sharing, a fresh compatible transport destination before using the new binary with a live catalog. Keep the old catalog offline as a backup. Initialise the new catalog through existing commands, restart clients and enrol the wanted work. Activation remains an explicit operator step.
 
-Stored operation receipts retain their normal retry role, as defined in the domain-result contract. New runtime code reads only the new reference representation.
+New runtime code reads only the new reference representation.
 
 ## Verification plan
 
@@ -906,12 +894,12 @@ Implementation must pass the following checks.
 | Identity | Duplicate exact URL rejected across URL kinds; document ref or commit does not create a new identity; equivalent spellings remain distinct unless the model reuses a supplied key |
 | Evidence | Current trimmed and full projection fixtures remain unchanged; attempted file paths alone establish no success; uncertain or tool-only references can be omitted |
 | Capture | One Session inference can produce progress and references; the reference request retains the original Stream and Session after progress saves; reset context keeps references and established checkout/location hints |
-| Concurrency | A newer A is preserved while independent B saves; unrelated reference and Session progress edits do not reject A; supported operation changes returned to earlier values have a newer revision; outside edits are detected when their current body or token differs |
+| Concurrency | A newer A is preserved while independent B saves; unrelated reference and Session progress edits do not reject A; a user capture taken before any Stream change conflicts; outside edits are detected when their current value differs |
 | Deletion | A captured mutation cannot update a deleted or recreated reference; an addition captured while absent may rediscover after permanent deletion; no deletion ledger is consulted |
 | Authority | Foreign-host writes, changed native identity, moved membership and move-away-and-back are refused; explicit user edits work without any Session |
 | Dropped | Automatic restoration is refused per row while an independent change saves; automatic deletion is structurally invalid; metadata edits and stale text reapplication preserve Dropped; explicit restoration can choose Active or Fulfilled |
 | Retargeting | An old proposal cannot reach a corrected target; occupied destination keys conflict; overlapping changes are rejected before apply |
-| Receipts | Partial results survive local save and retry; partial Changes sets accepted_save and warning output; changed intent cannot reuse an operation ID; later current data survives replay of an earlier receipt |
+| Receipts | Partial results survive local save; partial Changes sets accepted_save and warning output; a landed retry is no change; later current data survives a retry |
 | Failure | Session progress remains saved after reference refusal; savedAny records earlier accepted saves before stopping; later Stream inference is skipped; no retry occurs; uncertain persistence or failed publication remains distinct from domain acceptance |
 | Management | The current Stream tab offers References; all states are inspectable; Delete requires confirmation; dirty captures and unapplied input survive reopening; reapply requires explicit refresh and restoration choices |
 | Presentation | Fulfilled stays eligible for display; Dropped has no normal-card action or overflow count; saved names and relationship text use the specified layout; clipped headers retain actions under the existing painted-prefix/text rules; vertically omitted entries have none; purpose continuation preserves selected minima and exact entry overflow counts; artifacts keep their separate source |
@@ -920,13 +908,12 @@ Implementation must pass the following checks.
 
 ### Record-local cost assertions
 
-Use existing YAML observation utilities with zero and many unrelated records,
+Use existing record-store observation utilities with zero and many unrelated records,
 including malformed unrelated records. After opening the store, an automatic
 reference save reads its Stream target and named Session plus the fixed
 format metadata. It performs no directory inventory and replaces at most
-one target envelope, including its receipt. A user reference save needs no
-Session dependency read. An identical retry reads the target receipt
-without reading the Session or writing another envelope.
+one target record. A user reference save needs no Session dependency read.
+A retry that already landed reads the same records and writes nothing.
 
 Count addressed reads, transferred bytes and installed replacements under the
 existing [adapter budget](record-local-operations.md#inventory-and-operation-budgets).

@@ -290,21 +290,14 @@ impl App {
     ) -> Result<Output> {
         let opened = application::open_records(&self.config)?;
         let stream = self.proposed_stream(opened.host().as_str(), title, &fields)?;
-        let operation = Uuid::new_v4().to_string();
-        let saved =
-            application::create_record(opened.records(), &operation, &Record::Stream(stream));
-        let current = saved
-            .as_ref()
-            .ok()
-            .map(|saved| match &saved.current.record {
-                Record::Stream(stream) => stream.clone(),
-                _ => unreachable!("Stream creation target"),
-            });
-        let mut output = catalog::finish_save(&operation, saved)?;
+        let saved = application::create_record(opened.records(), &Record::Stream(stream))?;
+        let Record::Stream(stream) = saved.current.record.clone() else {
+            unreachable!("Stream creation target")
+        };
+        let mut output = catalog::finish_created(saved);
         if !output.accepted_save {
             return Ok(output);
         }
-        let stream = current.expect("accepted creation returns its actual Stream");
         let completion = (|| -> Result<Option<(Value, bool)>> {
             let directory = self.path(cwd.as_deref().unwrap_or(&self.cwd))?;
             let locations = self.locations(opened.root(), opened.host().as_str())?;
@@ -353,7 +346,7 @@ impl App {
     }
 
     fn proposed_stream(&self, host: &str, title: String, intent: &StreamFields) -> Result<Stream> {
-        let mut stream = Stream::new(Uuid::new_v4().to_string(), title, None, host)?;
+        let mut stream = Stream::new(uuid::Uuid::new_v4().to_string(), title, None, host)?;
         stream.title_mode = TitleMode::Manual;
         let changes = fields::stream(&stream, intent, &mut |path| self.read_text(path))?;
         let Record::Stream(stream) =

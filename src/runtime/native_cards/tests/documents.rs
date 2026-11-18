@@ -12,13 +12,11 @@ impl DocumentSource {
         );
         stream.references.push(serde_json::from_value(json!({
             "name":"Design","purpose":"Guide the work","role":"brief","state":"active",
-            "target":{"kind":"document","repository_url":"repository","path":"design.md","ref":"main"},
-            "revision":"fixture"
+            "target":{"kind":"document","repository_url":"repository","path":"design.md","ref":"main"}
         })).unwrap());
         if let Some(change) = self.1 {
             let reference = &mut stream.references[0];
             match change {
-                "revision" => reference.revision = "newer".into(),
                 "name" => reference.name = "New name".into(),
                 "purpose" => reference.purpose = "New purpose".into(),
                 "role" => reference.role = crate::model::ReferenceRole::Dependency,
@@ -121,8 +119,8 @@ fn document_open_reuses_the_exact_editor_and_accepts_a_tab_info_focus_reply() {
 }
 
 #[test]
-fn document_open_refuses_fresh_target_relationship_revision_and_dropped_changes() {
-    for change in ["revision", "name", "purpose", "role", "dropped", "target"] {
+fn document_open_refuses_fresh_target_relationship_and_dropped_changes() {
+    for change in ["name", "purpose", "role", "dropped", "target"] {
         let f = Fixture::new();
         let root = f.directory.path().canonicalize().unwrap();
         std::fs::write(root.join("design.md"), "Design").unwrap();

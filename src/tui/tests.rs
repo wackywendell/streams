@@ -135,13 +135,12 @@ fn document_mut(reference: &mut Reference) -> &mut RepositoryDocument {
 fn document_reference(path: &str, name: &str) -> Reference {
     serde_json::from_value(serde_json::json!({
         "name":name, "purpose":"Guide the work", "role":"brief", "state":"active",
-        "target":{"kind":"document","repository_url":"https://example.com/lib","path":path,"ref":"topic"},
-        "revision":format!("fixture-{path}")
+        "target":{"kind":"document","repository_url":"https://example.com/lib","path":path,"ref":"topic"}
     })).unwrap()
 }
 fn url_reference(kind: &str, url: &str, name: &str) -> Reference {
     serde_json::from_value(serde_json::json!({
-        "name":name,"purpose":name,"role":"deliverable","state":"active","target":{"kind":kind,"url":url},"revision":"fixture-url"
+        "name":name,"purpose":name,"role":"deliverable","state":"active","target":{"kind":kind,"url":url}
     })).unwrap()
 }
 fn reference_url_text(reference: &Reference) -> &str {
@@ -399,11 +398,10 @@ fn link_actions_require_fresh_membership_under_the_painters_url_policy() {
     refreshed.records.stream.references[0].state = ReferenceState::Dropped;
     assert!(!refreshed.contains_link(&painted));
     assert!(refreshed.contains_link(&equivalent));
-    for field in ["revision", "name", "purpose", "kind", "role", "state"] {
+    for field in ["name", "purpose", "kind", "role", "state"] {
         let mut changed = original.clone();
         let reference = &mut changed.records.stream.references[0];
         match field {
-            "revision" => reference.revision = "newer".into(),
             "name" => reference.name = "New name".into(),
             "purpose" => reference.purpose = "New purpose".into(),
             "kind" => {
@@ -530,11 +528,7 @@ fn artifacts_render_from_session_metadata_with_exact_fresh_shortcuts() {
     view.begin_refresh();
     assert!(!view.is_current(&action));
     assert!(view.paint(Rect::new(0, 0, 100, 20)).documents.is_empty());
-    snapshot
-        .records
-        .session
-        .previous_stream_ids
-        .push(snapshot.records.stream.id.clone());
+    snapshot.records.session.membership_epoch += 1;
     snapshot.records.session.stream_id = "destination".into();
     snapshot.records.stream.id = "destination".into();
     let rendered = super::render::render(Some(&snapshot), Rect::new(0, 0, 100, 20), None);
@@ -616,11 +610,6 @@ fn artifact_descriptions_use_available_height_instead_of_a_count_cutoff() {
                 })
                 .collect(),
         );
-        snapshot
-            .records
-            .session
-            .previous_stream_ids
-            .push("former-stream".into());
         snapshot.records.session.artifacts.insert(
             "former-stream".into(),
             (0..4)

@@ -27,7 +27,6 @@ fn artifact_content_and_session_metadata_sync_to_a_read_only_foreign_replica() {
     write_artifact(
         &a_records,
         "a-host",
-        "output",
         &WriteArtifact {
             session_id,
             stream_id: None,
@@ -49,10 +48,10 @@ fn artifact_content_and_session_metadata_sync_to_a_read_only_foreign_replica() {
             .len(),
         1
     );
-    assert!(delete_artifact(&b_records, "foreign-delete", &key).is_err());
+    assert!(delete_artifact(&b_records, &key).is_err());
     let path = crate::yaml_store::records::relative_artifact_path(&key).unwrap();
     assert_eq!(fs::read(b.join(path)).unwrap(), b"useful output\n");
-    delete_artifact(&a_records, "delete", &key).unwrap();
+    delete_artifact(&a_records, &key).unwrap();
     assert_eq!(a_sync.sync().sharing, SharingStatus::Confirmed);
     assert_eq!(b_sync.sync().sharing, SharingStatus::Confirmed);
     assert!(read_artifact(&b_records, &key).is_err());

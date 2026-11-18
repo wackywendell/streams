@@ -53,7 +53,7 @@ fn move_changes_only_membership_and_its_period() {
     let (session, a, b, intent) = records();
     let mut expected = session.clone();
     expected.stream_id = "b".into();
-    expected.previous_stream_ids = vec!["a".into()];
+    expected.membership_epoch = 1;
     assert_eq!(
         apply_move(&session, &a, &b, &intent).unwrap(),
         Some(expected)
@@ -72,8 +72,7 @@ fn unchanged_membership_creates_no_new_period_and_revisit_keeps_both_transitions
     assert_eq!(apply_move(&moved, &b, &b, &to_b).unwrap(), None);
     let returned = apply_move(&moved, &b, &a, &to_a).unwrap().unwrap();
     assert_eq!(returned.stream_id, session.stream_id);
-    assert_eq!(returned.previous_stream_ids, ["a", "b"]);
-    assert_ne!(returned.previous_stream_ids, session.previous_stream_ids);
+    assert_eq!(returned.membership_epoch, 2);
     assert_eq!(returned.id, session.id);
 }
 

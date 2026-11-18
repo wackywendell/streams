@@ -9,7 +9,7 @@ use crate::{
     model::RecordKind,
     storage::{
         StorageError,
-        records::{RecordAddress, RecordChange, RecordRead, RecordReader, RecordRequest},
+        records::{RecordAddress, RecordChange, RecordRead, RecordReader},
     },
     yaml_store::encode_component,
 };
@@ -102,16 +102,16 @@ impl ArtifactStore for YamlRecordStore {
         read(&self.scope(false)?)
     }
 
-    fn save_artifact<E: From<StorageError> + std::fmt::Display>(
+    fn save_artifact<T, E: From<StorageError> + std::fmt::Display>(
         &self,
-        request: &RecordRequest,
+        target: &RecordAddress,
         content: ContentChange,
         apply: impl FnOnce(
             &dyn RecordReader,
             Option<&RecordRead>,
-        ) -> Result<(RecordChange, ArtifactKey), E>,
-    ) -> Result<ArtifactSave, E> {
-        if request.target().host() != self.host || request.target().kind() != RecordKind::Session {
+        ) -> Result<(RecordChange<T>, ArtifactKey), E>,
+    ) -> Result<ArtifactSave<T>, E> {
+        if target.host() != self.host || target.kind() != RecordKind::Session {
             return Err(invalid("artifact write must target a local Session").into());
         }
         if let ContentChange::Write(text) = &content {
@@ -120,11 +120,9 @@ impl ArtifactStore for YamlRecordStore {
         let scope = self.scope(true)?;
         let mut path = None;
         let mut content_saved = false;
-        let saved = self.save_scoped(&scope, request, |reader, before| {
+        let saved = self.save_scoped(&scope, target, |reader, before| {
             let (change, key) = apply(reader, before)?;
-            if *request.target()
-                != RecordAddress::new(&key.host, RecordKind::Session, &key.session)?
-            {
+            if *target != RecordAddress::new(&key.host, RecordKind::Session, &key.session)? {
                 return Err(invalid("artifact key must match its producing Session").into());
             }
             let relative = relative_artifact_path(&key)?;
@@ -157,8 +155,9 @@ impl ArtifactStore for YamlRecordStore {
             }
         })?;
         let mut warnings = Vec::new();
-        if matches!(content, ContentChange::Delete) && !save.repeated {
-            let path = path.expect("a fresh save derives its content path");
+        // Deleting again after the reference is gone still removes leftover content.
+        if matches!(content, ContentChange::Delete) {
+            let path = path.expect("a save derives its content path");
             let deleted = match fs::symlink_metadata(&path) {
                 Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
                     fs::remove_file(&path).map_err(invalid).and_then(|()| {

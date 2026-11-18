@@ -46,12 +46,12 @@ fn watched_inputs_have_one_canonical_session_and_stream_address_and_both_directo
         paths,
         BTreeSet::from([
             records.root().join(format!(
-                "hosts/{HOST}/conversations/{}.yaml",
+                "hosts/{HOST}/conversations/{}.json",
                 scope.session_id
             )),
             records
                 .root()
-                .join(format!("hosts/{HOST}/streams/project%2Fname.yaml")),
+                .join(format!("hosts/{HOST}/streams/project%2Fname.json")),
             app.registry(HOST).unwrap().path().into(),
             bindings.path(&scope.stream_id, Some(&scope.session_id)),
             bindings.path(&scope.stream_id, None),
@@ -62,14 +62,14 @@ fn watched_inputs_have_one_canonical_session_and_stream_address_and_both_directo
         destination.contains(
             &records
                 .root()
-                .join(format!("hosts/{HOST}/streams/destination.yaml"))
+                .join(format!("hosts/{HOST}/streams/destination.json"))
         )
     );
     assert!(
         !destination.contains(
             &records
                 .root()
-                .join(format!("hosts/{HOST}/streams/project%2Fname.yaml"))
+                .join(format!("hosts/{HOST}/streams/project%2Fname.json"))
         )
     );
     assert!(destination.contains(&inputs.session_path));
@@ -94,13 +94,13 @@ fn watched_inputs_have_one_canonical_session_and_stream_address_and_both_directo
         "Conversation",
     )
     .unwrap();
-    application::create_record(records.records(), "stream", &Record::Stream(stream)).unwrap();
-    application::create_record(records.records(), "session", &Record::Session(session)).unwrap();
+    application::create_record(records.records(), &Record::Stream(stream)).unwrap();
+    application::create_record(records.records(), &Record::Session(session)).unwrap();
     let mut files = Files::new(paths, Events::new(PaneEvents::new(|_| {}))).unwrap();
     let session = inputs.session(&files).unwrap();
     let stream_path = records
         .root()
-        .join(format!("hosts/{HOST}/streams/project%2Fname.yaml"));
+        .join(format!("hosts/{HOST}/streams/project%2Fname.json"));
     fs::write(&inputs.session_path, "not a record").unwrap();
     fs::write(stream_path, "not a record").unwrap();
     let observed = inputs

@@ -20,13 +20,14 @@ not an existing runtime interface or a settled record-local design.
 
 All current record types, including Streams, have one immutable writing host.
 Cross-host manual edits and handover are not exceptions. A service backend must
-preserve those partitions, embedded retry receipts, captured report admission and
+preserve those partitions, record revisions, captured report admission and
 the distinction between local persistence and publication. Host-local checkout
 registrations, directory bindings, native sockets and process locks never become
 shared catalog records.
 
-The service must persist duplicate-intent evidence if it promises retries across
-server restarts; an HTTP idempotency cache alone is insufficient. The exact client
+Retries are recognised from record state and revisions, so the service must keep
+those revisions across server restarts; an HTTP idempotency cache alone is
+insufficient. The exact client
 queue, acknowledgement and reset model remains to be designed against current
 record interfaces. The old `Operation`, ownership-token, standalone receipt and
 save-marker layouts are not compatibility contracts to recreate.
@@ -72,7 +73,7 @@ When a normal read refresh or write sync detects that `CatalogMeta('root')` is m
 2. **Explicit re-seed (`streams sync --reseed`):** When invoked by the user:
    - pushes the Streams `.ioa.toml`, `.csdl.xml`, and `.cedar` specifications to the `temper-cloud` instance if they are absent;
    - creates a new `CatalogMeta('root')` with a fresh `epoch_id`;
-   - uploads preserved record envelopes, including their embedded retry receipts; and
+   - uploads preserved records, including their revisions; and
    - replays the host's pending `outbox.json` operations on top, updating `.catalog-sync/temper.json` to the new `epoch_id`.
 3. **Secondary host convergence after a re-seed:** When a second host (such as a remote Cloud Workspace) later syncs and observes a new `epoch_id` created by the first host's `--reseed`, it does not discard its local state. Instead, it reconciles any records present in its own local `confirmed` snapshot and `outbox` that are missing or newer on the server—specifically its immutable `hosts/<second-host-id>/` partition—before adopting the new `epoch_id`. Because producer partitions are disjoint across hosts, the union of the hosts' local copies reconstructs the catalog across a total server wipe.
 

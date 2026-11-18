@@ -39,8 +39,8 @@ layout will therefore use Session directories, replacing the initial flat-file
 proposal:
 
 ```text
-hosts/<host>/streams/<stream>.yaml
-hosts/<host>/conversations/<session>.yaml
+hosts/<host>/streams/<stream>.json
+hosts/<host>/conversations/<session>.json
 hosts/<host>/streams/<stream>/artifacts/<session>/<name>
 ```
 
@@ -69,7 +69,7 @@ Writing an existing name will replace its content and description. If the conten
 save succeeds but the Session save fails, the old attachment may refer to updated
 content with its previous description. This is another visible partial save,
 not permission to retry silently. Description-only edits need only the Session
-record. Existing Session-save receipts must not duplicate artifact contents.
+record. Session records must not duplicate artifact contents.
 
 ## Bound names and content
 

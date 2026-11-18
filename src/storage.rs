@@ -13,20 +13,16 @@ pub struct StorageError {
     kind: StorageErrorKind,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StorageErrorKind {
     Definite,
     Uncertain,
-    /// A definite failure to decode one record, which a listing names instead of failing.
-    Unreadable(Box<records::UnreadableRecord>),
 }
 
+/// A point read of an undecodable record fails definitely; listings keep the typed value.
 impl From<records::UnreadableRecord> for StorageError {
     fn from(record: records::UnreadableRecord) -> Self {
-        Self {
-            message: record.to_string(),
-            kind: StorageErrorKind::Unreadable(Box::new(record)),
-        }
+        Self::new(record.to_string())
     }
 }
 
@@ -49,14 +45,6 @@ impl StorageError {
 
     pub fn is_uncertain(&self) -> bool {
         self.kind == StorageErrorKind::Uncertain
-    }
-
-    /// The record this error names when it is a decode failure; otherwise the error itself.
-    pub fn into_unreadable(self) -> Result<records::UnreadableRecord, Self> {
-        match self.kind {
-            StorageErrorKind::Unreadable(record) => Ok(*record),
-            _ => Err(self),
-        }
     }
 
     // Once replacement occurred, any subsequent failure must preserve that ambiguity.

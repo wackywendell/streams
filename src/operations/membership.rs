@@ -91,7 +91,7 @@ pub fn apply_move(
         return Ok(None);
     }
     let mut moved = session.clone();
-    moved.previous_stream_ids.push(session.stream_id.clone());
+    moved.membership_epoch += 1;
     moved.stream_id = destination.id.clone();
     moved.validate_portable()?;
     Ok(Some(moved))

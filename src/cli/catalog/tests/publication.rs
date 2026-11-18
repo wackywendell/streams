@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn direct_human_edit_retry_keeps_its_original_decision_and_actual_current_record() {
+fn direct_human_edit_retry_after_a_later_edit_conflicts_and_keeps_the_later_record() {
     let f = Fixture::new();
     let created = f.create("Work", None, Status::Active);
     let id = created["id"].as_str().unwrap();
@@ -9,7 +9,6 @@ fn direct_human_edit_retry_keeps_its_original_decision_and_actual_current_record
     let changes = json!({"goal":"First"}).as_object().unwrap().clone();
     let first = application::save_user_edit(
         f.opened.records(),
-        "human-edit",
         &Record::Stream(before.clone()),
         &changes,
         TitleDefaults::default(),
@@ -25,14 +24,20 @@ fn direct_human_edit_retry_keeps_its_original_decision_and_actual_current_record
     let bytes = f.snapshot();
     let retry = application::save_user_edit(
         f.opened.records(),
-        "human-edit",
         &Record::Stream(before.clone()),
         &changes,
         TitleDefaults::default(),
     )
     .unwrap();
-    assert!(retry.repeated);
-    assert_eq!(retry.outcome, first.outcome);
+    assert!(!retry.written);
+    assert_eq!(
+        first.outcome.outcome,
+        streams::operations::DomainOutcome::Changes
+    );
+    assert_eq!(
+        retry.outcome.outcome,
+        streams::operations::DomainOutcome::Conflict
+    );
     assert_eq!(record_to_data(&retry.current.record), later["stream"]);
     assert_eq!(f.snapshot(), bytes);
 }

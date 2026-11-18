@@ -91,13 +91,12 @@ pub(super) fn execute(app: &App, session_id: &str, request: Request) -> Result<O
         Request::Sync {} => app.sync_records(),
         Request::Lifecycle { action } => {
             let opened = application::open_records(&app.config)?;
-            let op = uuid::Uuid::new_v4().to_string();
             let update = match action {
                 LifecycleAction::Resume => {
-                    application::lifecycle::resume_session(&opened, Harness::Pi, session_id, &op)?
+                    application::lifecycle::resume_session(&opened, Harness::Pi, session_id)?
                 }
                 LifecycleAction::Park => {
-                    application::lifecycle::park_session(&opened, Harness::Pi, session_id, &op)?
+                    application::lifecycle::park_session(&opened, Harness::Pi, session_id)?
                 }
             };
             let mut output = Output::value(update.to_json());

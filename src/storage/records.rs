@@ -1,10 +1,8 @@
-//! Record-local persistence: exact addresses, one target and its embedded retry evidence.
+//! Record-local persistence: exact addresses and one target per save.
 
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
-use sha2::{Digest, Sha256};
 
 use crate::model::{Record, RecordKind, check_text};
 
@@ -67,42 +65,9 @@ impl RecordAddress {
     }
 }
 
-/// Captured intent is supplied by the domain, never reconstructed from current records.
-#[derive(Debug, Clone)]
-pub struct RecordRequest {
-    pub(crate) target: RecordAddress,
-    pub(crate) operation_id: String,
-    pub(crate) fingerprint: String,
-}
-
-impl RecordRequest {
-    pub fn new(
-        target: RecordAddress,
-        operation_id: impl Into<String>,
-        intent: &Value,
-    ) -> Result<Self, StorageError> {
-        target.validate()?;
-        let operation_id = operation_id.into();
-        check_text(&operation_id, "operation ID", false)
-            .map_err(|e| StorageError::new(e.to_string()))?;
-        let bytes =
-            serde_json::to_vec(&(&target, intent)).map_err(|e| StorageError::new(e.to_string()))?;
-        Ok(Self {
-            target,
-            operation_id,
-            fingerprint: format!("{:x}", Sha256::digest(bytes)),
-        })
-    }
-
-    pub fn target(&self) -> &RecordAddress {
-        &self.target
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordRead {
     pub record: Record,
-    pub revision: String,
 }
 
 /// A record file whose bytes cannot be decoded, named by kind and catalog path, with the cause.
@@ -173,17 +138,39 @@ impl RecordListing {
     }
 }
 
-/// Only the target can be replaced. Domain rejection returns an error instead.
-pub struct RecordChange {
+/// The record a save callback wants stored, with its typed domain outcome.
+/// Returning the current record unchanged skips the write.
+pub struct RecordChange<T> {
     pub record: Record,
-    pub outcome: Map<String, Value>,
+    pub outcome: T,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RecordSave {
+pub struct RecordSave<T> {
     pub current: RecordRead,
-    pub outcome: Map<String, Value>,
-    pub repeated: bool,
+    pub outcome: T,
+    /// False when the record was already as requested, so nothing was written.
+    pub written: bool,
+}
+
+impl<T> RecordSave<T> {
+    /// Names the saved record in a response that reports several saves.
+    pub fn target(&self) -> String {
+        format!(
+            "{}:{}",
+            self.current.record.kind().as_ref(),
+            self.current.record.key().id()
+        )
+    }
+
+    /// The `local` save status every caller reports.
+    pub fn local(&self) -> &'static str {
+        if self.written {
+            "persisted"
+        } else {
+            "unchanged"
+        }
+    }
 }
 
 /// The shell may read named dependencies; it has no enumeration or write capability.
@@ -198,10 +185,6 @@ pub trait RecordInventory {
     fn listing(&self) -> Result<RecordListing, StorageError>;
     fn host_sessions(&self, host: &str) -> Result<RecordListing, StorageError>;
     fn host_streams(&self, host: &str) -> Result<RecordListing, StorageError>;
-    fn last_updated_ms(
-        &self,
-        addresses: &[RecordAddress],
-    ) -> Result<std::collections::BTreeMap<RecordAddress, u64>, StorageError>;
 }
 
 /// Serialization belongs to the adapter. No action manages a multi-file transaction.
@@ -211,11 +194,13 @@ pub trait RecordStore {
         read: impl FnOnce(&dyn RecordReader) -> Result<T, E>,
     ) -> Result<T, E>;
 
-    /// Read the target once, handle its receipt, then admit and atomically replace it.
-    /// The callback is the shell: read explicit dependencies, then call pure apply.
-    fn save<E: From<StorageError>>(
+    /// Read the target once, then admit and atomically replace it. The callback is the
+    /// shell: read explicit dependencies, then call pure apply. A change that leaves the
+    /// record as it is writes nothing; otherwise the store advances the record's revision
+    /// and update time, which no other code sets.
+    fn save<T, E: From<StorageError>>(
         &self,
-        request: &RecordRequest,
-        apply: impl FnOnce(&dyn RecordReader, Option<&RecordRead>) -> Result<RecordChange, E>,
-    ) -> Result<RecordSave, E>;
+        target: &RecordAddress,
+        apply: impl FnOnce(&dyn RecordReader, Option<&RecordRead>) -> Result<RecordChange<T>, E>,
+    ) -> Result<RecordSave<T>, E>;
 }

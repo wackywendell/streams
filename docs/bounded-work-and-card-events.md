@@ -60,7 +60,7 @@ Putting a directory binding in the Session would synchronize host-local paths.
 Putting it in the registry would make every directory selection rewrite and lock
 a host-wide file and wake unrelated cards. Their separate owners and rates of
 change justify the cheap keyed reads. [Record-local operations](record-local-operations.md)
-owns point reads, receipts and the separate discovery budget for explicit listing,
+owns point reads, revision guards and the separate discovery budget for explicit listing,
 capture and reopening. No automatic path scans for a Session or roster.
 
 ### Separate record inputs from display inputs

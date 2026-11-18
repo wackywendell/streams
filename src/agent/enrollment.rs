@@ -42,7 +42,6 @@ struct SessionProposal {
 #[serde(deny_unknown_fields)]
 struct EnrollmentWire {
     version: u32,
-    operation_id: String,
     catalog_source: String,
     harness: Harness,
     harness_session_id: String,
@@ -58,7 +57,6 @@ struct EnrollmentWire {
 /// Parsed and locally validated intent. It neither attests native identity nor resolves cwd.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct EnrollmentRequest {
-    operation_id: String,
     catalog_source: String,
     harness: Harness,
     harness_session_id: String,
@@ -97,14 +95,12 @@ impl EnrollmentRequest {
                 "catalog source changed since capture; inspect the current catalog before making a new request",
             ));
         }
-        check_text(&wire.operation_id, "operation_id", false)?;
         check_text(&wire.harness_session_id, "harness_session_id", false)?;
         check_text(&wire.cwd, "cwd", false)?;
         if let Some(id) = &wire.stream_id {
             check_text(id, "stream_id", false)?;
         }
         let request = Self {
-            operation_id: wire.operation_id,
             catalog_source: wire.catalog_source,
             harness: wire.harness,
             harness_session_id: wire.harness_session_id,
@@ -123,9 +119,6 @@ impl EnrollmentRequest {
         Ok(request)
     }
 
-    pub fn operation_id(&self) -> &str {
-        &self.operation_id
-    }
     pub fn catalog_source(&self) -> &str {
         &self.catalog_source
     }

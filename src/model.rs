@@ -439,21 +439,16 @@ pub struct Reference {
     pub role: ReferenceRole,
     pub state: ReferenceState,
     pub target: ReferenceTarget,
-    pub revision: String,
 }
 
 impl Reference {
-    pub fn new(
-        value: ReferenceValue,
-        revision: impl Into<String>,
-    ) -> Result<Self, ValidationError> {
+    pub fn new(value: ReferenceValue) -> Result<Self, ValidationError> {
         let reference = Self {
             name: value.name,
             purpose: value.purpose,
             role: value.role,
             state: value.state,
             target: value.target,
-            revision: revision.into(),
         };
         reference.validate()?;
         Ok(reference)
@@ -462,7 +457,6 @@ impl Reference {
     pub fn validate(&self) -> Result<(), ValidationError> {
         check_text(&self.name, "reference.name", false)?;
         check_text(&self.purpose, "reference.purpose", false)?;
-        check_text(&self.revision, "reference.revision", false)?;
         self.target.validate()
     }
 
@@ -544,6 +538,11 @@ pub struct Stream {
     pub repositories: BTreeMap<String, Repository>,
     #[serde(deserialize_with = "objects")]
     pub references: Vec<Reference>,
+    /// Set only by the store when a save changes the record; see `Stamps`.
+    #[serde(default)]
+    pub revision: u64,
+    #[serde(default)]
+    pub updated_at_ms: u64,
 }
 
 impl Stream {
@@ -565,6 +564,8 @@ impl Stream {
             status: Status::Active,
             repositories: BTreeMap::new(),
             references: Vec::new(),
+            revision: 0,
+            updated_at_ms: 0,
         }
         .validated()
     }
@@ -619,9 +620,10 @@ pub struct Session {
     pub id: String,
     pub host_id: String,
     pub stream_id: String,
-    /// Ended memberships in transition order; revisiting a stream is allowed.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub previous_stream_ids: Vec<String>,
+    /// Counts membership moves, so a captured report can tell an A → B → A return
+    /// from an unbroken membership.
+    #[serde(default)]
+    pub membership_epoch: u64,
     /// Attachment metadata grouped by the Stream where each output was produced.
     #[serde(
         default,
@@ -651,6 +653,11 @@ pub struct Session {
     pub remaining_short: Option<String>,
     #[serde(default, deserialize_with = "optional_object")]
     pub checkout: Option<Checkout>,
+    /// Set only by the store when a save changes the record; see `Stamps`.
+    #[serde(default)]
+    pub revision: u64,
+    #[serde(default)]
+    pub updated_at_ms: u64,
 }
 
 impl Session {
@@ -698,7 +705,7 @@ impl Session {
             id: id.into(),
             host_id: host_id.into(),
             stream_id: stream_id.into(),
-            previous_stream_ids: Vec::new(),
+            membership_epoch: 0,
             artifacts: BTreeMap::new(),
             harness: harness.into(),
             harness_session_id: harness_session_id.into(),
@@ -712,6 +719,8 @@ impl Session {
             remaining: String::new(),
             remaining_short: None,
             checkout: None,
+            revision: 0,
+            updated_at_ms: 0,
         }
         .validated()
     }
@@ -727,25 +736,8 @@ impl Session {
         check_text(&self.id, "session.id", false)?;
         check_text(&self.host_id, "session.host_id", false)?;
         check_text(&self.stream_id, "session.stream_id", false)?;
-        for id in &self.previous_stream_ids {
-            check_text(id, "session.previous_stream_ids entry", false)?;
-        }
-        if self
-            .previous_stream_ids
-            .windows(2)
-            .any(|pair| pair[0] == pair[1])
-            || self.previous_stream_ids.last() == Some(&self.stream_id)
-        {
-            return Err(ValidationError::new(
-                "session membership transitions must change streams",
-            ));
-        }
         for (stream, artifacts) in &self.artifacts {
-            if stream != &self.stream_id && !self.previous_stream_ids.contains(stream) {
-                return Err(ValidationError::new(
-                    "artifact group must name a current or former Stream",
-                ));
-            }
+            check_text(stream, "artifact Stream", false)?;
             let mut names = BTreeSet::new();
             for artifact in artifacts {
                 artifact.validate()?;
@@ -895,6 +887,53 @@ impl Record {
             Record::Stream(_) => RecordKind::Stream,
             Record::Session(_) => RecordKind::Session,
             Record::Host(_) => RecordKind::Host,
+        }
+    }
+
+    /// Equal apart from the store's save stamps, as a retried write compares itself.
+    pub fn same_content(&self, other: &Record) -> bool {
+        let mut other = other.clone();
+        if let Some(stamps) = self.stamps() {
+            other.set_stamps(stamps);
+        }
+        *self == other
+    }
+
+    /// The save stamps of a Stream or Session. A Host record has none.
+    pub fn stamps(&self) -> Option<Stamps> {
+        match self {
+            Self::Stream(s) => Some(Stamps::of(s.revision, s.updated_at_ms)),
+            Self::Session(s) => Some(Stamps::of(s.revision, s.updated_at_ms)),
+            Self::Host(_) => None,
+        }
+    }
+
+    /// Only the record store calls this, as part of a save that changes the record.
+    pub fn set_stamps(&mut self, stamps: Stamps) {
+        let (revision, updated_at_ms) = match self {
+            Self::Stream(s) => (&mut s.revision, &mut s.updated_at_ms),
+            Self::Session(s) => (&mut s.revision, &mut s.updated_at_ms),
+            Self::Host(_) => return,
+        };
+        *revision = stamps.revision;
+        *updated_at_ms = stamps.updated_at_ms;
+    }
+}
+
+/// A Stream or Session's save count and the time of its last changing save.
+/// The revision is the record's optimistic-concurrency token: a captured edit compares it
+/// with the stored record to learn whether anything changed since capture.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Stamps {
+    pub revision: u64,
+    pub updated_at_ms: u64,
+}
+
+impl Stamps {
+    fn of(revision: u64, updated_at_ms: u64) -> Self {
+        Self {
+            revision,
+            updated_at_ms,
         }
     }
 }

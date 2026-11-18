@@ -45,7 +45,6 @@ use streams::{
     },
     sync::outcomes,
 };
-use uuid::Uuid;
 
 type Result<T> = std::result::Result<T, CliError>;
 
@@ -861,15 +860,9 @@ impl App {
                     ));
                 }
                 let stream = self.record_target(&opened, &target)?;
-                catalog::update_record(
-                    &opened,
-                    &stream,
-                    title,
-                    &fields,
-                    settings.naming,
-                    |path| self.read_text(path),
-                    || Uuid::new_v4().to_string(),
-                )
+                catalog::update_record(&opened, &stream, title, &fields, settings.naming, |path| {
+                    self.read_text(path)
+                })
             }
             Command::Close { target } => {
                 self.set_stream_status(&target, streams::model::Status::Closed)
@@ -885,12 +878,8 @@ impl App {
                 let opened = application::open_records(&self.config)?;
                 let settings = self.config.load()?;
                 let decay_days = days.unwrap_or(settings.lifecycle.decay_days);
-                let summary = application::lifecycle::decay_host_records(
-                    &opened,
-                    decay_days,
-                    now_ms(),
-                    &Uuid::new_v4().to_string(),
-                )?;
+                let summary =
+                    application::lifecycle::decay_host_records(&opened, decay_days, now_ms())?;
                 let plain = format!(
                     "closed {} stream(s), {} session(s) (decay_days={})",
                     summary.closed_streams, summary.closed_sessions, decay_days
@@ -936,7 +925,6 @@ impl App {
                 .expect("status field")
                 .clone(),
             settings.naming,
-            &Uuid::new_v4().to_string(),
         )
     }
     fn configure(&self, overrides_flag: bool, action: Option<ConfigCommand>) -> Result<Output> {

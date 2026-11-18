@@ -76,14 +76,22 @@ fn exact_context_does_not_connect_or_read_native_placement_to_read_its_session()
         "Lane",
     )
     .unwrap();
-    application::create_record(opened.records(), "stream", &Record::Stream(stream.clone()))
-        .unwrap();
-    application::create_record(
-        opened.records(),
-        "session",
-        &Record::Session(session.clone()),
-    )
-    .unwrap();
+    let Record::Stream(stream) =
+        application::create_record(opened.records(), &Record::Stream(stream.clone()))
+            .unwrap()
+            .current
+            .record
+    else {
+        unreachable!()
+    };
+    let Record::Session(session) =
+        application::create_record(opened.records(), &Record::Session(session.clone()))
+            .unwrap()
+            .current
+            .record
+    else {
+        unreachable!()
+    };
     let state = app.state(opened.root(), opened.host().as_str()).unwrap();
     fs::create_dir_all(state.root()).unwrap();
     fs::write(

@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { infer as modelInfer } from "./agent.ts";
 import type { InferenceLogOptions } from "./agent.ts";
@@ -79,7 +78,7 @@ export class Reporter {
   }
   const cli = this.options.cli(ctx), generate = this.options.infer ?? modelInfer;
   return runReport(reset ? {kind: "reset", target, auto: Boolean(auto), instructions} : {kind: "report", force, instructions}, {
-   signal: fence.signal, operationId: randomUUID, automaticEnrollment: this.options.settings().enrollment === "automatic",
+   signal: fence.signal, automaticEnrollment: this.options.settings().enrollment === "automatic",
    // A reset discards an unreadable card first, so the native startup that reads it waits until capture.
    capture: async () => {await this.options.prepare?.();return captureInputs(ctx, cli, this.options.settings().context, fence, "report");},
    generate: request => generate(ctx, request, fence.signal, this.options.settings().model, this.options.logging?.()),

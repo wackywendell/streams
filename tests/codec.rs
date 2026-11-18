@@ -303,7 +303,7 @@ fn references_are_required_and_old_collections_are_rejected() {
 fn reference() -> Value {
     json!({
         "name": "Reference", "purpose": "Define acceptance", "role": "brief", "state": "active",
-        "target": {"kind": "link", "url": "https://EXAMPLE.test/brief"}, "revision": "replay:capture:0:1"
+        "target": {"kind": "link", "url": "https://EXAMPLE.test/brief"}
     })
 }
 
@@ -326,10 +326,7 @@ fn standalone_references_have_strict_shapes_and_exact_resource_keys() {
             serde_json::from_value::<ResourceKey>(json!(key)).unwrap(),
             key
         );
-        assert_eq!(
-            Reference::new(saved.value(), saved.revision.clone()).unwrap(),
-            saved
-        );
+        assert_eq!(Reference::new(saved.value()).unwrap(), saved);
         if kind == "document" {
             let mut changed = saved.clone();
             if let ReferenceTarget::Document(document) = &mut changed.target {
@@ -360,7 +357,7 @@ fn standalone_references_have_strict_shapes_and_exact_resource_keys() {
                 key
             );
         }
-        for field in ["extra", "actor"] {
+        for field in ["extra", "actor", "revision"] {
             let mut invalid = wire.clone();
             invalid[field] = json!(true);
             assert!(serde_json::from_value::<Reference>(invalid).is_err());
@@ -371,7 +368,7 @@ fn standalone_references_have_strict_shapes_and_exact_resource_keys() {
         let mut invalid = json!(key);
         invalid["extra"] = json!(true);
         assert!(serde_json::from_value::<ResourceKey>(invalid).is_err());
-        for field in ["name", "purpose", "role", "state", "target", "revision"] {
+        for field in ["name", "purpose", "role", "state", "target"] {
             let mut invalid = wire.clone();
             invalid.as_object_mut().unwrap().remove(field);
             assert!(
@@ -380,7 +377,6 @@ fn standalone_references_have_strict_shapes_and_exact_resource_keys() {
             );
         }
         let mut value = wire;
-        value.as_object_mut().unwrap().remove("revision");
         let desired: ReferenceValue = serde_json::from_value(value.clone()).unwrap();
         desired.validate().unwrap();
         assert_eq!(serde_json::to_value(desired).unwrap(), value);
@@ -447,7 +443,7 @@ fn standalone_document_recovery_is_nullable_optional_and_nonempty() {
 #[test]
 fn reference_text_validation_preserves_rust_unicode_acceptance() {
     use streams::model::Reference;
-    for field in ["name", "purpose", "revision"] {
+    for field in ["name", "purpose"] {
         for text in [
             "\u{feff}",
             "😀",

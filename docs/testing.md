@@ -41,9 +41,11 @@ current record-local runtime's correctness.
 
 - Pure operation tests check captured targets, manual fields, membership revisits,
   same-host writes and rejected requests' lack of mutation.
-- Memory and YAML record stores exercise the same interface. Disk tests separately
-  establish atomic replacement, embedded receipt retries after later edits,
-  changed-intent refusal and post-replacement uncertainty.
+- Memory and file record stores exercise the same interface. Disk tests separately
+  establish atomic replacement, unchanged saves that write nothing, landed retries,
+  retries after later edits and post-replacement uncertainty.
+- Listing a catalog, including `list`, `show` and `tidy` on a Git catalog, starts
+  no Git process.
 - Real Git tests establish disjoint-file publication, same-file conflict refusal,
   two-host visibility and offline save/explicit sync behavior. Domain replay and
   per-operation commits are not part of that transport.
@@ -65,8 +67,8 @@ The [record-local adapter budgets](record-local-operations.md#inventory-and-oper
 count addressed content reads, listings, replacements and bytes. They are not
 process-wide card/native budgets: configuration, filesystem metadata, native
 inputs, process starts, lock time and failed partial I/O remain outside them.
-Exercise real callers before claiming those costs are bounded. Receipt maps and
-membership history can grow even when the number of addressed records stays fixed.
+Exercise real callers before claiming those costs are bounded. Records can grow
+even when the number of addressed records stays fixed.
 
 Count work, not elapsed time, for semantic budgets. Test an unchanged projection's
 lack of effects and an unrelated event's lack of reads. Measure compilation

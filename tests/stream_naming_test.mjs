@@ -18,7 +18,7 @@ function context() {
   stream:{id:'effort',title:'Effort',title_mode:'inherit',goal:null,goal_short:null,goal_mode:'automatic',owner:{host_id:'host'},status:'active',repositories:{},references:[]},
   session,sessions:[session]};
 }
-const accepted = {operation_id:'name',save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}};
+const accepted = {save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}};
 
 test('name syntax defaults to Session, preserves title text and explicitly pins manual mode', () => {
  assert.deepEqual(parseNamingEdit('name','  My  task  '), {target:'session',changes:{title:'My  task',title_mode:'manual'}});

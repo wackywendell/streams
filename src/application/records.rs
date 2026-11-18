@@ -44,25 +44,6 @@ impl OpenedRecords {
     pub fn host_streams(&self) -> Result<RecordListing> {
         Ok(self.records.host_streams(self.host.as_str())?)
     }
-    /// Last-updated timestamps in Unix ms from the active catalog backend.
-    pub fn last_updated_ms(
-        &self,
-        addresses: &[RecordAddress],
-    ) -> Result<std::collections::BTreeMap<RecordAddress, u64>> {
-        if self.root().join(".catalog-local/transport.json").exists() {
-            let sync = RecordSync::open(self.root(), self.host.as_str())?;
-            Ok(sync.last_updated_ms(addresses)?)
-        } else {
-            self.local_last_updated_ms(addresses)
-        }
-    }
-    /// Local file mtime timestamps without admitting transport configuration.
-    pub fn local_last_updated_ms(
-        &self,
-        addresses: &[RecordAddress],
-    ) -> Result<std::collections::BTreeMap<RecordAddress, u64>> {
-        Ok(self.records.last_updated_ms(addresses)?)
-    }
     /// Explicit human discovery/inspection only; ordinary commands use `records()`.
     pub fn inventory(&self) -> Result<Vec<RecordRead>> {
         Ok(self.records.inventory()?)

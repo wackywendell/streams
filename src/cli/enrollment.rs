@@ -5,6 +5,7 @@ use serde::Serialize;
 use streams::{
     agent::{ContextRequest, EnrollmentRequest, RecordContext},
     model::{Record, Session, Stream},
+    operations::DomainOutcome,
     runtime::checkouts::canonical_directory,
     storage::records::RecordSave,
 };
@@ -34,7 +35,7 @@ struct Receipt {
 }
 #[derive(Serialize)]
 struct Saved {
-    operation_id: String,
+    target: String,
     save: serde_json::Value,
 }
 #[derive(Serialize)]
@@ -43,32 +44,13 @@ struct CompletionError {
     detail: &'static str,
 }
 impl Receipt {
-    fn persist(
-        &mut self,
-        operation_id: String,
-        result: application::Result<RecordSave>,
-    ) -> Result<RecordSave> {
-        let saved = match result {
-            Ok(saved) => saved,
-            Err(application::ApplicationError::Storage(error)) if error.is_uncertain() => {
-                self.saves.push(Saved {
-                    operation_id,
-                    save: serde_json::json!({
-                        "local":"uncertain","domain":null,"detail":error.to_string(),
-                    }),
-                });
-                return Err(application::ApplicationError::Storage(error).into());
-            }
-            Err(error) => return Err(error.into()),
-        };
+    fn persist(&mut self, saved: RecordSave<DomainOutcome>) -> RecordSave<DomainOutcome> {
         self.saves.push(Saved {
-            operation_id,
-            save: serde_json::json!({
-                "local":if saved.repeated {"unchanged"} else {"persisted"},"domain":saved.outcome,
-            }),
+            target: saved.target(),
+            save: serde_json::json!({"local": saved.local(), "domain": {"outcome": saved.outcome}}),
         });
         self.accepted = true;
-        Ok(saved)
+        saved
     }
 }
 
@@ -122,57 +104,28 @@ impl App {
         let completion = (|| -> Result<()> {
             let directory = canonical_directory(&self.path(std::path::Path::new(request.cwd()))?)?;
             if request.stream_proposal().is_some() {
-                let saved = receipt.persist(
-                    format!("{}:stream", request.operation_id()),
-                    application::enroll_stream(opened.records(), opened.host().as_str(), request),
-                )?;
-                let Record::Stream(stream) = saved.current.record else {
-                    return Err(CliError::message("enrollment returned a non-Stream effort"));
-                };
-                receipt.stream = Some(stream);
+                receipt.persist(application::enroll_stream(
+                    opened.records(),
+                    opened.host().as_str(),
+                    request,
+                )?);
             }
-            let saved = application::enroll_session_observed(
+            let enrolled = application::enroll_session_observed(
                 opened.records(),
                 opened.host().as_str(),
                 request,
-            );
-            let (save, dependency) = match saved {
-                Ok(saved) => (Ok(saved.save), saved.stream),
-                Err(error) => (Err(error), None),
-            };
-            let saved = receipt.persist(format!("{}:session", request.operation_id()), save)?;
+            )?;
+            let dependency = enrolled.stream;
+            let saved = receipt.persist(enrolled.save);
             let Record::Session(session) = saved.current.record else {
                 return Err(CliError::message(
                     "enrollment returned a non-Session conversation",
                 ));
             };
-            let matching = |stream: &Stream| {
-                stream.id == session.stream_id && stream.owner_host_id == session.host_id
-            };
-            receipt.stream = dependency
-                .filter(matching)
-                .or_else(|| receipt.stream.take().filter(matching))
-                .or_else(|| {
-                    observed
-                        .stream
-                        .as_ref()
-                        .filter(|stream| matching(stream))
-                        .cloned()
-                });
-            let changed_membership = saved
-                .outcome
-                .get("stream_id")
-                .and_then(serde_json::Value::as_str)
-                != Some(session.stream_id.as_str());
+            receipt.stream = Some(dependency);
             receipt.session = Some(session);
-            if changed_membership {
-                return Err(CliError::message(
-                    "retained enrollment predates the current membership; inspect current records before completing directory or native setup",
-                ));
-            }
             let session = receipt.session.as_ref().expect("accepted current Session");
-            let stream = receipt.stream.as_ref().ok_or_else(||CliError::message(
-                "accepted enrollment has no already-observed matching Stream; refresh before completing local or native setup"))?;
+            let stream = receipt.stream.as_ref().expect("accepted current Stream");
             let locations = self.locations(opened.root(), opened.host().as_str())?;
             locations.remember(&stream.id, &directory, None, true, None, None)?;
             let binding =
@@ -186,12 +139,9 @@ impl App {
             }
             if stream.status == streams::model::Status::Closed
                 && session.status == streams::model::Status::Active
-                && let Some(reopened) = application::lifecycle::reopen_closed_stream(
-                    opened,
-                    &stream.id,
-                    &format!("{}:reopen", request.operation_id()),
-                )?
-                && let Record::Stream(updated) = reopened.save.current.record
+                && let Some(reopened) =
+                    application::lifecycle::reopen_closed_stream(opened, &stream.id)?
+                && let Record::Stream(updated) = reopened.current.record
             {
                 receipt.stream = Some(updated);
             }
@@ -204,7 +154,7 @@ impl App {
             }
             receipt.completion_error = Some(CompletionError {
                 message: error.to_string(),
-                detail: "local enrollment needs attention; retain these receipts and inspect before retrying",
+                detail: "local enrollment needs attention; inspect the saved records before retrying",
             });
         }
         let value = serde_json::to_value(&receipt)?;

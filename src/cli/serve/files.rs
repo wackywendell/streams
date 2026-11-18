@@ -223,7 +223,7 @@ mod tests {
         model::{Record, Stream},
         storage::{
             StorageError,
-            records::{RecordChange, RecordRequest, RecordStore},
+            records::{RecordChange, RecordStore},
         },
     };
 
@@ -236,22 +236,13 @@ mod tests {
             application::initialize_records(&config, Strategy::None, None, "main").unwrap();
         (directory, records)
     }
-    fn save(records: &application::OpenedRecords, id: &str, record: Record) {
-        let request = RecordRequest::new(
-            RecordAddress::for_record(&record),
-            id,
-            &serde_json::json!({"record":record}),
-        )
-        .unwrap();
+    fn save(records: &application::OpenedRecords, record: Record) {
         records
             .records()
-            .save::<StorageError>(&request, |_, _| {
+            .save::<_, StorageError>(&RecordAddress::for_record(&record), |_, _| {
                 Ok(RecordChange {
                     record: record.clone(),
-                    outcome: serde_json::json!({"outcome":"changes"})
-                        .as_object()
-                        .unwrap()
-                        .clone(),
+                    outcome: (),
                 })
             })
             .unwrap();
@@ -320,7 +311,6 @@ mod tests {
         for id in ["old", "next"] {
             save(
                 &records,
-                id,
                 Record::Stream(Stream::new(id, id, None, host).unwrap()),
             );
         }
@@ -337,7 +327,7 @@ mod tests {
                 .unwrap(),
             )
         };
-        save(&records, "initial", session("old"));
+        save(&records, session("old"));
         let (sender, _) = mpsc::channel();
         let mut files = Files::new(&records, "native", sender).unwrap();
         assert!(
@@ -347,7 +337,7 @@ mod tests {
         files.set_stream(Some("old")).unwrap();
         files.prepare().unwrap();
         let old_path = files.groups["stream"].clone();
-        save(&records, "move", session("next"));
+        save(&records, session("next"));
         assert!(files.prepare().unwrap());
         assert_eq!(
             files.groups["stream"], old_path,
@@ -361,7 +351,7 @@ mod tests {
         )
         .unwrap();
         changed.status = streams::model::Status::Waiting;
-        save(&records, "racing-next", Record::Stream(changed));
+        save(&records, Record::Stream(changed));
         files.set_stream(Some("next")).unwrap();
         let next_path = files.groups["stream"].clone();
         assert_ne!(next_path, old_path);

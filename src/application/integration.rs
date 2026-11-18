@@ -6,7 +6,7 @@ use crate::{
         ConversationId, LinkKind, ReadReply, Reference, ResolvedTarget, SessionView, WorkScope,
     },
     model::{Record, RecordKind, Session, Status, Stream, ValidationError},
-    operations::{decay_cutoff_ms, project_stream_status},
+    operations::{decay_cutoff_ms, project_stream_status, stream_activity_ms},
     storage::records::{RecordAddress, RecordRead, RecordReader, RecordStore, UnreadableRecord},
 };
 
@@ -286,12 +286,10 @@ impl<'a> Streams<'a> {
         mut unreadable: Vec<UnreadableRecord>,
     ) -> Result<crate::integration::HostListing> {
         use crate::integration::{HostListing, StreamSummary};
-        let host = self.records.host().as_str();
         let stream_listing = self.records.host_streams()?;
         unreadable.extend(stream_listing.unreadable);
         unreadable.sort_by(|left, right| left.path.cmp(&right.path));
         let stream_reads = stream_listing.records;
-        let mut addresses = Vec::with_capacity(stream_reads.len() + sessions.len());
         let mut counts: std::collections::BTreeMap<String, (usize, usize)> =
             std::collections::BTreeMap::new();
         let mut by_stream: std::collections::BTreeMap<&str, Vec<&Session>> =
@@ -306,40 +304,19 @@ impl<'a> Streams<'a> {
                 .entry(session.stream_id.as_str())
                 .or_default()
                 .push(session);
-            addresses.push(RecordAddress::new(host, RecordKind::Session, &session.id)?);
         }
-        let mut streams = Vec::with_capacity(stream_reads.len());
+        let mut summaries = Vec::with_capacity(stream_reads.len());
         for read in stream_reads {
             let Record::Stream(stream) = read.record else {
                 unreachable!("Stream partition")
             };
-            addresses.push(RecordAddress::new(host, RecordKind::Stream, &stream.id)?);
-            streams.push(stream);
-        }
-        let timestamps = self.records.last_updated_ms(&addresses)?;
-        let mut latest_session_ms: std::collections::BTreeMap<String, u64> =
-            std::collections::BTreeMap::new();
-        for session in sessions.values() {
-            let addr = RecordAddress::new(host, RecordKind::Session, &session.id)?;
-            if let Some(&ms) = timestamps.get(&addr) {
-                let entry = latest_session_ms
-                    .entry(session.stream_id.clone())
-                    .or_insert(0);
-                *entry = (*entry).max(ms);
-            }
-        }
-        let mut summaries = Vec::with_capacity(streams.len());
-        for stream in streams {
-            let stream_addr = RecordAddress::new(host, RecordKind::Stream, &stream.id)?;
-            let stream_ms = timestamps.get(&stream_addr).copied().unwrap_or(0);
-            let session_ms = latest_session_ms.get(&stream.id).copied().unwrap_or(0);
-            let last_updated_ms = stream_ms.max(session_ms);
             let (active_sessions, total_sessions) =
                 counts.get(&stream.id).copied().unwrap_or((0, 0));
             let members = by_stream
                 .get(stream.id.as_str())
                 .map(Vec::as_slice)
                 .unwrap_or(&[]);
+            let last_updated_ms = stream_activity_ms(&stream, members);
             let status = self.projected_status(stream.status, members, last_updated_ms);
             summaries.push(StreamSummary {
                 id: stream.id,
@@ -655,21 +632,7 @@ impl<'a> Streams<'a> {
                 }
             }
         }
-        let last_updated_ms = if self.lifecycle_cutoff.is_some() {
-            let host = self.records.host().as_str();
-            let mut addrs = Vec::with_capacity(1 + members.len());
-            addrs.push(RecordAddress::new(host, RecordKind::Stream, &stream.id)?);
-            for member in &members {
-                addrs.push(RecordAddress::new(host, RecordKind::Session, &member.id)?);
-            }
-            self.records
-                .last_updated_ms(&addrs)?
-                .into_values()
-                .max()
-                .unwrap_or(0)
-        } else {
-            0
-        };
+        let last_updated_ms = stream_activity_ms(&stream, &members);
         let status = self.projected_status(stream.status, &members, last_updated_ms);
         Ok(StreamView {
             id: stream.id,

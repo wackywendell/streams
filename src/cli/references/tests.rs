@@ -26,7 +26,7 @@ fn current(document: bool) -> Stream {
     stream.references.push(
         serde_json::from_value(json!({
             "name":"Plan","purpose":"Guide work","role":"brief","state":"active",
-            "target":target,"revision":"old"
+            "target":target
         }))
         .unwrap(),
     );
@@ -34,15 +34,10 @@ fn current(document: bool) -> Stream {
 }
 
 fn desired(stream: &Stream, arguments: &[&str]) -> ReferenceValue {
-    let ReferenceChange::UserSet {
-        desired,
-        next_revision,
-        ..
-    } = mutation(stream, &parse(arguments), "new").unwrap()
+    let ReferenceChange::UserSet { desired, .. } = mutation(stream, &parse(arguments)).unwrap()
     else {
         panic!("set")
     };
-    assert_eq!(next_revision, "new");
     desired
 }
 
@@ -76,10 +71,7 @@ fn add_requires_complete_values_and_defaults_to_active() {
             let index = args.iter().position(|argument| *argument == flag).unwrap();
             let mut missing = args.to_vec();
             missing.drain(index..index + 2);
-            assert!(
-                mutation(&stream, &parse(&missing), "new").is_err(),
-                "{flag}"
-            );
+            assert!(mutation(&stream, &parse(&missing)).is_err(), "{flag}");
         }
     }
     let value = desired(
@@ -133,7 +125,7 @@ fn add_refuses_existing_identity_and_unsupported_flags() {
         "brief",
     ]);
     assert!(
-        mutation(&stream, &command, "new")
+        mutation(&stream, &command)
             .unwrap_err()
             .to_string()
             .contains("already exists")
@@ -159,7 +151,7 @@ fn add_refuses_existing_identity_and_unsupported_flags() {
             "brief",
         ];
         args.extend(extra);
-        assert!(mutation(&empty, &parse(&args), "new").is_err());
+        assert!(mutation(&empty, &parse(&args)).is_err());
     }
 }
 
@@ -237,8 +229,7 @@ fn edit_preserves_metadata_and_document_correction_copies_recovery() {
                 "repo",
                 "--path",
                 "plan.md"
-            ]),
-            "new"
+            ])
         )
         .is_err()
     );
@@ -260,7 +251,7 @@ fn edit_family_changes_require_explicit_kind_and_complete_targets() {
             "plan.md",
         ];
         args.extend(flags);
-        assert!(mutation(&stream, &parse(&args), "new").is_err());
+        assert!(mutation(&stream, &parse(&args)).is_err());
     }
     let value = desired(
         &stream,
@@ -351,8 +342,7 @@ fn recovery_flags_set_clear_and_reject_web_targets() {
         assert!(
             mutation(
                 &current(false),
-                &parse(&["edit", "work", "--url", "https://example.test/pr/1", flag]),
-                "new"
+                &parse(&["edit", "work", "--url", "https://example.test/pr/1", flag])
             )
             .is_err()
         );
@@ -370,8 +360,7 @@ fn recovery_flags_set_clear_and_reject_web_targets() {
                     "plan.md",
                     flag,
                     ""
-                ]),
-                "new"
+                ])
             )
             .is_err()
         );
@@ -385,8 +374,7 @@ fn recovery_flags_set_clear_and_reject_web_targets() {
                     "https://example.test/pr/1",
                     flag,
                     "known"
-                ]),
-                "new"
+                ])
             )
             .is_err()
         );
@@ -407,8 +395,7 @@ fn dropped_edits_require_explicit_restore_and_delete_confirmation() {
                 "https://example.test/pr/1",
                 "--state",
                 "active"
-            ]),
-            "new"
+            ])
         )
         .is_err()
     );
@@ -455,16 +442,14 @@ fn dropped_edits_require_explicit_restore_and_delete_confirmation() {
                 "https://example.test/pr/1",
                 "--state",
                 "dropped"
-            ]),
-            "new"
+            ])
         )
         .is_err()
     );
     assert!(
         mutation(
             &stream,
-            &parse(&["delete", "work", "--url", "https://example.test/pr/1"]),
-            "new"
+            &parse(&["delete", "work", "--url", "https://example.test/pr/1"])
         )
         .is_err()
     );
@@ -477,8 +462,7 @@ fn dropped_edits_require_explicit_restore_and_delete_confirmation() {
                 "--url",
                 "https://example.test/pr/1",
                 "--confirm"
-            ]),
-            "new"
+            ])
         )
         .unwrap(),
         ReferenceChange::UserDelete { .. }

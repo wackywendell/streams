@@ -298,7 +298,7 @@ fn membership_move_keeps_checkout_selection_and_never_uses_destination_alias_url
     let host = session["host_id"].as_str().unwrap();
     let store = YamlRecordStore::new(f.root(), host).unwrap();
     let intent = MoveIntent::new(host, "pi", "native", destination_id).unwrap();
-    application::move_session_observed(&store, "move", &intent).unwrap();
+    application::move_session_observed(&store, &intent).unwrap();
     assert_eq!(
         f.ok(&["session", "directory", session_id])["directory"],
         selected
@@ -352,7 +352,7 @@ fn record_local_cli_initializes_enrolls_reports_and_retries_without_scans_or_pub
     let initial = f.ok(&args);
     assert!(initial["session"].is_null());
     assert!(initial["stream"].is_null());
-    let enrollment = json!({"version":2,"operation_id":"enroll","catalog_source":initial["catalog_source"],
+    let enrollment = json!({"version":2,"catalog_source":initial["catalog_source"],
         "actor":"user","harness":"pi","harness_session_id":args[5],
         "stream":{"title":"Work","goal":"Original"},"session":{"title":"Contribution"},"cwd":f.cwd});
     let (code, enrolled) = f.run(&["agent", "enroll"], Some(&enrollment.to_string()));
@@ -382,14 +382,14 @@ fn record_local_cli_initializes_enrolls_reports_and_retries_without_scans_or_pub
     let malformed = f.root().join("hosts/unrelated/streams");
     fs::create_dir_all(&malformed).unwrap();
     for index in 0..64 {
-        fs::write(malformed.join(format!("bad-{index}.yaml")), "malformed").unwrap();
+        fs::write(malformed.join(format!("bad-{index}.json")), "malformed").unwrap();
     }
     fs::write(
         f.root().join(".catalog-local/transport.json"),
         "malformed transport",
     )
     .unwrap();
-    let request = json!({"version":2,"operation_id":"captured-update","catalog_source":context["catalog_source"],
+    let request = json!({"version":2,"catalog_source":context["catalog_source"],
         "actor":"user","kind":"stream","before":context["stream"],"changes":{"goal":"Captured"},"inputs":[],
         "title_default":context["title_defaults"]["stream"]});
     let (code, first) = f.run(&["agent", "apply"], Some(&request.to_string()));
@@ -401,7 +401,7 @@ fn record_local_cli_initializes_enrolls_reports_and_retries_without_scans_or_pub
     let accepted = fs::read(&path).unwrap();
     let (code, retry) = f.run(&["agent", "apply"], Some(&request.to_string()));
     assert_eq!(code, 0, "{retry}");
-    assert_eq!(retry["save"]["domain"], first["save"]["domain"]);
+    assert_eq!(retry["save"]["domain"]["outcome"], "no-change");
     assert_eq!(retry["save"]["local"], "unchanged");
     assert_eq!(fs::read(&path).unwrap(), accepted);
     let mut wrong_source = request;
@@ -435,7 +435,7 @@ fn record_local_cli_initializes_enrolls_reports_and_retries_without_scans_or_pub
         code, 2,
         "a positional UUID is discovery and must not bypass malformed unrelated records"
     );
-    let session_request = json!({"version":2,"operation_id":"progress","catalog_source":current["catalog_source"],
+    let session_request = json!({"version":2,"catalog_source":current["catalog_source"],
         "actor":"automatic","kind":"session","before":current["session"],"changes":{"state":"Complete"},"inputs":[],
         "title_default":current["title_defaults"]["session"]});
     let (code, saved) = f.run(&["agent", "apply"], Some(&session_request.to_string()));
@@ -546,8 +546,7 @@ fn record_local_session_commands_pin_checkout_identity_and_preserve_host_qualifi
         "--session-id",
         "primary",
     ]);
-    let proposal = json!({"version":2,"catalog_source":source["catalog_source"],"operation_id":"initial",
-        "harness":"pi","harness_session_id":"primary","stream":{"title":"Effort"},"session":{"title":"Primary"},"actor":"user","cwd":f.cwd});
+    let proposal = json!({"version":2,"catalog_source":source["catalog_source"],"harness":"pi","harness_session_id":"primary","stream":{"title":"Effort"},"session":{"title":"Primary"},"actor":"user","cwd":f.cwd});
     let (code, enrolled) = f.run(&["agent", "enroll"], Some(&proposal.to_string()));
     assert_eq!(code, 0, "{enrolled}");
     let id = enrolled["stream"]["id"].as_str().unwrap();
@@ -644,7 +643,6 @@ fn record_local_session_commands_pin_checkout_identity_and_preserve_host_qualifi
     );
 
     let mut other = proposal.clone();
-    other["operation_id"] = json!("other");
     other["harness_session_id"] = json!("other");
     let (code, other) = f.run(&["agent", "enroll"], Some(&other.to_string()));
     assert_eq!(code, 0, "{other}");
@@ -684,11 +682,8 @@ fn record_local_session_commands_pin_checkout_identity_and_preserve_host_qualifi
         )
         .unwrap(),
     );
-    for (operation, record) in [
-        ("remote-stream", &remote_stream),
-        ("remote-session", &remote_session),
-    ] {
-        application::create_record(&remote, operation, record).unwrap();
+    for record in [&remote_stream, &remote_session] {
+        application::create_record(&remote, record).unwrap();
         let relative = relative_record_path(&RecordAddress::for_record(record)).unwrap();
         let target = f.root().join(&relative);
         fs::create_dir_all(target.parent().unwrap()).unwrap();
@@ -907,6 +902,76 @@ fn local_catalog_does_not_require_git_in_plain_directories() {
 }
 
 #[test]
+fn reading_a_git_catalog_starts_no_git_process() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new();
+    let remote = f.home.join("unavailable.git");
+    f.ok(&[
+        "init",
+        "--sync",
+        "git",
+        "--remote",
+        remote.to_str().unwrap(),
+    ]);
+    let stream = f.create("Listed");
+    f.create("Another");
+    f.run(&["sync"], None);
+    let real = String::from_utf8(
+        Command::new("sh")
+            .args(["-c", "command -v git"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    let bin = f.home.join("bin");
+    fs::create_dir(&bin).unwrap();
+    let git = bin.join("git");
+    fs::write(
+        &git,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$STREAMS_TEST_GIT_PROBE\"\nexec {} \"$@\"\n",
+            real.trim()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&git, fs::Permissions::from_mode(0o700)).unwrap();
+    let probe = f.home.join("git-called");
+    let id = stream["id"].as_str().unwrap();
+    for args in [
+        vec!["list"],
+        vec!["list", "--all"],
+        vec!["show", id],
+        vec!["tidy", "--days", "3650"],
+    ] {
+        let output = f
+            .command()
+            .env("PATH", &bin)
+            .env("STREAMS_TEST_GIT_PROBE", &probe)
+            .args(&args)
+            .arg("--json")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        let data: Value = serde_json::from_slice(&output.stdout).unwrap();
+        if args[0] == "list" {
+            let listed = data["streams"].as_array().unwrap();
+            assert_eq!(listed.len(), 2, "{data}");
+            assert!(listed.iter().all(|s| s["updated_at_ms"].as_u64() > Some(0)));
+        }
+        assert!(
+            !probe.exists(),
+            "{args:?} started Git: {}",
+            fs::read_to_string(&probe).unwrap()
+        );
+    }
+}
+
+#[test]
 fn session_references_and_candidates_keep_the_host_qualified_identity() {
     let f = Fixture::new();
     f.init();
@@ -943,7 +1008,11 @@ fn session_references_and_candidates_keep_the_host_qualified_identity() {
         .root()
         .join(streams::yaml_store::records::relative_record_path(&stream_address).unwrap());
     fs::create_dir_all(stream_path.parent().unwrap()).unwrap();
-    fs::write(stream_path, serde_json::to_vec_pretty(&json!({"version":2,"revision":"foreign-stream","kind":"stream","record":foreign_stream,"receipts":{}})).unwrap()).unwrap();
+    fs::write(
+        stream_path,
+        serde_json::to_vec_pretty(&foreign_stream).unwrap(),
+    )
+    .unwrap();
     let address = streams::storage::records::RecordAddress::new(
         foreign_host,
         streams::model::RecordKind::Session,
@@ -954,12 +1023,7 @@ fn session_references_and_candidates_keep_the_host_qualified_identity() {
         .root()
         .join(streams::yaml_store::records::relative_record_path(&address).unwrap());
     fs::create_dir_all(path.parent().unwrap()).unwrap();
-    fs::write(
-        path,
-        serde_json::to_vec_pretty(
-            &json!({"version":2,"revision":"foreign-revision","kind":"session","record":foreign,"receipts":{}}),
-        ).unwrap(),
-    ).unwrap();
+    fs::write(path, serde_json::to_vec_pretty(&foreign).unwrap()).unwrap();
     assert_eq!(f.ok(&["session", "show", id])["session"], local);
     let (code, error) = f.run(&["session", "show", "Contribution"], None);
     assert_eq!(code, 2, "{error}");
@@ -1069,7 +1133,7 @@ fn reference_commands_save_without_a_session_and_keep_exact_revisions() {
     assert_eq!(reference["state"], "dropped");
     assert!(reference["target"].get("ref").is_none());
     assert_eq!(reference["target"]["commit"], "commit");
-    let revision = reference["revision"].clone();
+    let revision = changed["stream"]["revision"].clone();
     let same = f.ok(&[
         "reference",
         "edit",
@@ -1082,7 +1146,7 @@ fn reference_commands_save_without_a_session_and_keep_exact_revisions() {
         "Updated",
     ]);
     assert_eq!(same["save"]["domain"]["outcome"], "no-change");
-    assert_eq!(same["stream"]["references"][0]["revision"], revision);
+    assert_eq!(same["stream"]["revision"], revision);
     let (code, _) = f.run(
         &[
             "reference",

@@ -5,10 +5,10 @@ use streams::{
     agent::parse_record_update,
     application::{move_session_observed, save_record_update},
     model::{NamingMode, Record, RecordKind, Session, Stream, TitleDefaults, TitleMode},
-    operations::membership::MoveIntent,
+    operations::{DomainOutcome, EditOutcome, membership::MoveIntent},
     storage::{
         StorageError,
-        records::{RecordAddress, RecordChange, RecordRequest, RecordStore},
+        records::{RecordAddress, RecordChange, RecordSave, RecordStore},
     },
     yaml_store::records::{RecordIoEvent, YamlRecordStore, relative_record_path},
 };
@@ -28,23 +28,34 @@ fn stream(id: &str) -> Stream {
     Stream::new(id, id, None, "host").unwrap()
 }
 fn put(store: &YamlRecordStore, record: Record) {
-    put_with_id(store, record, "setup");
-}
-fn put_with_id(store: &YamlRecordStore, record: Record, operation_id: &str) {
-    let request = RecordRequest::new(
-        RecordAddress::for_record(&record),
-        operation_id,
-        &json!({"record":record}),
-    )
-    .unwrap();
     store
-        .save::<StorageError>(&request, |_, _| {
+        .save::<_, StorageError>(&RecordAddress::for_record(&record), |_, _| {
             Ok(RecordChange {
                 record,
-                outcome: serde_json::Map::new(),
+                outcome: (),
             })
         })
         .unwrap();
+}
+/// The saved record, with the revision a fresh capture would carry.
+fn stored(store: &YamlRecordStore, record: Record) -> Record {
+    store
+        .with_reader::<_, StorageError>(|reader| reader.read(&RecordAddress::for_record(&record)))
+        .unwrap()
+        .unwrap()
+        .record
+}
+fn stored_session(store: &YamlRecordStore) -> Session {
+    let Record::Session(session) = stored(store, Record::Session(session())) else {
+        unreachable!()
+    };
+    session
+}
+fn stored_stream(store: &YamlRecordStore, id: &str) -> Stream {
+    let Record::Stream(stream) = stored(store, Record::Stream(stream(id))) else {
+        unreachable!()
+    };
+    stream
 }
 fn setup(root: &std::path::Path) -> YamlRecordStore {
     let store = YamlRecordStore::new(root, "host").unwrap();
@@ -54,17 +65,17 @@ fn setup(root: &std::path::Path) -> YamlRecordStore {
     put(&store, Record::Session(session()));
     store
 }
-fn wire(id: &str, before: &Session, actor: &str, state: &str) -> Value {
-    json!({"version":2,"title_default":"automatic","catalog_source":"source","operation_id":id,"kind":"session","actor":actor,"before":before,"changes":{"state":state},"inputs":[]})
+fn wire(before: &Session, actor: &str, state: &str) -> Value {
+    json!({"version":2,"title_default":"automatic","catalog_source":"source","kind":"session","actor":actor,"before":before,"changes":{"state":state},"inputs":[]})
 }
-fn update(store: &YamlRecordStore, value: &Value) -> streams::storage::records::RecordSave {
+fn update(store: &YamlRecordStore, value: &Value) -> RecordSave<EditOutcome> {
     update_with_defaults(store, value, TitleDefaults::default())
 }
 fn update_with_defaults(
     store: &YamlRecordStore,
     value: &Value,
     defaults: TitleDefaults,
-) -> streams::storage::records::RecordSave {
+) -> RecordSave<EditOutcome> {
     save_record_update(
         store,
         &parse_record_update(&value.to_string(), "source", defaults).unwrap(),
@@ -76,10 +87,9 @@ fn update_with_defaults(
 fn session_report_reads_its_current_stream_after_a_valid_move() {
     let directory = tempfile::tempdir().unwrap();
     let store = setup(directory.path());
-    let request = wire("report", &session(), "automatic", "progress");
+    let request = wire(&session(), "automatic", "progress");
     move_session_observed(
         &store,
-        "move",
         &MoveIntent::new("host", "pi", "native", "b").unwrap(),
     )
     .unwrap();
@@ -91,9 +101,9 @@ fn session_report_reads_its_current_stream_after_a_valid_move() {
         unreachable!()
     };
     assert_eq!(current.stream_id, "b");
-    assert_eq!(current.previous_stream_ids, ["a"]);
+    assert_eq!(current.membership_epoch, 1);
     assert_eq!(current.state, "progress");
-    assert_eq!(result.outcome["outcome"], "changes");
+    assert_eq!(result.outcome.outcome, DomainOutcome::Changes);
     let target = RecordAddress::new("host", RecordKind::Session, current.id).unwrap();
     let dependency = RecordAddress::new("host", RecordKind::Stream, "b").unwrap();
     assert_eq!(
@@ -124,7 +134,7 @@ fn report_byte_and_directory_budgets_do_not_grow_with_unrelated_records() {
             let store = setup(root);
             for index in 0..size {
                 std::fs::write(
-                    root.join(format!("hosts/host/streams/unrelated-{index}.yaml")),
+                    root.join(format!("hosts/host/streams/unrelated-{index}.json")),
                     "malformed unrelated record",
                 )
                 .unwrap();
@@ -145,9 +155,9 @@ fn report_byte_and_directory_budgets_do_not_grow_with_unrelated_records() {
             };
             let prose = "x".repeat(64 * 1024);
             let request = if kind == RecordKind::Session {
-                wire("report", &session(), "automatic", &prose)
+                wire(&session(), "automatic", &prose)
             } else {
-                json!({"version":2,"title_default":"automatic","catalog_source":"source","operation_id":"report","kind":"stream","actor":"automatic","before":stream("a"),"changes":{"goal":prose},"inputs":[{"kind":"session","record":session()}]})
+                json!({"version":2,"title_default":"automatic","catalog_source":"source","kind":"stream","actor":"automatic","before":stream("a"),"changes":{"goal":prose},"inputs":[{"kind":"session","record":session()}]})
             };
             let events = Arc::new(Mutex::new(Vec::new()));
             let observed = events.clone();
@@ -167,21 +177,26 @@ fn report_byte_and_directory_budgets_do_not_grow_with_unrelated_records() {
             let written = std::fs::metadata(target).unwrap().len() as usize;
             assert_eq!(record_io::writes(&trace), [(target.clone(), written)]);
 
+            // A retry that already landed reads the same records and writes nothing.
             events.lock().unwrap().clear();
-            assert!(update(&store, &request).repeated);
+            let retry = update(&store, &request);
+            assert!(!retry.written);
+            assert_eq!(retry.outcome.outcome, DomainOutcome::NoChange);
             let trace = events.lock().unwrap().clone();
             assert_eq!(
                 record_io::accesses(&trace),
                 [
                     RecordIoEvent::Lock(root.join(".catalog.lock")),
                     RecordIoEvent::Read(marker.clone()),
-                    RecordIoEvent::Read(target.clone())
+                    RecordIoEvent::Read(target.clone()),
+                    RecordIoEvent::Read(dependency.clone())
                 ]
             );
-            assert_eq!(
-                record_io::bytes_read(&trace),
-                std::fs::metadata(&marker).unwrap().len() as usize + written
-            );
+            let bytes_now: usize = [&marker, &session_path, &stream_path]
+                .iter()
+                .map(|path| std::fs::metadata(path).unwrap().len() as usize)
+                .sum();
+            assert_eq!(record_io::bytes_read(&trace), bytes_now);
             assert!(record_io::writes(&trace).is_empty());
         }
     }
@@ -191,70 +206,66 @@ fn report_byte_and_directory_budgets_do_not_grow_with_unrelated_records() {
 fn stream_report_checks_membership_period_without_retargeting_old_prose() {
     let directory = tempfile::tempdir().unwrap();
     let store = setup(directory.path());
-    let request = json!({"version":2,"title_default":"automatic","catalog_source":"source","operation_id":"report","kind":"stream","actor":"automatic","before":stream("a"),"changes":{"goal":"old prose"},"inputs":[{"kind":"session","record":session()}]});
+    let request = json!({"version":2,"title_default":"automatic","catalog_source":"source","kind":"stream","actor":"automatic","before":stream("a"),"changes":{"goal":"old prose"},"inputs":[{"kind":"session","record":session()}]});
     move_session_observed(
         &store,
-        "out",
         &MoveIntent::new("host", "pi", "native", "b").unwrap(),
     )
     .unwrap();
     move_session_observed(
         &store,
-        "back",
         &MoveIntent::new("host", "pi", "native", "a").unwrap(),
     )
     .unwrap();
     let result = update(&store, &request);
-    assert_eq!(result.outcome["outcome"], "superseded");
-    assert_eq!(result.current.record, Record::Stream(stream("a")));
+    assert_eq!(result.outcome.outcome, DomainOutcome::Superseded);
+    assert!(
+        result
+            .current
+            .record
+            .same_content(&Record::Stream(stream("a")))
+    );
     let destination = RecordAddress::new("host", RecordKind::Stream, "b").unwrap();
-    assert_eq!(
+    assert!(
         store
             .with_reader::<_, StorageError>(|reader| reader.read(&destination))
             .unwrap()
             .unwrap()
-            .record,
-        Record::Stream(stream("b"))
+            .record
+            .same_content(&Record::Stream(stream("b")))
     );
 }
 
 #[test]
-fn report_receipts_keep_work_text_only_in_the_current_record() {
+fn saved_records_hold_only_the_current_work_text() {
     fn saved_bytes(payload: &str) -> Vec<u8> {
         let directory = tempfile::tempdir().unwrap();
         let store = setup(directory.path());
-        let mut current = session();
+        let mut current = stored_session(&store);
         for index in 0..16 {
             let saved = update(
                 &store,
-                &wire(
-                    &format!("report-{index}"),
-                    &current,
-                    "user",
-                    &format!("{index}: {payload}"),
-                ),
+                &wire(&current, "user", &format!("{index}: {payload}")),
             );
             assert_eq!(
-                saved.outcome,
+                json!(saved.outcome),
                 json!({"outcome":"changes","conflicts":[],"reason":""})
-                    .as_object()
-                    .unwrap()
-                    .clone()
             );
             let Record::Session(session) = saved.current.record else {
                 unreachable!()
             };
             current = session;
         }
-        let target = RecordAddress::for_record(&Record::Session(current));
+        assert_eq!(current.revision, 17);
+        let target = RecordAddress::for_record(&Record::Session(current.clone()));
         let bytes = std::fs::read(
             directory
                 .path()
                 .join(relative_record_path(&target).unwrap()),
         )
         .unwrap();
-        let envelope: Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(envelope["receipts"].as_object().unwrap().len(), 17);
+        let file: Session = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(file, current);
         bytes
     }
     let small = saved_bytes("");
@@ -264,28 +275,31 @@ fn report_receipts_keep_work_text_only_in_the_current_record() {
 }
 
 #[test]
-fn no_change_and_refused_report_retries_retain_only_the_original_decision() {
+fn no_change_and_refused_report_retries_decide_again_without_writing() {
     let directory = tempfile::tempdir().unwrap();
     let store = setup(directory.path());
-    let unchanged = wire("unchanged", &session(), "user", "");
+    let unchanged = wire(&session(), "user", "");
     let no_change = update(&store, &unchanged);
-    assert_eq!(no_change.outcome["outcome"], "no-change");
-    update(&store, &wire("newer", &session(), "user", "current"));
-    for (actor, expected) in [("user", "conflict"), ("automatic", "superseded")] {
-        let request = wire(actor, &session(), actor, "stale proposal");
+    assert_eq!(no_change.outcome.outcome, DomainOutcome::NoChange);
+    assert!(!no_change.written);
+    update(&store, &wire(&stored_session(&store), "user", "current"));
+    for (actor, expected) in [
+        ("user", DomainOutcome::Conflict),
+        ("automatic", DomainOutcome::Superseded),
+    ] {
+        let request = wire(&session(), actor, "stale proposal");
         let first = update(&store, &request);
-        assert_eq!(first.outcome["outcome"], expected);
-        assert!(!first.outcome["conflicts"].as_array().unwrap().is_empty());
-        assert!(!first.outcome["reason"].as_str().unwrap().is_empty());
-        assert_eq!(first.outcome.len(), 3);
+        assert_eq!(first.outcome.outcome, expected);
+        assert!(!first.outcome.conflicts.is_empty());
+        assert!(!first.outcome.reason.is_empty());
+        assert!(!first.written);
         let repeated = update(&store, &request);
-        assert!(repeated.repeated);
+        assert!(!repeated.written);
         assert_eq!(repeated.outcome, first.outcome);
         assert_eq!(repeated.current, first.current);
     }
     let repeated = update(&store, &unchanged);
-    assert!(repeated.repeated);
-    assert_eq!(repeated.outcome, no_change.outcome);
+    assert!(!repeated.written);
     let Record::Session(current) = repeated.current.record else {
         unreachable!()
     };
@@ -293,19 +307,18 @@ fn no_change_and_refused_report_retries_retain_only_the_original_decision() {
 }
 
 #[test]
-fn accepted_report_retry_after_later_edits_reads_only_target_and_retains_original_outcome() {
+fn accepted_report_retry_after_later_edits_keeps_them() {
     let directory = tempfile::tempdir().unwrap();
     let store = setup(directory.path());
-    let mut original = wire("report", &session(), "automatic", "accepted");
+    let mut original = wire(&session(), "automatic", "accepted");
     original["changes"]["title"] = json!("Accepted generated name");
     let first = update(&store, &original);
     let Record::Session(before) = &first.current.record else {
         unreachable!()
     };
-    update(&store, &wire("newer", before, "user", "current work"));
+    update(&store, &wire(before, "user", "current work"));
     move_session_observed(
         &store,
-        "move",
         &MoveIntent::new("host", "pi", "native", "b").unwrap(),
     )
     .unwrap();
@@ -320,64 +333,39 @@ fn accepted_report_retry_after_later_edits_reads_only_target_and_retains_origina
             session: NamingMode::Manual,
         },
     );
-    assert!(repeated.repeated);
-    assert_eq!(repeated.outcome, first.outcome);
+    // The retry finds later work in place and leaves it there.
+    assert!(!repeated.written);
+    assert_eq!(repeated.outcome.outcome, DomainOutcome::Superseded);
     let Record::Session(current) = repeated.current.record else {
         unreachable!()
     };
     assert_eq!(current.state, "current work");
     assert_eq!(current.title, "Accepted generated name");
     assert_eq!(current.stream_id, "b");
-    assert_eq!(record_io::accesses(&events.lock().unwrap()).len(), 3);
-    let mut changed_default = original.clone();
-    changed_default["title_default"] = json!("manual");
-    assert!(
-        save_record_update(
-            &store,
-            &parse_record_update(
-                &changed_default.to_string(),
-                "source",
-                TitleDefaults::default()
-            )
-            .unwrap()
-        )
-        .is_err()
-    );
-    let mut changed = original;
-    changed["changes"]["state"] = json!("different intent");
-    assert!(
-        save_record_update(
-            &store,
-            &parse_record_update(
-                &changed.to_string(),
-                "source",
-                streams::model::TitleDefaults::default()
-            )
-            .unwrap()
-        )
-        .is_err()
-    );
+    assert!(record_io::writes(&events.lock().unwrap()).is_empty());
 }
 
 #[test]
 fn stale_never_applied_inherited_title_is_superseded_but_unrelated_progress_is_not() {
     let directory = tempfile::tempdir().unwrap();
     let store = setup(directory.path());
-    let mut request = wire("stale-title", &session(), "automatic", "captured progress");
+    let mut request = wire(&session(), "automatic", "captured progress");
     request["changes"]["title"] = json!("Stale generated name");
     let manual = TitleDefaults {
         session: NamingMode::Manual,
         ..TitleDefaults::default()
     };
     let result = update_with_defaults(&store, &request, manual);
-    assert_eq!(result.outcome["outcome"], "superseded");
-    assert_eq!(result.current.record, Record::Session(session()));
-    let progress = update_with_defaults(
-        &store,
-        &wire("progress", &session(), "automatic", "fresh work"),
-        manual,
+    assert_eq!(result.outcome.outcome, DomainOutcome::Superseded);
+    assert!(
+        result
+            .current
+            .record
+            .same_content(&Record::Session(session()))
     );
-    assert_eq!(progress.outcome["outcome"], "changes");
+    let progress =
+        update_with_defaults(&store, &wire(&session(), "automatic", "fresh work"), manual);
+    assert_eq!(progress.outcome.outcome, DomainOutcome::Changes);
     let Record::Session(current) = progress.current.record else {
         unreachable!()
     };
@@ -386,14 +374,13 @@ fn stale_never_applied_inherited_title_is_superseded_but_unrelated_progress_is_n
 }
 
 #[test]
-fn accepted_stream_title_retry_after_default_drift_and_move_reads_only_target() {
+fn accepted_stream_title_retry_after_default_drift_and_move_is_no_change() {
     let directory = tempfile::tempdir().unwrap();
     let store = setup(directory.path());
-    let request = json!({"version":2,"title_default":"automatic","catalog_source":"source","operation_id":"title","kind":"stream","actor":"automatic","before":stream("a"),"changes":{"title":"Generated effort"},"inputs":[{"kind":"session","record":session()}]});
+    let request = json!({"version":2,"title_default":"automatic","catalog_source":"source","kind":"stream","actor":"automatic","before":stream("a"),"changes":{"title":"Generated effort"},"inputs":[{"kind":"session","record":session()}]});
     let first = update(&store, &request);
     move_session_observed(
         &store,
-        "move",
         &MoveIntent::new("host", "pi", "native", "b").unwrap(),
     )
     .unwrap();
@@ -408,10 +395,10 @@ fn accepted_stream_title_retry_after_default_drift_and_move_reads_only_target() 
             ..TitleDefaults::default()
         },
     );
-    assert!(repeated.repeated);
-    assert_eq!(repeated.outcome, first.outcome);
+    assert!(!repeated.written);
+    assert_eq!(repeated.outcome.outcome, DomainOutcome::NoChange);
     assert_eq!(repeated.current.record, first.current.record);
-    assert_eq!(record_io::accesses(&events.lock().unwrap()).len(), 3);
+    assert!(record_io::writes(&events.lock().unwrap()).is_empty());
 }
 
 #[test]
@@ -421,12 +408,12 @@ fn explicit_title_modes_do_not_depend_on_changed_global_defaults() {
         let store = setup(directory.path());
         let policy = update(
             &store,
-            &json!({"version":2,"title_default":"automatic","catalog_source":"source","operation_id":"mode","kind":"session","actor":"user","before":session(),"changes":{"title_mode":mode},"inputs":[]}),
+            &json!({"version":2,"title_default":"automatic","catalog_source":"source","kind":"session","actor":"user","before":stored_session(&store),"changes":{"title_mode":mode},"inputs":[]}),
         );
         let Record::Session(before) = policy.current.record else {
             unreachable!()
         };
-        let mut request = wire("report", &before, "automatic", "progress");
+        let mut request = wire(&before, "automatic", "progress");
         request["changes"]["title"] = json!("Generated title");
         let result = update_with_defaults(
             &store,
@@ -436,7 +423,7 @@ fn explicit_title_modes_do_not_depend_on_changed_global_defaults() {
                 ..TitleDefaults::default()
             },
         );
-        assert_eq!(result.outcome["outcome"], "changes");
+        assert_eq!(result.outcome.outcome, DomainOutcome::Changes);
         let Record::Session(current) = result.current.record else {
             unreachable!()
         };
@@ -453,7 +440,7 @@ fn explicit_title_modes_do_not_depend_on_changed_global_defaults() {
 
 #[test]
 fn request_schema_rejects_old_tokens_unversioned_requests_and_rosters() {
-    let valid = wire("report", &session(), "automatic", "work");
+    let valid = wire(&session(), "automatic", "work");
     assert!(
         parse_record_update(
             &valid.to_string(),
@@ -475,6 +462,8 @@ fn request_schema_rejects_old_tokens_unversioned_requests_and_rosters() {
     old_token["ownership_token"] = json!("old");
     let mut old_authority = valid.clone();
     old_authority["authority"] = Value::Null;
+    let mut old_operation = valid.clone();
+    old_operation["operation_id"] = json!("old");
     let mut old_version = valid.clone();
     old_version["version"] = json!(1);
     let mut dependency = valid.clone();
@@ -485,6 +474,7 @@ fn request_schema_rejects_old_tokens_unversioned_requests_and_rosters() {
         inherited_default,
         old_token,
         old_authority,
+        old_operation,
         old_version,
         dependency,
     ] {
@@ -505,7 +495,7 @@ fn request_schema_rejects_old_tokens_unversioned_requests_and_rosters() {
         )
         .is_err()
     );
-    let roster = json!({"version":2,"title_default":"automatic","catalog_source":"source","operation_id":"report","kind":"stream","actor":"automatic","before":stream("a"),"changes":{"goal":"prose"},"inputs":[{"kind":"session","record":session()},{"kind":"session","record":session()}]});
+    let roster = json!({"version":2,"title_default":"automatic","catalog_source":"source","kind":"stream","actor":"automatic","before":stream("a"),"changes":{"goal":"prose"},"inputs":[{"kind":"session","record":session()},{"kind":"session","record":session()}]});
     assert!(
         parse_record_update(
             &roster.to_string(),
@@ -520,7 +510,7 @@ fn request_schema_rejects_old_tokens_unversioned_requests_and_rosters() {
 fn manual_stream_edit_has_no_session_dependency_even_after_membership_changes() {
     let directory = tempfile::tempdir().unwrap();
     let store = setup(directory.path());
-    let request = json!({"version":2,"title_default":"automatic","catalog_source":"source","operation_id":"manual","kind":"stream","actor":"user","before":stream("a"),"changes":{"goal":"manual goal"},"inputs":[]});
+    let request = json!({"version":2,"title_default":"automatic","catalog_source":"source","kind":"stream","actor":"user","before":stored_stream(&store, "a"),"changes":{"goal":"manual goal"},"inputs":[]});
     let mut invalid = request.clone();
     invalid["inputs"] = json!([{"kind":"session","record":session()}]);
     assert!(
@@ -533,7 +523,6 @@ fn manual_stream_edit_has_no_session_dependency_even_after_membership_changes() 
     );
     move_session_observed(
         &store,
-        "move",
         &MoveIntent::new("host", "pi", "native", "b").unwrap(),
     )
     .unwrap();
@@ -541,7 +530,7 @@ fn manual_stream_edit_has_no_session_dependency_even_after_membership_changes() 
     let observed = events.clone();
     let store = store.with_io_observer(move |event| observed.lock().unwrap().push(event));
     let result = update(&store, &request);
-    assert_eq!(result.outcome["outcome"], "changes");
+    assert_eq!(result.outcome.outcome, DomainOutcome::Changes);
     let Record::Stream(current) = result.current.record else {
         unreachable!()
     };
@@ -567,26 +556,23 @@ fn reference_value(url: &str) -> Value {
     json!({"name":"Design","purpose":"Guide work","role":"brief","state":"active",
         "target":{"kind":"link","url":url}})
 }
-fn reference(url: &str, revision: &str) -> streams::model::Reference {
-    let mut value = reference_value(url);
-    value["revision"] = json!(revision);
-    serde_json::from_value(value).unwrap()
+fn reference(url: &str) -> streams::model::Reference {
+    serde_json::from_value(reference_value(url)).unwrap()
 }
 fn reference_wire(before: &Stream, actor: &str, changes: Value) -> Value {
-    json!({"version":2,"title_default":"automatic","catalog_source":"source","operation_id":"references","kind":"stream","actor":actor,"before":before,
+    json!({"version":2,"title_default":"automatic","catalog_source":"source","kind":"stream","actor":actor,"before":before,
         "changes":{"reference_changes":changes},
         "inputs":if actor=="automatic" {json!([{"kind":"session","record":session()}])} else {json!([])}})
 }
 fn set_row(url: &str, desired: Value) -> Value {
-    json!({"key":{"kind":"url","url":url},"desired":desired,"next_revision":"references"})
+    json!({"key":{"kind":"url","url":url},"desired":desired})
 }
 fn doc_row() -> Value {
     json!({"key":{"kind":"document","repository_url":"git@example.test:repo","path":"docs/design.md"},
         "desired":{"name":"Design","purpose":"Guide work","role":"brief","state":"active",
-            "target":{"kind":"document","repository_url":"git@example.test:repo","path":"docs/design.md"}},
-        "next_revision":"references"})
+            "target":{"kind":"document","repository_url":"git@example.test:repo","path":"docs/design.md"}}})
 }
-fn saved_stream(save: &streams::storage::records::RecordSave) -> Stream {
+fn saved_stream(save: &RecordSave<EditOutcome>) -> Stream {
     let Record::Stream(stream) = &save.current.record else {
         unreachable!()
     };
@@ -607,7 +593,7 @@ fn reference_documents_assign_and_preserve_recovery_without_aliases() {
                 checkout.repository_url = Some("git@example.test:repo".into());
                 captured.checkout = Some(checkout);
             }
-            put_with_id(&store, Record::Session(captured.clone()), "checkout");
+            put(&store, Record::Session(captured.clone()));
             let mut row = doc_row();
             if explicit {
                 row["desired"]["target"]["ref"] = json!("explicit");
@@ -644,12 +630,10 @@ fn reference_documents_assign_and_preserve_recovery_without_aliases() {
             document.commit = Some("verified".into());
             document.source_session_id = None;
             let preserved_ref = document.r#ref.clone();
-            put_with_id(&store, Record::Stream(before.clone()), "recovery");
+            put(&store, Record::Stream(before.clone()));
             let mut row = doc_row();
             row["desired"]["purpose"] = json!("Changed purpose");
-            row["next_revision"] = json!("update-document");
             let mut request = reference_wire(&before, "automatic", json!([row]));
-            request["operation_id"] = json!("update-document");
             request["inputs"][0]["record"] = json!(captured);
             let next = saved_stream(&update(&store, &request));
             let streams::model::ReferenceTarget::Document(next) = &next.references[0].target else {
@@ -668,20 +652,17 @@ fn partial_reference_save_preserves_stale_and_dropped_rows_and_accepts_independe
     let store = setup(directory.path());
     let mut before = stream("a");
     before.references = vec![
-        reference("https://example.test/a", "old"),
-        reference("https://example.test/dropped", "drop"),
+        reference("https://example.test/a"),
+        reference("https://example.test/dropped"),
     ];
     before.references[1].state = streams::model::ReferenceState::Dropped;
     let mut current = before.clone();
-    current.references[0].purpose = "Outside edit with unchanged token".into();
+    current.references[0].purpose = "Outside edit".into();
     current
         .references
-        .push(reference("https://example.test/unrelated", "outside"));
-    put_with_id(&store, Record::Stream(current.clone()), "current");
-    update(
-        &store,
-        &wire("progress", &session(), "automatic", "Working"),
-    );
+        .push(reference("https://example.test/unrelated"));
+    put(&store, Record::Stream(current.clone()));
+    update(&store, &wire(&session(), "automatic", "Working"));
     let request = reference_wire(
         &before,
         "automatic",
@@ -701,10 +682,10 @@ fn partial_reference_save_preserves_stale_and_dropped_rows_and_accepts_independe
         ]),
     );
     let first = update(&store, &request);
-    assert_eq!(first.outcome["outcome"], "changes");
-    assert_eq!(first.outcome["conflicts"], json!([]));
-    assert_eq!(first.outcome["reason"], "");
-    let rows = &first.outcome["reference_results"];
+    assert_eq!(first.outcome.outcome, DomainOutcome::Changes);
+    assert_eq!(json!(first.outcome)["conflicts"], json!([]));
+    assert_eq!(json!(first.outcome)["reason"], "");
+    let rows = &json!(first.outcome)["reference_results"];
     assert_eq!(rows[0]["outcome"], "superseded");
     assert_eq!(rows[0]["reason"], "reference changed since capture");
     assert_eq!(rows[1]["outcome"], "superseded");
@@ -713,10 +694,14 @@ fn partial_reference_save_preserves_stale_and_dropped_rows_and_accepts_independe
     assert_eq!(rows[2]["action"], "add");
     let saved = saved_stream(&first);
     assert_eq!(saved.references[..3], current.references);
-    assert_eq!(saved.references[3].revision, "references");
+    // The retry finds the added row in place and the stale rows still stale.
     let replay = update(&store, &request);
-    assert!(replay.repeated);
-    assert_eq!(replay.outcome, first.outcome);
+    assert!(!replay.written);
+    assert_eq!(replay.outcome.outcome, DomainOutcome::Superseded);
+    let rows = &json!(replay.outcome)["reference_results"];
+    assert_eq!(rows[0]["outcome"], "superseded");
+    assert_eq!(rows[1]["outcome"], "superseded");
+    assert_eq!(rows[2]["outcome"], "no-change");
 }
 
 #[test]
@@ -748,16 +733,15 @@ fn reference_roles_states_kind_changes_and_noops_follow_saved_revisions() {
                 "automatic",
                 json!([set_row("https://example.test/item", desired.clone())]),
             );
-            request["operation_id"] = json!("next");
-            request["changes"]["reference_changes"][0]["next_revision"] = json!("next");
             let result = update(&store, &request);
-            assert_eq!(result.outcome["outcome"], "no-change");
-            assert_eq!(saved_stream(&result).references[0].revision, "references");
+            assert_eq!(result.outcome.outcome, DomainOutcome::NoChange);
+            assert!(!result.written);
             desired["target"]["kind"] = json!("pr");
-            request["operation_id"] = json!("classify");
-            request["changes"]["reference_changes"][0]["next_revision"] = json!("classify");
             request["changes"]["reference_changes"][0]["desired"] = desired;
-            assert_eq!(update(&store, &request).outcome["outcome"], "changes");
+            assert_eq!(
+                update(&store, &request).outcome.outcome,
+                DomainOutcome::Changes
+            );
         }
     }
 }
@@ -768,11 +752,12 @@ fn user_correction_conflicts_at_occupied_destination_but_saves_independent_delet
     let store = setup(directory.path());
     let mut before = stream("a");
     before.references = vec![
-        reference("https://example.test/a", "a"),
-        reference("https://example.test/b", "b"),
-        reference("https://example.test/c", "c"),
+        reference("https://example.test/a"),
+        reference("https://example.test/b"),
+        reference("https://example.test/c"),
     ];
-    put_with_id(&store, Record::Stream(before.clone()), "current");
+    put(&store, Record::Stream(before.clone()));
+    let before = stored_stream(&store, "a");
     let request = reference_wire(
         &before,
         "user",
@@ -782,33 +767,33 @@ fn user_correction_conflicts_at_occupied_destination_but_saves_independent_delet
         ]),
     );
     let result = update(&store, &request);
-    assert_eq!(result.outcome["outcome"], "changes");
+    assert_eq!(result.outcome.outcome, DomainOutcome::Changes);
     assert_eq!(
-        result.outcome["reference_results"][0]["reason"],
+        json!(result.outcome)["reference_results"][0]["reason"],
         "replacement target already exists"
     );
     assert_eq!(
-        result.outcome["reference_results"][0]["outcome"],
+        json!(result.outcome)["reference_results"][0]["outcome"],
         "conflict"
     );
-    assert_eq!(result.outcome["reference_results"][1]["action"], "delete");
+    assert_eq!(
+        json!(result.outcome)["reference_results"][1]["action"],
+        "delete"
+    );
     assert_eq!(saved_stream(&result).references, before.references[..2]);
     let correction = reference_wire(
-        &before,
+        &saved_stream(&result),
         "user",
         json!([set_row(
             "https://example.test/a",
             reference_value("https://example.test/new")
         )]),
     );
-    let mut correction = correction;
-    correction["operation_id"] = json!("correction");
-    correction["changes"]["reference_changes"][0]["next_revision"] = json!("correction");
     let result = update(&store, &correction);
-    assert_eq!(result.outcome["outcome"], "changes");
+    assert_eq!(result.outcome.outcome, DomainOutcome::Changes);
     assert_eq!(
         saved_stream(&result).references[0].target.key(),
-        reference("https://example.test/new", "x").target.key()
+        reference("https://example.test/new").target.key()
     );
 }
 
@@ -823,14 +808,12 @@ fn reference_session_and_stream_guards_cover_move_revisit_native_identity_and_ow
             "move" | "revisit" => {
                 move_session_observed(
                     &store,
-                    "move",
                     &MoveIntent::new("host", "pi", "native", "b").unwrap(),
                 )
                 .unwrap();
                 if kind == "revisit" {
                     move_session_observed(
                         &store,
-                        "back",
                         &MoveIntent::new("host", "pi", "native", "a").unwrap(),
                     )
                     .unwrap();
@@ -849,7 +832,6 @@ fn reference_session_and_stream_guards_cover_move_revisit_native_identity_and_ow
         }
         if matches!(kind, "owner" | "identity" | "native") {
             let edit = streams::operations::references::ReferenceChanges::new(
-                "references",
                 &before,
                 streams::operations::Actor::Automatic,
                 Some(&session()),
@@ -868,7 +850,6 @@ fn reference_session_and_stream_guards_cover_move_revisit_native_identity_and_ow
                                     url: "https://example.test/a".into(),
                                 },
                         },
-                        next_revision: "references".into(),
                     },
                 ],
             )
@@ -884,13 +865,14 @@ fn reference_session_and_stream_guards_cover_move_revisit_native_identity_and_ow
                 _ => unreachable!(),
             }
             let result = edit.apply(&current, Some(&current_session)).unwrap();
-            assert_eq!(result.domain()["outcome"], "superseded");
-            assert_eq!(result.domain()["conflicts"], json!(["inputs"]));
+            let outcome = result.outcome();
+            assert_eq!(outcome.outcome, DomainOutcome::Superseded);
+            assert_eq!(outcome.conflicts, ["inputs"]);
         } else {
             let result = update(&store, &request);
-            assert_eq!(result.outcome["outcome"], "superseded", "{kind}");
-            assert_eq!(result.outcome["conflicts"], json!(["inputs"]));
-            assert_eq!(saved_stream(&result), before);
+            assert_eq!(result.outcome.outcome, DomainOutcome::Superseded, "{kind}");
+            assert_eq!(json!(result.outcome)["conflicts"], json!(["inputs"]));
+            assert!(Record::Stream(saved_stream(&result)).same_content(&Record::Stream(before)));
         }
     }
 }
@@ -898,13 +880,11 @@ fn reference_session_and_stream_guards_cover_move_revisit_native_identity_and_ow
 #[test]
 fn captured_mutations_never_recreate_deleted_or_recreated_rows_but_absent_additions_rediscover() {
     for actor in ["automatic", "user"] {
-        for current_kind in ["deleted", "recreated", "changed-token"] {
+        for current_kind in ["deleted", "changed"] {
             let directory = tempfile::tempdir().unwrap();
             let store = setup(directory.path());
             let mut before = stream("a");
-            before
-                .references
-                .push(reference("https://example.test/a", "original"));
+            before.references.push(reference("https://example.test/a"));
             let mut desired = reference_value("https://example.test/a");
             desired["purpose"] = json!("Captured change");
             let request = reference_wire(
@@ -916,20 +896,28 @@ fn captured_mutations_never_recreate_deleted_or_recreated_rows_but_absent_additi
             if current_kind == "deleted" {
                 current.references.clear();
             } else {
-                current.references[0].revision = "recreated-or-ABA".into();
+                current.references[0].purpose = "Outside edit".into();
             }
-            put_with_id(&store, Record::Stream(current.clone()), "outside");
+            put(&store, Record::Stream(current.clone()));
             let result = update(&store, &request);
             assert_eq!(
-                result.outcome["outcome"],
+                result.outcome.outcome,
                 if actor == "automatic" {
-                    "superseded"
+                    DomainOutcome::Superseded
                 } else {
-                    "conflict"
+                    DomainOutcome::Conflict
                 }
             );
-            assert_eq!(saved_stream(&result), current);
-            assert_eq!(result.outcome["conflicts"], json!(["references"]));
+            assert!(Record::Stream(saved_stream(&result)).same_content(&Record::Stream(current)));
+            // A user capture is refused as a whole by the Stream revision.
+            assert_eq!(
+                json!(result.outcome)["conflicts"],
+                if actor == "automatic" {
+                    json!(["references"])
+                } else {
+                    json!(["inputs"])
+                }
+            );
         }
         let directory = tempfile::tempdir().unwrap();
         let store = setup(directory.path());
@@ -942,14 +930,22 @@ fn captured_mutations_never_recreate_deleted_or_recreated_rows_but_absent_additi
                 reference_value("https://example.test/a")
             )]),
         );
-        // Permanent deletion leaves no suppression ledger, even for an old capture.
+        // Permanent deletion leaves no suppression ledger, so an old automatic capture adds
+        // the row again. A user edit compares and swaps on the Stream revision.
         let mut temporary = before.clone();
         temporary
             .references
-            .push(reference("https://example.test/a", "temporary"));
-        put_with_id(&store, Record::Stream(temporary), "create-temporary");
-        put_with_id(&store, Record::Stream(before), "permanent-delete");
-        assert_eq!(update(&store, &request).outcome["outcome"], "changes");
+            .push(reference("https://example.test/a"));
+        put(&store, Record::Stream(temporary));
+        put(&store, Record::Stream(before));
+        assert_eq!(
+            update(&store, &request).outcome.outcome,
+            if actor == "automatic" {
+                DomainOutcome::Changes
+            } else {
+                DomainOutcome::Conflict
+            }
+        );
     }
 }
 
@@ -958,9 +954,7 @@ fn correction_old_selector_cannot_reach_the_new_target_and_user_can_restore_drop
     let directory = tempfile::tempdir().unwrap();
     let store = setup(directory.path());
     let mut before = stream("a");
-    before
-        .references
-        .push(reference("https://example.test/a", "original"));
+    before.references.push(reference("https://example.test/a"));
     let request = reference_wire(
         &before,
         "automatic",
@@ -973,26 +967,26 @@ fn correction_old_selector_cannot_reach_the_new_target_and_user_can_restore_drop
     corrected.references[0].target = streams::model::ReferenceTarget::Link {
         url: "https://example.test/b".into(),
     };
-    corrected.references[0].revision = "correction".into();
     corrected.references[0].state = streams::model::ReferenceState::Dropped;
-    put_with_id(&store, Record::Stream(corrected.clone()), "correction");
+    put(&store, Record::Stream(corrected.clone()));
     let result = update(&store, &request);
     assert_eq!(
-        result.outcome["reference_results"][0]["reason"],
+        json!(result.outcome)["reference_results"][0]["reason"],
         "reference no longer exists"
     );
-    assert_eq!(saved_stream(&result), corrected);
+    assert!(Record::Stream(saved_stream(&result)).same_content(&Record::Stream(corrected.clone())));
     let mut desired = reference_value("https://example.test/b");
     desired["state"] = json!("fulfilled");
-    let mut restore = reference_wire(
-        &corrected,
+    let restore = reference_wire(
+        &stored_stream(&store, "a"),
         "user",
         json!([set_row("https://example.test/b", desired)]),
     );
-    restore["operation_id"] = json!("restore");
-    restore["changes"]["reference_changes"][0]["next_revision"] = json!("restore");
     let result = update(&store, &restore);
-    assert_eq!(result.outcome["reference_results"][0]["action"], "restore");
+    assert_eq!(
+        json!(result.outcome)["reference_results"][0]["action"],
+        "restore"
+    );
     assert_eq!(
         saved_stream(&result).references[0].state,
         streams::model::ReferenceState::Fulfilled
@@ -1017,7 +1011,7 @@ fn reference_raw_parser_rejects_authority_presence_overlap_and_old_list_payloads
         value_wire["changes"]["reference_changes"][0]["desired"]["target"][field] = value;
         invalids.push(value_wire);
     }
-    for field in ["key", "desired", "next_revision"] {
+    for field in ["key", "desired"] {
         let mut invalid = valid.clone();
         invalid["changes"]["reference_changes"][0]
             .as_object_mut()
@@ -1052,7 +1046,7 @@ fn reference_raw_parser_rejects_authority_presence_overlap_and_old_list_payloads
     invalid["changes"]["goal"] = json!("mixed");
     invalids.push(invalid);
     let mut invalid = valid.clone();
-    invalid["changes"]["reference_changes"][0]["next_revision"] = json!("wrong");
+    invalid["changes"]["reference_changes"][0]["next_revision"] = json!("old");
     invalids.push(invalid);
     let mut invalid = valid.clone();
     invalid["changes"]["reference_changes"][0]["key"]["path"] = json!("different");
@@ -1062,10 +1056,6 @@ fn reference_raw_parser_rejects_authority_presence_overlap_and_old_list_payloads
     invalids.push(invalid);
     let mut deletion = valid.clone();
     deletion["changes"]["reference_changes"][0]["desired"] = Value::Null;
-    deletion["changes"]["reference_changes"][0]
-        .as_object_mut()
-        .unwrap()
-        .remove("next_revision");
     invalids.push(deletion);
     for invalid in invalids {
         assert!(
@@ -1080,9 +1070,7 @@ fn reference_raw_parser_rejects_authority_presence_overlap_and_old_list_payloads
     user["changes"]["reference_changes"][0]["desired"]["target"]["ref"] = Value::Null;
     assert!(parse_record_update(&user.to_string(), "source", TitleDefaults::default()).is_ok());
     let mut before = stream("a");
-    before
-        .references
-        .push(reference("https://example.test/a", "captured"));
+    before.references.push(reference("https://example.test/a"));
     let deletion = reference_wire(
         &before,
         "user",
@@ -1090,12 +1078,12 @@ fn reference_raw_parser_rejects_authority_presence_overlap_and_old_list_payloads
     );
     assert!(parse_record_update(&deletion.to_string(), "source", TitleDefaults::default()).is_ok());
     let mut invalid = deletion.clone();
-    invalid["changes"]["reference_changes"][0]["next_revision"] = json!("references");
+    invalid["operation_id"] = json!("old");
     assert!(parse_record_update(&invalid.to_string(), "source", TitleDefaults::default()).is_err());
 }
 
 #[test]
-fn reference_constructor_rejects_overlap_reused_revisions_and_foreign_captures() {
+fn reference_constructor_rejects_overlap_and_foreign_captures() {
     use streams::{
         model::ResourceKey,
         operations::{
@@ -1107,44 +1095,28 @@ fn reference_constructor_rejects_overlap_reused_revisions_and_foreign_captures()
         },
     };
     let mut before = stream("a");
-    before.references = vec![reference("https://example.test/a", "captured")];
-    let user = |old: &str, new: &str, revision: &str| ReferenceChange::UserSet {
+    before.references = vec![reference("https://example.test/a")];
+    let user = |old: &str, new: &str| ReferenceChange::UserSet {
         key: ResourceKey::Url { url: old.into() },
-        desired: reference(new, "unused").value(),
-        next_revision: revision.into(),
+        desired: reference(new).value(),
     };
     for changes in [
-        vec![user(
-            "https://example.test/a",
-            "https://example.test/b",
-            "captured",
-        )],
         vec![
-            user("https://example.test/a", "https://example.test/b", "next"),
-            user("https://example.test/b", "https://example.test/b", "next"),
+            user("https://example.test/a", "https://example.test/b"),
+            user("https://example.test/b", "https://example.test/b"),
         ],
         vec![
-            user("https://example.test/a", "https://example.test/c", "next"),
-            user("https://example.test/b", "https://example.test/c", "next"),
+            user("https://example.test/a", "https://example.test/c"),
+            user("https://example.test/b", "https://example.test/c"),
         ],
-        vec![user(
-            "https://example.test/b",
-            "https://example.test/c",
-            "next",
-        )],
+        vec![user("https://example.test/b", "https://example.test/c")],
         vec![ReferenceChange::UserDelete {
             key: ResourceKey::Url {
                 url: "https://example.test/absent".into(),
             },
         }],
     ] {
-        let id = if matches!(&changes[0], ReferenceChange::UserSet {next_revision,..} if next_revision=="captured")
-        {
-            "captured"
-        } else {
-            "next"
-        };
-        assert!(ReferenceChanges::new(id, &before, Actor::User, None, changes).is_err());
+        assert!(ReferenceChanges::new(&before, Actor::User, None, changes).is_err());
     }
     let automatic = || ReferenceChange::Automatic {
         key: ResourceKey::Url {
@@ -1159,26 +1131,18 @@ fn reference_constructor_rejects_overlap_reused_revisions_and_foreign_captures()
                 url: "https://example.test/a".into(),
             },
         },
-        next_revision: "next".into(),
     };
-    assert!(ReferenceChanges::new("next", &before, Actor::User, None, vec![automatic()]).is_err());
+    assert!(ReferenceChanges::new(&before, Actor::User, None, vec![automatic()]).is_err());
     assert!(
         ReferenceChanges::new(
-            "next",
             &before,
             Actor::Automatic,
             Some(&session()),
-            vec![user(
-                "https://example.test/a",
-                "https://example.test/a",
-                "next"
-            )]
+            vec![user("https://example.test/a", "https://example.test/a")]
         )
         .is_err()
     );
-    assert!(
-        ReferenceChanges::new("next", &before, Actor::Native, None, vec![automatic()]).is_err()
-    );
+    assert!(ReferenceChanges::new(&before, Actor::Native, None, vec![automatic()]).is_err());
     for field in ["host", "stream"] {
         let mut captured = session();
         if field == "host" {
@@ -1188,7 +1152,6 @@ fn reference_constructor_rejects_overlap_reused_revisions_and_foreign_captures()
         }
         assert!(
             ReferenceChanges::new(
-                "next",
                 &before,
                 Actor::Automatic,
                 Some(&captured),
@@ -1208,7 +1171,7 @@ fn reference_io_budgets_are_record_local_with_malformed_unrelated_records() {
             let store = setup(root);
             for index in 0..size {
                 std::fs::write(
-                    root.join(format!("hosts/host/streams/unrelated-{index}.yaml")),
+                    root.join(format!("hosts/host/streams/unrelated-{index}.json")),
                     "malformed unrelated record",
                 )
                 .unwrap();
@@ -1222,17 +1185,18 @@ fn reference_io_budgets_are_record_local_with_malformed_unrelated_records() {
                     .unwrap(),
             );
             let marker = root.join(".catalog-local/records.json");
+            let stream_bytes = std::fs::metadata(&stream_path).unwrap().len();
             let expected_bytes = std::fs::metadata(&marker).unwrap().len()
-                + std::fs::metadata(&stream_path).unwrap().len()
+                + stream_bytes
                 + if actor == "automatic" {
                     std::fs::metadata(&session_path).unwrap().len()
                 } else {
                     0
                 };
+            let request = reference_wire(&stored_stream(&store, "a"), actor, json!([doc_row()]));
             let events = Arc::new(Mutex::new(Vec::new()));
             let observed = events.clone();
             let store = store.with_io_observer(move |event| observed.lock().unwrap().push(event));
-            let request = reference_wire(&stream("a"), actor, json!([doc_row()]));
             update(&store, &request);
             let trace = events.lock().unwrap().clone();
             let mut expected = vec![
@@ -1248,44 +1212,17 @@ fn reference_io_budgets_are_record_local_with_malformed_unrelated_records() {
             let written = std::fs::metadata(&stream_path).unwrap().len() as usize;
             assert_eq!(record_io::writes(&trace), [(stream_path.clone(), written)]);
             events.lock().unwrap().clear();
-            assert!(update(&store, &request).repeated);
+            // A retry that already landed reads the same records and writes nothing.
+            let retry = update(&store, &request);
+            assert!(!retry.written);
+            assert_eq!(retry.outcome.outcome, DomainOutcome::NoChange);
             let trace = events.lock().unwrap().clone();
-            assert_eq!(record_io::accesses(&trace), expected[..3]);
+            assert_eq!(record_io::accesses(&trace), expected);
             assert_eq!(
                 record_io::bytes_read(&trace),
-                std::fs::metadata(marker).unwrap().len() as usize + written
+                expected_bytes as usize - stream_bytes as usize + written
             );
             assert!(record_io::writes(&trace).is_empty());
         }
     }
-}
-
-#[test]
-fn declined_manual_text_is_still_part_of_the_retry_fingerprint() {
-    let directory = tempfile::tempdir().unwrap();
-    let store = setup(directory.path());
-    let initial = session();
-    let renamed = update(
-        &store,
-        &json!({"version":2,"title_default":"automatic","catalog_source":"source","operation_id":"rename","kind":"session","actor":"user","before":initial,"changes":{"title":"Human name"},"inputs":[]}),
-    );
-    let Record::Session(before) = renamed.current.record else {
-        unreachable!()
-    };
-    let mut request = wire("report", &before, "automatic", "progress");
-    request["changes"]["title"] = json!("ignored title");
-    update(&store, &request);
-    request["changes"]["title"] = json!("different ignored title");
-    assert!(
-        save_record_update(
-            &store,
-            &parse_record_update(
-                &request.to_string(),
-                "source",
-                streams::model::TitleDefaults::default()
-            )
-            .unwrap()
-        )
-        .is_err()
-    );
 }

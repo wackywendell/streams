@@ -13,9 +13,9 @@ use streams::{
     runtime::conversations::Harness,
     storage::{
         StorageError,
-        records::{RecordAddress, RecordChange, RecordRequest, RecordStore},
+        records::{RecordAddress, RecordChange, RecordStore},
     },
-    yaml_store::records::{RecordIoEvent, relative_record_path},
+    yaml_store::records::RecordIoEvent,
 };
 
 const NATIVE: &str = "11234567-89ab-4def-8123-456789abcdef";
@@ -58,8 +58,8 @@ impl Fixture {
             events,
         }
     }
-    fn request(&self, id: &str, stream: Option<&str>) -> EnrollmentRequest {
-        let mut wire = json!({"version":2,"catalog_source":self.opened.source_id(),"operation_id":id,
+    fn request(&self, stream: Option<&str>) -> EnrollmentRequest {
+        let mut wire = json!({"version":2,"catalog_source":self.opened.source_id(),
             "harness":"pi","harness_session_id":NATIVE,"session":{"title":"Contribution"},
             "actor":"automatic","cwd":self.app.cwd});
         if let Some(stream) = stream {
@@ -86,14 +86,12 @@ impl Fixture {
     }
     fn put(&self, stream: Stream) {
         let record = Record::Stream(stream);
-        let request =
-            RecordRequest::new(RecordAddress::for_record(&record), "fixture", &json!({})).unwrap();
         self.opened
             .records()
-            .save::<StorageError>(&request, |_, _| {
+            .save::<_, StorageError>(&RecordAddress::for_record(&record), |_, _| {
                 Ok(RecordChange {
                     record,
-                    outcome: Default::default(),
+                    outcome: (),
                 })
             })
             .unwrap();
@@ -104,7 +102,7 @@ impl Fixture {
 fn record_only_enrollment_uses_the_admitted_root_without_native_or_settings_rereads_or_publication()
 {
     let f = Fixture::new();
-    let request = f.request("initial", None);
+    let request = f.request(None);
     let observed = f.context();
     // Runtime path derivation uses the admitted root and immutable Config paths, not settings.
     fs::write(f.app.config.config_path(), "not JSON").unwrap();
@@ -130,11 +128,10 @@ fn record_only_enrollment_uses_the_admitted_root_without_native_or_settings_rere
 }
 
 #[test]
-fn retained_enrollment_keeps_its_original_decision_and_current_records_without_retargeting_directory_intent()
- {
+fn enrollment_retried_after_a_move_refuses_without_writing_or_retargeting_directory_intent() {
     let f = Fixture::new();
     f.put(Stream::new("a", "A", None, f.opened.host().as_str()).unwrap());
-    let request = f.request("initial", Some("a"));
+    let request = f.request(Some("a"));
     let first = f
         .app
         .enroll_records(&f.opened, &request, &f.context())
@@ -150,53 +147,37 @@ fn retained_enrollment_keeps_its_original_decision_and_current_records_without_r
     f.put(Stream::new("b", "B", None, f.opened.host().as_str()).unwrap());
     application::move_session_observed(
         f.opened.records(),
-        "move",
         &MoveIntent::new(f.opened.host().as_str(), "pi", NATIVE, "b").unwrap(),
     )
     .unwrap();
     let observed = f.context();
     f.events.lock().unwrap().clear();
-    let retry = f
+    // The record shows a later membership, so the old enrollment cannot be told apart from a
+    // new one that would move the conversation; it refuses rather than undo the move.
+    let error = f
         .app
         .enroll_records(&f.opened, &request, &observed)
+        .err()
         .unwrap();
-    assert!(retry.output.accepted_save);
-    assert_eq!(retry.output.code, 2);
-    assert!(!retry.directory_selected);
-    assert_eq!(retry.session.as_ref().unwrap().stream_id, "b");
-    assert_eq!(retry.stream.as_ref().unwrap().id, "b");
-    assert_eq!(
-        retry.output.value["saves"][0]["save"]["domain"]["stream_id"],
-        "a"
+    assert!(
+        error.to_string().contains("use an explicit move"),
+        "{error}"
     );
     assert_eq!(fs::read(selected_path).unwrap(), selected);
     assert!(binding.read("b", None).unwrap().is_none());
-    let reads = f
-        .events
-        .lock()
-        .unwrap()
-        .iter()
-        .filter_map(|event| match event {
-            RecordIoEvent::Read(path) => Some(path.clone()),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(
-        reads,
-        [
-            f.opened.root().join(".catalog-local/records.json"),
-            f.opened.root().join(
-                relative_record_path(&RecordAddress::for_record(&Record::Session(session)))
-                    .unwrap()
-            )
-        ]
+    let events = f.events.lock().unwrap().clone();
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, RecordIoEvent::Written(..))),
+        "{events:?}"
     );
 }
 
 #[test]
 fn directory_failure_preserves_accepted_records_without_claiming_local_completion() {
     let f = Fixture::new();
-    let request = f.request("initial", None);
+    let request = f.request(None);
     let effort = streams::agent::effort_id_for(f.opened.host().as_str(), Harness::Pi, NATIVE);
     let directory_path = f
         .app
@@ -218,21 +199,4 @@ fn directory_failure_preserves_accepted_records_without_claiming_local_completio
     assert!(completed.output.value.get("completion_error").is_some());
     assert_eq!(completed.output.value["saves"].as_array().unwrap().len(), 2);
     assert_eq!(f.context().session, completed.session);
-}
-
-#[test]
-fn uncertain_enrollment_keeps_its_receipt_without_claiming_definite_acceptance() {
-    let mut receipt = Receipt::default();
-    assert!(
-        receipt
-            .persist(
-                "initial:session".into(),
-                Err(StorageError::uncertain("replacement flush failed").into())
-            )
-            .is_err()
-    );
-    assert!(!receipt.accepted);
-    let value = serde_json::to_value(receipt).unwrap();
-    assert_eq!(value["saves"][0]["save"]["local"], "uncertain");
-    assert!(value["saves"][0]["save"]["domain"].is_null());
 }

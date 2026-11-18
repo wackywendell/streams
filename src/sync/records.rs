@@ -14,12 +14,9 @@ use crate::{
     model::check_text,
     storage::{
         StorageError,
-        records::{RecordAddress, RecordInventory, RecordStore},
+        records::{RecordInventory, RecordStore},
     },
-    yaml_store::records::{
-        YamlRecordStore, catalog_path_host, decode_record_tree, record_mtime_ms,
-        relative_record_path,
-    },
+    yaml_store::records::{YamlRecordStore, catalog_path_host, decode_record_tree},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -29,15 +26,7 @@ use std::{
 };
 
 const CONFIG: &str = ".catalog-local/transport.json";
-const GIT_TIMES_CACHE: &str = ".catalog-local/git-times.json";
 type Tree = BTreeMap<PathBuf, Vec<u8>>;
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct GitTimesCache {
-    version: u32,
-    head: String,
-    times: BTreeMap<String, u64>,
-}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "strategy", rename_all = "lowercase", deny_unknown_fields)]
 enum Mode {
@@ -544,140 +533,6 @@ impl RecordSync {
             )
             .with_detail(error.to_string()),
         }
-    }
-
-    /// Resolve per-record modification timestamps using the active backend:
-    /// file mtime for local-only, cached Git commit times (plus dirty file mtime) for Git.
-    pub fn last_updated_ms(
-        &self,
-        addresses: &[RecordAddress],
-    ) -> Result<BTreeMap<RecordAddress, u64>, StorageError> {
-        if self.strategy() == Strategy::None {
-            return YamlRecordStore::new(&self.root, &self.host)?.last_updated_ms(addresses);
-        }
-        let head = self.local_head()?;
-        let mut cache = self.load_git_times_cache();
-        if cache.as_ref().is_none_or(|c| c.head != head) {
-            let mut times = match cache.as_ref() {
-                Some(prev) if self.is_ancestor(&prev.head, &head)? => {
-                    let mut updated = prev.times.clone();
-                    let range = format!("{}..{head}", prev.head);
-                    self.collect_git_times(Some(&range), &mut updated)?;
-                    updated
-                }
-                _ => {
-                    let mut fresh = BTreeMap::new();
-                    self.collect_git_times(None, &mut fresh)?;
-                    fresh
-                }
-            };
-            let next = GitTimesCache {
-                version: 1,
-                head,
-                times: std::mem::take(&mut times),
-            };
-            if let Ok(bytes) = serde_json::to_vec(&next) {
-                let _ = atomic_write(
-                    &self.root.join(GIT_TIMES_CACHE),
-                    &bytes,
-                    &self.root.join(".catalog-staging"),
-                );
-            }
-            cache = Some(next);
-        }
-        let times = cache.map(|c| c.times).unwrap_or_default();
-        let dirty = self.dirty_record_paths()?;
-        let mut out = BTreeMap::new();
-        for address in addresses {
-            let relative = relative_record_path(address)?;
-            let key = relative.to_string_lossy().into_owned();
-            if dirty.contains(&key) {
-                if let Some(ms) = record_mtime_ms(&self.root, &relative)? {
-                    out.insert(address.clone(), ms);
-                }
-            } else if let Some(&ms) = times.get(&key) {
-                out.insert(address.clone(), ms);
-            } else if let Some(ms) = record_mtime_ms(&self.root, &relative)? {
-                out.insert(address.clone(), ms);
-            }
-        }
-        Ok(out)
-    }
-
-    fn load_git_times_cache(&self) -> Option<GitTimesCache> {
-        let bytes = read_bytes(&self.root.join(GIT_TIMES_CACHE)).ok()??;
-        let cache: GitTimesCache = decode_json(&bytes).ok()?;
-        (cache.version == 1 && !cache.head.is_empty()).then_some(cache)
-    }
-
-    fn is_ancestor(&self, older: &str, newer: &str) -> Result<bool, StorageError> {
-        if older.is_empty() {
-            return Ok(false);
-        }
-        match self.git.run(
-            &["merge-base", "--is-ancestor", older, newer],
-            None,
-            None,
-            &[0],
-        ) {
-            Ok(_) => Ok(true),
-            Err(error) if matches!(error.code, Some(1 | 128)) => Ok(false),
-            Err(error) => Err(git_error(error)),
-        }
-    }
-
-    fn collect_git_times(
-        &self,
-        range: Option<&str>,
-        times: &mut BTreeMap<String, u64>,
-    ) -> Result<(), StorageError> {
-        let mut args = vec!["log", "--format=__COMMIT__%ct", "--name-only"];
-        if let Some(range) = range {
-            args.push(range);
-        }
-        args.extend(["--", "hosts"]);
-        let output = self.git.text(&args, None, None, &[0]).map_err(git_error)?;
-        let mut current_ms = 0u64;
-        let mut seen = BTreeSet::new();
-        for line in output.lines() {
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-            if let Some(secs) = line.strip_prefix("__COMMIT__") {
-                current_ms = secs.parse::<u64>().unwrap_or(0).saturating_mul(1000);
-            } else if seen.insert(line.to_owned()) {
-                times.insert(line.to_owned(), current_ms);
-            }
-        }
-        Ok(())
-    }
-
-    fn dirty_record_paths(&self) -> Result<BTreeSet<String>, StorageError> {
-        let bytes = self
-            .git
-            .run(
-                &[
-                    "status",
-                    "--porcelain=v1",
-                    "-z",
-                    "--no-renames",
-                    "--untracked-files=all",
-                    "--",
-                    "hosts",
-                ],
-                None,
-                None,
-                &[0],
-            )
-            .map_err(git_error)?;
-        let mut dirty = BTreeSet::new();
-        for entry in bytes.split(|&b| b == 0).filter(|e| e.len() > 3) {
-            if let Ok(path) = std::str::from_utf8(&entry[3..]) {
-                dirty.insert(path.to_owned());
-            }
-        }
-        Ok(dirty)
     }
 }
 fn changed(before: &Tree, after: &Tree) -> BTreeSet<PathBuf> {

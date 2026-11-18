@@ -1,12 +1,14 @@
 //! Explicit discovery and transport validation, never called by a named record read.
 
-use super::{RecordIoEvent, YamlRecordStore, decode_record, invalid, relative_record_path};
+use super::{
+    RESET_HINT, RecordIoEvent, YamlRecordStore, decode_record, invalid, relative_record_path,
+};
 use crate::{
     file_io::ensure_directory,
     model::{Record, RecordKind},
     storage::{
         StorageError,
-        records::{RecordAddress, RecordInventory, RecordListing, RecordRead},
+        records::{RecordAddress, RecordInventory, RecordListing, RecordRead, UnreadableRecord},
     },
 };
 use std::{
@@ -19,14 +21,17 @@ use std::{
 pub fn address_from_relative_path(path: &Path) -> Result<RecordAddress, StorageError> {
     let parts = components(path)?;
     let (host, kind, id) = match parts.as_slice() {
-        ["hosts", host, "host.yaml"] => {
+        ["hosts", host, "host.json"] => {
             let host = component(host)?;
             (host.clone(), RecordKind::Host, host)
         }
-        ["hosts", host, "streams", file] => (component(host)?, RecordKind::Stream, filename(file)?),
-        ["hosts", host, "conversations", file] => {
-            (component(host)?, RecordKind::Session, filename(file)?)
+        ["hosts", host, "streams", file] => {
+            (component(host)?, RecordKind::Stream, filename(path, file)?)
         }
+        ["hosts", host, "conversations", file] => {
+            (component(host)?, RecordKind::Session, filename(path, file)?)
+        }
+        ["hosts", _, "host.yaml"] => return Err(old_format(path)),
         _ => return Err(StorageError::new("unexpected catalog record path")),
     };
     let address = RecordAddress::new(host, kind, id)?;
@@ -67,12 +72,20 @@ pub fn catalog_path_host(path: &Path) -> Result<String, StorageError> {
     }
 }
 
-fn filename(value: &str) -> Result<String, StorageError> {
-    component(
-        value
-            .strip_suffix(".yaml")
-            .ok_or_else(|| StorageError::new("record filename must end in .yaml"))?,
-    )
+fn filename(path: &Path, value: &str) -> Result<String, StorageError> {
+    match value.strip_suffix(".json") {
+        Some(id) => component(id),
+        None if value.ends_with(".yaml") => Err(old_format(path)),
+        None => Err(StorageError::new("record filename must end in .json")),
+    }
+}
+
+/// Records from before the current format were YAML-named envelopes.
+fn old_format(path: &Path) -> StorageError {
+    StorageError::new(format!(
+        "record {} is from an older catalog format; {RESET_HINT}",
+        path.display()
+    ))
 }
 
 fn relationships(records: &BTreeMap<RecordAddress, RecordRead>) -> Result<(), StorageError> {
@@ -210,44 +223,10 @@ impl RecordInventory for YamlRecordStore {
         let mut listing = RecordListing::default();
         for (path, bytes) in self.read_locked(false)? {
             let address = address_from_relative_path(&path)?;
-            list(&mut listing, decode_record(&address, &bytes))?;
+            list(&mut listing, decode_record(&address, &bytes));
         }
         Ok(sorted(listing))
     }
-
-    fn last_updated_ms(
-        &self,
-        addresses: &[RecordAddress],
-    ) -> Result<BTreeMap<RecordAddress, u64>, StorageError> {
-        let _scope = self.scope(false)?;
-        let mut out = BTreeMap::new();
-        for address in addresses {
-            let relative = relative_record_path(address)?;
-            if let Some(ms) = record_mtime_ms(&self.root, &relative)? {
-                out.insert(address.clone(), ms);
-            }
-        }
-        Ok(out)
-    }
-}
-
-pub(crate) fn record_mtime_ms(root: &Path, relative: &Path) -> Result<Option<u64>, StorageError> {
-    super::check_parents(root, relative)?;
-    let full = root.join(relative);
-    let meta = match fs::symlink_metadata(&full) {
-        Ok(meta) => meta,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(invalid(error)),
-    };
-    if !meta.file_type().is_file() {
-        return Err(invalid("record entry must be a regular file"));
-    }
-    let modified = meta.modified().map_err(invalid)?;
-    let ms = modified
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    Ok(Some(u64::try_from(ms).unwrap_or(u64::MAX)))
 }
 
 impl YamlRecordStore {
@@ -298,22 +277,19 @@ impl YamlRecordStore {
             let bytes = self
                 .read_named(relative)?
                 .ok_or_else(|| invalid(format!("{label} disappeared during inspection")))?;
-            list(&mut listing, decode_record(&address, &bytes))?;
+            list(&mut listing, decode_record(&address, &bytes));
         }
         Ok(sorted(listing))
     }
 }
 
-/// A decode failure names its record in the listing; any other failure fails the listing.
-fn list(
-    listing: &mut RecordListing,
-    decoded: Result<RecordRead, StorageError>,
-) -> Result<(), StorageError> {
+/// A decode failure names its record in the listing; any other failure fails the listing
+/// before it reaches here.
+fn list(listing: &mut RecordListing, decoded: Result<RecordRead, UnreadableRecord>) {
     match decoded {
         Ok(read) => listing.records.push(read),
-        Err(error) => listing.unreadable.push(error.into_unreadable()?),
+        Err(unreadable) => listing.unreadable.push(unreadable),
     }
-    Ok(())
 }
 
 fn sorted(mut listing: RecordListing) -> RecordListing {

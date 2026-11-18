@@ -85,9 +85,9 @@ re-enter planning or save a retry.
 
 ## Catalog and UI boundaries remain
 
-Keep record-local catalog saves, immutable host ownership, membership history,
+Keep record-local catalog saves, immutable host ownership, membership epochs,
 captured report targets, document path checks and naming policy. Removing native
-launch receipts does not remove catalog save receipts or Pi branch admission.
+launch receipts does not remove catalog revision guards or Pi branch admission.
 [Reconciliation](native-context-reconciliation.md) owns move-versus-refresh
 semantics; [enrollment](native-enrollment-boundary.md) owns the record-only helper;
 [native cards](native-herdr-work-cards.md) owns UI and document rationale.

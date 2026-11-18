@@ -7,10 +7,9 @@ mod tests;
 use crate::{
     artifacts::{self, ArtifactKey, ArtifactStore, ArtifactSummary, ContentChange},
     model::{Record, RecordKind, Session, ValidationError},
-    storage::records::{RecordAddress, RecordChange, RecordRead, RecordReader, RecordRequest},
+    storage::records::{RecordAddress, RecordChange, RecordRead, RecordReader},
 };
 use serde::Serialize;
-use serde_json::json;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct WriteArtifact {
@@ -105,12 +104,19 @@ fn before_session(before: Option<&RecordRead>) -> Result<&Session> {
     }
 }
 
+/// What an artifact save reports.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtifactOutcome {
+    Artifact(ArtifactSummary),
+    Deleted(String),
+}
+
 pub fn write_artifact(
     store: &impl ArtifactStore,
     host: &str,
-    operation_id: &str,
     intent: &WriteArtifact,
-) -> Result<artifacts::ArtifactSave> {
+) -> Result<artifacts::ArtifactSave<ArtifactOutcome>> {
     artifacts::ArtifactEntry {
         name: intent.name.clone(),
         description: intent.description.clone(),
@@ -120,17 +126,12 @@ pub fn write_artifact(
         artifacts::validate_content(content)?;
     }
     let target = RecordAddress::new(host, RecordKind::Session, &intent.session_id)?;
-    let request = RecordRequest::new(
-        target,
-        operation_id,
-        &json!({"action":"write_artifact", "intent":intent}),
-    )?;
     let content = intent
         .content
         .clone()
         .map(ContentChange::Write)
         .unwrap_or(ContentChange::Keep);
-    store.save_artifact(&request, content, |reader, before| {
+    store.save_artifact(&target, content, |reader, before| {
         let session = before_session(before)?;
         let key = ArtifactKey {
             host: host.into(),
@@ -155,11 +156,10 @@ pub fn write_artifact(
             .into_iter()
             .find(|item| item.key == key)
             .expect("write adds metadata");
-        let outcome = json!({"artifact":summary});
         Ok((
             RecordChange {
                 record: Record::Session(after),
-                outcome: outcome.as_object().expect("object").clone(),
+                outcome: ArtifactOutcome::Artifact(summary),
             },
             key,
         ))
@@ -168,23 +168,16 @@ pub fn write_artifact(
 
 pub fn delete_artifact(
     store: &impl ArtifactStore,
-    operation_id: &str,
     key: &ArtifactKey,
-) -> Result<artifacts::ArtifactSave> {
+) -> Result<artifacts::ArtifactSave<ArtifactOutcome>> {
     key.validate()?;
     let target = RecordAddress::new(&key.host, RecordKind::Session, &key.session)?;
-    let request = RecordRequest::new(
-        target,
-        operation_id,
-        &json!({"action":"delete_artifact", "key":key}),
-    )?;
-    store.save_artifact(&request, ContentChange::Delete, |_, before| {
+    store.save_artifact(&target, ContentChange::Delete, |_, before| {
         let after = artifacts::edit(before_session(before)?, key, None, false)?;
-        let outcome = json!({"deleted":key.reference()});
         Ok((
             RecordChange {
                 record: Record::Session(after),
-                outcome: outcome.as_object().expect("object").clone(),
+                outcome: ArtifactOutcome::Deleted(key.reference()),
             },
             key.clone(),
         ))

@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { isReferenceText, receiptCanContinue, receiptHasUnappliedReferences, type ApplyRequest, type LocalContext, type Receipt, type Reference, type ReferenceValue, type ReferenceTarget, type ResourceKey, type SessionWire, type StreamWire, type Mode } from "./streams.ts";
 import { isReferenceValue, isResourceKey, parseLocalContext, resourceKey } from "../../integrations/herdr-work-cards/src/streams-context.ts";
@@ -29,7 +28,7 @@ export function validateChanges(kind: "stream" | "session", before: StreamWire |
   else if (["recap", "state", "remaining"].includes(key) && (typeof value !== "string" || value.includes("\0"))) throw Error(`${key} must be text`);
  }
 }
-export function editRequest(context: LocalContext, kind: "stream" | "session", changes: Record<string, unknown>, actor: "automatic" | "user", operationId: string = randomUUID()): ApplyRequest {
+export function editRequest(context: LocalContext, kind: "stream" | "session", changes: Record<string, unknown>, actor: "automatic" | "user"): ApplyRequest {
  const before = context[kind];if (!before) throw Error(`No attached ${kind}`);
  const host = kind === "session" ? (before as SessionWire).host_id : (before as StreamWire).owner.host_id;
  if (host !== context.host_id) throw Error("Foreign-host records are read-only");
@@ -40,7 +39,7 @@ export function editRequest(context: LocalContext, kind: "stream" | "session", c
   if (!context.session) throw Error("Automatic Stream edits require the current Session");
   inputs.push({kind:"session", record:context.session});
  }
- return structuredClone({version:2, catalog_source:context.catalog_source, operation_id:operationId, kind, actor, before, changes, title_default, inputs});
+ return structuredClone({version:2, catalog_source:context.catalog_source, kind, actor, before, changes, title_default, inputs});
 }
 export type AutomaticReferenceValue = Omit<ReferenceValue, "target"> & {target: Exclude<ReferenceTarget, {kind:"document"}> | {kind:"document"; repository_url:string; path:string; ref?:string}};
 export type ReferenceDraft = {key: ResourceKey; desired: ReferenceValue | AutomaticReferenceValue | null};
@@ -52,9 +51,6 @@ export function isAutomaticReferenceValue(value: unknown): value is AutomaticRef
  if (!isReferenceValue(value)) return false;
  const target = value.target;
  return target.kind !== "document" || !Object.hasOwn(target, "commit") && !Object.hasOwn(target, "source_session_id") && (!Object.hasOwn(target, "ref") || isReferenceText(target.ref));
-}
-function valueOf(reference: Reference): ReferenceValue {
- const {revision: _revision, ...value} = reference;return value;
 }
 function cleanValue(value: ReferenceValue): ReferenceValue {
  if (value.target.kind !== "document") return structuredClone(value);
@@ -68,13 +64,12 @@ export function materialiseReference(value: AutomaticReferenceValue, current: Re
  const ref = value.target.ref ?? old?.ref ?? (!current && session?.checkout?.repository_url === value.target.repository_url ? session.checkout.ref : undefined);
  return cleanValue({...value, target:{...value.target, ...(ref == null ? {} : {ref}), ...(old?.commit == null ? {} : {commit:old.commit}), ...(old?.source_session_id == null ? !current && session ? {source_session_id:session.id} : {} : {source_session_id:old.source_session_id})}});
 }
-export function referenceRequest(context: LocalContext, actor: ReferenceActor, drafts: ReferenceDraft[], operationId: string = randomUUID()): ApplyRequest | undefined {
+export function referenceRequest(context: LocalContext, actor: ReferenceActor, drafts: ReferenceDraft[]): ApplyRequest | undefined {
  const captured = structuredClone(context);parseLocalContext(captured);
  const {stream, session} = captured;
  if (!stream || stream.owner.host_id !== captured.host_id) throw Error("Reference edits require a local captured Stream");
  if (actor !== "user" && actor !== "automatic") throw Error("Invalid reference actor");
  if (actor === "automatic" && (!session || session.stream_id !== stream.id || session.host_id !== stream.owner.host_id)) throw Error("Automatic reference edits require the captured Session");
- if (!isReferenceText(operationId)) throw Error("operation_id must be nonempty reference text");
  if (!Array.isArray(drafts) || !drafts.length) throw Error("Reference changes must contain at least one row");
  const capturedByKey = new Map(stream.references.map(reference => [referenceSelector(resourceKey(reference.target)), reference]));
  const occupied = new Set<string>();
@@ -89,14 +84,13 @@ export function referenceRequest(context: LocalContext, actor: ReferenceActor, d
   if ((!current || actor === "automatic") && oldKey !== targetKey) throw Error("Reference target does not match its selector");
   for (const key of new Set([oldKey, targetKey])) {if (occupied.has(key)) throw Error("Reference changes overlap");occupied.add(key);}
   const effective = draft.desired === null ? null : actor === "automatic" ? materialiseReference(draft.desired as AutomaticReferenceValue, current, session) : cleanValue(draft.desired as ReferenceValue);
-  if (current && effective !== null && isDeepStrictEqual(cleanValue(valueOf(current)), effective)) continue;
-  if (current?.revision === operationId && effective !== null) throw Error("next_revision must differ from the captured revision");
-  changes.push(draft.desired === null ? {key:draft.key, desired:null} : {key:draft.key, desired:draft.desired, next_revision:operationId});
+  if (current && effective !== null && isDeepStrictEqual(cleanValue(current), effective)) continue;
+  changes.push({key:draft.key, desired:draft.desired});
  }
  if (!changes.length) return undefined;
- return structuredClone({version:2, catalog_source:captured.catalog_source, operation_id:operationId, kind:"stream", actor, before:stream, changes:{reference_changes:changes}, title_default:captured.title_defaults.stream, inputs:actor === "automatic" ? [{kind:"session", record:session!}] : []});
+ return structuredClone({version:2, catalog_source:captured.catalog_source, kind:"stream", actor, before:stream, changes:{reference_changes:changes}, title_default:captured.title_defaults.stream, inputs:actor === "automatic" ? [{kind:"session", record:session!}] : []});
 }
-export function automaticReferenceRequest(context: LocalContext, rawProposals: unknown, operationId: string): ApplyRequest | undefined {
+export function automaticReferenceRequest(context: LocalContext, rawProposals: unknown): ApplyRequest | undefined {
  if (rawProposals === undefined) return undefined;
  if (!Array.isArray(rawProposals)) throw Error("reference_proposals must be an array");
  if (!rawProposals.length) return undefined;
@@ -104,7 +98,7 @@ export function automaticReferenceRequest(context: LocalContext, rawProposals: u
   if (!isAutomaticReferenceValue(value)) throw Error("Invalid automatic reference proposal");
   return {key:resourceKey(value.target), desired:value};
  });
- return referenceRequest(context, "automatic", drafts, operationId);
+ return referenceRequest(context, "automatic", drafts);
 }
 export class ReferenceEdit {
  readonly base: LocalContext;
@@ -116,15 +110,15 @@ export class ReferenceEdit {
   const current = this.key && this.base.stream?.references.find(row => referenceSelector(resourceKey(row.target)) === referenceSelector(this.key!));
   if (!current) return this.desired !== null;
   if (this.desired === null) return true;
-  if (this.actor === "automatic" && isAutomaticReferenceValue(this.desired)) return !isDeepStrictEqual(cleanValue(valueOf(current)), materialiseReference(this.desired, current, this.base.session));
-  return !isReferenceValue(this.desired) || !isDeepStrictEqual(cleanValue(valueOf(current)), cleanValue(this.desired));
+  if (this.actor === "automatic" && isAutomaticReferenceValue(this.desired)) return !isDeepStrictEqual(cleanValue(current), materialiseReference(this.desired, current, this.base.session));
+  return !isReferenceValue(this.desired) || !isDeepStrictEqual(cleanValue(current), cleanValue(this.desired));
  }
  rebase(context: LocalContext): void {Object.assign(this.base, structuredClone(context));this.error = undefined;}
- request(operationId: string = randomUUID()): ApplyRequest | undefined {
+ request(): ApplyRequest | undefined {
   const key = this.key ?? (isReferenceValue(this.desired) ? resourceKey(this.desired.target) : null);
   if (!key) throw Error("Choose a valid reference target");
   if (!this.key && this.base.stream?.references.some(row => referenceSelector(resourceKey(row.target)) === referenceSelector(key))) throw Error("Reference already exists; edit the saved row");
-  return referenceRequest(this.base, this.actor, [{key, desired:this.desired as ReferenceDraft["desired"]}], operationId);
+  return referenceRequest(this.base, this.actor, [{key, desired:this.desired as ReferenceDraft["desired"]}]);
  }
  async save(cli: {apply(request: ApplyRequest): Promise<Receipt>}, onReceipt?: (receipt: Receipt) => void): Promise<Receipt | undefined> {
   try {
@@ -150,7 +144,7 @@ export class FieldEdit {
    if (!this.dirty) return;
    const result = await cli.apply(editRequest(this.base, this.kind, {[this.field]: this.value}, "user"));
    onReceipt?.(result);
-   if (!result.save?.domain) throw Error("Save outcome is uncertain; receipt and input retained. Inspect catalog repair state before another write. Do not blindly retry.");
+   if (!result.save?.domain) throw Error("Invalid catalog receipt");
    if (result.save.domain.outcome === "conflict" || result.save.domain.outcome === "superseded") throw Error(`Edit ${result.save.domain.outcome}. Your input is retained. Compare the live field, then discard and reopen to use its new base.`);
    if (!receiptCanContinue(result)) throw Error("Local save receipt retained; completion or publication requires inspection before another write. Do not blindly retry.");
    this.error = undefined;return result;

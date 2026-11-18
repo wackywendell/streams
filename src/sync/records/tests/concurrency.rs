@@ -22,7 +22,7 @@ fn save_during_network(root: &Path, host: &str, goal: &str) -> Result<(), GitErr
     let records = YamlRecordStore::new(root, host).unwrap();
     let mut current = stream(&records, host);
     current.goal = Some(goal.into());
-    put(&records, "during-network", Record::Stream(current));
+    put(&records, Record::Stream(current));
     assert_eq!(stream(&records, host).goal.as_deref(), Some(goal));
     Ok(())
 }
@@ -140,7 +140,7 @@ fn a_save_during_fetch_is_checkpointed_before_same_file_divergence_is_decided() 
     let peer_records = YamlRecordStore::new(&b, "owner").unwrap();
     let mut incoming = stream(&peer_records, "owner");
     incoming.goal = Some("remote work".into());
-    put(&peer_records, "remote", Record::Stream(incoming));
+    put(&peer_records, Record::Stream(incoming));
     assert_eq!(peer.sync().sharing, SharingStatus::Confirmed);
     sync.git = sync.git.clone().with_hook(Arc::new(Mutex::new(
         move |_: &Git, args: &[&str], _: Option<&[u8]>, _: Option<&Path>| {

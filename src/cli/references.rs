@@ -47,18 +47,13 @@ impl App {
                 "catalog root changed during reference edit",
             ));
         }
-        let operation_id = uuid::Uuid::new_v4().to_string();
-        let change = mutation(&stream, &command, &operation_id)?;
-        catalog::finish_save(
-            &operation_id,
-            application::save_user_references(
-                opened.records(),
-                &operation_id,
-                &stream,
-                vec![change],
-                settings.naming,
-            ),
-        )
+        let change = mutation(&stream, &command)?;
+        Ok(catalog::finish_record(application::save_user_references(
+            opened.records(),
+            &stream,
+            vec![change],
+            settings.naming,
+        )?))
     }
 }
 
@@ -273,11 +268,7 @@ fn edit_value(reference: &Reference, fields: &ReferenceFields) -> Result<Referen
     Ok(value)
 }
 
-fn mutation(
-    stream: &Stream,
-    command: &ReferenceCommand,
-    operation_id: &str,
-) -> Result<ReferenceChange> {
+fn mutation(stream: &Stream, command: &ReferenceCommand) -> Result<ReferenceChange> {
     let (key, desired) = match command {
         ReferenceCommand::Add { target, fields, .. } => {
             let desired = add_value(target, fields)?;
@@ -333,11 +324,7 @@ fn mutation(
         }
         ReferenceCommand::List { .. } => return Err(CliError::message("list has no mutation")),
     };
-    Ok(ReferenceChange::UserSet {
-        key,
-        desired,
-        next_revision: operation_id.into(),
-    })
+    Ok(ReferenceChange::UserSet { key, desired })
 }
 
 fn unsafe_character(c: char) -> bool {

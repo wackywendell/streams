@@ -3,7 +3,7 @@ use std::os::unix::fs::symlink;
 
 use super::*;
 use crate::model::{Record, Session, Stream};
-use serde_json::json;
+use serde_json::{Value, json};
 
 thread_local! {
     static READS: std::cell::RefCell<Vec<PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
@@ -36,18 +36,12 @@ fn stream(id: &str, title: &str) -> Record {
     Record::Stream(Stream::new(id, title, None, "host").unwrap())
 }
 
-fn put(store: &YamlRecordStore, id: &str, record: Record) -> RecordSave {
-    let request = RecordRequest::new(
-        RecordAddress::for_record(&record),
-        id,
-        &record_to_data(&record),
-    )
-    .unwrap();
+fn put(store: &YamlRecordStore, record: Record) -> RecordSave<()> {
     store
-        .save::<StorageError>(&request, |_, _| {
+        .save::<_, StorageError>(&RecordAddress::for_record(&record), |_, _| {
             Ok(RecordChange {
                 record,
-                outcome: json!({"accepted":id}).as_object().unwrap().clone(),
+                outcome: (),
             })
         })
         .unwrap()
@@ -74,7 +68,7 @@ fn read(store: &YamlRecordStore, key: &RecordAddress) -> Result<Option<RecordRea
 #[test]
 fn replacement_observation_distinguishes_installed_bytes_from_definite_failure() {
     let (_directory, store) = setup();
-    let path = store.root.join("target.yaml");
+    let path = store.root.join("target.json");
     // The filesystem owner separately proves that after_write means persist succeeded.
     for (result, installed) in [
         (Ok(()), true),
@@ -100,12 +94,12 @@ fn replacement_observation_distinguishes_installed_bytes_from_definite_failure()
 #[test]
 fn canonical_paths_include_host_for_every_kind_and_encode_components() {
     for (kind, id, suffix) in [
-        (RecordKind::Host, "host/..", "host.yaml"),
-        (RecordKind::Stream, "work/..", "streams/work%2F...yaml"),
+        (RecordKind::Host, "host/..", "host.json"),
+        (RecordKind::Stream, "work/..", "streams/work%2F...json"),
         (
             RecordKind::Session,
             "work/..",
-            "conversations/work%2F...yaml",
+            "conversations/work%2F...json",
         ),
     ] {
         let key = RecordAddress::new("host/..", kind, id).unwrap();
@@ -133,7 +127,7 @@ fn exact_reads_create_nothing_and_require_explicit_completed_format() {
         read(&store, &key)
             .unwrap_err()
             .to_string()
-            .contains("cutover")
+            .contains(RESET_HINT)
     );
     assert!(!root.join(".catalog-local").exists());
     fs::create_dir(root.join("streams")).unwrap();
@@ -156,12 +150,11 @@ fn portable_sessions_require_native_ids_and_resolved_checkout_urls() {
     let mut legacy = session.clone();
     legacy.id = "legacy".into();
     let key = RecordAddress::for_record(&Record::Session(legacy.clone()));
-    let request = RecordRequest::new(key.clone(), "bad", &json!({})).unwrap();
     assert!(
         store
-            .save::<StorageError>(&request, |_, _| Ok(RecordChange {
+            .save::<_, StorageError>(&key, |_, _| Ok(RecordChange {
                 record: Record::Session(legacy),
-                outcome: Map::new()
+                outcome: ()
             }))
             .is_err()
     );
@@ -172,13 +165,13 @@ fn portable_sessions_require_native_ids_and_resolved_checkout_urls() {
             .exists()
     );
     let record = Record::Session(session);
-    put(&store, "valid", record.clone());
+    put(&store, record.clone());
     let key = RecordAddress::for_record(&record);
     let path = store.root.join(relative_record_path(&key).unwrap());
     let original: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     for edit in [
-        |v: &mut Value| v["record"]["harness_session_id"] = json!("different"),
-        |v: &mut Value| v["record"]["checkout"] = json!({"repository":"label", "ref":"main"}),
+        |v: &mut Value| v["harness_session_id"] = json!("different"),
+        |v: &mut Value| v["checkout"] = json!({"repository":"label", "ref":"main"}),
     ] {
         let mut value = original.clone();
         edit(&mut value);
@@ -194,18 +187,21 @@ fn format_marker_requires_strict_json_and_the_configured_producer() {
     let (_dir, store) = setup();
     let key = RecordAddress::for_record(&stream("work", "Work"));
     for bytes in [
-        "version: 2\nhost: host\n",
-        r#"[2,"host"]"#,
-        r#"{"version":2,"version":2,"host":"host"}"#,
-        r#"{"version":2,"host":"host","unknown":true}"#,
-        r#"{"version":1,"host":"host"}"#,
-        r#"{"version":"2","host":"host"}"#,
-        r#"{"version":2,"host":"other"}"#,
+        "version: 3\nhost: host\n",
+        r#"[3,"host"]"#,
+        r#"{"version":3,"version":3,"host":"host"}"#,
+        r#"{"version":3,"host":"host","unknown":true}"#,
+        r#"{"version":"3","host":"host"}"#,
+        r#"{"version":3,"host":"other"}"#,
     ] {
         fs::write(store.root.join(FORMAT), bytes).unwrap();
         assert!(read(&store, &key).is_err(), "{bytes}");
     }
+    // A catalog from an older Streams version names the reset step.
     fs::write(store.root.join(FORMAT), r#"{"version":2,"host":"host"}"#).unwrap();
+    let error = read(&store, &key).unwrap_err().to_string();
+    assert!(error.contains(RESET_HINT), "{error}");
+    fs::write(store.root.join(FORMAT), r#"{"version":3,"host":"host"}"#).unwrap();
     assert!(read(&store, &key).unwrap().is_none());
 }
 
@@ -214,7 +210,7 @@ fn named_reads_and_saves_do_not_scan_or_depend_on_unrelated_records_or_history()
     let (_dir, store) = setup();
     let original = stream("work", "Original");
     let key = RecordAddress::for_record(&original);
-    put(&store, "create", original.clone());
+    put(&store, original.clone());
     let expected = vec![
         PathBuf::from(".catalog.lock"),
         PathBuf::from(FORMAT),
@@ -223,7 +219,7 @@ fn named_reads_and_saves_do_not_scan_or_depend_on_unrelated_records_or_history()
     let (before, first_reads) = reads(|| read(&store, &key).unwrap().unwrap());
     assert_eq!(first_reads, expected);
     for i in 0..100 {
-        let path = store.root.join(format!("hosts/elsewhere/streams/{i}.yaml"));
+        let path = store.root.join(format!("hosts/elsewhere/streams/{i}.json"));
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, "malformed: [").unwrap();
     }
@@ -232,9 +228,9 @@ fn named_reads_and_saves_do_not_scan_or_depend_on_unrelated_records_or_history()
     let (after, next_reads) = reads(|| read(&store, &key).unwrap().unwrap());
     assert_eq!(before, after);
     assert_eq!(next_reads, expected);
-    let (saved, save_reads) = reads(|| put(&store, "edit", stream("work", "Edited")));
+    let (saved, save_reads) = reads(|| put(&store, stream("work", "Edited")));
     assert_eq!(save_reads, expected);
-    assert_eq!(saved.current.record, stream("work", "Edited"));
+    assert!(saved.current.record.same_content(&stream("work", "Edited")));
     assert!(!store.root.join(".catalog-sync").exists());
     assert!(!store.root.join(".git").exists());
     assert!(!store.root.join("save.json").exists());
@@ -256,12 +252,8 @@ fn shell_reads_only_explicit_dependencies_and_save_returns_without_reopening() {
         )
         .unwrap(),
     );
-    for (id, record) in [
-        ("source", source.clone()),
-        ("destination", destination.clone()),
-        ("session", session.clone()),
-    ] {
-        put(&store, id, record);
+    for record in [source.clone(), destination.clone(), session.clone()] {
+        put(&store, record);
     }
     let old_bytes = fs::read(
         store
@@ -269,28 +261,22 @@ fn shell_reads_only_explicit_dependencies_and_save_returns_without_reopening() {
             .join(relative_record_path(&RecordAddress::for_record(&source)).unwrap()),
     )
     .unwrap();
-    let request = RecordRequest::new(
-        RecordAddress::for_record(&session),
-        "move",
-        &json!({"destination":"destination"}),
-    )
-    .unwrap();
     let (saved, paths) = reads(|| {
         store
-            .save::<StorageError>(&request, |reader, before| {
-                assert_eq!(
+            .save::<_, StorageError>(&RecordAddress::for_record(&session), |reader, before| {
+                assert!(
                     reader
                         .read(&RecordAddress::for_record(&source))?
                         .unwrap()
-                        .record,
-                    source
+                        .record
+                        .same_content(&source)
                 );
-                assert_eq!(
+                assert!(
                     reader
                         .read(&RecordAddress::for_record(&destination))?
                         .unwrap()
-                        .record,
-                    destination
+                        .record
+                        .same_content(&destination)
                 );
                 let Record::Session(mut moved) = before.unwrap().record.clone() else {
                     unreachable!()
@@ -298,7 +284,7 @@ fn shell_reads_only_explicit_dependencies_and_save_returns_without_reopening() {
                 moved.stream_id = "destination".into();
                 Ok(RecordChange {
                     record: Record::Session(moved),
-                    outcome: Map::new(),
+                    outcome: (),
                 })
             })
             .unwrap()
@@ -329,75 +315,77 @@ fn shell_reads_only_explicit_dependencies_and_save_returns_without_reopening() {
 }
 
 #[test]
-fn retry_after_reopening_and_later_edits_keeps_current_record_and_original_outcome() {
-    let (_dir, store) = setup();
-    let original = stream("work", "Original");
-    let first = put(&store, "first", original.clone());
-    let key = RecordAddress::for_record(&original);
-    let request = RecordRequest::new(key.clone(), "first", &record_to_data(&original)).unwrap();
-    let later = put(&store, "later", stream("work", "Later"));
-    let bytes = fs::read(store.root.join(relative_record_path(&key).unwrap())).unwrap();
-    let reopened = YamlRecordStore::new(&store.root, "host").unwrap();
-    let result = reopened
-        .save::<StorageError>(&request, |_, _| panic!("retry ran apply"))
-        .unwrap();
-    assert!(result.repeated);
-    assert_eq!(result.current, later.current);
-    assert_eq!(result.outcome, first.outcome);
-    assert_eq!(
-        fs::read(store.root.join(relative_record_path(&key).unwrap())).unwrap(),
-        bytes
-    );
-    let changed = RecordRequest::new(key, "first", &json!({"different":true})).unwrap();
-    assert!(
-        reopened
-            .save::<StorageError>(&changed, |_, _| panic!("changed intent ran apply"))
-            .unwrap_err()
-            .to_string()
-            .contains("changed intent")
-    );
-}
-
-#[test]
-fn no_change_keeps_logical_revision_but_embeds_its_own_receipt() {
+fn only_changed_saves_write_and_advance_the_stamps() {
     let (_dir, store) = setup();
     let record = stream("work", "Same");
-    let before = put(&store, "first", record.clone());
-    let after = put(&store, "second", record.clone());
-    assert_eq!(before.current, after.current);
-    let bytes = fs::read(
-        store
-            .root
-            .join(relative_record_path(&RecordAddress::for_record(&record)).unwrap()),
-    )
-    .unwrap();
-    let envelope: Envelope = decode(&bytes).unwrap();
-    assert_eq!(envelope.receipts.len(), 2);
+    let key = RecordAddress::for_record(&record);
+    let path = store.root.join(relative_record_path(&key).unwrap());
+    let first = put(&store, record.clone());
+    assert!(first.written);
+    assert_eq!(first.local(), "persisted");
+    let stamps = first.current.record.stamps().unwrap();
+    assert_eq!(stamps.revision, 1);
+    assert!(stamps.updated_at_ms > 0);
+    let bytes = fs::read(&path).unwrap();
+    // The file is the record itself.
+    assert_eq!(
+        serde_json::from_slice::<Value>(&bytes).unwrap(),
+        record_to_data(&first.current.record)
+    );
+
+    // Saving the same content, or returning the current record to skip, writes nothing.
+    WRITES.with(|writes| writes.borrow_mut().clear());
+    let same = put(&store, record.clone());
+    let skipped = store
+        .save::<_, StorageError>(&key, |_, before| {
+            Ok(RecordChange {
+                record: before.unwrap().record.clone(),
+                outcome: (),
+            })
+        })
+        .unwrap();
+    for save in [&same, &skipped] {
+        assert!(!save.written);
+        assert_eq!(save.local(), "unchanged");
+        assert_eq!(save.current, first.current);
+    }
+    assert!(WRITES.with(|writes| writes.borrow().is_empty()));
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+
+    // Stamps a caller supplies are ignored; a change advances them by one.
+    let mut edited = stream("work", "Edited");
+    edited.set_stamps(Stamps {
+        revision: 99,
+        updated_at_ms: 1,
+    });
+    let changed = put(&store, edited);
+    let next = changed.current.record.stamps().unwrap();
+    assert!(changed.written);
+    assert_eq!(next.revision, 2);
+    assert!(next.updated_at_ms >= stamps.updated_at_ms);
 }
 
 #[test]
 fn foreign_writes_and_target_replacement_fail_before_any_replacement() {
     let (_dir, store) = setup();
     let foreign = RecordAddress::new("other", RecordKind::Stream, "work").unwrap();
-    let request = RecordRequest::new(foreign, "bad", &json!({})).unwrap();
     let (error, paths) =
-        reads(|| store.save::<StorageError>(&request, |_, _| panic!("foreign apply")));
+        reads(|| store.save::<(), StorageError>(&foreign, |_, _| panic!("foreign apply")));
     assert!(error.is_err());
     assert!(paths.is_empty());
-    let own = stream("work", "Own");
-    let request = RecordRequest::new(RecordAddress::for_record(&own), "bad", &json!({})).unwrap();
+    let own = RecordAddress::for_record(&stream("work", "Own"));
     let error = store
-        .save::<StorageError>(&request, |_, _| {
+        .save::<_, StorageError>(&own, |_, _| {
             Ok(RecordChange {
                 record: stream("different", "Wrong"),
-                outcome: Map::new(),
+                outcome: (),
             })
         })
         .unwrap_err();
     assert!(error.to_string().contains("identity or host"));
-    assert!(read(&store, request.target()).unwrap().is_none());
+    assert!(read(&store, &own).unwrap().is_none());
     let wrong = YamlRecordStore::new(&store.root, "other").unwrap();
-    assert!(read(&wrong, request.target()).is_err());
+    assert!(read(&wrong, &own).is_err());
 }
 
 #[test]
@@ -407,7 +395,7 @@ fn foreign_replicas_are_directly_readable_but_never_writable() {
     let other = YamlRecordStore::new(other_dir.path(), "other").unwrap();
     other.initialize().unwrap();
     let record = Record::Stream(Stream::new("work", "Foreign", None, "other").unwrap());
-    let saved = put(&other, "create", record.clone());
+    let saved = put(&other, record.clone());
     let key = RecordAddress::for_record(&record);
     let relative = relative_record_path(&key).unwrap();
     let target = store.root.join(&relative);
@@ -423,20 +411,19 @@ fn foreign_replicas_are_directly_readable_but_never_writable() {
             relative
         ]
     );
-    let request = RecordRequest::new(key, "change", &json!({})).unwrap();
     assert!(
         store
-            .save::<StorageError>(&request, |_, _| panic!("foreign replica apply"))
+            .save::<(), StorageError>(&key, |_, _| panic!("foreign replica apply"))
             .is_err()
     );
-    assert_eq!(read(&store, request.target()).unwrap().unwrap(), current);
+    assert_eq!(read(&store, &key).unwrap().unwrap(), current);
 }
 
 #[test]
-fn failed_atomic_replacement_leaves_record_and_receipts_together() {
+fn failed_atomic_replacement_leaves_the_previous_record() {
     let (_dir, store) = setup();
     let record = stream("work", "Before");
-    put(&store, "first", record.clone());
+    let before = put(&store, record.clone());
     let path = store
         .root
         .join(relative_record_path(&RecordAddress::for_record(&record)).unwrap());
@@ -445,49 +432,41 @@ fn failed_atomic_replacement_leaves_record_and_receipts_together() {
     fs::write(store.root.join(".catalog-staging"), "blocked").unwrap();
     WRITES.with(|writes| writes.borrow_mut().clear());
     let after = stream("work", "After");
-    let request = RecordRequest::new(
-        RecordAddress::for_record(&after),
-        "second",
-        &record_to_data(&after),
-    )
-    .unwrap();
+    let key = RecordAddress::for_record(&after);
     assert!(
         store
-            .save::<StorageError>(&request, |_, _| Ok(RecordChange {
+            .save::<_, StorageError>(&key, |_, _| Ok(RecordChange {
                 record: after,
-                outcome: Map::new()
+                outcome: ()
             }))
             .is_err()
     );
     assert!(WRITES.with(|writes| writes.borrow().is_empty()));
     assert_eq!(fs::read(&path).unwrap(), bytes);
-    let envelope: Envelope = decode(&bytes).unwrap();
-    assert!(!envelope.receipts.contains_key("second"));
-    assert_eq!(
-        read(&store, request.target()).unwrap().unwrap().record,
-        record
-    );
+    assert_eq!(read(&store, &key).unwrap().unwrap(), before.current);
 }
 
 #[test]
 fn malformed_duplicate_key_and_wrong_identity_records_are_never_absence() {
     let (_dir, store) = setup();
     let record = stream("work", "Before");
-    put(&store, "first", record.clone());
+    put(&store, record.clone());
     let key = RecordAddress::for_record(&record);
     let path = store.root.join(relative_record_path(&key).unwrap());
-    let original: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    let mut variants = vec!["[]".to_string(), "{\"version\":2,\"version\":2}".into()];
+    let text = fs::read_to_string(&path).unwrap();
+    let original: Value = serde_json::from_str(&text).unwrap();
+    let mut variants = vec![
+        "[]".to_string(),
+        "title: Before\n".into(),
+        text.replacen('{', "{\"title\":\"Duplicate\",", 1),
+    ];
     for edit in [
-        |v: &mut Value| v["version"] = json!(3),
         |v: &mut Value| v["revision"] = json!(""),
+        |v: &mut Value| v["updated_at_ms"] = json!(-1),
         |v: &mut Value| v["unknown"] = json!(true),
-        |v: &mut Value| v["record"]["id"] = json!("other"),
-        |v: &mut Value| v["record"]["owner"]["host_id"] = json!("other"),
-        |v: &mut Value| v["receipts"]["first"]["fingerprint"] = json!("bad"),
-        |v: &mut Value| v["receipts"]["first"] = json!(["a".repeat(64), {}]),
-        |v: &mut Value| v["receipts"]["first"]["unknown"] = json!(true),
-        |v: &mut Value| v["record"] = json!([]),
+        |v: &mut Value| v["id"] = json!("other"),
+        |v: &mut Value| v["owner"]["host_id"] = json!("other"),
+        |v: &mut Value| *v = json!({"version": 2, "record": v.clone(), "receipts": {}}),
     ] {
         let mut value = original.clone();
         edit(&mut value);
@@ -504,15 +483,15 @@ fn malformed_duplicate_key_and_wrong_identity_records_are_never_absence() {
 fn unreadable_records_are_named_by_kind_path_and_cause() {
     let (_dir, store) = setup();
     let record = stream("work", "Before");
-    put(&store, "first", record.clone());
+    put(&store, record.clone());
     let key = RecordAddress::for_record(&record);
     let path = store.root.join(relative_record_path(&key).unwrap());
     let mut value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    value["record"]["archived"] = json!(false);
+    value["archived"] = json!(false);
     fs::write(&path, value.to_string()).unwrap();
     let error = read(&store, &key).unwrap_err().to_string();
     assert!(
-        error.starts_with("Stream record hosts/host/streams/work.yaml is unreadable: "),
+        error.starts_with("Stream record hosts/host/streams/work.json is unreadable: "),
         "{error}"
     );
     assert!(error.contains("unknown field `archived`"), "{error}");
@@ -530,7 +509,7 @@ fn symlinked_ancestors_leaves_and_special_files_are_rejected_without_blocking() 
         "hosts",
         "hosts/host",
         "hosts/host/streams",
-        "hosts/host/streams/work.yaml",
+        "hosts/host/streams/work.json",
     ] {
         let (_dir, store) = setup();
         let key = RecordAddress::for_record(&stream("work", "Work"));

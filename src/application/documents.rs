@@ -269,22 +269,19 @@ mod tests {
     }
 
     fn doc_ref(repo_url: &str, path: &str, name: &str) -> Reference {
-        Reference::new(
-            ReferenceValue {
-                name: name.into(),
-                purpose: "Guide".into(),
-                role: ReferenceRole::Brief,
-                state: ReferenceState::Active,
-                target: ReferenceTarget::Document(RepositoryDocument {
-                    repository_url: repo_url.into(),
-                    path: path.into(),
-                    r#ref: Some("main".into()),
-                    commit: None,
-                    source_session_id: None,
-                }),
-            },
-            "rev-1",
-        )
+        Reference::new(ReferenceValue {
+            name: name.into(),
+            purpose: "Guide".into(),
+            role: ReferenceRole::Brief,
+            state: ReferenceState::Active,
+            target: ReferenceTarget::Document(RepositoryDocument {
+                repository_url: repo_url.into(),
+                path: path.into(),
+                r#ref: Some("main".into()),
+                commit: None,
+                source_session_id: None,
+            }),
+        })
         .unwrap()
     }
 

@@ -13,7 +13,7 @@ export type ReportSnapshot = {
 };
 export type ReportGenerator = <T extends EnrollmentInference | ReportInference>(request: T) => Promise<InferenceResult<T>>;
 export type ReportEnvironment = {
- signal: AbortSignal; automaticEnrollment: boolean; operationId(): string;
+ signal: AbortSignal; automaticEnrollment: boolean;
  capture(): Promise<ReportSnapshot>; generate: ReportGenerator;
  /** Before a reset captures anything, so a card that cannot be decoded is rebuilt instead. */
  discardUnreadable(): Promise<DiscardedCard>;
@@ -65,13 +65,13 @@ export async function runReport(action: ReportAction, environment: ReportEnviron
   };
   if (Object.keys(inferred.changes).length) {
    if (signal.aborted || !await capture.attached()) return false;
-   const receipt = await environment.apply(editRequest(capture.catalog, kind, inferred.changes, "automatic", environment.operationId()));
+   const receipt = await environment.apply(editRequest(capture.catalog, kind, inferred.changes, "automatic"));
    if (!recordReceipt(receipt)) return false;
   }
   if (kind === "session") {
    let request: ApplyRequest | undefined, receipt: Receipt | undefined;
    try {
-    if (inferred.reference_proposals !== undefined && (!Array.isArray(inferred.reference_proposals) || inferred.reference_proposals.length)) request = automaticReferenceRequest(capture.catalog, inferred.reference_proposals, environment.operationId());
+    if (inferred.reference_proposals !== undefined && (!Array.isArray(inferred.reference_proposals) || inferred.reference_proposals.length)) request = automaticReferenceRequest(capture.catalog, inferred.reference_proposals);
     if (request) {
      if (signal.aborted || !await capture.attached()) return false;
      receipt = await environment.apply(request);
@@ -87,11 +87,10 @@ export async function runReport(action: ReportAction, environment: ReportEnviron
  if (!capture.catalog.session) {
   if (reset && !reenroll) {environment.notice("Reset requires an attached work card. Use /streams attach first.");return false;}
   if (!force && !environment.automaticEnrollment) return false;
-  const operationId = environment.operationId();
   const result = await generate({type: "enroll", catalog: capture.catalog, messages: capture.evidence.messages, instructions});
   if (signal.aborted || !await capture.attached() || (!result.meaningful && !force)) return false;
   if (!result.session?.title?.trim() || (!capture.catalog.stream && !result.stream?.title?.trim())) throw Error("Enrollment requires meaningful effort and session titles");
-  const receipt = await environment.enroll({version: 2, catalog_source: capture.catalog.catalog_source, operation_id: operationId, harness: "pi", harness_session_id: capture.native, ...(capture.catalog.stream ? {stream_id: capture.catalog.stream.id} : {stream: result.stream}), session: result.session, actor: "automatic", cwd: capture.cwd});
+  const receipt = await environment.enroll({version: 2, catalog_source: capture.catalog.catalog_source, harness: "pi", harness_session_id: capture.native, ...(capture.catalog.stream ? {stream_id: capture.catalog.stream.id} : {stream: result.stream}), session: result.session, actor: "automatic", cwd: capture.cwd});
   environment.receipt(receipt);
   if (receiptCanContinue(receipt)) savedAny = true;
   if (!capture.valid() || !receiptCanContinue(receipt)) return savedAny;
@@ -111,7 +110,7 @@ export async function runReport(action: ReportAction, environment: ReportEnviron
    if (kind === "stream" && capture.catalog.stream!.goal_mode === "manual") changes.goal_mode = "automatic";
    if (!Object.keys(changes).length) continue;
    if (signal.aborted || !await capture.attached()) return savedAny;
-   const receipt = await environment.apply(editRequest(capture.catalog, kind, changes, "user", environment.operationId()));
+   const receipt = await environment.apply(editRequest(capture.catalog, kind, changes, "user"));
    environment.receipt(receipt);
    if (receiptCanContinue(receipt)) savedAny = true;
    if (!capture.valid() || !receiptCanContinue(receipt)) return savedAny;

@@ -4,10 +4,7 @@ use streams::{
     model::TitleDefaults,
     storage::{
         StorageError,
-        records::{
-            RecordAddress, RecordChange, RecordRead, RecordReader, RecordRequest, RecordSave,
-            RecordStore,
-        },
+        records::{RecordAddress, RecordChange, RecordRead, RecordReader, RecordSave, RecordStore},
     },
     yaml_store::records::{RecordIoEvent, YamlRecordStore, relative_record_path},
 };
@@ -16,14 +13,14 @@ use super::*;
 
 fn request(before: Value) -> Value {
     json!({
-        "version":2,"operation_id":"captured-update","catalog_source":"logical-source",
+        "version":2,"catalog_source":"logical-source",
         "actor":"user","kind":"stream","before":before,"changes":{"goal":"Captured"},
         "title_default":"automatic","inputs":[],
     })
 }
 
 #[test]
-fn captured_apply_is_target_local_and_retains_the_original_decision_without_publication() {
+fn captured_apply_is_target_local_and_a_landed_retry_writes_nothing_without_publication() {
     for unrelated in [0, 64] {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path();
@@ -38,23 +35,22 @@ fn captured_apply_is_target_local_and_retains_the_original_decision_without_publ
         );
         let address = RecordAddress::for_record(&record);
         let path = root.join(relative_record_path(&address).unwrap());
-        store
-            .save::<StorageError>(
-                &RecordRequest::new(address.clone(), "create", &json!({})).unwrap(),
-                |_, _| {
-                    Ok(RecordChange {
-                        record: record.clone(),
-                        outcome: json!({"outcome":"changes"}).as_object().unwrap().clone(),
-                    })
-                },
-            )
-            .unwrap();
+        let record = store
+            .save::<_, StorageError>(&address, |_, _| {
+                Ok(RecordChange {
+                    record: record.clone(),
+                    outcome: (),
+                })
+            })
+            .unwrap()
+            .current
+            .record;
         // A broken transport configuration cannot block an ordinary local save.
         std::fs::write(root.join(".catalog-local/transport.json"), "not JSON").unwrap();
         let others = root.join("hosts/other/streams");
         std::fs::create_dir_all(&others).unwrap();
         for index in 0..unrelated {
-            std::fs::write(others.join(format!("broken-{index}.yaml")), "malformed").unwrap();
+            std::fs::write(others.join(format!("broken-{index}.json")), "malformed").unwrap();
         }
         events.lock().unwrap().clear();
         let captured = request(record_to_data(&record));
@@ -64,7 +60,6 @@ fn captured_apply_is_target_local_and_retains_the_original_decision_without_publ
             "logical-source",
             TitleDefaults::default(),
         ));
-        assert_eq!(first["operation_id"], "captured-update");
         assert_eq!(first["save"]["domain"]["outcome"], "changes");
         assert_eq!(first["save"]["local"], "persisted");
         assert_eq!(first["stream"]["goal"], "Captured");
@@ -91,7 +86,7 @@ fn captured_apply_is_target_local_and_retains_the_original_decision_without_publ
             "logical-source",
             TitleDefaults::default(),
         ));
-        assert_eq!(retry["save"]["domain"], first["save"]["domain"]);
+        assert_eq!(retry["save"]["domain"]["outcome"], "no-change");
         assert_eq!(retry["save"]["local"], "unchanged");
         assert_eq!(retry["stream"], first["stream"]);
         assert_eq!(std::fs::read(&path).unwrap(), accepted);
@@ -122,7 +117,6 @@ fn captured_apply_is_target_local_and_retains_the_original_decision_without_publ
         );
         assert_eq!(std::fs::read(&path).unwrap(), accepted);
         let mut stale = captured;
-        stale["operation_id"] = json!("new-stale-intent");
         stale["changes"] = json!({"goal":"Different"});
         let refused = apply(
             &store,
@@ -138,41 +132,30 @@ fn captured_apply_is_target_local_and_retains_the_original_decision_without_publ
 }
 
 #[test]
-fn partial_reference_conflict_keeps_the_accepted_record_receipt_and_safe_diagnostics() {
+fn partial_reference_conflict_keeps_the_accepted_rows_and_safe_diagnostics() {
     let f = Fixture::new();
     let mut stream = Stream::new("partial", "Partial", None, f.opened.host().as_str()).unwrap();
-    stream.references.push(serde_json::from_value(json!({
-        "name":"Original", "purpose":"Guide work", "role":"brief", "state":"active",
-        "target":{"kind":"document","repository_url":"repo\u{202e}","path":"plan.md"},"revision":"captured"
-    })).unwrap());
-    application::create_record(
-        f.opened.records(),
-        "create-partial",
-        &Record::Stream(stream.clone()),
-    )
-    .unwrap();
-    let mut desired = stream.references[0].value();
-    desired.purpose = "Newer purpose".into();
-    application::save_user_references(
-        f.opened.records(),
-        "outside",
-        &stream,
-        vec![streams::operations::references::ReferenceChange::UserSet {
-            key: stream.references[0].target.key(),
-            desired,
-            next_revision: "outside".into(),
-        }],
-        TitleDefaults::default(),
-    )
-    .unwrap();
+    for target in [
+        json!({"kind":"document","repository_url":"repo\u{202e}","path":"plan.md"}),
+        json!({"kind":"pr","url":"https://example.test/taken"}),
+    ] {
+        stream.references.push(
+            serde_json::from_value(json!({
+                "name":"Original", "purpose":"Guide work", "role":"brief", "state":"active",
+                "target":target
+            }))
+            .unwrap(),
+        );
+    }
+    let created = application::create_record(f.opened.records(), &Record::Stream(stream)).unwrap();
     let captured = json!({
-        "version":2,"operation_id":"partial-save","catalog_source":"logical-source",
-        "actor":"user","kind":"stream","before":record_to_data(&Record::Stream(stream)),
+        "version":2,"catalog_source":"logical-source",
+        "actor":"user","kind":"stream","before":record_to_data(&created.current.record),
         "changes":{"reference_changes":[
             {"key":{"kind":"document","repository_url":"repo\u{202e}","path":"plan.md"},
-             "desired":{"name":"Stale","purpose":"Stale purpose","role":"brief","state":"active","target":{"kind":"document","repository_url":"repo\u{202e}","path":"plan.md"}},"next_revision":"partial-save"},
+             "desired":{"name":"Moved","purpose":"Guide work","role":"brief","state":"active","target":{"kind":"pr","url":"https://example.test/taken"}}},
             {"key":{"kind":"url","url":"https://example.test/new"},
-             "desired":{"name":"Added","purpose":"Deliver work","role":"deliverable","state":"active","target":{"kind":"pr","url":"https://example.test/new"}},"next_revision":"partial-save"}
+             "desired":{"name":"Added","purpose":"Deliver work","role":"deliverable","state":"active","target":{"kind":"pr","url":"https://example.test/new"}}}
         ]},"title_default":"automatic","inputs":[]
     });
     let output = apply(
@@ -194,17 +177,15 @@ fn partial_reference_conflict_keeps_the_accepted_record_receipt_and_safe_diagnos
         output.value["save"]["domain"]["reference_results"][1]["outcome"],
         "changes"
     );
-    assert_eq!(
-        output.value["stream"]["references"][0]["purpose"],
-        "Newer purpose"
-    );
-    assert_eq!(output.value["stream"]["references"][1]["name"], "Added");
+    assert_eq!(output.value["stream"]["references"][0]["name"], "Original");
+    assert_eq!(output.value["stream"]["references"][2]["name"], "Added");
     assert_eq!(
         output.notices,
         vec![
-            "Reference not applied: {\"kind\":\"document\",\"repository_url\":\"repo\\u202e\",\"path\":\"plan.md\"}; reference changed since capture"
+            "Reference not applied: {\"kind\":\"document\",\"repository_url\":\"repo\\u202e\",\"path\":\"plan.md\"}; replacement target already exists"
         ]
     );
+    // The retry finds the added row in place and writes nothing.
     let repeated = apply(
         f.opened.records(),
         &captured.to_string(),
@@ -213,58 +194,43 @@ fn partial_reference_conflict_keeps_the_accepted_record_receipt_and_safe_diagnos
     )
     .unwrap();
     assert_eq!(repeated.code, 2);
-    assert!(repeated.accepted_save);
     assert_eq!(repeated.value["save"]["local"], "unchanged");
     assert_eq!(
-        repeated.value["save"]["domain"],
-        output.value["save"]["domain"]
+        repeated.value["save"]["domain"]["reference_results"][1]["outcome"],
+        "no-change"
     );
-    assert_eq!(repeated.notices, output.notices);
+    assert_eq!(repeated.value["stream"], output.value["stream"]);
 }
 
-struct FailedWrite(bool);
+struct FailedWrite;
 impl RecordStore for FailedWrite {
     fn with_reader<T, E: From<StorageError>>(
         &self,
         _: impl FnOnce(&dyn RecordReader) -> std::result::Result<T, E>,
     ) -> std::result::Result<T, E> {
-        panic!("apply must not read again after an uncertain save");
+        panic!("apply must not read again after a failed save");
     }
-    fn save<E: From<StorageError>>(
+    fn save<T, E: From<StorageError>>(
         &self,
-        _: &RecordRequest,
-        _: impl FnOnce(&dyn RecordReader, Option<&RecordRead>) -> std::result::Result<RecordChange, E>,
-    ) -> std::result::Result<RecordSave, E> {
-        let error = if self.0 {
-            StorageError::uncertain("replacement flush failed")
-        } else {
-            StorageError::new("replacement flush failed")
-        };
-        Err(error.into())
+        _: &RecordAddress,
+        _: impl FnOnce(
+            &dyn RecordReader,
+            Option<&RecordRead>,
+        ) -> std::result::Result<RecordChange<T>, E>,
+    ) -> std::result::Result<RecordSave<T>, E> {
+        Err(StorageError::uncertain("replacement flush failed").into())
     }
 }
 
 #[test]
-fn apply_retains_post_replacement_uncertainty_but_not_a_definite_failure_as_a_save() {
+fn a_failed_save_is_an_error_and_the_record_state_decides_a_retry() {
     let record = Record::Stream(
         Stream::new("effort", "Work", Some("Original".into()), "test-host").unwrap(),
     );
     let captured = request(record_to_data(&record)).to_string();
-    let uncertain = apply(
-        &FailedWrite(true),
-        &captured,
-        "logical-source",
-        TitleDefaults::default(),
-    )
-    .unwrap();
-    assert_eq!(uncertain.code, 2);
-    assert_eq!(uncertain.value["operation_id"], "captured-update");
-    assert_eq!(uncertain.value["save"]["local"], "uncertain");
-    assert!(uncertain.value["save"]["domain"].is_null());
-    assert!(uncertain.value.get("stream").is_none());
     assert!(
         apply(
-            &FailedWrite(false),
+            &FailedWrite,
             &captured,
             "logical-source",
             TitleDefaults::default()
