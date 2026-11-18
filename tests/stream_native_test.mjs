@@ -154,7 +154,7 @@ function paneFixture(t,options={}) {
  }});
  const attach=()=>{
   catalog.stream={id:'effort',title:'Work',title_mode:'automatic',goal:'Goal',goal_mode:'automatic',goal_short:null,status:'active',owner:{host_id:'host'},revision:1,updated_at_ms:0,repositories:{},references:[]};
-  catalog.session={id:f.id,host_id:'host',revision:1,updated_at_ms:0,stream_id:'effort',harness:'pi',harness_session_id:f.id,title:'Contribution',title_mode:'automatic',status:'active',recap:'',state:'',state_short:null,remaining:'',checkout:null};
+  catalog.session={id:f.id,host_id:'host',revision:1,updated_at_ms:0,membership_epoch:0,stream_id:'effort',harness:'pi',harness_session_id:f.id,title:'Contribution',title_mode:'automatic',status:'active',recap:'',state:'',state_short:null,remaining:'',checkout:null};
   catalog.sessions=[catalog.session];
  };
  if(options.attached)attach();

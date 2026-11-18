@@ -16,7 +16,7 @@ const { defaults } = await load('settings');
 const local = {local:'unchanged',sharing:'local-only',domain:null};
 function context() {
  const stream={id:'effort',title:'Manual',title_mode:'manual',goal:'Manual goal',goal_short:null,goal_mode:'manual',status:'active',owner:{host_id:'host'},revision:1,updated_at_ms:0,repositories:{},references:[]};
- const session={id:'session',host_id:'host',revision:1,updated_at_ms:0,stream_id:'effort',harness:'pi',harness_session_id:'native',title:'Session',title_mode:'automatic',status:'active',state:'',state_short:null,remaining:'',checkout:null};
+ const session={id:'session',host_id:'host',revision:1,updated_at_ms:0,membership_epoch:0,stream_id:'effort',harness:'pi',harness_session_id:'native',title:'Session',title_mode:'automatic',status:'active',state:'',state_short:null,remaining:'',checkout:null};
  return {catalog_source:'source',host_id:'host',stream,session,sessions:[session],title_defaults:{stream:'automatic',session:'automatic'}};
 }
 function hooks(cli, infer = () => assert.fail('lifecycle sync must not invoke a model'), settings = defaults) {
