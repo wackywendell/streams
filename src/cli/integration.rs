@@ -269,7 +269,6 @@ impl App {
                     }
                     streams::integration::ModAction::OpenReference {
                         reference,
-                        context,
                         mode,
                         placement,
                         ..
@@ -278,7 +277,7 @@ impl App {
                             reference.as_ref()
                         {
                             Ok(ModResult::ReferenceOpened {
-                                value: facade.open_link(stream, link, context),
+                                value: facade.open_link(stream, link),
                             })
                         } else {
                             let value = self.integration_open_reference(

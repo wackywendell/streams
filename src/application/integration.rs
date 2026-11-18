@@ -632,7 +632,6 @@ impl<'a> Streams<'a> {
         &self,
         stream: &str,
         link: &crate::integration::LinkKey,
-        _context: &crate::integration::ActivationContext,
     ) -> crate::integration::ReferenceOpenReport {
         use crate::integration::{
             NonEmpty, ReferenceOpenReport, ReferenceOpenResult, ViewerAction,

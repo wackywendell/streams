@@ -34,7 +34,7 @@ The checked-in [integration design](hc-herdr-app-design.md) remains byte-for-byt
    A live terminal's current `streams.pi.*` claim identifies its Pi conversation directly. A claim is current while its helper's `ProcessKey` (boot ID, PID and start time) names a running process; a dead helper or a reused PID leaves a stale claim that readers ignore. Two current claims on one terminal, an unreadable label or an observation gap leave the terminal unknown for the user to resolve. Tab and Frame reads do not require `terminal.foreground.pid` to descend from the Pi SDK process or check process-group/stopped state, so running a tool, subshell, or pager inside Pi never makes the conversation disappear or fail validation.
 
 6. **Direct reference activation.**
-   Clicking a Document, Artifact, or Link validates the saved reference against the catalog (including that a document's `viewing_session` belongs to `stream`) and opens it directly with `context: { kind: "explicit" }`, the only activation context. Opening a reference never reads terminal foreground PIDs.
+   Clicking a Document, Artifact, or Link validates the saved reference against the catalog (including that a document's `viewing_session` belongs to `stream`) and opens it directly. Opening a reference never reads terminal foreground PIDs.
 
 7. **No duplicate projection DSL for hc.**
    Legacy Herdr retains its existing projection module; `hc` lifecycle and save follow-ons in `streams serve` directly record the Session directory, bind an unassociated caller space (`HcOperation::bind_caller_terminal`), write the `streams.work` routing hint, and project `desired_pi_name` using `NativeCardsConfig::session_naming()`.

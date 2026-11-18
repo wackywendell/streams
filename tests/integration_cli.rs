@@ -1554,8 +1554,8 @@ fn link_actions_revalidate_saved_kind_and_url_without_native_or_owner_path_discl
     let socket = fixture._directory.path().join("no-native.socket");
     let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
     listener.set_nonblocking(true).unwrap();
-    let invoke = |stream: &str, kind: &str, url: &str, context: Value, global: bool| {
-        let request=fixture.envelope(json!({"kind":"act","action":{"kind":"open_reference","reference":{"kind":"link","stream":stream,"link":{"kind":kind,"url":url}},"context":context,"at":null}}));
+    let invoke = |stream: &str, kind: &str, url: &str, global: bool| {
+        let request=fixture.envelope(json!({"kind":"act","action":{"kind":"open_reference","reference":{"kind":"link","stream":stream,"link":{"kind":kind,"url":url}},"at":null}}));
         let mut command = fixture.command();
         command.env("HC_SOCKET", &socket);
         if global {
@@ -1600,7 +1600,7 @@ fn link_actions_revalidate_saved_kind_and_url_without_native_or_owner_path_discl
             ("link-only", "issue", urls[2], false),
             ("link-only", "issue", urls[3], false),
         ] {
-            let result = invoke(stream, kind, url, json!({"kind":"explicit"}), global);
+            let result = invoke(stream, kind, url, global);
             if allowed {
                 assert_eq!(
                     result,
@@ -1624,13 +1624,7 @@ fn link_actions_revalidate_saved_kind_and_url_without_native_or_owner_path_discl
     )
     .unwrap();
     assert_eq!(
-        invoke(
-            "link-only",
-            "issue",
-            urls[0],
-            json!({"kind":"explicit"}),
-            false
-        )["kind"],
+        invoke("link-only", "issue", urls[0], false)["kind"],
         "not_applied",
         "activation rereads after a painted reference was removed"
     );
@@ -2687,7 +2681,6 @@ fn frame_reads_and_reference_opening_resolve_enrolled_sessions_and_viewer_termin
                         "name":"result.md"
                     }
                 },
-                "context":{"kind":"explicit"},
                 "at":null
             }
         }));
@@ -2885,7 +2878,6 @@ fn frame_reads_and_reference_opening_resolve_enrolled_sessions_and_viewer_termin
                     },
                     "viewing_session":fixture.sessions[0].id
                 },
-                "context":{"kind":"explicit"},
                 "at":null
             }
         }));
@@ -3046,7 +3038,6 @@ fn frame_reads_and_reference_opening_resolve_enrolled_sessions_and_viewer_termin
                     "document": { "repository": "source", "path": "z.md" },
                     "viewing_session": fixture.sessions[0].id
                 },
-                "context": { "kind": "explicit" },
                 "at": null,
                 "mode": "editor",
                 "placement": "pane-right"

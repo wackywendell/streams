@@ -1042,7 +1042,6 @@ export class StreamsCoordinator {
       {
         kind: "open_reference",
         reference,
-        context: { kind: "explicit" },
         at,
         ...(mode ? { mode } : {}),
         ...(placement ? { placement } : {}),

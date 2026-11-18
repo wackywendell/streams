@@ -272,11 +272,6 @@ pub enum Reference {
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum ActivationContext {
-    Explicit,
-}
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ViewerAction {
     SelectSpace { space: NativeRef },
     FocusTerminal { terminal: NativeRef },
@@ -796,7 +791,6 @@ pub struct OpenRequest {
 pub enum ModAction {
     OpenReference {
         reference: Box<Reference>,
-        context: ActivationContext,
         #[serde(deserialize_with = "required_nullable")]
         at: Option<NativeRef>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
