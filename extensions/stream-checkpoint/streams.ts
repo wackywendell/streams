@@ -60,6 +60,7 @@ export function receiptHasWarning(value: Receipt): boolean {
  const saves = value.saves?.map(item => item.save) ?? (value.save ? [value.save] : []);
  return !!value.warnings?.length || !receiptCanContinue(value) || saves.some(resultNeedsAttention) || !!value.publication && resultNeedsAttention(value.publication);
 }
+export type DiscardedCard = {session: string | null; stream: string | null};
 export class StreamCli {
  constructor(readonly cwd: string, private readonly runner: Runner) {}
  private async run(request: ChildRequest, purpose: "read" | "save" | "publication" = "read", options?: {timeout: number; signal?: AbortSignal}): Promise<any> {
@@ -78,6 +79,13 @@ export class StreamCli {
   try {catalog = parseLocalContext(value);} catch {throw new StreamsCliError("Invalid local catalog context");}
   if (catalog.session && catalog.session.harness_session_id !== sessionId) throw new StreamsCliError("Catalog context does not match this Pi session");
   return catalog;
+ }
+ /** Discards whichever records of this conversation's card cannot be decoded; null where readable. */
+ async discardUnreadableCard(): Promise<DiscardedCard> {
+  const value = await this.run({kind:"discard_unreadable_card"});
+  const reason = (item: unknown) => item === null || typeof item === "string";
+  if (!object(value) || !reason(value.session) || !reason(value.stream)) throw new StreamsCliError("Invalid discarded card");
+  return {session: value.session, stream: value.stream};
  }
  async list(): Promise<StreamWire[]> {
   const value = await this.run({kind:"list_streams"});

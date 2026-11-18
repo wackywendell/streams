@@ -59,6 +59,8 @@ export async function replayCapture(capture: Capture, root: string, runtime: Inf
      signal, automaticEnrollment: true, operationId: () => `replay:${capture.id}:${index}:${operation++}`,
      capture: async () => ({native: sample.native_session_id, cwd: sample.cwd!, evidence: structuredClone(sample.evidence!), catalog: structuredClone(catalog), valid: () => !signal.aborted, attached: async () => !signal.aborted}),
      generate,
+     // A captured card was decoded when it was captured; there is nothing to discard.
+     discardUnreadable: async () => ({session: null, stream: null}),
      apply: request => project("apply", request), enroll: request => project("enroll", request),
      receipt: receipt => {const saved = {...receipt, simulated:true} as Receipt;result.receipts.push(saved);if (receiptHasWarning(saved)) result.notices.push(receiptText(saved));}, notice: text => {result.notices.push(text);},
     });

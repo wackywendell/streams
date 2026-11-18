@@ -32,7 +32,7 @@ export type ConfigSnapshot = {
  };
 };
 export type ChildRequest =
- | {kind: "session_started" | "attach" | "open_card" | "close_card" | "list_streams"}
+ | {kind: "session_started" | "attach" | "open_card" | "close_card" | "list_streams" | "discard_unreadable_card"}
  | {kind: "context"; stream_id?: string}
  | {kind: "capture_inputs"; target: {kind: "inventory"} | {kind: "stream"; stream_id: string} | {kind: "workspace"; workspace_id: string}}
  | {kind: "preview"; catalog: DomainObject; action: "apply" | "enroll"; request: DomainObject}

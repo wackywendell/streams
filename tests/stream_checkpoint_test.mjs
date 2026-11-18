@@ -226,6 +226,29 @@ test('a refused reference save keeps the progress receipt and does not retry or 
  assert.equal(receipts[0].save.domain.outcome,'changes');assert.equal(receipts[1].save.domain.outcome,'superseded');
 });
 
+test('a reset discards an unreadable card before capturing it and enrolls again when the Session was discarded',async()=>{
+ const reason='Session record hosts/host/conversations/s.yaml is unreadable: missing field `title`';
+ const attached=context(),catalog={...context(),stream:null,session:null,sessions:[]},events=[],notices=[];
+ const saved=await runReport({kind:'reset',target:'all',auto:false},{signal:new AbortController().signal,automaticEnrollment:false,operationId:randomUUID,
+  discardUnreadable:async()=>{events.push('discard');return {session:reason,stream:null};},
+  capture:async()=>{events.push('capture');return {native:'native',cwd:'/repo',evidence:{messages:[],leafId:null},catalog:structuredClone(catalog),valid:()=>true,attached:async()=>true};},
+  generate:async request=>{events.push(request.type);return request.type==='enroll'?{meaningful:false,stream:{title:'Work'},session:{title:'Lane'}}:{changes:{}};},
+  enroll:async request=>{events.push('enroll');assert.equal(request.harness_session_id,'native');Object.assign(catalog,structuredClone(attached));return {saves:[{operation_id:request.operation_id,save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}}]};},
+  apply:assert.fail,receipt:()=>{},notice:(text,level)=>notices.push({text,level}),
+ });
+ assert.equal(saved,true);
+ assert.deepEqual(events,['discard','capture','enroll','enroll','capture','session','capture','stream']);
+ assert.deepEqual(notices,[{text:`${reason}. Reset discarded it.`,level:'warning'}]);
+});
+test('a reset of a readable card discards nothing and says nothing',async()=>{
+ const notices=[];let discards=0;
+ await runReport({kind:'reset',target:'session',auto:false},{signal:new AbortController().signal,automaticEnrollment:true,operationId:randomUUID,
+  discardUnreadable:async()=>{discards++;return {session:null,stream:null};},
+  capture:async()=>({native:'native',cwd:'/repo',evidence:{messages:[],leafId:null},catalog:context(),valid:()=>true,attached:async()=>true}),
+  generate:async()=>({changes:{}}),enroll:assert.fail,apply:assert.fail,receipt:()=>{},notice:(text,level)=>notices.push({text,level}),
+ });
+ assert.equal(discards,1);assert.deepEqual(notices,[]);
+});
 test('malformed deferred references leave saved progress and its receipt intact',async()=>{
  for(const proposals of [null,{},[null],[{...proposedDocument,target:{...proposedDocument.target,commit:null}}]])for(const progress of [false,true]) {
   const catalog=context(),receipts=[],notices=[],requests=[],tasks=[];let captures=0;
@@ -985,7 +1008,7 @@ function commandFixture(options={}) {
  const commands=new Map(),tools=new Map(),handlers=new Map(),notices=[],requests=[],writes=[],receipts=[],activity=[],dialogs=[];
  const catalog=options.catalog??context();let reads=0;
  const actions=makeSnapshotActions(defaultConfigSnapshot());
- const cli={context:async()=>{reads++;return structuredClone(catalog);},getConfig:async()=>structuredClone(actions.snap),setConfig:actions.setConfig,unsetConfig:actions.unsetConfig,cardSettings:async()=>({global:'automatic',session:'inherit',effective:'automatic'}),list:async()=>[stream],apply:async req=>{writes.push(req);Object.assign(catalog[req.kind],req.changes);return {save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}};},enroll:async req=>{writes.push(req);catalog.stream=stream;catalog.session=session;return {stream,session,saves:[]};}};
+ const cli={context:async()=>{reads++;return structuredClone(catalog);},discardUnreadableCard:async()=>({session:null,stream:null}),getConfig:async()=>structuredClone(actions.snap),setConfig:actions.setConfig,unsetConfig:actions.unsetConfig,cardSettings:async()=>({global:'automatic',session:'inherit',effective:'automatic'}),list:async()=>[stream],apply:async req=>{writes.push(req);Object.assign(catalog[req.kind],req.changes);return {save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}};},enroll:async req=>{writes.push(req);catalog.stream=stream;catalog.session=session;return {stream,session,saves:[]};}};
  const ctx={mode:'tui',hasUI:true,cwd:'/repo',sessionManager:{getSessionId:()=> 'native',getLeafId:()=> 'leaf',getBranch:()=>[{id:'leaf'}],buildSessionProjection:()=>({messages:[{role:'user',content:'Build work cards',timestamp:0}]})},ui:{notify:(text,level)=>notices.push({text,level}),setStatus:(_key,text)=>activity.push(text),select:async(title,rows)=>{dialogs.push({title,rows});return options.select?.(title,rows)??'Close';},editor:async()=> 'Contribution',confirm:async()=>true}};
  registerWorkCard({on:(name,fn)=>handlers.set(name,fn),registerCommand:(name,value)=>commands.set(name,value),registerTool:value=>tools.set(value.name,value),registerShortcut:()=>assert.fail('no shortcuts'),appendEntry:(type,value)=>receipts.push({type,value})},{agentDir:options.agentDir,settings:{...defaults,reporting:'manual',enrollment:'manual',...options.settings},cli,infer:async(_ctx,req,_signal,_model,logging)=>{requests.push(req);return options.infer?await options.infer(req,logging):{changes:{}};}});
  return {commands,tools,handlers,ctx,notices,requests,writes,receipts,activity,dialogs,reads:()=>reads,run:args=>commands.get('streams').handler(args,ctx)};
@@ -1525,7 +1548,7 @@ test('a superseded report retains its receipt without retrying inference; a late
  catalog.sessions.push(sibling);
  const receipts=[];let sessionAttempts=0;
  const f=reporterFixture();
- const cli={context:async()=>structuredClone(catalog),apply:async req=>{
+ const cli={context:async()=>structuredClone(catalog),discardUnreadableCard:async()=>({session:null,stream:null}),apply:async req=>{
   if(req.kind==='session'&&++sessionAttempts===1){
    sibling.state='Concurrent sibling progress';
    return {operation_id:req.operation_id,save:{local:'unchanged',sharing:'local-only',domain:{outcome:'superseded',conflicts:['inputs'],reason:'captured catalog input changed'}}};

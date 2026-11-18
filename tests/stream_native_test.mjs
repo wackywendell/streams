@@ -137,11 +137,13 @@ test('shutdown cancels a pending native request but never sends close or final c
 function paneFixture(t,options={}) {
  const handlers=new Map(),commands=new Map(),tools=new Map(),steps=[],inferences=[],enrollments=[];
  const catalog={catalog_source:'source-a',host_id:'host',stream:null,session:null,sessions:[],title_defaults:{stream:'automatic',session:'automatic'}};
- let preference='inherit';
+ let preference='inherit',unreadable=options.unreadable??null;
  const f=fixture(t,{empty:options.empty,run:async request=>{
   if(options.realClient && ['context','sync','enroll','apply'].includes(request.kind))return {status:'success',result:await cli[request.kind](request.request)};
   steps.push(request.kind);
+  if(request.kind==='discard_unreadable_card'){const stream=unreadable;unreadable=null;return {status:'success',result:{session:null,stream}};}
   if(request.kind==='session_started'){
+   if(unreadable)return {status:'error',error:{kind:'runtime',message:unreadable}};
    if(f.messages.length)await options.beforeStart?.();
    if(options.workspaceStream)catalog.stream=structuredClone(options.workspaceStream);
    return {status:'success',result:catalog.session?{native:'active',display:'suppressed'}:{native:'inactive',reason:'not_enrolled'}};
@@ -223,6 +225,15 @@ test('failed deferred startup blocks report inference and manual reads until rel
  await f.run('report');await until(()=>f.notices.some(text=>text.includes('Origin not proved')));
  await assert.rejects(f.tools.get('stream_read').execute('read',{},undefined,undefined,f.ctx),/Origin not proved/);
  assert.deepEqual(f.inferences,[]);assert.deepEqual(f.enrollments,[]);assert.deepEqual(f.steps,['session_started']);
+});
+test('a reset discards the unreadable card that failed native startup, then starts again and rebuilds it',async t=>{
+ environment(t);const f=paneFixture(t,{attached:true,realClient:true,unreadable:'Stream record hosts/host/streams/effort.yaml is unreadable: unknown field `archived`'});
+ await f.start();await until(()=>f.notices.some(text=>text.includes('unknown field `archived`')));
+ await f.run('report');await until(()=>f.notices.filter(text=>text.includes('unknown field `archived`')).length===2);
+ assert.deepEqual(f.inferences,[],'a report still waits for a native startup that failed');
+ await f.run('reset');await until(()=>f.steps.includes('apply-stream'));
+ assert.deepEqual(f.steps.filter(step=>step!=='lifecycle'),['session_started','discard_unreadable_card','session_started','apply-session','apply-stream']);
+ assert.ok(f.notices.some(text=>text.endsWith('unknown field `archived`. Reset discarded it.')),f.notices.join('\n'));
 });
 test('a tree change during manual read startup prevents its context request',async t=>{
  environment(t);let release;const f=paneFixture(t,{empty:true,realClient:true,beforeStart:()=>new Promise(resolve=>release=resolve)});

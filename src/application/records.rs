@@ -4,6 +4,8 @@ use std::path::Path;
 
 use crate::{
     config::{Config, HostIdentity, Strategy, source_id},
+    model::{Record, RecordKind, Session, Stream},
+    runtime::conversations::Harness,
     storage::records::{RecordAddress, RecordInventory, RecordRead, RecordStore},
     sync::records::RecordSync,
     yaml_store::records::{RecordIoEvent, YamlRecordStore},
@@ -65,6 +67,55 @@ impl OpenedRecords {
     pub fn inventory(&self) -> Result<Vec<RecordRead>> {
         Ok(self.records.inventory()?)
     }
+    /// Discard whichever records of a conversation's card cannot be decoded, so a reset can
+    /// rebuild them. The card is the conversation's Session, found by its native identity, and
+    /// the Stream that Session names. An unreadable Session is removed: the Stream it named is
+    /// unknown, so the conversation enrolls again. An unreadable Stream is replaced by a new
+    /// Stream with the same ID, so every member keeps its membership; it takes the Session's
+    /// title until the reset infers its own.
+    pub fn discard_unreadable_card(
+        &self,
+        harness: Harness,
+        native_id: &str,
+    ) -> Result<DiscardedCard> {
+        let host = self.host.as_str();
+        let session_address = RecordAddress::new(
+            host,
+            RecordKind::Session,
+            Session::id_for(host, harness.as_ref(), native_id),
+        )?;
+        if let Some(session) = self.records.discard_unreadable(&session_address, None)? {
+            return Ok(DiscardedCard {
+                session: Some(session),
+                stream: None,
+            });
+        }
+        let session = self
+            .records
+            .with_reader(|reader| reader.read(&session_address))?;
+        let Some(RecordRead {
+            record: Record::Session(session),
+            ..
+        }) = session
+        else {
+            return Ok(DiscardedCard::default());
+        };
+        let stream_address = RecordAddress::new(host, RecordKind::Stream, &session.stream_id)?;
+        let fresh = Stream::new(&session.stream_id, &session.title, None, host)?;
+        Ok(DiscardedCard {
+            session: None,
+            stream: self
+                .records
+                .discard_unreadable(&stream_address, Some(Record::Stream(fresh)))?,
+        })
+    }
+}
+
+/// The decode error of each card record a reset discarded; `None` where it was readable.
+#[derive(Debug, Default, PartialEq, Eq, serde::Serialize)]
+pub struct DiscardedCard {
+    pub session: Option<String>,
+    pub stream: Option<String>,
 }
 
 /// Initialize only an empty catalog. Existing data is neither interpreted nor adopted.

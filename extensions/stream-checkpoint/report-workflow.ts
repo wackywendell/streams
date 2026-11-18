@@ -1,6 +1,6 @@
 import { automaticFields, automaticReferenceRequest, editRequest, referenceSelector } from "./core.ts";
 import { receiptCanContinue, receiptHasUnappliedReferences, referenceText } from "./streams.ts";
-import type { LocalContext, Receipt, ApplyRequest } from "./streams.ts";
+import type { DiscardedCard, LocalContext, Receipt, ApplyRequest } from "./streams.ts";
 import type { EnrollmentInference, InferenceResult, ReportInference } from "./agent.ts";
 
 export type ResetTarget = "all" | "session" | "stream";
@@ -15,6 +15,8 @@ export type ReportGenerator = <T extends EnrollmentInference | ReportInference>(
 export type ReportEnvironment = {
  signal: AbortSignal; automaticEnrollment: boolean; operationId(): string;
  capture(): Promise<ReportSnapshot>; generate: ReportGenerator;
+ /** Before a reset captures anything, so a card that cannot be decoded is rebuilt instead. */
+ discardUnreadable(): Promise<DiscardedCard>;
  apply(request: ApplyRequest): Promise<Receipt>; enroll(request: unknown): Promise<Receipt>;
  receipt(receipt: Receipt): void; notice(text: string, level?: "info" | "warning"): void;
 };
@@ -25,8 +27,18 @@ export async function runReport(action: ReportAction, environment: ReportEnviron
  const target = action.kind === "reset" ? action.target : "all";
  const force = action.kind === "reset" || action.force, instructions = action.instructions;
  const {signal, generate} = environment, captureNow = () => environment.capture();
- let capture = await captureNow(), savedAny = false;
- if (!capture.valid() || signal.aborted) return false;
+ let savedAny = false, reenroll = false;
+ if (reset) {
+  const discarded = await environment.discardUnreadable();
+  for (const reason of [discarded.session, discarded.stream]) if (reason !== null) {
+   savedAny = true;environment.notice(`${reason}. Reset discarded it.`, "warning");
+  }
+  // An unreadable Session named no Stream we can keep; the conversation enrolls again.
+  reenroll = discarded.session !== null;
+  if (signal.aborted) return savedAny;
+ }
+ let capture = await captureNow();
+ if (!capture.valid() || signal.aborted) return savedAny;
  const inferAndApply = async (kind: "session" | "stream"): Promise<boolean> => {
   const inferred = await generate({type: kind, catalog: capture.catalog, messages: capture.evidence.messages, instructions, reset});
   if (signal.aborted || !await capture.attached()) return false;
@@ -73,7 +85,7 @@ export async function runReport(action: ReportAction, environment: ReportEnviron
   return true;
  };
  if (!capture.catalog.session) {
-  if (reset) {environment.notice("Reset requires an attached work card. Use /streams attach first.");return false;}
+  if (reset && !reenroll) {environment.notice("Reset requires an attached work card. Use /streams attach first.");return false;}
   if (!force && !environment.automaticEnrollment) return false;
   const operationId = environment.operationId();
   const result = await generate({type: "enroll", catalog: capture.catalog, messages: capture.evidence.messages, instructions});

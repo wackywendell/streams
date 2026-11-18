@@ -373,6 +373,7 @@ impl Server {
                 request => {
                     let is_apply = matches!(request, Request::Apply { .. });
                     let is_lifecycle = matches!(request, Request::Lifecycle { .. });
+                    let is_discard = matches!(request, Request::DiscardUnreadableCard {});
                     let config_change = matches!(
                         request,
                         Request::SetConfig { .. } | Request::UnsetConfig { .. }
@@ -385,7 +386,7 @@ impl Server {
                         dispatch::execute(current_app, &self.session_id, request)?
                     };
                     if (is_apply && (output.code == 0 || output.accepted_save))
-                        || (is_lifecycle && output.accepted_save)
+                        || ((is_lifecycle || is_discard) && output.accepted_save)
                     {
                         output.accepted_save = true;
                         if let Some(controller) = controller

@@ -67,6 +67,10 @@ Session between `parked`/`closed` and `active` (reopening a `closed` Stream when
 `resume` activates the Session), returning `{"session_changed": bool,
 "stream_changed": bool, "saves": [...], "session": ..., "completion_error"?: ...}`
 and emitting save notifications when records change.
+`{"kind":"discard_unreadable_card"}` runs before a reset captures anything. It
+discards whichever records of the child's card cannot be decoded and returns
+`{"session": string | null, "stream": string | null}`, the decode error of each
+record it discarded. It emits a save notification when it discarded anything.
 `set_title_default` accepts only a `stream` or `session` target and an
 `automatic` or `manual` mode. It saves the corresponding global naming setting
 and returns `{"title_defaults":{"stream":"...","session":"..."}}`.

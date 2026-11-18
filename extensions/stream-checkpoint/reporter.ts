@@ -10,7 +10,7 @@ import { SessionScope, captureInputs, hasConversation } from "./session-scope.ts
 import type { SessionFence } from "./session-scope.ts";
 import type { ReportingSettings } from "./settings.ts";
 
-type Options = {scope?: SessionScope; prepare?(): Promise<void> | undefined; cli(ctx: ExtensionContext): StreamCli; settings(): ReportingSettings; infer?: typeof modelInfer; logging?(): InferenceLogOptions | undefined; notice(text: string, level?: "info" | "warning"): void; receipt(value: Receipt, quiet?: boolean): void; activity?(text?: string, completed?: boolean): void};
+type Options = {scope?: SessionScope; prepare?(): Promise<void> | undefined; repaired?(): Promise<void> | undefined; cli(ctx: ExtensionContext): StreamCli; settings(): ReportingSettings; infer?: typeof modelInfer; logging?(): InferenceLogOptions | undefined; notice(text: string, level?: "info" | "warning"): void; receipt(value: Receipt, quiet?: boolean): void; activity?(text?: string, completed?: boolean): void};
 type Pending = {ctx: ExtensionContext; force: boolean; instructions?: string; reset?: boolean; auto?: boolean; target?: ResetTarget};
 export class Reporter {
  readonly scope: SessionScope;
@@ -77,13 +77,17 @@ export class Reporter {
    if (force) this.options.notice("Start a conversation before reporting a work card.");
    return false;
   }
-  await this.options.prepare?.();
-  if (!fence.current()) return false;
   const cli = this.options.cli(ctx), generate = this.options.infer ?? modelInfer;
   return runReport(reset ? {kind: "reset", target, auto: Boolean(auto), instructions} : {kind: "report", force, instructions}, {
    signal: fence.signal, operationId: randomUUID, automaticEnrollment: this.options.settings().enrollment === "automatic",
-   capture: () => captureInputs(ctx, cli, this.options.settings().context, fence, "report"),
+   // A reset discards an unreadable card first, so the native startup that reads it waits until capture.
+   capture: async () => {await this.options.prepare?.();return captureInputs(ctx, cli, this.options.settings().context, fence, "report");},
    generate: request => generate(ctx, request, fence.signal, this.options.settings().model, this.options.logging?.()),
+   discardUnreadable: async () => {
+    const discarded = await cli.discardUnreadableCard();
+    if (discarded.session !== null || discarded.stream !== null) await this.options.repaired?.();
+    return discarded;
+   },
    apply: (request) => cli.apply(request), enroll: (request) => cli.enroll(request),
    receipt: (receipt) => {if (fence.live()) this.options.receipt(receipt, !force);},
    notice: (text, level) => {if (fence.live()) this.options.notice(text, level);},

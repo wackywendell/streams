@@ -135,6 +135,8 @@ pub enum Request {
         #[serde(skip_serializing_if = "Option::is_none")]
         stream_id: Option<String>,
     },
+    /// Discard the records of this conversation's card that cannot be decoded, before a reset.
+    DiscardUnreadableCard {},
     CaptureInputs {
         target: CaptureTarget,
     },

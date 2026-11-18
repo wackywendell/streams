@@ -43,10 +43,15 @@ export class NativeController {
   if (!this.startup && this.env.HERDR_ENV === "1" && !hasConversation(ctx.sessionManager)) return;
   return this.startup ??= (async () => {
    this.assertCurrent();
-   this.adapter = (this.options.factory ?? loadNative)({pi:this.options.pi, ctx, sessionId:this.sessionId, cwd:this.cwd, env:{...this.env}, child:this.options.child, assertCurrent:this.assertCurrent, warning:this.options.warning});
+   this.adapter ??= (this.options.factory ?? loadNative)({pi:this.options.pi, ctx, sessionId:this.sessionId, cwd:this.cwd, env:{...this.env}, child:this.options.child, assertCurrent:this.assertCurrent, warning:this.options.warning});
    const adapter = await this.adapter;this.assertCurrent();
    await adapter.start(this.controller.signal);this.assertCurrent();
   })();
+ }
+ /** A reset that discarded unreadable card records changed what a failed startup read, so the next catalog request starts once more. */
+ async retryFailedStartup(): Promise<void> {
+  const startup = this.startup;
+  if (startup && await startup.then(() => false, () => true) && this.startup === startup) this.startup = undefined;
  }
  prepareCatalog(): Promise<void> | undefined {
   const starting = this.start();

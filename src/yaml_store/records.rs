@@ -22,7 +22,7 @@ use crate::{
         atomic_write, decode_json, ensure_directory, existing_write_lock, inspection_lock, lock,
         read_bytes, write_json,
     },
-    model::{RecordKind, check_text},
+    model::{Record, RecordKind, check_text},
     storage::{
         StorageError,
         records::{
@@ -404,13 +404,7 @@ impl YamlRecordStore {
             record: record_to_data(&change.record),
             receipts,
         };
-        let bytes = serde_json::to_vec_pretty(&envelope).map_err(invalid)?;
-        let relative = relative_record_path(&request.target)?;
-        check_parents(&self.root, &relative)?;
-        let path = self.root.join(relative);
-        let saved = atomic_write(&path, &bytes, &self.root.join(".catalog-staging"));
-        self.observe_replacement(path, bytes.len(), &saved);
-        saved?;
+        self.write_envelope(&request.target, &envelope)?;
         Ok(RecordSave {
             current: RecordRead {
                 record: change.record,
@@ -419,6 +413,63 @@ impl YamlRecordStore {
             outcome: change.outcome,
             repeated: false,
         })
+    }
+
+    fn write_envelope(
+        &self,
+        target: &RecordAddress,
+        envelope: &Envelope,
+    ) -> Result<(), StorageError> {
+        let bytes = serde_json::to_vec_pretty(envelope).map_err(invalid)?;
+        let relative = relative_record_path(target)?;
+        check_parents(&self.root, &relative)?;
+        let path = self.root.join(relative);
+        let saved = atomic_write(&path, &bytes, &self.root.join(".catalog-staging"));
+        self.observe_replacement(path, bytes.len(), &saved);
+        saved
+    }
+
+    /// Discard the target when its file exists but cannot be decoded: install `replacement`
+    /// with a fresh revision and no receipts, or remove the file when there is none.
+    /// A readable or missing target is left alone. Returns the decode error it discarded.
+    pub fn discard_unreadable(
+        &self,
+        target: &RecordAddress,
+        replacement: Option<Record>,
+    ) -> Result<Option<String>, StorageError> {
+        if target.host() != self.host {
+            return Err(StorageError::new("cannot write another host's partition"));
+        }
+        let _scope = self.scope(true)?;
+        let relative = relative_record_path(target)?;
+        let Some(bytes) = self.read_named(&relative)? else {
+            return Ok(None);
+        };
+        let Err(unreadable) = decode_envelope(target, &bytes) else {
+            return Ok(None);
+        };
+        match replacement {
+            Some(record) => {
+                record.validate_portable().map_err(invalid)?;
+                if RecordAddress::for_record(&record) != *target {
+                    return Err(StorageError::new(
+                        "a replacement must keep the target's identity",
+                    ));
+                }
+                self.write_envelope(
+                    target,
+                    &Envelope {
+                        version: 2,
+                        revision: Uuid::new_v4().to_string(),
+                        kind: target.kind(),
+                        record: record_to_data(&record),
+                        receipts: BTreeMap::new(),
+                    },
+                )?;
+            }
+            None => std::fs::remove_file(self.root.join(relative)).map_err(invalid)?,
+        }
+        Ok(Some(unreadable.to_string()))
     }
 }
 

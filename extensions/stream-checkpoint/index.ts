@@ -158,7 +158,7 @@ export default function registerWorkCard(pi: ExtensionAPI, options: Options = {}
   statusTimer.unref?.();
  };
  const reporter = new Reporter({
-  scope, cli, settings, logging, prepare: () => native?.prepareCatalog(), infer: options.infer,
+  scope, cli, settings, logging, prepare: () => native?.prepareCatalog(), repaired: () => native?.retryFailedStartup(), infer: options.infer,
   notice: (text, level) => scope.context?.ui.notify(`Streams — ${text}`, level ?? "warning"), receipt,
   activity: (text, completed) => {
    clearStatusTimer();

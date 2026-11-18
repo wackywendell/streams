@@ -14,6 +14,7 @@
     {"type":"request","id":12,"request":{"kind":"enroll","request":{"version":2}}},
     {"type":"request","id":13,"request":{"kind":"apply","request":{}}},
     {"type":"request","id":14,"request":{"kind":"list_streams"}},
+    {"type":"request","id":15,"request":{"kind":"discard_unreadable_card"}},
     {"type":"request","id":16,"request":{"kind":"sync"}},
     {"type":"request","id":17,"request":{"kind":"sync"}},
     {"type":"request","id":18,"request":{"kind":"set_title_default","target":"stream","mode":"automatic"}},

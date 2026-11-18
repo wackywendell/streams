@@ -21,6 +21,13 @@ pub(super) fn execute(app: &App, session_id: &str, request: Request) -> Result<O
         Request::Context { stream_id } => app
             .agent_observation(Harness::Pi, session_id, stream_id.as_deref())?
             .output(),
+        Request::DiscardUnreadableCard {} => {
+            let discarded = application::open_records(&app.config)?
+                .discard_unreadable_card(Harness::Pi, session_id)?;
+            let mut output = Output::value(json!(discarded));
+            output.accepted_save = discarded.session.is_some() || discarded.stream.is_some();
+            Ok(output)
+        }
         Request::CaptureInputs { target } => match target {
             CaptureTarget::Inventory {} => app.capture_inputs(None, None),
             CaptureTarget::Stream { stream_id } => app.capture_inputs(Some(&stream_id), None),

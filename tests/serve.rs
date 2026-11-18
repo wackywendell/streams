@@ -284,6 +284,92 @@ fn typed_preview_apply_and_enroll_keep_domain_packets_without_stdin() {
 }
 
 #[test]
+fn discarding_an_unreadable_card_replaces_the_stream_in_place_and_removes_the_session() {
+    let f = Fixture::new();
+    let (context, _) = f.capture();
+    let id = context["stream"]["id"].as_str().unwrap();
+    let mut child = f.start();
+    let enrollment = json!({"version":2,"operation_id":"enroll", "catalog_source":context["catalog_source"],
+        "harness":"pi", "harness_session_id":"pi-session", "actor":"user",
+        "cwd":f.directory.path(), "stream_id":id, "session":{"title":"Session"}});
+    child.request(1, json!({"kind":"enroll","request":enrollment}));
+    assert_eq!(child.response(1)["outcome"]["status"], "success");
+    let partition = f
+        .root()
+        .join("hosts")
+        .join(streams::yaml_store::encode_component(
+            context["host_id"].as_str().unwrap(),
+        ));
+    let stream_path = partition.join("streams").join(format!(
+        "{}.yaml",
+        streams::yaml_store::encode_component(id)
+    ));
+    let mut stale: Value = serde_json::from_slice(&fs::read(&stream_path).unwrap()).unwrap();
+    stale["record"]["archived"] = json!(false);
+    fs::write(&stream_path, stale.to_string()).unwrap();
+
+    child.request(2, json!({"kind":"context"}));
+    let failed = child.response(2)["outcome"].clone();
+    assert_eq!(failed["status"], "error");
+    assert!(
+        failed["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("is unreadable: unknown field `archived`"),
+        "{failed}"
+    );
+
+    child.request(3, json!({"kind":"discard_unreadable_card"}));
+    let discarded = child.response(3)["outcome"]["result"].clone();
+    assert_eq!(discarded["session"], Value::Null);
+    assert!(
+        discarded["stream"]
+            .as_str()
+            .unwrap()
+            .starts_with("Stream record hosts/"),
+        "{discarded}"
+    );
+    child.request(4, json!({"kind":"context"}));
+    let card = child.response(4)["outcome"]["result"].clone();
+    assert_eq!(card["stream"]["id"], id, "membership is kept");
+    assert_eq!(card["stream"]["title"], "Session");
+    assert_eq!(card["stream"]["goal"], Value::Null);
+    assert_eq!(card["session"]["stream_id"], id);
+
+    child.request(5, json!({"kind":"discard_unreadable_card"}));
+    assert_eq!(
+        child.response(5)["outcome"]["result"],
+        json!({"session":null,"stream":null}),
+        "a readable card is left alone"
+    );
+
+    let session_id = card["session"]["id"].as_str().unwrap();
+    let session_path = partition.join("conversations").join(format!(
+        "{}.yaml",
+        streams::yaml_store::encode_component(session_id)
+    ));
+    fs::write(&session_path, "not a record").unwrap();
+    child.request(6, json!({"kind":"discard_unreadable_card"}));
+    let discarded = child.response(6)["outcome"]["result"].clone();
+    assert!(
+        discarded["session"]
+            .as_str()
+            .unwrap()
+            .starts_with("Session record hosts/"),
+        "{discarded}"
+    );
+    assert!(!session_path.exists());
+    child.request(7, json!({"kind":"context"}));
+    let card = child.response(7)["outcome"]["result"].clone();
+    assert_eq!(
+        card["session"],
+        Value::Null,
+        "the conversation enrolls again"
+    );
+    assert_eq!(child.finish(), (0, String::new()));
+}
+
+#[test]
 fn preview_and_ready_never_load_poisoned_configuration() {
     let f = Fixture::new();
     let (catalog, request) = f.capture();
