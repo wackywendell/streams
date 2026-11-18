@@ -63,12 +63,12 @@ test('idempotent enrollment with no new saves is a valid receipt, including publ
  const cli=new StreamCli('/tmp',async()=>({status:'success',result:value}));
  assert.deepEqual(await cli.enroll({}),value);assert.match(receiptText(value),/Already enrolled; no new local saves/);
 });
-test('repair-required null-domain receipts retain dirty input without retry',async()=>{
+test('a save without a domain outcome is refused and keeps dirty input without retry',async()=>{
  const value={save:{local:'repair-required',sharing:'local-only',domain:null,detail:'interrupted save marker'}};let calls=0;const receipts=[];
  const cli=new StreamCli('/tmp',async()=>{calls++;return {status:'success',result:value};});
  const edit=new FieldEdit('session',context(),'state');edit.value='Keep this input';
  await assert.rejects(edit.save(cli,receipt=>receipts.push(receipt)),/Invalid catalog receipt/);
- assert.equal(calls,1);assert.deepEqual(receipts,[value]);assert.equal(edit.value,'Keep this input');assert.match(receiptText(value),/interrupted save marker/);assert.match(receiptText(value),/not reconciled/);
+ assert.equal(calls,1);assert.deepEqual(receipts,[]);assert.equal(edit.value,'Keep this input');
 });
 test('typed catalog rejects nonreceipts and preserves structured failures',async()=>{
  for(const outcome of [{status:'success',result:{}},{status:'error',error:{kind:'invalid',message:'Fix input'}}]){

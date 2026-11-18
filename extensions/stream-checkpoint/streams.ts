@@ -8,8 +8,8 @@ export type { Status, Mode, Reference, ReferenceValue, ReferenceTarget, Resource
 export type ReferenceResult = {key: ResourceKey; action: "add" | "update" | "drop" | "restore" | "delete"; outcome: "changes" | "no-change" | "superseded" | "conflict"; reason: string};
 export type LocalStatus = "unchanged" | "persisted" | "committed" | "repair-required";
 export type SharingStatus = "local-only" | "pending" | "confirmed" | "blocked" | "failed" | "uncertain";
-export type Result = { warnings?: string[]; local: LocalStatus; sharing?: SharingStatus; domain: { outcome: "changes" | "no-change" | "superseded" | "conflict"; reference_results?: ReferenceResult[]; [key: string]: unknown } | null; detail?: string; [key: string]: unknown };
-export type PublicationResult = Result & {domain: null; sharing: SharingStatus};
+export type Result = { warnings?: string[]; local: LocalStatus; sharing?: SharingStatus; domain: { outcome: "changes" | "no-change" | "superseded" | "conflict"; reference_results?: ReferenceResult[]; [key: string]: unknown }; detail?: string; [key: string]: unknown };
+export type PublicationResult = Omit<Result, "domain"> & {domain: null; sharing: SharingStatus};
 export type Receipt = {warnings?: string[]; simulated?: true; stream?: StreamWire; session?: SessionWire; publication?: PublicationResult; completion_error?: unknown} & ({save: Result; saves?: never} | {save?: never; saves: {target: string; save: Result}[]});
 export type ApplyRequest = {version: 2; catalog_source: string; kind: "stream" | "session"; actor: "automatic" | "user"; before: StreamWire | SessionWire; changes: Record<string, unknown>; title_default: Mode; inputs: {kind: "stream" | "session"; record: StreamWire | SessionWire}[]};
 export class StreamsCliError extends Error {
@@ -33,8 +33,9 @@ const referenceResult = (value: unknown): value is ReferenceResult => object(val
  && Object.keys(value).length === 4 && ["key", "action", "outcome", "reason"].every(key => Object.hasOwn(value, key))
  && isResourceKey(value.key) && ["add", "update", "drop", "restore", "delete"].includes(value.action)
  && ["changes", "no-change", "superseded", "conflict"].includes(value.outcome) && typeof value.reason === "string";
-const result = (v: unknown): v is Result => object(v) && ["unchanged", "persisted", "committed", "repair-required"].includes(v.local) && (v.sharing === undefined || ["local-only", "pending", "confirmed", "blocked", "failed", "uncertain"].includes(v.sharing)) && (v.domain === null || object(v.domain) && ["changes", "no-change", "superseded", "conflict"].includes(v.domain.outcome) && (v.domain.reference_results === undefined || Array.isArray(v.domain.reference_results) && v.domain.reference_results.every(referenceResult)));
-const publication = (v: unknown): v is PublicationResult => result(v) && v.domain === null && v.sharing !== undefined;
+const statuses = (v: unknown): v is Record<string, any> => object(v) && ["unchanged", "persisted", "committed", "repair-required"].includes(v.local) && (v.sharing === undefined || ["local-only", "pending", "confirmed", "blocked", "failed", "uncertain"].includes(v.sharing));
+const result = (v: unknown): v is Result => statuses(v) && object(v.domain) && ["changes", "no-change", "superseded", "conflict"].includes(v.domain.outcome) && (v.domain.reference_results === undefined || Array.isArray(v.domain.reference_results) && v.domain.reference_results.every(referenceResult));
+const publication = (v: unknown): v is PublicationResult => statuses(v) && v.domain === null && v.sharing !== undefined;
 function receipt(value: unknown): value is Receipt {
  if (!object(value) || Object.hasOwn(value, "authority") || value.publication !== undefined && !publication(value.publication)) return false;
  if (value.save !== undefined) return value.saves === undefined && result(value.save);
@@ -153,7 +154,7 @@ export function receiptText(value: Receipt): string {
  if (!saves.length) return "Already enrolled; no new local saves" + (value.warnings?.length ? "\n" + value.warnings.join("\n") : "");
  if (receiptHasWarning(value)) {
   const diagnostics = saves.flatMap(({save}) => unappliedReferences(save).map(row => `Reference not applied: ${referenceKeyJson(row.key)}; ${referenceText(row.reason)}`)).filter(line => !value.warnings?.includes(line));
-  return (value.warnings?.length ? value.warnings.join("\n") + "\n" : "") + saves.map(({target, save}) => `${target}: ${save.domain?.outcome ?? "not reconciled"}; local=${save.local}${save.sharing ? `; sharing=${save.sharing}` : ""}${save.detail ? `; ${save.detail}` : ""}`).join("\n") + (diagnostics.length ? `\n${diagnostics.join("\n")}` : "") + (value.publication ? `\nPublication: ${JSON.stringify(value.publication)}` : "") + (value.completion_error ? `\nSaved receipt retained; completion problem: ${JSON.stringify(value.completion_error)}. Do not blindly retry.` : "");
+  return (value.warnings?.length ? value.warnings.join("\n") + "\n" : "") + saves.map(({target, save}) => `${target}: ${save.domain.outcome}; local=${save.local}${save.sharing ? `; sharing=${save.sharing}` : ""}${save.detail ? `; ${save.detail}` : ""}`).join("\n") + (diagnostics.length ? `\n${diagnostics.join("\n")}` : "") + (value.publication ? `\nPublication: ${JSON.stringify(value.publication)}` : "") + (value.completion_error ? `\nSaved receipt retained; completion problem: ${JSON.stringify(value.completion_error)}. Do not blindly retry.` : "");
  }
  if (value.saves) {
   const label = [value.stream?.title, value.session?.title].filter(Boolean).join(" / ");

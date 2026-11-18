@@ -163,7 +163,7 @@ function paneFixture(t,options={}) {
   sync:async()=>({local:'unchanged',sharing:'local-only',domain:null}),
   enroll:async request=>{
    steps.push('enroll');enrollments.push(structuredClone(request));
-   if(options.rejectEnrollment)return {saves:[{target:'session:native',save:{local:'repair-required',sharing:'local-only',domain:null}}]};
+   if(options.rejectEnrollment)return {saves:[{target:'session:native',save:{local:'unchanged',sharing:'local-only',domain:{outcome:'conflict'}}}]};
    attach();return {stream:catalog.stream,session:catalog.session,saves:[{target:'session:native',save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}}]};
   },
   apply:async request=>{

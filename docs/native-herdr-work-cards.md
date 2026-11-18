@@ -42,7 +42,7 @@ A complete painted document key remains active when its descriptive text is
 clipped. A resize or refresh invalidates old actions before new input can use them.
 
 HTTP links use the terminal client's link gesture. Activation compares the full
-saved Reference, including revision and relationship fields, with current records
+saved Reference, including its relationship fields, with current records
 before parsing its exact URL for the browser. Display labels and parsed URL
 spelling supply no identity. Annotation integrations remain out of scope.
 
