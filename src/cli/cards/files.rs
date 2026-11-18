@@ -1,73 +1,19 @@
 use super::events::{Change, Events};
-use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use crate::cli::file_watch::{self, FileWatch};
+use notify::Event;
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::{self, OpenOptions},
-    io::Read,
-    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 use streams::tui::application::Refresh;
 
 type Version = Result<Option<Vec<u8>>, String>;
-fn version(path: &Path) -> Version {
-    let mut file = match OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path)
-    {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.to_string()),
-    };
-    if !file.metadata().map_err(|e| e.to_string())?.is_file() {
-        return Err("watched input must be a regular file".into());
-    }
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes).map_err(|e| e.to_string())?;
-    Ok(Some(bytes))
-}
-fn relevant(paths: &BTreeSet<PathBuf>, event: &Event) -> bool {
-    if !matches!(
-        event.kind,
-        EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_) | EventKind::Any
-    ) {
-        return false;
-    }
-    let structural = matches!(
-        event.kind,
-        EventKind::Create(_)
-            | EventKind::Remove(_)
-            | EventKind::Modify(notify::event::ModifyKind::Name(_))
-    );
-    event.paths.iter().any(|path| {
-        paths.contains(path) || structural && paths.iter().any(|target| target.starts_with(path))
-    })
-}
-fn watcher(
-    events: Events,
-    paths: Arc<Mutex<BTreeSet<PathBuf>>>,
-    generation: u8,
-) -> Result<RecommendedWatcher, String> {
-    // RecommendedWatcher is native (FSEvents/inotify), with no polling fallback.
-    notify::recommended_watcher(move |event: notify::Result<Event>| {
-        if event.as_ref().map_or(true, |event| {
-            event.need_rescan() || relevant(&paths.lock().expect("card watch paths"), event)
-        }) {
-            events.push(Change::File(generation, event));
-        }
-    })
-    .map_err(|e| e.to_string())
-}
 
 pub(super) struct Files {
-    watcher: RecommendedWatcher,
-    events: Events,
+    watch: FileWatch,
     paths: Arc<Mutex<BTreeSet<PathBuf>>>,
-    parents: BTreeSet<PathBuf>,
     versions: BTreeMap<PathBuf, Version>,
-    generation: u8,
 }
 pub(super) struct FileChanges {
     pub changed: bool,
@@ -76,13 +22,19 @@ pub(super) struct FileChanges {
 impl Files {
     pub fn new(paths: BTreeSet<PathBuf>, events: Events) -> Result<Self, String> {
         let shared = Arc::new(Mutex::new(BTreeSet::new()));
+        let filter = shared.clone();
+        let watch = FileWatch::new(move |generation, event: notify::Result<Event>| {
+            if event.as_ref().map_or(true, |event| {
+                event.need_rescan()
+                    || file_watch::relevant(&*filter.lock().expect("card watch paths"), event)
+            }) {
+                events.push(Change::File(generation, event));
+            }
+        })?;
         let mut files = Self {
-            watcher: watcher(events.clone(), shared.clone(), 0)?,
-            events,
+            watch,
             paths: shared,
-            parents: BTreeSet::new(),
             versions: BTreeMap::new(),
-            generation: 0,
         };
         files.set_paths(paths)?;
         Ok(files)
@@ -95,43 +47,12 @@ impl Files {
         for path in observed {
             self.versions
                 .entry(path.clone())
-                .or_insert_with(|| version(&path));
+                .or_insert_with(|| file_watch::version(&path));
         }
         Ok(())
     }
     fn watch_parents(&mut self, paths: &BTreeSet<PathBuf>) -> Result<(), String> {
-        let mut parents = BTreeSet::new();
-        for path in paths {
-            let mut parent = path.parent().ok_or("watched file has no parent")?;
-            loop {
-                match fs::metadata(parent) {
-                    Ok(metadata) if metadata.is_dir() => break,
-                    Ok(_) => {
-                        return Err(format!(
-                            "watch parent is not a directory: {}",
-                            parent.display()
-                        ));
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                        parent = parent.parent().ok_or("no existing watch parent")?
-                    }
-                    Err(error) => return Err(error.to_string()),
-                }
-            }
-            parents.insert(parent.to_path_buf());
-        }
-        // Register replacements before releasing old parents: atomic renames and
-        // newly created record directories must not introduce a subscription gap.
-        for parent in parents.difference(&self.parents) {
-            self.watcher
-                .watch(parent, RecursiveMode::NonRecursive)
-                .map_err(|e| e.to_string())?;
-        }
-        for parent in self.parents.difference(&parents) {
-            self.watcher.unwatch(parent).map_err(|e| e.to_string())?;
-        }
-        self.parents = parents;
-        Ok(())
+        self.watch.watch(paths.iter().map(PathBuf::as_path), [])
     }
     pub fn consume(
         &mut self,
@@ -146,21 +67,16 @@ impl Files {
         };
         let mut recovered = false;
         for (generation, event) in events {
-            if generation != self.generation {
+            if !self.watch.current(generation) {
                 continue;
             }
             let rescan = event.as_ref().map_or(true, Event::need_rescan);
             if rescan {
-                if self.generation != 0 {
-                    return Err("required card file subscription dropped again".into());
-                }
-                self.generation = 1;
-                self.watcher = watcher(self.events.clone(), self.paths.clone(), self.generation)?;
-                self.parents.clear();
+                self.watch.recover()?;
                 touched.extend(paths.iter().cloned());
                 recovered = true;
             } else if let Ok(event) = event
-                && relevant(&paths, &event)
+                && file_watch::relevant(&paths, &event)
             {
                 for path in event.paths {
                     touched.extend(
@@ -177,7 +93,7 @@ impl Files {
         }
         let mut changed = recovered;
         for path in touched {
-            let next = version(&path);
+            let next = file_watch::version(&path);
             if self.versions.get(&path) != Some(&next) {
                 changed = true;
                 self.versions.insert(path, next);
@@ -200,6 +116,8 @@ impl Files {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use notify::EventKind;
+    use std::fs;
     use streams::tui::application::PaneEvents;
     fn events() -> Events {
         Events::new(PaneEvents::new(|_| {}))
@@ -215,7 +133,10 @@ mod tests {
             notify::event::AccessKind::Close(notify::event::AccessMode::Read),
         ] {
             let event = Event::new(EventKind::Access(kind)).add_path(own.clone());
-            assert!(!relevant(&[own.clone()].into(), &event));
+            assert!(!file_watch::relevant(
+                &BTreeSet::from([own.clone()]),
+                &event
+            ));
             assert!(
                 !files
                     .consume(vec![(0, Ok(event))], Refresh::Changed)
@@ -232,7 +153,10 @@ mod tests {
         let mut files = Files::new([own.clone()].into(), events()).unwrap();
         let other = Event::new(EventKind::Modify(notify::event::ModifyKind::Any))
             .add_path(root.path().join("other.yaml"));
-        assert!(!relevant(&[own.clone()].into(), &other));
+        assert!(!file_watch::relevant(
+            &BTreeSet::from([own.clone()]),
+            &other
+        ));
         let staging = root.path().join("staging.tmp");
         fs::write(&staging, "after").unwrap();
         fs::rename(&staging, &own).unwrap();
@@ -241,7 +165,7 @@ mod tests {
         )))
         .add_path(staging)
         .add_path(own.clone());
-        assert!(relevant(&[own].into(), &event));
+        assert!(file_watch::relevant(&BTreeSet::from([own]), &event));
         let mut reads = 0;
         for _ in 0..32 {
             if files

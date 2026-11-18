@@ -10,6 +10,7 @@ mod debug;
 mod documents;
 mod enrollment;
 mod fields;
+mod file_watch;
 mod integration;
 #[cfg(test)]
 mod native_tests;

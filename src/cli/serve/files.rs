@@ -4,37 +4,24 @@ use super::{
     super::{CliError, Result, application},
     Wake,
 };
-use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    fs,
-    path::{Path, PathBuf},
-    sync::mpsc::Sender,
-};
+use notify::Event;
+use std::{collections::BTreeMap, path::PathBuf, sync::mpsc::Sender};
 use streams::{
     file_store::records::relative_record_path,
     model::{RecordKind, Session},
     storage::records::RecordAddress,
 };
 
+use crate::cli::file_watch::{self, FileWatch};
+
 type Versions = BTreeMap<&'static str, std::result::Result<Option<Vec<u8>>, String>>;
 pub(super) struct Files {
-    watcher: RecommendedWatcher,
-    sender: Sender<Wake>,
-    directories: BTreeSet<PathBuf>,
+    watch: FileWatch,
     groups: BTreeMap<&'static str, PathBuf>,
     versions: Versions,
     root: PathBuf,
     host: String,
     streams: PathBuf,
-    generation: u8,
-}
-fn watcher(sender: Sender<Wake>, generation: u8) -> Result<RecommendedWatcher> {
-    // RecommendedWatcher is native (FSEvents/inotify); never substitute a polling backend.
-    notify::recommended_watcher(move |event| {
-        let _ = sender.send(Wake::Files(generation, event));
-    })
-    .map_err(|error| CliError::message(format!("required file subscription: {error}")))
 }
 impl Files {
     pub fn new(
@@ -58,16 +45,17 @@ impl Files {
             .parent()
             .expect("host partition")
             .join("streams");
+        let watch = FileWatch::new(move |generation, event| {
+            let _ = sender.send(Wake::Files(generation, event));
+        })
+        .map_err(CliError::message)?;
         let mut files = Self {
-            watcher: watcher(sender.clone(), 0)?,
-            sender,
-            directories: BTreeSet::new(),
+            watch,
             groups: BTreeMap::from([("session", session)]),
             versions: BTreeMap::new(),
             root,
             host: host.into(),
             streams,
-            generation: 0,
         };
         files.prepare()?;
         Ok(files)
@@ -111,7 +99,7 @@ impl Files {
         let versions = self
             .groups
             .iter()
-            .map(|(key, path)| (*key, version(path)))
+            .map(|(key, path)| (*key, file_watch::version(path)))
             .collect();
         let changed = self.versions != versions;
         self.versions = versions;
@@ -119,105 +107,38 @@ impl Files {
     }
 
     fn watch_parents(&mut self) -> Result<()> {
-        let mut directories = BTreeSet::new();
-        for requested in self
-            .groups
-            .values()
-            .map(|path| path.parent().expect("absolute record parent"))
-            .chain(std::iter::once(self.streams.as_path()))
-        {
-            let mut parent = requested;
-            loop {
-                match fs::metadata(parent) {
-                    Ok(metadata) if metadata.is_dir() => break,
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                        parent = parent
-                            .parent()
-                            .ok_or_else(|| CliError::message("no existing watch parent"))?;
-                    }
-                    _ => {
-                        return Err(CliError::message(format!(
-                            "required watch parent is not a directory: {}",
-                            parent.display()
-                        )));
-                    }
-                }
-            }
-            directories.insert(parent.to_path_buf());
-        }
-        // Register replacements first. Parent watches survive atomic file replacement.
-        for path in directories.difference(&self.directories) {
-            self.watcher
-                .watch(path, RecursiveMode::NonRecursive)
-                .map_err(|e| {
-                    CliError::message(format!(
-                        "required file subscription at {}: {e}",
-                        path.display()
-                    ))
-                })?;
-        }
-        for path in self.directories.difference(&directories) {
-            self.watcher
-                .unwatch(path)
-                .map_err(|e| CliError::message(format!("required file unsubscribe: {e}")))?;
-        }
-        self.directories = directories;
-        Ok(())
+        self.watch
+            .watch(
+                self.groups.values().map(PathBuf::as_path),
+                [self.streams.as_path()],
+            )
+            .map_err(CliError::message)
     }
 
+    /// Missing ancestor creation or deletion only repairs this narrow watch;
+    /// unchanged logical file bytes still produce no observation.
     pub fn relevant(&self, event: &Event) -> bool {
-        if !matches!(
-            event.kind,
-            EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_) | EventKind::Any
-        ) {
-            return false;
-        }
-        event.paths.iter().any(|path| {
-            self.groups.values().any(|target| {
-                // Missing ancestor creation/deletion only repairs this narrow watch;
-                // unchanged logical file bytes still produce no observation.
-                target == path
-                    || target.starts_with(path)
-                        && matches!(
-                            event.kind,
-                            EventKind::Create(_)
-                                | EventKind::Remove(_)
-                                | EventKind::Modify(notify::event::ModifyKind::Name(_))
-                        )
-            })
-        })
+        file_watch::relevant(self.groups.values(), event)
     }
 
     pub fn current(&self, generation: u8) -> bool {
-        self.generation == generation
+        self.watch.current(generation)
     }
 
     pub fn recover(&mut self) -> Result<()> {
-        if self.generation != 0 {
-            return Err(CliError::message(
-                "required file subscription dropped again",
-            ));
-        }
-        self.generation = 1;
-        self.watcher = watcher(self.sender.clone(), self.generation)?;
-        self.directories.clear();
+        self.watch.recover().map_err(CliError::message)?;
         self.watch_parents()
-    }
-}
-
-fn version(path: &Path) -> std::result::Result<Option<Vec<u8>>, String> {
-    match fs::read(path) {
-        Ok(bytes) => Ok(Some(bytes)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(format!("{}: {error}", path.display())),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use notify::event::{CreateKind, ModifyKind, RenameMode};
-    use std::sync::mpsc;
+    use notify::{
+        EventKind,
+        event::{CreateKind, ModifyKind, RenameMode},
+    };
+    use std::{fs, sync::mpsc};
     use streams::{
         config::{Config, Strategy},
         model::{Record, Stream},
@@ -331,7 +252,7 @@ mod tests {
         let (sender, _) = mpsc::channel();
         let mut files = Files::new(&records, "native", sender).unwrap();
         assert!(
-            files.directories.contains(&files.streams),
+            files.watch.parents().contains(&files.streams),
             "watch all possible addressed Stream events before context collection"
         );
         files.set_stream(Some("old")).unwrap();
