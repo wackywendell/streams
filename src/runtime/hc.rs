@@ -680,6 +680,9 @@ impl HcOperation {
     pub fn supports(&self, method: &str) -> bool {
         self.client.supports(method)
     }
+    pub fn ended(&self) -> bool {
+        self.client.failed()
+    }
     /// One `terminal.get`, kept as read-only evidence. `None` when hc does not know the terminal
     /// or does not offer the method.
     pub fn terminal_get(&mut self, key: &str) -> Result<Option<Value>, FrontendError> {

@@ -182,3 +182,91 @@ fn hc_associate_caller_and_notify_saved_share_one_connection_even_after_correlat
     drop(frontend);
     server.join().unwrap();
 }
+
+#[test]
+fn hc_notify_saved_reconnects_after_associate_caller_ends_the_connection() {
+    use serde_json::{Value, json};
+    use std::{
+        io::{BufRead, BufReader, Write},
+        os::unix::net::{UnixListener, UnixStream},
+        thread,
+    };
+
+    let temp = tempfile::Builder::new()
+        .prefix("frontends-hc-eof-")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let socket = temp.path().join("hc.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+
+    let server = thread::spawn(move || {
+        let next = |reader: &mut BufReader<UnixStream>| -> Value {
+            let mut line = String::new();
+            assert_ne!(reader.read_line(&mut line).unwrap(), 0);
+            serde_json::from_str(&line).unwrap()
+        };
+        let respond_hello = |reader: &mut BufReader<UnixStream>| {
+            let hello = next(reader);
+            assert_eq!(hello["method"], "hello");
+            writeln!(
+                reader.get_mut(),
+                "{}",
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": hello["id"],
+                    "result": {
+                        "generation": 1,
+                        "framed": false,
+                        "core": { "id": "core" },
+                        "methods": ["hello", "terminal.get", "terminal.label", "doc.get", "doc.set"]
+                    }
+                })
+            )
+            .unwrap();
+        };
+
+        // Connection 1: associate_caller hits EOF after doc.get, ending the HcClient.
+        let (stream1, _) = listener.accept().unwrap();
+        let mut reader1 = BufReader::new(stream1);
+        respond_hello(&mut reader1);
+        let doc_get = next(&mut reader1);
+        assert_eq!(doc_get["method"], "doc.get");
+        drop(reader1);
+
+        // Connection 2: notify_saved opens a fresh connection and delivers the notice.
+        let (stream2, _) = listener.accept().unwrap();
+        let mut reader2 = BufReader::new(stream2);
+        respond_hello(&mut reader2);
+        let label = next(&mut reader2);
+        assert_eq!(label["method"], "terminal.label");
+        let labels = label["params"]["labels"].clone();
+        writeln!(
+            reader2.get_mut(),
+            "{}",
+            json!({
+                "jsonrpc": "2.0",
+                "id": label["id"],
+                "result": {
+                    "address": "t1",
+                    "state": "live",
+                    "pid": std::process::id(),
+                    "labels": labels
+                }
+            })
+        )
+        .unwrap();
+
+        let mut eof = String::new();
+        assert_eq!(reader2.read_line(&mut eof).unwrap(), 0);
+    });
+
+    let environment = BTreeMap::from([
+        ("HC_SOCKET".into(), socket.to_str().unwrap().into()),
+        ("HC_TERMINAL_ID".into(), "t1".into()),
+    ]);
+    let mut frontend = connect(FrontendId::Hc, caller(environment));
+    assert!(frontend.associate_caller("stream").is_err());
+    frontend.notify_saved().unwrap();
+    drop(frontend);
+    server.join().unwrap();
+}

@@ -349,6 +349,13 @@ impl HcFrontend {
     }
 
     fn connection(&mut self) -> Result<&mut (HcEndpoint, HcOperation)> {
+        if self
+            .connection
+            .as_ref()
+            .is_some_and(|(_, operation)| operation.ended())
+        {
+            self.connection = None;
+        }
         if self.connection.is_none() {
             let (socket, expected, stopping) = match &self.pinned {
                 Some((socket, endpoint, stopping)) => {

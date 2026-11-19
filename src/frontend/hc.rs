@@ -197,6 +197,9 @@ impl HcClient {
     pub fn supports(&self, method: &str) -> bool {
         self.methods.contains(method)
     }
+    pub fn failed(&self) -> bool {
+        self.failed
+    }
     pub fn request(&mut self, method: &str, params: &Value) -> Result<Value, FrontendError> {
         self.exchange(method, params, false)
             .1
