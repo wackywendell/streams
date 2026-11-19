@@ -1,6 +1,6 @@
 # streams
 
-Streams keeps a personal catalog of ongoing work. Each stream has a stable identity, an optional goal, a work status and references to documents, PRs, issues and other useful material. Sessions describe their own scope and achievements, current status and remaining work. Plans and design decisions stay in project repositories, not in scratch notes.
+Streams keeps a personal catalog of ongoing work. Each stream has a stable identity, an optional goal and references to documents, PRs, issues and other useful material. Sessions describe their own scope and achievements, current status and remaining work; a stream's status is derived from its sessions. Plans and design decisions stay in project repositories, not in scratch notes.
 
 This checkout includes the catalog CLI, Pi work-card extension and bundled agent skill. Published `v0.1.0` packages still use the scratch workflow; do not mix those packages with this CLI.
 
@@ -93,7 +93,7 @@ streams check
 
 `create` saves a stream without launching a workspace. A missing goal is `null`, not placeholder text. Creation reports the stable ID.
 
-Search is a case-insensitive literal substring of the title or goal. It has no operators or query language. Repeat `--status` to select several statuses. `list` projects live Session activity for `active`/`parked` Streams and excludes `closed` streams unless you use `--closed` or `--all`. Run `streams tidy [--days N]` to persist `closed` on inactive Sessions and Streams untouched past `lifecycle.decay_days`.
+Search is a case-insensitive literal substring of the title or goal. It has no operators or query language. Repeat `--status` to select several statuses. `list` derives each Stream's status as the highest status among its Sessions (`active > blocked > waiting > parked > done > closed`, or `active` when empty) and excludes `closed` streams unless you use `--closed` or `--all`. Run `streams tidy [--days N]` to persist `closed` on inactive open Sessions untouched past `lifecycle.decay_days`.
 
 `list` shows every Stream it can read. It names each record file it cannot decode, with its kind, host, catalog path, cause and repair, on stderr, or under `unreadable` with `--json`, and still exits 0, because the listing itself succeeded. `list` fails only when the catalog itself cannot be read. The repair depends on the kind of record:
 
@@ -113,14 +113,11 @@ Stream selectors accept an exact ID, an exact title or a unique title substring.
 streams update STREAM_ID --title "Catalog discovery"
 streams update STREAM_ID --goal-file ./goal.txt
 streams update STREAM_ID --clear-goal
-streams update STREAM_ID --status parked
 streams update STREAM_ID --add-repository streams https://github.com/wackywendell/streams
-streams close STREAM_ID
-streams restore STREAM_ID
 streams tidy
 ```
 
-Statuses are `active`, `waiting`, `blocked`, `parked`, `done`, and `closed`. Closing a Stream closes its non-done child Sessions; restoring reopens the Stream to `active`. Marking work `done` does not close its runtime.
+Session statuses are `active`, `blocked`, `waiting`, `parked`, `done`, and `closed`. Stream status is derived from its Sessions under `active > blocked > waiting > parked > done > closed` (defaulting to `active` for an empty Stream) and is not edited directly. Marking work `done` does not close its runtime.
 
 Setting a title or goal makes that field manual. Use `--title-mode automatic` or `--goal-mode automatic` to allow future automatic refinement. Compact summaries clear when their source text changes.
 
@@ -164,7 +161,7 @@ streams session lifecycle park --harness pi --session-id NATIVE_ID
 
 Interactive Pi TUI sessions park active Sessions on shutdown and reactivate `parked` or `closed` Sessions on resume (`session_started`); non-interactive (`print`, `json`) and ephemeral (`--no-session`) Pi runs skip Streams startup and reporting.
 
-Attaching records an existing conversation; it does not start it. A session has one concise title, a lifecycle status, a cumulative `recap`, current `state` (labelled Status) and `remaining` work. Each text has a matching `_short` form. Reports prefer 1–2 words and fewer than 20 characters, with a 24-character maximum. Session text stays report-writable; only titles have automatic/manual/inherit modes. All 6 text fields accept `--FIELD`, `--FIELD-file` and `--clear-FIELD` (use hyphens in flag names). Clearing full text saves an empty string; clearing a short form saves null. Its native identity belongs to one host. The owning host must authorise attachments and session updates. Finishing a session does not finish the stream.
+Attaching records an existing conversation; it does not start it. A session has one concise title, a lifecycle status, a cumulative `recap`, current `state` (labelled Status) and `remaining` work. Each text has a matching `_short` form. Reports prefer 1–2 words and fewer than 20 characters, with a 24-character maximum. Session text stays report-writable; only titles have automatic/manual/inherit modes. All 6 text fields accept `--FIELD`, `--FIELD-file` and `--clear-FIELD` (use hyphens in flag names). Clearing full text saves an empty string; clearing a short form saves null. Its native identity belongs to one host. The owning host must authorise attachments and session updates. When every session in a stream is `done` (or `done` and `closed`), the stream's derived status becomes `done`.
 
 For a portable checkout reference, add `--repository ALIAS --ref BRANCH` when attaching. `--cwd` records the local directory. Session references also accept `HOST_ID/SESSION_RECORD_ID` when needed to disambiguate IDs. Attach creates a record; it cannot move an already enrolled Session. There is no Session-move CLI command.
 
@@ -194,7 +191,7 @@ Content saves before its Session reference; deletion removes the reference first
 
 The checkout's Pi extension maintains catalog records instead of generating scratch drafts. By default it reports after each completed response, using the current Pi model and trimmed conversation context. Meaningful work can enroll an effort and its first session automatically; greetings alone do not. Existing caller-workspace associations are reused without launching agents or moving focus.
 
-- `/streams` or `/streams card` opens the card without running a model. Edit labelled fields, choose valid statuses and manage reference rows. Whole-effort actions are separate from session actions; IDs, ownership and membership are read-only.
+- `/streams` or `/streams card` opens the card without running a model. Edit labelled fields, choose valid session statuses and manage reference rows. Stream actions are separate from session actions; IDs, ownership and membership are read-only.
 - Editing a title or goal makes it manual. Titles can return to automatic or inherit the global default; goals use automatic or manual. Invalid or conflicting edits retain their input; unchanged fields are not submitted.
 - The Stream tab's References manager edits names, purposes, kinds, roles, states and targets. Retained input remains separately inspectable after conflicts or source deletion. Explicit reapply uses a fresh capture and asks before restoring a Dropped row.
 - `/streams name [session|stream] <name>` saves and protects a title, including unchanged text. The default target is Session. `/streams title-mode [session|stream] automatic|manual|inherit` changes policy without generating a new title.
@@ -215,7 +212,7 @@ Pi's built-in `/name` imports a different name as a manual Session title when Pi
 
 Session inference can propose reference additions, updates and drops alongside progress. Progress saves first, then references use the original capture; a reference refusal preserves saved progress and stops later inference without retrying. Reference state describes this effort's relationship to the resource and does not change external tickets or Stream lifecycle.
 
-Session progress and effort metadata use separate inferences, so updating both takes two helper requests. Reports preserve captured records, ownership and conversation-lineage guards. They may update session status, but cannot park, finish or archive the whole effort. Historical conversation is evidence, not fresh verification of files or remote services.
+Session progress and effort metadata use separate inferences, so updating both takes two helper requests. Reports preserve captured records, ownership and conversation-lineage guards. Automatic reports may update session status (`active`, `waiting`, `blocked`, `parked`, `done`, never `closed`); stream status is derived from its sessions. Historical conversation is evidence, not fresh verification of files or remote services.
 
 The menu refreshes on action or reopen, not while waiting for a selection. Discussion and unsent inputs survive closing and reopening the card in the same Pi process, not extension reload. The native Herdr card reads the same saved records; it does not run another summarizer.
 

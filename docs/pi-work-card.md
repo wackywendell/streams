@@ -16,7 +16,7 @@ A report captures Pi's active projected conversation, respecting compaction and 
 
 The helper receives captured catalog records and conversation evidence. It has no project-writing or shell tools and does not independently reread documents. Historical file contents in the conversation remain historical evidence, not a fresh verification claim. Include current names, goals and progress in its input so later reports can respect edits made through the card.
 
-Use a single background operation per Pi session. Coalesce newer evidence rather than queueing a report for every event. Before applying, check session identity, attachment and that the captured conversation remains on the active branch. Appending work does not invalidate an older captured prefix: save that report and schedule a follow-up. A rewind, branch switch or session replacement invalidates the result. Automatic updates transition `session.status` (`active`, `waiting`, `blocked`, `parked`, `done`) from conversation evidence—including when the user indicates the session is done, paused, waiting or blocked—while whole-effort `stream.status`, archive state and protected naming modes remain manual-only.
+Use a single background operation per Pi session. Coalesce newer evidence rather than queueing a report for every event. Before applying, check session identity, attachment and that the captured conversation remains on the active branch. Appending work does not invalidate an older captured prefix: save that report and schedule a follow-up. A rewind, branch switch or session replacement invalidates the result. Automatic updates transition `session.status` (`active`, `waiting`, `blocked`, `parked`, `done`; never `closed`) from conversation evidence, including when the user indicates the session is done, paused, waiting or blocked. Stream status is derived from its sessions rather than stored, while protected naming modes remain manual-only.
 
 ## Identity and initial enrollment
 
@@ -34,7 +34,7 @@ Enrollment reuses an observed workspace association rather than guessing from na
 
 Titles are short, recognizable sidebar and tab-bar handles, not descriptions: effort titles name the subject in 1–3 words (target 20 characters or fewer); session titles name the lane or role in 1–2 words, 3 at most (target 18 characters or fewer). Do not repeat effort-title words in the session title or add task verbs, generic filler or compound lists. Put descriptions in goal and state.
 
-The panel separates “Whole effort” from “This session”. The editor uses labelled fields rather than raw JSON or YAML: text editors for titles and descriptions, choices for valid statuses, and explicit archive/restore actions. IDs, ownership and membership are read-only. Finishing a contribution never implies finishing the effort.
+The panel separates Stream and Session tabs. The editor uses labelled fields rather than raw JSON: text editors for titles and descriptions, choices for valid session statuses, and an explicit Finish action on the Session tab. IDs, ownership and membership are read-only. Stream status is derived from its sessions.
 
 Changing a title or goal protects it as manual text. Show that protection beside the field, with an explicit way to return it to automatic management. Submit only dirty fields; opening or saving an unchanged form must not turn automatic text into manual text or erase compact derivatives. Background reports can refresh clean fields while dirty fields retain their captured base. Invalid or stale edits keep their input and show an actionable error.
 
@@ -42,7 +42,7 @@ The Stream tab's References manager includes every saved state. It edits names, 
 
 Each exact selector retains its original capture and unsaved input. Reopening resumes it, including after source deletion. Retained-only rows remain independently inspectable and discardable; explicit reapply refreshes the capture and reconfirms deletion or restoration. A retained manual-add form remains separate from saved rows. Discussion reference batches require an empty retained-edit map, and partial results retain every unapplied row.
 
-A direct edit is user intent. User-directed lifecycle edits are permitted, but background inference must never park, finish or archive an effort. Chat may discuss uncertainty without changing records. Separate a conversational reply, an automatic description refresh and an explicitly requested user edit; do not treat every chat turn as permission for management changes.
+A direct edit is user intent. User-directed session status edits are permitted, while automatic reports may set `session.status` to `active`, `waiting`, `blocked`, `parked`, or `done` (never `closed`). Chat may discuss uncertainty without changing records. Separate a conversational reply, an automatic description refresh and an explicitly requested user edit; do not treat every chat turn as permission for management changes.
 
 Closing the panel does not discard its unsent input or discussion. Reopening restores it for that native Pi conversation and catalog within the same process; extension reload does not. Menus refresh on action or reopen rather than pushing updates while a selection is open. Opening the panel alone neither starts a model request nor modifies the catalog. Only explicitly submitted edits or discussion run its agent.
 

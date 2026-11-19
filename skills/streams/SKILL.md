@@ -1,6 +1,6 @@
 ---
 name: streams
-description: "Manage durable Streams work records and session progress. Use for work status, catalog discovery, initial attachment, reporting/checkpoint, field and reference edits, archive/restore, or opening and resuming recorded work."
+description: "Manage durable Streams work records and session progress. Use for work status, catalog discovery, initial attachment, reporting/checkpoint, field and reference edits, or opening and resuming recorded work."
 metadata:
   short-description: Manage durable work and contributions
 ---
@@ -11,10 +11,10 @@ Streams records whole efforts separately from their sessions. Read the relevant 
 
 ## Record semantics
 
-- A stream has a stable ID, title, optional goal, status, repositories and references. A missing goal is null, not placeholder text.
+- A stream has a stable ID, title, optional goal, repositories and references. A missing goal is null, not placeholder text. Stream status is derived from its sessions (`active > blocked > waiting > parked > done > closed`, or `active` when empty) and is not stored or edited directly.
 - Each session belongs to one stream and host. Its concise title names its contribution; `recap` describes its scope and achievements, `state` its current moment (displayed as Status), and `remaining` its unfinished work. Each has a matching `_short` form: prefer 1–2 words and fewer than 20 characters, never 25 or more. Recap changes only with the scope or main outcome; state changes on most reports.
-- Status is `active`, `waiting`, `blocked`, `parked` or `done`. Archive controls visibility independently. Neither closes running agents or workspaces.
-- Agents may report their own progress and session status. Parking, finishing or archiving the whole effort requires user direction. An explicit request is approval; do not ask for a redundant confirmation.
+- Session status is `active`, `blocked`, `waiting`, `parked`, `done` or `closed`. Marking work `done` does not close running agents or workspaces.
+- Automatic reports may update session progress and session status (`active`, `blocked`, `waiting`, `parked` or `done`, never `closed`). Setting `closed` on a session requires explicit user direction or `streams tidy`. An explicit request is approval; do not ask for a redundant confirmation.
 - Manual title/goal modes protect text from automatic refinement. Change a mode to automatic only when requested. Do not change scope while improving wording.
 - Plans, decisions and substantial drafts belong in project documents linked from the stream. Keep progress concise rather than copying those documents into records.
 - Record edit times are not verification times. Historical conversation and file contents do not establish that a branch, PR or document is still current.
@@ -39,7 +39,7 @@ Both local-only and Git catalogs require explicit `streams init`. If setup is mi
 | Attach an existing conversation | `streams session attach STREAM_ID --harness pi --session-id NATIVE_ID --title "Contribution"` |
 | Inspect a contribution | `streams session show SESSION_RECORD_ID --json` |
 | Make an explicit session edit | `streams session update SESSION_RECORD_ID --status done` |
-| Hide or restore work | `streams archive STREAM_ID` / `streams restore STREAM_ID` |
+| Close stale open sessions | `streams tidy` |
 | Open or reuse a workspace | `streams open STREAM_ID` |
 | Resume a recorded conversation | `streams resume STREAM_ID --session SESSION_RECORD_ID` |
 | Publish pending local work | `streams sync --json` |

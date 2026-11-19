@@ -63,10 +63,9 @@ Preview carries its catalog, action and request as separate fields. Enrollment
 and apply carry their domain request object, not serialized stdin.
 Sync is simply `{"kind":"sync"}`, without an event or scheduling policy.
 `lifecycle` takes `"action": "resume" | "park"` and transitions the addressed Pi
-Session between `parked`/`closed` and `active` (reopening a `closed` Stream when
-`resume` activates the Session), returning `{"session_changed": bool,
-"stream_changed": bool, "saves": [...], "session": ..., "completion_error"?: ...}`
-and emitting save notifications when records change.
+Session between `parked`/`closed` and `active` (skipping `done` Sessions),
+returning `{"session_changed": bool, "saves": [...], "session": ...}` and
+emitting save notifications when the Session changes.
 `{"kind":"list_streams"}` returns `{"streams": [...], "unreadable": [...]}`:
 every Stream the catalog listing could read, and each record file it could not
 decode as `{"kind": "host" | "stream" | "session", "host": string, "path": string,
