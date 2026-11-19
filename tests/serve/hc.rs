@@ -351,7 +351,7 @@ fn registration_failure_does_not_gate_catalog_or_retry() {
 }
 
 #[test]
-fn hc_enrollment_and_apply_bind_space_route_terminal_project_name_and_emit_save_notices() {
+fn hc_enrollment_binds_space_and_apply_only_notifies() {
     use streams::integration::WorkScope;
     let f = Fixture::new();
     let (saved, _) = f.capture();
@@ -875,25 +875,48 @@ fn hc_noop_apply_skips_notice_association_and_vcs_while_writing_apply_notifies_w
     let socket = directory.path().join("s");
     let listener = UnixListener::bind(&socket).unwrap();
 
-    // Fake `git` and `jj` on PATH that record any invocation once `trap_armed` exists.
+    // Initialize a real Git repository in cwd BEFORE enrollment so enrollment binds the
+    // Session to a real Checkout (which would trigger VCS discovery on every `remember_directory`).
+    let real_git = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+        .map(|dir| dir.join("git"))
+        .find(|candidate| candidate.is_file())
+        .expect("git executable on PATH");
+    let init = std::process::Command::new(&real_git)
+        .args(["init", "--quiet"])
+        .current_dir(f.directory.path())
+        .status()
+        .unwrap();
+    assert!(init.success(), "git init failed");
+
+    // Fake `git` and `jj` on PATH: delegate `git` to the real binary during enrollment,
+    // then log and fail once `trap_armed` exists.
     let trap_bin = directory.path().join("bin");
     fs::create_dir_all(&trap_bin).unwrap();
     let trap_armed = directory.path().join("trap_armed");
     let vcs_log = directory.path().join("vcs.log");
-    for tool in ["git", "jj"] {
-        let script = trap_bin.join(tool);
-        fs::write(
-            &script,
-            format!(
-                "#!/bin/sh\nif [ -f \"{}\" ]; then echo \"{} $*\" >> \"{}\"; exit 99; fi\nexit 1\n",
-                trap_armed.display(),
-                tool,
-                vcs_log.display()
-            ),
-        )
-        .unwrap();
-        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    let git_script = trap_bin.join("git");
+    fs::write(
+        &git_script,
+        format!(
+            "#!/bin/sh\nif [ -f \"{}\" ]; then echo \"git $*\" >> \"{}\"; exit 99; fi\nexec \"{}\" \"$@\"\n",
+            trap_armed.display(),
+            vcs_log.display(),
+            real_git.display(),
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&git_script, fs::Permissions::from_mode(0o755)).unwrap();
+    let jj_script = trap_bin.join("jj");
+    fs::write(
+        &jj_script,
+        format!(
+            "#!/bin/sh\nif [ -f \"{}\" ]; then echo \"jj $*\" >> \"{}\"; exit 99; fi\nexit 1\n",
+            trap_armed.display(),
+            vcs_log.display(),
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&jj_script, fs::Permissions::from_mode(0o755)).unwrap();
 
     let work_for_server = expected_work;
     let notice_key_for_server = expected_notice_key;
@@ -1023,8 +1046,20 @@ fn hc_noop_apply_skips_notice_association_and_vcs_while_writing_apply_notifies_w
     assert_eq!(resp2["outcome"]["status"], "success");
     let enrolled_session = resp2["outcome"]["result"]["session"].clone();
 
-    // Place a `.git` marker in cwd and arm the VCS trap before every Apply.
-    fs::create_dir_all(f.directory.path().join(".git")).unwrap();
+    // Verify enrollment actually bound the Session to the Git checkout, then arm the VCS trap
+    // before every Apply.
+    let session_dir = f.ok(
+        &[
+            "session",
+            "directory",
+            enrolled_session["id"].as_str().unwrap(),
+        ],
+        None,
+    );
+    assert!(
+        session_dir["directory"]["checkout_id"].is_string(),
+        "enrollment must bind the Git checkout so remember_directory would invoke VCS: {session_dir}"
+    );
     fs::write(&trap_armed, "armed").unwrap();
 
     // No-op Apply (same title, no changes): no view frame, no hc notice/association, no VCS.

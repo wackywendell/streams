@@ -360,10 +360,9 @@ impl Server {
                 if pi_context.is_none() {
                     return Err(CliError::message("hc Pi request context is unavailable"));
                 }
-                let (output, opened) =
-                    controllers
-                        .hc
-                        .request(self, &app, &request, stopping, &cancelled)?;
+                let (output, opened) = controllers
+                    .hc
+                    .request(self, &app, &request, stopping, &cancelled)?;
                 opened_for_locator = Some(opened);
                 return Ok(output);
             }
