@@ -19,7 +19,7 @@ const { defaults } = await load('settings');
 const { default: extension } = await load('index');
 const stream = {id:'effort',title:'Work',title_mode:'manual',goal:'Original goal',goal_short:'Old goal',goal_mode:'automatic',owner:{host_id:'host'},revision:1,updated_at_ms:0,repositories:{},references:[]};
 const session = {id:sessionId('host','pi','native'),host_id:'host',revision:1,updated_at_ms:0,membership_epoch:0,stream_id:'effort',harness:'pi',harness_session_id:'native',title:'Lane',title_mode:'automatic',status:'active',state:'Original state',state_short:'Old state',remaining:'Next',checkout:null};
-const context = () => withPatchSchemas(structuredClone({catalog_source:'source',host_id:'host',stream,session,sessions:[session],title_defaults:{stream:'automatic',session:'automatic'}}));
+const context = () => withPatchSchemas(structuredClone({catalog_source:'source',host_id:'host',stream,session,title_defaults:{stream:'automatic',session:'automatic'}}));
 const response = args => ({role:'assistant',api:'openai-responses',provider:'test',model:'model',timestamp:1,stopReason:'toolUse',usage:{input:0,output:0,cacheRead:0,cacheWrite:0,totalTokens:0,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}},content:[{type:'toolCall',id:'record',name:'record_card',arguments:args}]});
 function fixture() {
  const dir = mkdtempSync(join(tmpdir(),'streams-prompt-lab-')),root = join(dir,'debug');
@@ -37,7 +37,6 @@ const update = {kind:'report',force:true};
 async function project({catalog,action,request}) {
  assert.equal(action,'apply');
  const target = catalog[request.kind];Object.assign(target,request.changes);
- if (request.kind==='session') catalog.sessions = catalog.sessions.map(s=>s.id===target.id&&s.host_id===target.host_id?structuredClone(target):s);
  return {catalog,receipt:{save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}},simulated:true}};
 }
 test('pure payload construction and strict parsing share schemas without mutating frozen inputs',()=>{
@@ -60,7 +59,7 @@ test('session reset payload keeps captured empty and unavailable hints',()=>{
  catalog.document_locations.length=0;assert.equal(visible.document_locations.length,1);
 });
 test('enrollment accepts only title proposals and optional effort goals',()=>{
- const catalog=context();catalog.session=null;catalog.sessions=[];
+ const catalog=context();catalog.session=null;
  const request={type:'enroll',catalog,messages:[]},payload=buildInferencePayload(request);
  for(const answer of [
   {meaningful:false},
@@ -88,16 +87,14 @@ test('enrollment accepts only title proposals and optional effort goals',()=>{
  }
 });
 test('stream preparation uses only the addressed contribution without claiming a complete roster',()=>{
- const catalog=context(),sibling={...session,id:'sibling',title:'Other lane',state:'Independent contribution'};
- catalog.sessions=[{...catalog.session,state:'Stale target'},sibling];catalog.session.state='Latest target';
+ const catalog=context();
+ catalog.session.state='Latest target';
  const request={type:'stream',catalog,messages:[{role:'user',content:'Rename this effort to my local task',timestamp:1}]},before=structuredClone(request);
  const payload=buildInferencePayload(request),sent=JSON.parse(payload.messages.at(-1).content);
  assert.equal(payload.messages.length,1);assert.deepEqual(Object.keys(sent.catalog),['stream','sessions']);
  assert.deepEqual(sent.catalog.sessions,[catalog.session]);assert.deepEqual(sent.catalog.stream,catalog.stream);
- assert.doesNotMatch(JSON.stringify(payload),/Rename this effort to my local task|Stale target/);
+ assert.doesNotMatch(JSON.stringify(payload),/Rename this effort to my local task/);
  assert.deepEqual(request,before);
- catalog.sessions=[sibling];
- assert.deepEqual(JSON.parse(buildInferencePayload(request).messages[0].content).catalog.sessions,[catalog.session]);
 });
 test('report prompts separate Session progress and reference proposals from Stream metadata',()=>{
  for(const [kind,label] of [['stream','Stream'],['session','Session']]) for(const manual of [false,true]) {
@@ -251,7 +248,7 @@ test('capture uses the exact current-session leaf, preserving evidence projectio
 });
 test('capture retains unavailable foreign sessions and unknown openness rather than dropping them',()=>{
  const f=fixture();try {
-  const sample=structuredClone(f.inventory.samples[0]);sample.host_id='foreign';sample.native_session_id='remote';sample.catalog.session={...session,id:sessionId('foreign','pi','remote'),host_id:'foreign',harness_session_id:'remote'};sample.catalog.sessions=[sample.catalog.session];sample.catalog.stream.owner.host_id='foreign';sample.open=null;sample.locations=[];sample.transcript_file=null;sample.unavailable='foreign host';f.inventory.samples.push(sample);
+  const sample=structuredClone(f.inventory.samples[0]);sample.host_id='foreign';sample.native_session_id='remote';sample.catalog.session={...session,id:sessionId('foreign','pi','remote'),host_id:'foreign',harness_session_id:'remote'};sample.catalog.stream.owner.host_id='foreign';sample.open=null;sample.locations=[];sample.transcript_file=null;sample.unavailable='foreign host';f.inventory.samples.push(sample);
   f.inventory.topology_error='Herdr unavailable';
   const {capture}=captureSessions(f.inventory,f.root);
   assert.equal(capture.samples.length,2);assert.equal(capture.samples[1].unavailable,'foreign host');assert.equal(capture.samples[1].open,null);
@@ -294,7 +291,7 @@ test('per-task failures preserve earlier simulated saves, raw cross-target args 
 });
 test('reset on an uncarded sample is skipped with the refusal notice, not reported completed',async()=>{
  const f=fixture();try {
-  Object.assign(f.inventory.samples[0].catalog,{session:null,sessions:[]});
+  Object.assign(f.inventory.samples[0].catalog,{session:null});
   const {capture}=captureSessions(f.inventory,f.root);
   const {run,directory}=await replayCapture(capture,f.root,runtime(()=>assert.fail('no model')),model,{kind:'reset',target:'all',auto:false},()=>assert.fail('no preview'),new AbortController().signal);
   assert.equal(run.samples[0].status,'skipped');assert.deepEqual(run.samples[0].tasks,[]);
@@ -420,7 +417,7 @@ test('real preview child applies live derivative-clearing and reconciliation rul
 });
 test('real enrollment preview feeds later helpers with deterministic private working-copy identities',async t=>{
  const f=fixture();try {
-  Object.assign(f.inventory.samples[0].catalog,{stream:null,session:null,sessions:[]});
+  Object.assign(f.inventory.samples[0].catalog,{stream:null,session:null});
   const {capture}=captureSessions(f.inventory,f.root),client=childCli(f.dir);t.after(()=>client.stop());
   const rt=runtime(async(_model,payload)=>{
    const request=JSON.parse(payload.messages.at(-1).content);

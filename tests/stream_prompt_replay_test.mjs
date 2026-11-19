@@ -23,7 +23,7 @@ const stream = {id:'effort', title:'Work', title_mode:'automatic', goal:'Old goa
 const session = {id:sessionId('host','pi','native'),host_id:'host',revision:1,updated_at_ms:0,membership_epoch:0,stream_id:'effort',harness:'pi',harness_session_id:'native',title:'Lane',title_mode:'automatic',status:'active',state:'Old state',state_short:'Old',remaining:'Old remaining',checkout:null};
 const catalog = native => {
  const card = {...session,id:sessionId('host','pi',native),harness_session_id:native};
- return withPatchSchemas(structuredClone({catalog_source:'frozen-source',host_id:'host',stream,session:card,sessions:[card],title_defaults:{stream:'automatic',session:'automatic'}}));
+ return withPatchSchemas(structuredClone({catalog_source:'frozen-source',host_id:'host',stream,session:card,title_defaults:{stream:'automatic',session:'automatic'}}));
 };
 const response = args => ({role:'assistant',content:[{type:'toolCall',id:'call',name:'record_card',arguments:args}],api:'fake',provider:'fake',model:'chosen',stopReason:'toolUse',timestamp:0});
 const runtime = generate => ({model:{...model,id:'not-selected'}, modelRegistry:{find:(provider,id)=>provider===model.provider && id===model.id?model:undefined,complete:async(selected,payload,options)=>{assert.equal(selected.id,'chosen');return generate(payload,options);}}});
@@ -48,10 +48,9 @@ function previewFixture(onRequest=()=>{}) {
   const next = structuredClone(input.catalog), request=input.request;
   if(input.action==='apply') {
    Object.assign(next[request.kind],request.changes);
-   if(request.kind==='session') next.sessions = next.sessions.map(card=>card.id===next.session.id?structuredClone(next.session):card);
   } else {
    next.stream ??= {...structuredClone(stream),...request.stream};
-   next.session = {...structuredClone(session),...request.session,id:sessionId('host',request.harness,request.harness_session_id),harness_session_id:request.harness_session_id};next.sessions=[structuredClone(next.session)];
+   next.session = {...structuredClone(session),...request.session,id:sessionId('host',request.harness,request.harness_session_id),harness_session_id:request.harness_session_id};
   }
   return {catalog:withPatchSchemas(next),receipt:{save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}},simulated:true}};
  };
@@ -146,7 +145,7 @@ test('partial reference replay completes with attention and full receipt, withou
 }));
 test('unattached trials simulate enrollment before ordered reporting and keep unavailable samples listed',async()=>temporary(async root=>{
  const {inventory}=setup(root,['native','missing']);
- const base=inventory.samples[0].catalog;base.stream=null;base.session=null;base.sessions=[];
+ const base=inventory.samples[0].catalog;base.stream=null;base.session=null;
  inventory.target={kind:'workspace',id:'workspace',title:'Workspace'};
  inventory.samples[1].unavailable='Transcript unavailable';inventory.samples[1].transcript_file=null;
  const {capture}=captureSessions(inventory,join(root,'enrollment'));const tasks=[],writes=[];
@@ -248,7 +247,6 @@ test('foreign samples use the local catalog host, round-trip, and stay unavailab
  const {inventory}=setup(root);const foreign=inventory.samples[0];
  foreign.host_id='remote';foreign.catalog.stream.owner.host_id='remote';
  Object.assign(foreign.catalog.session,{host_id:'remote',id:sessionId('remote','pi',foreign.native_session_id)});
- foreign.catalog.sessions=[foreign.catalog.session];
  foreign.transcript_file=null;foreign.unavailable='Transcript belongs to another host';
  const validated=parseCaptureInventory(JSON.parse(JSON.stringify(inventory)));
  const {capture}=captureSessions(validated,join(root,'foreign'));
@@ -359,7 +357,7 @@ for(const kind of ['snapshot','helper']) test(`failed ${kind} writes leave no da
 
 test('unattached reset is skipped with its notice and zero inference or preview calls',async()=>temporary(async root=>{
  const {inventory}=setup(root);inventory.target={kind:'workspace',id:'workspace',title:'Workspace'};
- Object.assign(inventory.samples[0].catalog,{session:null,stream:null,sessions:[]});
+ Object.assign(inventory.samples[0].catalog,{session:null,stream:null});
  const {capture}=captureSessions(inventory,join(root,'reset'));
  const {run}=await replayCapture(capture,join(root,'reset'),runtime(()=>assert.fail('reset inference')),model,{kind:'reset',target:'all',auto:true},()=>assert.fail('reset preview'),new AbortController().signal);
  assert.equal(run.samples[0].status,'skipped');assert.equal(run.samples[0].tasks.length,0);

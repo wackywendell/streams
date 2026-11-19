@@ -48,7 +48,6 @@ pub struct RecordContext {
     pub stream: Option<Stream>,
     pub stream_status: Option<Status>,
     pub session: Option<Session>,
-    pub sessions: Vec<Session>,
 }
 
 /// The wire form of a context also carries `patch_schemas`, what an agent may change in
@@ -155,7 +154,6 @@ pub fn record_context(
         catalog_source: catalog_source.into(),
         host_id: host.into(),
         title_defaults,
-        sessions: session.iter().cloned().collect(),
         stream,
         stream_status,
         session,

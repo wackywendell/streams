@@ -591,8 +591,7 @@ impl Controller {
                         .locations()?
                         .remember_transcript(&stream.id, &session.id, path)?;
                 }
-                pass.context.session = Some(session.clone());
-                pass.context.sessions = vec![session];
+                pass.context.session = Some(session);
                 let stream_id = stream.id.clone();
                 pass.context.stream = Some(stream);
                 self.view.desired_pi_name = pass

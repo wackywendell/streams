@@ -19,7 +19,7 @@ function fixture(contextState={generation:0}) {
    const session=id,child={session,stops:0,requests:[],stop(){this.stops++;return this.closing?.promise??Promise.resolve();},async run(request){
     this.requests.push(request);
     if(this.reply)await this.reply.promise;
-    return {status:'success',result:request.kind==='sync'?{local:'unchanged',sharing:'local-only',domain:null}:{catalog_source:session,host_id:'host',stream:null,session:null,sessions:[],title_defaults:{stream:'automatic',session:'automatic'},patch_schemas:{}}};
+    return {status:'success',result:request.kind==='sync'?{local:'unchanged',sharing:'local-only',domain:null}:{catalog_source:session,host_id:'host',stream:null,session:null,title_defaults:{stream:'automatic',session:'automatic'},patch_schemas:{}}};
    }};
    children.push(child);return child;
   }});

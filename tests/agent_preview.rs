@@ -24,14 +24,13 @@ fn context() -> Value {
     let stream = record_to_data(&Record::Stream(stream));
     let session = record_to_data(&Record::Session(session));
     json!({"catalog_source":"physical-source","host_id":"host","title_defaults":TitleDefaults::default(),
-        "stream":stream,"session":session,"sessions":[session],"checkouts":[],
+        "stream":stream,"session":session,"checkouts":[],
         "document_locations":[]})
 }
 fn empty() -> Value {
     let mut value = context();
     value["stream"] = Value::Null;
     value["session"] = Value::Null;
-    value["sessions"] = json!([]);
     value
 }
 fn enrollment() -> Value {
@@ -150,7 +149,6 @@ fn reference_preview_partial_correction_and_whole_refusal_keep_domain_rows() {
     reject(&changed_context, "apply", &request);
     // User references do not need a Session in either the request or the snapshot.
     captured["session"] = Value::Null;
-    captured["sessions"] = json!([]);
     assert_eq!(
         project(&captured, "apply", &request)["receipt"]["save"]["domain"]["outcome"],
         "changes"
@@ -186,7 +184,6 @@ fn reference_preview_session_revisit_and_automatic_restoration_are_receipted() {
     assert_eq!(records(&result["catalog"]), captured);
     let mut revisited = captured.clone();
     revisited["session"]["membership_epoch"] = json!(2);
-    revisited["sessions"] = json!([revisited["session"]]);
     let result = project(&revisited, "apply", &request);
     assert_eq!(
         result["receipt"]["save"]["domain"]["conflicts"],
@@ -365,10 +362,6 @@ fn v2_enrollment_and_follow_on_edits_use_addressed_records_without_storage_or_au
     );
     let second = project(&first["catalog"], "apply", &request);
     assert_eq!(second["catalog"]["session"]["state_short"], "Ready");
-    assert_eq!(
-        second["catalog"]["sessions"],
-        json!([second["catalog"]["session"]])
-    );
     let request = update(
         &second["catalog"],
         "stream",
@@ -388,7 +381,6 @@ fn v2_enrollment_and_follow_on_edits_use_addressed_records_without_storage_or_au
 fn current_membership_history_is_preserved_without_loading_past_streams() {
     let mut capture = context();
     capture["session"]["membership_epoch"] = json!(3);
-    capture["sessions"] = json!([capture["session"]]);
     let source = envelope(
         &capture,
         "apply",
@@ -405,10 +397,6 @@ fn current_membership_history_is_preserved_without_loading_past_streams() {
     assert_eq!(source, original);
     assert_eq!(result["catalog"]["session"]["remaining"], "Next");
     assert_eq!(result["catalog"]["session"]["membership_epoch"], json!(3));
-    assert_eq!(
-        result["catalog"]["sessions"],
-        json!([result["catalog"]["session"]])
-    );
     assert_eq!(result["catalog"]["checkouts"], capture["checkouts"]);
 }
 
@@ -507,16 +495,9 @@ fn preview_does_not_invent_creation_retry_evidence_or_publication() {
     let mut request = enrollment();
     let mut uncarded = context();
     uncarded["session"] = Value::Null;
-    uncarded["sessions"] = json!([]);
     reject(&uncarded, "enroll", &request);
     request["stream_id"] = json!("effort");
-    assert_eq!(
-        project(&uncarded, "enroll", &request)["catalog"]["sessions"]
-            .as_array()
-            .unwrap()
-            .len(),
-        1
-    );
+    assert!(project(&uncarded, "enroll", &request)["catalog"]["session"].is_object());
 }
 
 #[test]
@@ -525,7 +506,6 @@ fn foreign_records_are_not_preview_write_authority_and_enrollment_never_imperson
     capture["stream"]["owner"]["host_id"] = json!("foreign");
     capture["session"]["host_id"] = json!("foreign");
     capture["session"]["id"] = json!(Session::id_for("foreign", "pi", "native"));
-    capture["sessions"] = json!([capture["session"]]);
     let error = preview(
         &envelope(
             &capture,
@@ -556,7 +536,6 @@ fn context_fields_relationships_and_addressed_session_shape_are_strict() {
         "host_id",
         "stream",
         "session",
-        "sessions",
         "title_defaults",
     ] {
         let mut broken = capture.clone();
@@ -571,23 +550,14 @@ fn context_fields_relationships_and_addressed_session_shape_are_strict() {
     broken["sessions"] = json!([]);
     invalid.push(broken);
     let mut broken = capture.clone();
-    broken["sessions"] = json!([capture["session"], capture["session"]]);
-    invalid.push(broken);
-    let mut broken = capture.clone();
-    broken["sessions"][0]["state"] = json!("Not exact");
-    invalid.push(broken);
-    let mut broken = capture.clone();
     broken["session"]["stream_id"] = json!("elsewhere");
-    broken["sessions"] = json!([broken["session"]]);
     invalid.push(broken);
     let mut broken = capture.clone();
     broken["session"]["id"] = json!("legacy-native-alias");
-    broken["sessions"] = json!([broken["session"]]);
     invalid.push(broken);
     let mut broken = capture.clone();
     broken["session"]["checkout"] =
         json!({"repository":"repo","ref":"main","directory_within_checkout":"."});
-    broken["sessions"] = json!([broken["session"]]);
     invalid.push(broken);
     for broken in invalid {
         reject(&broken, "apply", &request);

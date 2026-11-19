@@ -188,7 +188,7 @@ test('shutdown closes stdin, drains accepted responses and never restarts',async
 });
 test('Pi lifecycle shares one child, branch events do no native work and switching closes the old pipe',async t=>{
  const handlers=new Map(),tools=new Map(),instances=[];
- const catalog=withPatchSchemas({catalog_source:'catalog',host_id:'host',title_defaults:{stream:'automatic',session:'automatic'},stream:null,session:null,sessions:[]});
+ const catalog=withPatchSchemas({catalog_source:'catalog',host_id:'host',title_defaults:{stream:'automatic',session:'automatic'},stream:null,session:null});
  const ctx={cwd:'/tmp',hasUI:false,sessionManager:{getSessionId:()=> 'first'},ui:{setStatus:()=>{},notify:assert.fail}};
  register({on:(name,handler)=>handlers.set(name,handler),registerCommand:()=>{},registerTool:value=>tools.set(value.name,value),appendEntry:()=>{}},
   {settings:{...defaults,reporting:'manual',enrollment:'manual'},child:()=>{const f=fixture(t);instances.push(f);return f.manager;}});

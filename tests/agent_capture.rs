@@ -210,13 +210,6 @@ fn exact_capture_reads_only_its_target_and_observed_native_keys_at_zero_or_64_un
             sample(&result, "owner")["catalog"]["session"]["id"],
             session.id
         );
-        assert_eq!(
-            sample(&result, "owner")["catalog"]["sessions"]
-                .as_array()
-                .unwrap()
-                .len(),
-            1
-        );
         assert!(
             sample(&result, "owner")["catalog"]
                 .get("authority")
@@ -282,7 +275,6 @@ fn unbound_workspace_samples_exact_native_keys_and_never_attaches_them() {
     let lane = sample(&result, "unenrolled");
     assert!(lane["catalog"]["session"].is_null());
     assert!(lane["catalog"]["stream"].is_null());
-    assert_eq!(lane["catalog"]["sessions"], json!([]));
     assert!(lane["transcript_file"].is_null());
     assert!(
         lane["unavailable"]

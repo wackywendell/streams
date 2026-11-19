@@ -137,7 +137,7 @@ test('shutdown cancels a pending native request but never sends close or final c
 });
 function paneFixture(t,options={}) {
  const handlers=new Map(),commands=new Map(),tools=new Map(),steps=[],inferences=[],enrollments=[];
- const catalog=withPatchSchemas({catalog_source:'source-a',host_id:'host',stream:null,session:null,sessions:[],title_defaults:{stream:'automatic',session:'automatic'}});
+ const catalog=withPatchSchemas({catalog_source:'source-a',host_id:'host',stream:null,session:null,title_defaults:{stream:'automatic',session:'automatic'}});
  let preference='inherit',unreadable=options.unreadable??null;
  const f=fixture(t,{empty:options.empty,run:async request=>{
   if(options.realClient && ['context','sync','enroll','apply'].includes(request.kind))return {status:'success',result:await cli[request.kind](request.request)};
@@ -156,7 +156,6 @@ function paneFixture(t,options={}) {
  const attach=()=>{
   catalog.stream={id:'effort',title:'Work',title_mode:'automatic',goal:'Goal',goal_mode:'automatic',goal_short:null,owner:{host_id:'host'},revision:1,updated_at_ms:0,repositories:{},references:[]};
   catalog.session={id:f.id,host_id:'host',revision:1,updated_at_ms:0,membership_epoch:0,stream_id:'effort',harness:'pi',harness_session_id:f.id,title:'Contribution',title_mode:'automatic',status:'active',recap:'',state:'',state_short:null,remaining:'',checkout:null};
-  catalog.sessions=[catalog.session];
  };
  if(options.attached)attach();
  const cli={

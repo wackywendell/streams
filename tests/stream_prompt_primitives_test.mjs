@@ -16,7 +16,7 @@ function fixture(){
  const directory=mkdtempSync(join(tmpdir(),'streams-primitives-')),root=join(directory,'debug'),manager=SessionManager.inMemory(directory,{id:'native'});
  const stream={id:'effort',title:'Work',title_mode:'automatic',goal:'Goal',goal_short:null,goal_mode:'automatic',owner:{host_id:'host'},revision:1,updated_at_ms:0,repositories:{},references:[]};
  const session={id:sessionId('host','pi','native'),host_id:'host',revision:1,updated_at_ms:0,membership_epoch:0,stream_id:'effort',harness:'pi',harness_session_id:'native',title:'Lane',title_mode:'automatic',status:'active',state:'Before',state_short:null,remaining:'Next',checkout:null};
- const catalog=withPatchSchemas({catalog_source:'source',host_id:'host',stream,session,sessions:[session],title_defaults:{stream:'automatic',session:'automatic'}});
+ const catalog=withPatchSchemas({catalog_source:'source',host_id:'host',stream,session,title_defaults:{stream:'automatic',session:'automatic'}});
  manager.appendMessage({role:'user',content:[{type:'text',text:'Synthetic evidence'},{type:'image',data:'AA==',mimeType:'image/png'}],timestamp:1});
  manager.appendMessage({...response({}),content:[{type:'toolCall',id:'call',name:'bash',arguments:{command:'synthetic'}}]});
  manager.appendMessage({role:'toolResult',toolCallId:'call',toolName:'bash',content:[{type:'text',text:'Full tool evidence'}],isError:false,timestamp:2});

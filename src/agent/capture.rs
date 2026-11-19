@@ -169,7 +169,6 @@ fn sample_context(
                 title_defaults: defaults,
                 stream,
                 stream_status,
-                sessions: session.iter().cloned().collect(),
                 session,
             })
         })

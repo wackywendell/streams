@@ -17,7 +17,7 @@ const session = {
   revision:1, updated_at_ms:0,
 };
 const context = () => withPatchSchemas(structuredClone({
-  catalog_source:'source', host_id:'host', title_defaults:{stream:'automatic', session:'manual'}, stream, session, sessions:[session],
+  catalog_source:'source', host_id:'host', title_defaults:{stream:'automatic', session:'manual'}, stream, session,
 }));
 
 test('record-local context requires fresh title defaults and rejects Authority-bearing packets', () => {
@@ -41,24 +41,21 @@ test('context requires patch schemas for exactly its records', () => {
     const invalid = structuredClone({...context()}); change(invalid);
     assert.throws(() => parseLocalContext(invalid), /Invalid local catalog context/);
   }
-  const unattached = structuredClone({...context(), session:null, sessions:[]});
+  const unattached = structuredClone({...context(), session:null});
   assert.throws(() => parseLocalContext(unattached), /Invalid local catalog context/, 'no schemas for a missing Session');
   delete unattached.patch_schemas.session;
   assert.doesNotThrow(() => parseLocalContext(unattached));
 });
 
-test('addressed context rejects a roster and inconsistent host, membership or native identity', () => {
+test('addressed context rejects inconsistent host or membership', () => {
   for (const change of [
     value => value.stream.owner.host_id = 'foreign',
     value => value.session.stream_id = 'other',
-    value => value.sessions.push({...value.session, id:'sibling'}),
-    value => value.sessions = [],
-    value => value.sessions[0] = {...value.session, harness_session_id:'other-native'},
   ]) {
     const invalid = context(); change(invalid);
     assert.throws(() => parseLocalContext(invalid), /Inconsistent addressed catalog context/);
   }
-  assert.doesNotThrow(() => parseLocalContext(withPatchSchemas({...context(), session:null, sessions:[]})));
+  assert.doesNotThrow(() => parseLocalContext(withPatchSchemas({...context(), session:null})));
   const foreign = context();
   foreign.stream.owner.host_id = foreign.session.host_id = 'foreign';
   assert.doesNotThrow(() => parseLocalContext(foreign));

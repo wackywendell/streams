@@ -36,7 +36,6 @@ struct ContextWire {
     stream: Option<Value>,
     #[serde(deserialize_with = "required_nullable")]
     session: Option<Value>,
-    sessions: Vec<Value>,
     // Presentation data is preserved, not interpreted as evidence or capabilities.
     #[serde(default, rename = "checkouts")]
     _checkouts: Option<Value>,
@@ -74,16 +73,6 @@ impl Snapshot {
                 Ok::<_, ValidationError>(session)
             })
             .transpose()?;
-        let sessions = wire
-            .sessions
-            .iter()
-            .map(session_from_data)
-            .collect::<Result<Vec<_>, _>>()?;
-        if sessions.as_slice() != session.as_slice() {
-            return Err(ValidationError::new(
-                "catalog.sessions must contain only the exact addressed Session",
-            ));
-        }
         if let Some(session) = &session
             && stream.as_ref().is_none_or(|stream| {
                 stream.id != session.stream_id || stream.owner_host_id != session.host_id
@@ -126,10 +115,6 @@ impl Snapshot {
         self.original
             .insert("stream_status".into(), json!(stream_status));
         self.original.insert("session".into(), json!(self.session));
-        self.original.insert(
-            "sessions".into(),
-            json!(self.session.iter().collect::<Vec<_>>()),
-        );
         self.original.insert(
             "patch_schemas".into(),
             json!(PatchSchemas::new(

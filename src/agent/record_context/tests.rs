@@ -91,8 +91,7 @@ fn addressed_context_reads_only_this_session_and_stream_despite_unrelated_growth
             context.title_defaults.session,
             crate::model::NamingMode::Automatic
         );
-        assert_eq!(context.session, Some(session.clone()));
-        assert_eq!(context.sessions, [session]);
+        assert_eq!(context.session, Some(session));
         assert_eq!(context.stream.unwrap().id, "effort");
         let session_address = RecordAddress::new(
             "host",
@@ -196,7 +195,7 @@ fn completed_format_missing_session_is_unenrolled_but_a_missing_relationship_is_
             )
         })
         .unwrap();
-    assert!(context.session.is_none() && context.stream.is_none() && context.sessions.is_empty());
+    assert!(context.session.is_none() && context.stream.is_none());
     assert!(
         serde_json::to_value(context.wire())
             .unwrap()

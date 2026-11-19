@@ -15,7 +15,7 @@ const evidence = manager => structuredClone({messages:manager.buildSessionProjec
 function fixture() {
  const dir=mkdtempSync(join(tmpdir(),'streams-capture-full-')),root=join(dir,'debug'),source=join(dir,'source.jsonl');
  const manager=SessionManager.inMemory(dir,{id:'native'});
- const inventory={version:1,host_id:'host',streams:[],workspaces:[],topology_error:null,target:{kind:'workspace',id:'workspace',title:'Work'},samples:[{host_id:'host',harness:'pi',native_session_id:'native',open:false,locations:[],catalog:{catalog_source:'source',host_id:'host',stream:null,session:null,sessions:[],title_defaults:{stream:'automatic',session:'automatic'},patch_schemas:{}},transcript_file:source,unavailable:null}]};
+ const inventory={version:1,host_id:'host',streams:[],workspaces:[],topology_error:null,target:{kind:'workspace',id:'workspace',title:'Work'},samples:[{host_id:'host',harness:'pi',native_session_id:'native',open:false,locations:[],catalog:{catalog_source:'source',host_id:'host',stream:null,session:null,title_defaults:{stream:'automatic',session:'automatic'},patch_schemas:{}},transcript_file:source,unavailable:null}]};
  return {dir,root,source,manager,inventory,dispose:()=>rmSync(dir,{recursive:true,force:true})};
 }
 test('unresolved native observations preserve every supported harness without hiding healthy samples',()=>{

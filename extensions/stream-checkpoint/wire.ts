@@ -48,7 +48,7 @@ export type FieldRow = {field: string; schema: FieldSchema; short: boolean};
 export type PatchSchemas = Partial<Record<'stream' | 'session', Record<'automatic' | 'user', FieldRow[]>>>;
 export type LocalContext = {
   catalog_source: string; host_id: string; stream: StreamWire | null; stream_status?: Status | null;
-  session: SessionWire | null; sessions: SessionWire[]; title_defaults: TitleDefaults;
+  session: SessionWire | null; title_defaults: TitleDefaults;
   patch_schemas: PatchSchemas; checkouts?: unknown[]; document_locations?: unknown[];
 };
 
@@ -174,17 +174,12 @@ export function parseLocalContext(value: unknown): LocalContext & Record<string,
     || !identity(value.catalog_source) || !identity(value.host_id)
     || !(value.stream === null || isStream(value.stream)) || !(value.session === null || isSession(value.session))
     || !(value.stream_status === undefined || (value.stream === null ? value.stream_status === null : status(value.stream_status)))
-    || !Array.isArray(value.sessions) || !value.sessions.every(isSession)
     || !object(value.title_defaults) || !mode(value.title_defaults.stream) || !mode(value.title_defaults.session)
     || !patchSchemas(value.patch_schemas, value)) {
     throw new Error('Invalid local catalog context');
   }
   const session = value.session;
-  if (session && (!value.stream || session.host_id !== value.stream.owner.host_id || session.stream_id !== value.stream.id)
-    || value.sessions.length !== (session ? 1 : 0)
-    || value.sessions.some(row => row.id !== session?.id || row.host_id !== session?.host_id
-      || row.harness !== session?.harness || row.harness_session_id !== session?.harness_session_id
-      || row.stream_id !== session?.stream_id)) {
+  if (session && (!value.stream || session.host_id !== value.stream.owner.host_id || session.stream_id !== value.stream.id)) {
     throw new Error('Inconsistent addressed catalog context');
   }
   return value as LocalContext & Record<string, unknown>;

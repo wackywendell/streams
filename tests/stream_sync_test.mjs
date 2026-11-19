@@ -18,7 +18,7 @@ const local = {local:'unchanged',sharing:'local-only',domain:null};
 function context() {
  const stream={id:'effort',title:'Manual',title_mode:'manual',goal:'Manual goal',goal_short:null,goal_mode:'manual',owner:{host_id:'host'},revision:1,updated_at_ms:0,repositories:{},references:[]};
  const session={id:'session',host_id:'host',revision:1,updated_at_ms:0,membership_epoch:0,stream_id:'effort',harness:'pi',harness_session_id:'native',title:'Session',title_mode:'automatic',status:'active',state:'',state_short:null,remaining:'',checkout:null};
- return withPatchSchemas({catalog_source:'source',host_id:'host',stream,session,sessions:[session],title_defaults:{stream:'automatic',session:'automatic'}});
+ return withPatchSchemas({catalog_source:'source',host_id:'host',stream,session,title_defaults:{stream:'automatic',session:'automatic'}});
 }
 function hooks(cli, infer = () => assert.fail('lifecycle sync must not invoke a model'), settings = defaults) {
  const handlers=new Map(), warnings=[], entries=[];
@@ -68,7 +68,7 @@ test('a late lifecycle failure cannot notify or append into a replacement conver
 test('shutdown cancels in-flight inference, never adds a summary, and retains sync errors',async()=>{
  let entered, signal, models=0, syncs=0;
  const started=new Promise(resolve=>entered=resolve);
- const f=hooks({context:async()=>({...context(),stream:null,session:null,sessions:[]}),sync:async()=>{if(++syncs===2)throw Error('offline or timed out');return local;}},async(_ctx,_request,abort)=>{models++;signal=abort;entered();return new Promise(resolve=>abort.addEventListener('abort',()=>resolve({meaningful:false}),{once:true}));});
+ const f=hooks({context:async()=>({...context(),stream:null,session:null}),sync:async()=>{if(++syncs===2)throw Error('offline or timed out');return local;}},async(_ctx,_request,abort)=>{models++;signal=abort;entered();return new Promise(resolve=>abort.addEventListener('abort',()=>resolve({meaningful:false}),{once:true}));});
  await f.handlers.get('session_start')({},f.ctx);
  f.handlers.get('agent_end')({messages:[{role:'assistant',stopReason:'stop'}]},f.ctx);await started;
  await f.handlers.get('session_shutdown')({reason:'reload'},{...f.ctx});

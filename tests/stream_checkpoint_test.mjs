@@ -59,7 +59,7 @@ function makeSnapshotActions(initial = defaultConfigSnapshot(), hook) {
 }
 const stream = { id:'effort', title:'Work', title_mode:'manual', goal:'Goal', goal_mode:'automatic', goal_short:null, owner:{host_id:'host'},revision:1,updated_at_ms:0, repositories:{repo:{url:'https://example.com/repo'}}, references:[] };
 const session = { id:sessionId('host','pi','native'), host_id:'host',revision:1,updated_at_ms:0,membership_epoch:0,stream_id:'effort', harness:'pi', harness_session_id:'native', title:'Session', title_mode:'automatic', status:'active', state:'', state_short:null, remaining:'', checkout:null };
-const context = () => withPatchSchemas(structuredClone({catalog_source:'source-a',host_id:'host',stream,session,sessions:[session],title_defaults:{stream:'automatic',session:'automatic'}}));
+const context = () => withPatchSchemas(structuredClone({catalog_source:'source-a',host_id:'host',stream,session,title_defaults:{stream:'automatic',session:'automatic'}}));
 const localSync = async () => ({local:'unchanged',sharing:'local-only',domain:null});
 
 test('typed catalog apply retains accepted warning receipts without retry or target rewriting', async () => {
@@ -130,7 +130,7 @@ test('catalog list accepts only the current object contract',async()=>{
 test('the chooser offers readable Streams and names this host\'s records it could not read',async()=>{
  const repair='Run /streams reset in a conversation on that Stream, or delete or fix the file.';
  const unreadable=[{kind:'stream',host:'host',path:'hosts/host/streams/broken.yaml',cause:'unknown field `archived`',repair},{kind:'host',host:'other',path:'hosts/other/host.yaml',cause:'newer format',repair:'Delete or fix the file.'}];
- const calls=[];const cli={context:async()=>({...context(),stream:null,session:null,sessions:[]}),list:async()=>({streams:[stream],unreadable})};
+ const calls=[];const cli={context:async()=>({...context(),stream:null,session:null}),list:async()=>({streams:[stream],unreadable})};
  const ctx={hasUI:true,sessionManager:{getSessionId:()=> 'native'},ui:{select:async(title,rows)=>{calls.push({title,rows});return 'Cancel';}}};
  assert.equal((await chooseInitial(ctx,cli,{},()=>assert.fail())).status,'cancelled');
  assert.deepEqual(calls[0].rows,['effort · Work','Create…','Cancel']);
@@ -167,7 +167,7 @@ const proposedDocument={name:'Design',purpose:'Guide the work',role:'brief',stat
 test('live-shaped reference proposals save without a portable checkout or a ref',async()=>{
  const cwd=mkdtempSync(join(tmpdir(),'streams-docs-no-ref-')),cli=childCli(cwd,'native');
  try {
-  let catalog=context();catalog.session.id=sessionId('host','pi','native');catalog.sessions=[structuredClone(catalog.session)];catalog.stream.goal_mode='manual';
+  let catalog=context();catalog.session.id=sessionId('host','pi','native');catalog.stream.goal_mode='manual';
   catalog.checkouts=[{repository_url:'https://example.com/repo',checkout_id:'checkout',root:'/repo'}];catalog.document_locations=[];
   const initial=structuredClone(catalog),requests=[],candidate=structuredClone(proposedDocument);delete candidate.target.ref;let generations=0;
   const saved=await runReport({kind:'report',force:true},{
@@ -248,7 +248,7 @@ test('a refused reference save keeps the progress receipt and does not retry or 
 
 test('a reset discards an unreadable card before capturing it and enrolls again when the Session was discarded',async()=>{
  const reason='Session record hosts/host/conversations/s.yaml is unreadable: missing field `title`';
- const attached=context(),catalog={...context(),stream:null,session:null,sessions:[]},events=[],notices=[];
+ const attached=context(),catalog={...context(),stream:null,session:null},events=[],notices=[];
  const saved=await runReport({kind:'reset',target:'all',auto:false},{signal:new AbortController().signal,automaticEnrollment:false,
   discardUnreadable:async()=>{events.push('discard');return {session:reason,stream:null};},
   capture:async()=>{events.push('capture');return {native:'native',cwd:'/repo',evidence:{messages:[],leafId:null},catalog:structuredClone(catalog),valid:()=>true,attached:async()=>true};},
@@ -315,7 +315,7 @@ test('reference construction preserves exact captured values and actor boundarie
  assert.equal(automaticReferenceRequest(catalog,undefined,'unused'),undefined);assert.equal(automaticReferenceRequest(catalog,[],'unused'),undefined);
  const auto=automaticReferenceRequest(catalog,[value],'replay:capture:0');assert.deepEqual(auto.inputs,[{kind:'session',record:catalog.session}]);
  catalog.session.state='Changed';catalog.stream.title='Changed';assert.equal(auto.inputs[0].record.state,'');assert.equal(auto.before.title,'Work');
- const noSession=context();noSession.session=null;noSession.sessions=[];
+ const noSession=context();noSession.session=null;
  assert.deepEqual(referenceRequest(noSession,'user',[{key,desired:value}],'id').inputs,[]);
  const edit=new ReferenceEdit(context(),key,'user',value),receipts=[];let calls=0;
  const refused={save:{local:'unchanged',domain:{outcome:'conflict',reference_results:[{key,action:'add',outcome:'conflict',reason:'reference already exists'}]}}};
@@ -378,7 +378,7 @@ test('response cadence coalesces and accepts old prefixes then follows up; captu
 });
 test('reporting reads an outside attachment without restarting the Pi extension',async()=>{
  const f=reporterFixture({enrollment:'manual'}),bound=context();
- Object.assign(f.catalog,{stream:null,session:null,sessions:[]});
+ Object.assign(f.catalog,{stream:null,session:null});
  f.reporter.response(f.ctx);await f.reporter.idle();
  assert.deepEqual(f.inferences,[]);assert.deepEqual(f.saves,[]);
  Object.assign(f.catalog,bound);
@@ -815,7 +815,6 @@ test('session reset omits existing descriptions; stream reset retains contributi
  for(const type of ['session','stream'])for(const sessionMode of ['automatic','manual'])for(const titleMode of ['automatic','manual'])for(const goalMode of ['automatic','manual']) {
   const catalog=context();Object.assign(catalog.session,{title_mode:sessionMode,state:'Prior state',state_short:'Prior short state',remaining:'Prior remaining'});
   Object.assign(catalog.stream,{title_mode:titleMode,goal_mode:goalMode,goal_short:'Prior short goal'});
-  catalog.sessions=[structuredClone(catalog.session),{...catalog.session,host_id:'other-host'},{...catalog.session,id:'sibling'}];
   const before=structuredClone(catalog);let payload;
   const ctx={model:{contextWindow:100000},modelRegistry:{complete:async(_model,value)=>{payload=value;return {stopReason:'toolUse',content:[{type:'toolCall',name:'record_card',arguments:{changes:{}}}]};}}};
   await infer(ctx,{type,catalog,messages:[],reset:true},new AbortController().signal);
@@ -842,7 +841,7 @@ test('ordinary inference retains the visible generated text and has no reset ins
  const catalog=context();catalog.session.state='Prior state';catalog.session.state_short='Prior short';let sent;
  const ctx={model:{contextWindow:100000},modelRegistry:{complete:async(_model,payload)=>{sent=JSON.parse(payload.messages.at(-1).content);return {stopReason:'toolUse',content:[{type:'toolCall',name:'record_card',arguments:{changes:{}}}]};}}};
  await infer(ctx,{type:'session',catalog,messages:[]},new AbortController().signal);
- assert.deepEqual(sent.catalog.session,catalog.session);assert.deepEqual(sent.catalog.sessions,catalog.sessions);assert.equal(sent.reset,undefined);
+ assert.deepEqual(sent.catalog.session,catalog.session);assert.equal(Object.hasOwn(sent.catalog,'sessions'),false);assert.equal(sent.reset,undefined);
 });
 test('actual local Pi runtime registry and projected compaction work without live credentials',async()=>{
  const root=mkdtempSync(join(tmpdir(),'pi-runtime-card-'));
@@ -862,7 +861,7 @@ test('reference requests carry captured intent and leave its validation to Rust'
  const saved={...structuredClone(proposedDocument)};Object.assign(saved.target,{commit:'known',source_session_id:'origin'});catalog.stream.references=[saved];
  const auto=structuredClone(proposedDocument);delete auto.target.ref;
  const req=automaticReferenceRequest(catalog,[auto],'op');assert.equal(req.inputs[0].record.id,catalog.session.id);assert.deepEqual(req.changes.reference_changes,[{key,desired:auto}]);
- const user=referenceRequest({...catalog,session:null,sessions:[]},'user',[{key,desired:null}],'delete');assert.deepEqual(user.inputs,[]);assert.deepEqual(user.changes.reference_changes,[{key,desired:null}]);
+ const user=referenceRequest({...catalog,session:null},'user',[{key,desired:null}],'delete');assert.deepEqual(user.inputs,[]);assert.deepEqual(user.changes.reference_changes,[{key,desired:null}]);
  const edit=new ReferenceEdit(catalog,key,'user',{...saved,purpose:'retained'});assert.equal(edit.dirty,true);assert.equal(referenceSelector(key),JSON.stringify(['document',key.repository_url,key.path]));
 });
 test('discussion composer preserves unsent text across close/reopen without model requests',async()=>{
@@ -871,7 +870,7 @@ test('discussion composer preserves unsent text across close/reopen without mode
  await compose(ctx,state);assert.equal(state.input,'unsent question');await compose(ctx,state);assert.match(renders[1],/unsent question/);assert.match(renders[1],/Previous discussion/);
 });
 test('enrollment rejects the recorded session.status response before any catalog write',async()=>{
- const catalog=context();catalog.session=null;catalog.sessions=[];
+ const catalog=context();catalog.session=null;
  const raw={content:[{type:'toolCall',name:'record_card',arguments:{meaningful:true,session:{title:'EGM Docs',status:'active'}}}]};
  const capture={native:'native',cwd:'/fixture',catalog,evidence:{messages:[],leafId:null},valid:()=>true,attached:async()=>true};
  await assert.rejects(runReport({kind:'report',force:false},{
@@ -883,8 +882,8 @@ test('enrollment rejects the recorded session.status response before any catalog
 });
 test('background enrollment waits for meaningful work and reuses associated stream before session exists',async()=>{
  for(const meaningful of [false,true]){
-  const initial=context();initial.session=null;initial.sessions=[];const requests=[],receipts=[],steps=[];
-  const f=reporterFixture();const cli={context:async()=>structuredClone(initial),enroll:async request=>{requests.push(request);initial.session=structuredClone(session);initial.sessions=[initial.session];return {stream:initial.stream,session:initial.session,saves:[{target:'session:native',save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}}],completion_error:'Publication offline'};},apply:()=>assert.fail('partial enrollment must stop before reports')};
+  const initial=context();initial.session=null;const requests=[],receipts=[],steps=[];
+  const f=reporterFixture();const cli={context:async()=>structuredClone(initial),enroll:async request=>{requests.push(request);initial.session=structuredClone(session);return {stream:initial.stream,session:initial.session,saves:[{target:'session:native',save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}}],completion_error:'Publication offline'};},apply:()=>assert.fail('partial enrollment must stop before reports')};
   const reporter=new Reporter({cli:()=>cli,settings:()=>({...defaults}),infer:async(_ctx,req)=>{steps.push(req.type);return {meaningful,session:{title:'Contribution'},stream:{title:'Must not replace associated effort'}};},notice:text=>assert.fail(text),receipt:value=>receipts.push(value)});
   reporter.response(f.ctx);await reporter.idle();assert.equal(requests.length,meaningful?1:0);
   if(meaningful){assert.equal(requests[0].stream_id,'effort');assert.equal(requests[0].stream,undefined);assert.equal(receipts[0].completion_error,'Publication offline');assert.deepEqual(steps,['enroll']);}
@@ -911,7 +910,7 @@ test('bound chooser never lists or switches, and live card offers no switch/crea
 });
 for(const intent of ['reply','automatic','user'])test(`card discussion ${intent} has typed intent and no redundant confirmation`,async()=>{
  const handlers=new Map(),receipts=[],writes=[],history=[];let openPanel,submitted=false;const menu=['Discuss…','Close'];
- const visible=context();visible.sessions.push({...session,id:'sibling',host_id:'other-host'});
+ const visible=context();
  const cli={sync:localSync,context:async()=>structuredClone(visible),apply:async req=>{writes.push(req);return {save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}};}};
  const edit=intent==='reply'?undefined:{kind:'stream',actor:intent,changes:intent==='user'?{goal_mode:'manual'}:{goal:'Current descriptive goal'}};
  registerWorkCard({on:(name,fn)=>handlers.set(name,fn),registerCommand:(_name,options)=>{openPanel=ctx=>options.handler('card',ctx);},registerTool:()=>{},registerShortcut:()=>assert.fail('no shortcuts'),appendEntry:(type,value)=>receipts.push({type,value})},{settings:{...defaults,reporting:'manual'},cli,infer:async(_ctx,req)=>{assert.equal(req.type,'discussion');assert.match(req.discussion.at(-1).text,/card question/);return {reply:'Discussed without assuming extra intent',...(edit?{edit}:{})};}});
@@ -1129,7 +1128,7 @@ for(const [args,instructions] of [['report',undefined],['  report  Keep the cave
  assert.ok(f.requests.every(req=>req.instructions===instructions));assert.equal(f.dialogs.length,0);assert.equal(f.notices.length,0);
 });
 for(const args of ['', '  \t ', 'card', ' card '])for(const attached of [false,true])test(`streams ${JSON.stringify(args)} only views the ${attached?'attached':'unattached'} card`,async()=>{
- const catalog=context();if(!attached){catalog.stream=null;catalog.session=null;catalog.sessions=[];}
+ const catalog=context();if(!attached){catalog.stream=null;catalog.session=null;}
  const f=commandFixture({catalog});await f.run(args);
  assert.deepEqual(f.requests,[]);assert.deepEqual(f.writes,[]);assert.deepEqual(f.receipts,[]);assert.deepEqual(f.activity,[]);
  assert.equal(f.dialogs.length,attached?1:0);
@@ -1148,7 +1147,7 @@ test('streams reset dispatches fresh inference for both targets without changing
 });
 test('streams reset on an unattached conversation warns without inference, writes or enrollment',async()=>{
  for(const associated of [true,false]) {
-  const catalog=context();catalog.session=null;catalog.sessions=[];if(!associated)catalog.stream=null;
+  const catalog=context();catalog.session=null;if(!associated)catalog.stream=null;
   const f=commandFixture({catalog});await f.run('reset');await until(()=>f.activity.length===2);
   assert.deepEqual(f.notices,[{text:'Streams — Reset requires an attached work card. Use /streams attach first.',level:'warning'}]);
   assert.deepEqual(f.requests,[]);assert.deepEqual(f.writes,[]);assert.deepEqual(f.receipts,[]);assert.deepEqual(f.dialogs,[]);
@@ -1239,7 +1238,7 @@ test('helper logging setting toggles in place and passes log options to reports 
  } finally {rmSync(root,{recursive:true,force:true});}
 });
 test('streams attach enrolls an initial selection but never switches a bound conversation',async()=>{
- const catalog=context();catalog.stream=null;catalog.session=null;catalog.sessions=[];
+ const catalog=context();catalog.stream=null;catalog.session=null;
  const f=commandFixture({catalog,select:(_title,rows)=>rows.find(row=>row.startsWith('effort ·'))});
  await f.run('attach');assert.equal(f.writes.length,1);assert.equal(f.writes[0].stream_id,'effort');assert.equal(f.writes[0].actor,'user');assert.equal(f.receipts.length,1);
  const dialogs=f.dialogs.length;await f.run('attach');assert.equal(f.dialogs.length,dialogs);assert.equal(f.writes.length,1);assert.deepEqual(f.requests,[]);
@@ -1271,7 +1270,7 @@ for(const inside of [true,false])test(`real checkout CLI enroll/context/guarded 
   const fresh=await cli.context('native');assert.ok(!fresh.patch_schemas.stream.automatic.some(row=>row.field==='title'));assert.deepEqual(fresh.patch_schemas,patchSchemas(fresh),'the fake patch schemas follow Rust');
   const goal=await cli.apply(editRequest(fresh,'stream',{goal:'New automatic goal'},'automatic'));assert.equal(goal.stream.title,'Human title');assert.equal(goal.stream.goal_mode,'automatic');
   await cli.enroll({version:2,catalog_source:empty.catalog_source,harness:'pi',harness_session_id:'sibling-native',stream_id:captured.stream.id,session:{title:'Sibling contribution'},actor:'user',cwd});
-  const withSibling=await cli.context('native');assert.deepEqual(withSibling.sessions,[withSibling.session]);
+  const withSibling=await cli.context('native');assert.equal(Object.hasOwn(withSibling,'sessions'),false);
   const guardedSession=editRequest(withSibling,'session',{state:'Own progress unaffected by sibling'},'automatic');
   const guardedStream=editRequest(withSibling,'stream',{goal:'Established purpose with addressed contribution'},'automatic');
   const siblingContext=await sibling.context('sibling-native');await sibling.apply(editRequest(siblingContext,'session',{state:'Changed unrelated contribution'},'user'));
@@ -1351,7 +1350,7 @@ test('fallback reference manager selects identical metadata by exact keys for ed
 test('the fake patch schemas follow Rust for every title mode, title default and goal mode',async()=>{
  const titleModes=['automatic','manual','inherit'],defaults=['automatic','manual'];
  for(const streamTitle of titleModes)for(const sessionTitle of titleModes)for(const streamDefault of defaults)for(const sessionDefault of defaults)for(const goalMode of defaults){
-  const catalog=context();Object.assign(catalog.stream,{title_mode:streamTitle,goal_mode:goalMode});catalog.session.title_mode=sessionTitle;catalog.sessions=[structuredClone(catalog.session)];
+  const catalog=context();Object.assign(catalog.stream,{title_mode:streamTitle,goal_mode:goalMode});catalog.session.title_mode=sessionTitle;
   catalog.title_defaults={stream:streamDefault,session:sessionDefault};
   const {catalog:projected}=await rustPreview({catalog,action:'apply',request:editRequest(catalog,'session',{},'user')});
   assert.deepEqual(patchSchemas(catalog),projected.patch_schemas,JSON.stringify({streamTitle,sessionTitle,streamDefault,sessionDefault,goalMode}));
@@ -1521,7 +1520,6 @@ test('trimmed projection excludes tools/thinking; full retains only complete val
 test('all session descriptions and short forms share automatic report and reset handling',async()=>{
  const catalog=context();
  Object.assign(catalog.session,{recap:'Built settings.',recap_short:'Settings',state:'Under review.',state_short:'Review',remaining:'Land settings.',remaining_short:'Land'});
- catalog.sessions=[structuredClone(catalog.session)];
  const f=commandFixture({catalog,infer:async req=>({changes:req.type==='session'?{recap:'Built settings.',state:'Review complete.',remaining:'Land settings.'}:{}})});
  await f.run('reset session');await until(()=>f.writes.length===1);
  const saved=f.writes.find(request=>request.kind==='session');
@@ -1545,7 +1543,6 @@ test('infer normalizes null remaining/state, empty nullable fields and echoed no
 });
 test('a superseded report retains its receipt without retrying inference; a later explicit reset remains possible',async()=>{
  const catalog=context(),sibling={...session,id:'sibling',harness_session_id:'sibling-native',state:'Before'};
- catalog.sessions.push(sibling);
  const receipts=[];let sessionAttempts=0;
  const f=reporterFixture();
  const cli={context:async()=>structuredClone(catalog),discardUnreadableCard:async()=>({session:null,stream:null}),apply:async req=>{
@@ -1693,7 +1690,7 @@ test('finish failures remain reachable via retained session status edit',async()
  assert.equal(confirmations,1);assert.equal(writes,1);assert.equal(state.edits.size,0);assert.deepEqual(choices,[]);
 });
 test('unenrolled Session tab has no Session actions',async()=>{
- const catalog=context();catalog.session=null;catalog.sessions=[];
+ const catalog=context();catalog.session=null;
  const ctx={sessionManager:{getSessionId:()=> 'native'},ui:{notify:assert.fail,custom:async factory=>new Promise(resolve=>{
   const component=factory({terminal:{rows:36},requestRender(){}},{fg:(_c,t)=>t,bold:t=>t},{},resolve);
   component.handleInput('3');const rendered=component.render(100).join('\n');assert.match(rendered,/Not yet enrolled/);assert.doesNotMatch(rendered,/Reset…|Finish…/);component.handleInput('\x1b');
@@ -1703,7 +1700,6 @@ test('unenrolled Session tab has no Session actions',async()=>{
 
 test('record-local v2 edits capture defaults and only the addressed automatic Stream dependency', () => {
  const captured=context();
- captured.sessions.push({...captured.session,id:'sibling',harness_session_id:'other'});
  const progress=editRequest(captured,'session',{state:'Progress'},'automatic','progress');
  const automatic=editRequest(captured,'stream',{goal:'Purpose'},'automatic','purpose');
  const manual=editRequest(captured,'stream',{goal:'User purpose'},'user','manual');

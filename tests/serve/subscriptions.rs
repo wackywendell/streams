@@ -1238,7 +1238,6 @@ fn workspace_markers_select_the_existing_stream_for_unenrolled_lifecycle_and_enr
         let context = &captured["outcome"]["result"];
         assert_eq!(context["stream"], before, "{captured}");
         assert!(context["session"].is_null());
-        assert_eq!(context["sessions"], json!([]));
         child.request(
             3,
             json!({"kind":"enroll","request":{
