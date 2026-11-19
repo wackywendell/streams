@@ -15,9 +15,12 @@ use streams::{
     agent::{ContextRequest, EnrollmentRequest, RecordContext},
     cancellation::Cancellation,
     child_protocol::{Request, ServerFrame, UiFacts},
-    frontend::herdr::{
-        HerdrClient, HerdrNativeSnapshot,
-        events::{EventFilter, EventKind, SubscriptionCancel, SubscriptionUpdate},
+    frontend::{
+        FrontendId,
+        herdr::{
+            HerdrClient, HerdrNativeSnapshot,
+            events::{EventFilter, EventKind, SubscriptionCancel, SubscriptionUpdate},
+        },
     },
     integration::LifecycleEvent,
     runtime::{
@@ -60,6 +63,7 @@ pub(super) struct Controller {
     thread: Option<JoinHandle<()>>,
     files: Option<Files>,
     control: Option<super::control::Control>,
+    catalog_source: Option<String>,
     enabled: bool,
     binding: Binding,
     view: UiFacts,
@@ -86,6 +90,7 @@ impl Controller {
             thread: None,
             files: None,
             control: None,
+            catalog_source: None,
             enabled: false,
             binding: Binding::Unobserved,
             view: UiFacts {
@@ -101,11 +106,7 @@ impl Controller {
             },
         )
     }
-    fn ensure(
-        &mut self,
-        config: &NativeCardsConfig,
-        records: &Arc<application::OpenedRecords>,
-    ) -> Result<()> {
+    fn ensure_client(&mut self, config: &NativeCardsConfig) -> Result<()> {
         if self.client.is_some() {
             return Ok(());
         }
@@ -115,24 +116,6 @@ impl Controller {
             self.stopping.clone(),
         )
         .map_err(streams::runtime::RuntimeError::from)?;
-        if self.files.is_none() {
-            self.files = Some(Files::new(records, &self.session_id, self.sender.clone())?);
-        }
-        if self.control.is_none() {
-            let preferences = self.app.conversation_card_settings(
-                records,
-                &streams::integration::ConversationId {
-                    harness: "pi".into(),
-                    native_id: self.session_id.clone(),
-                },
-            )?;
-            let control = super::control::Control::start(preferences.path(), self.sender.clone())?;
-            self.app.environment.insert(
-                "STREAMS_CARD_CONTROL_SOCKET".into(),
-                control.path().to_string_lossy().into_owned(),
-            );
-            self.control = Some(control);
-        }
         let filter = EventFilter {
             kinds: [
                 EventKind::PaneMoved,
@@ -183,8 +166,47 @@ impl Controller {
         self.client = Some(client);
         Ok(())
     }
+    /// Keep file watches and card-control socket bound to the currently opened catalog source.
+    fn ensure_catalog(&mut self, records: &Arc<application::OpenedRecords>) -> Result<bool> {
+        if self.catalog_source.as_deref() == Some(records.source_id())
+            && self.files.is_some()
+            && self.control.is_some()
+        {
+            return Ok(false);
+        }
+        self.files = None;
+        self.control = None;
+        self.catalog_source = None;
+        self.binding = Binding::Unobserved;
+        self.app.environment.remove("STREAMS_CARD_CONTROL_SOCKET");
+        let files = Files::new(records, &self.session_id, self.sender.clone())?;
+        let preferences = self.app.conversation_card_settings(
+            records,
+            &streams::integration::ConversationId {
+                harness: "pi".into(),
+                native_id: self.session_id.clone(),
+            },
+        )?;
+        let control = super::control::Control::start(preferences.path(), self.sender.clone())?;
+        self.app.environment.insert(
+            "STREAMS_CARD_CONTROL_SOCKET".into(),
+            control.path().to_string_lossy().into_owned(),
+        );
+        self.files = Some(files);
+        self.control = Some(control);
+        self.catalog_source = Some(records.source_id().to_owned());
+        Ok(true)
+    }
     fn observe(&mut self, cancelled: &AtomicBool, baseline: FileBaseline) -> Result<Pass> {
         let records = Arc::new(application::open_records(&self.app.config)?);
+        self.observe_opened(records, cancelled, baseline)
+    }
+    fn observe_opened(
+        &mut self,
+        records: Arc<application::OpenedRecords>,
+        cancelled: &AtomicBool,
+        baseline: FileBaseline,
+    ) -> Result<Pass> {
         let settings = records.settings();
         let mut config = NativeCardsConfig::from_settings(
             settings,
@@ -192,11 +214,12 @@ impl Controller {
             &self.app.cwd,
             &self.plugin_root,
         )?;
-        self.ensure(&config, &records)?;
+        self.ensure_client(&config)?;
+        let rebuilt_catalog = self.ensure_catalog(&records)?;
         if cancelled.load(Ordering::Acquire) {
             return Err(crate::cli::CliError::message("native request cancelled"));
         }
-        if matches!(baseline, FileBaseline::Required) {
+        if !rebuilt_catalog && matches!(baseline, FileBaseline::Required) {
             self.files.as_mut().unwrap().prepare()?;
         }
         let client = self
@@ -355,25 +378,20 @@ impl Controller {
             subscription.set_watched_ids(panes, tabs, workspaces);
         }
     }
-    /// Whether the frontend selection for this Pi's environment and settings is Herdr.
-    fn in_herdr(&self) -> bool {
-        self.app
-            .config
-            .load()
-            .ok()
-            .and_then(|settings| self.app.selection(settings.frontend, None).ok())
-            .is_some_and(|selection| {
-                selection.resolved == Some(streams::frontend::FrontendId::Herdr)
-            })
-    }
-    pub fn request(&mut self, request: &Request, cancelled: Arc<AtomicBool>) -> Result<Output> {
+    pub fn request(
+        &mut self,
+        request: &Request,
+        frontend: Option<FrontendId>,
+        cancelled: Arc<AtomicBool>,
+    ) -> Result<Output> {
         use streams::{child_protocol::CardTarget, config::CardMode};
+        let is_herdr = frontend == Some(FrontendId::Herdr);
         let mode = match request {
             Request::OpenCard {} => Some(CardMode::Automatic),
             Request::CloseCard {} => Some(CardMode::Manual),
             _ => None,
         }
-        .filter(|_| self.in_herdr());
+        .filter(|_| is_herdr);
         if let Some(mode) = mode {
             if cancelled.load(Ordering::Acquire) {
                 return Err(crate::cli::CliError::message("native request cancelled"));
@@ -381,20 +399,26 @@ impl Controller {
             self.app
                 .set_card_mode(&self.session_id, CardTarget::Session, mode)?;
         }
-        self.request_native(request, cancelled).map_err(|error| {
-            if let Some(mode) = mode {
-                crate::cli::CliError::message(format!(
-                    "Card preference saved as {}; native action failed: {error}",
-                    serde_json::to_string(&mode).unwrap()
-                ))
-            } else {
-                error
-            }
-        })
+        self.request_native(request, is_herdr, cancelled)
+            .map_err(|error| {
+                if let Some(mode) = mode {
+                    crate::cli::CliError::message(format!(
+                        "Card preference saved as {}; native action failed: {error}",
+                        serde_json::to_string(&mode).unwrap()
+                    ))
+                } else {
+                    error
+                }
+            })
     }
-    fn request_native(&mut self, request: &Request, cancelled: Arc<AtomicBool>) -> Result<Output> {
+    fn request_native(
+        &mut self,
+        request: &Request,
+        is_herdr: bool,
+        cancelled: Arc<AtomicBool>,
+    ) -> Result<Output> {
         self.enabled = true;
-        if !self.in_herdr() {
+        if !is_herdr {
             if matches!(request, Request::OpenCard {} | Request::CloseCard {}) {
                 return Err(crate::cli::CliError::message(
                     "native card effects require Herdr",
@@ -448,10 +472,18 @@ impl Controller {
         Ok(Output::value(result))
     }
     fn project(&mut self, cancelled: Arc<AtomicBool>, baseline: FileBaseline) -> Result<()> {
-        if !self.enabled || !self.in_herdr() {
+        if !self.enabled {
             return Ok(());
         }
-        let pass = self.observe(&cancelled, baseline)?;
+        let records = Arc::new(application::open_records(&self.app.config)?);
+        if !self
+            .app
+            .selection(records.settings().frontend.clone(), None)
+            .is_ok_and(|selection| selection.resolved == Some(FrontendId::Herdr))
+        {
+            return Ok(());
+        }
+        let pass = self.observe_opened(records, &cancelled, baseline)?;
         if pass.context.session.is_some() {
             let newly_bound = pass.newly_bound;
             let mut engine = self.engine(pass, cancelled)?;
@@ -509,9 +541,10 @@ impl Controller {
         &mut self,
         fallback: &App,
         request: Value,
+        frontend: Option<FrontendId>,
         cancelled: Arc<AtomicBool>,
     ) -> Result<Output> {
-        if !self.enabled || !self.in_herdr() {
+        if !self.enabled || frontend != Some(FrontendId::Herdr) {
             return fallback.enroll_request(request);
         }
         let mut pass = self.observe(&cancelled, FileBaseline::Required)?;

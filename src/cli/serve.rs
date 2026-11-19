@@ -287,8 +287,8 @@ impl Server {
                 return Err(CliError::message("request cancelled before dispatch"));
             }
             let app = self.app()?;
-            let hc_selected =
-                app.selection(app.config.load()?.frontend, None)?.resolved == Some(FrontendId::Hc);
+            let frontend = app.selection(app.config.load()?.frontend, None)?.resolved;
+            let hc_selected = frontend == Some(FrontendId::Hc);
             if matches!(
                 request,
                 Request::SessionStarted {}
@@ -325,12 +325,14 @@ impl Server {
                             stopping.clone(),
                         )
                     });
-                    controller.request(&request, cancelled.clone())
+                    controller.request(&request, frontend, cancelled.clone())
                 }
                 Request::Enroll { request } => {
                     let value = serde_json::Value::Object(request);
                     let output = match controller {
-                        Some(controller) => controller.enroll(&app, value, cancelled.clone()),
+                        Some(controller) => {
+                            controller.enroll(&app, value, frontend, cancelled.clone())
+                        }
                         None => app.enroll_request(value),
                     }?;
                     if hc_selected

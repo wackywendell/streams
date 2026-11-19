@@ -1524,3 +1524,98 @@ fn accepted_save_with_native_completion_failure_retains_the_result_and_warns_onc
     );
     assert_eq!(child.finish(), (0, String::new()));
 }
+
+#[test]
+fn changing_catalog_root_between_passes_rebuilds_file_watches_and_card_control() {
+    use streams::child_protocol::{Outcome, Request};
+    use streams::runtime::native_cards::{LaunchedCardContext, control};
+
+    let f = NativeFixture::new();
+    let (mut child, initial_view) = f.start();
+    assert_eq!(initial_view["view"]["desired_pi_name"], "Before");
+
+    child.request(1, json!({"kind":"open_card"}));
+    assert_eq!(child.next()["view"]["desired_pi_name"], "Before");
+    assert_eq!(child.response(1)["outcome"]["result"]["display"], "opened");
+    let open_a = f
+        .server
+        .requests()
+        .into_iter()
+        .rfind(|(method, _)| method == "plugin.pane.open")
+        .unwrap()
+        .1;
+    let launch_a: LaunchedCardContext =
+        serde_json::from_str(open_a["env"]["STREAMS_CARDS_CONTEXT"].as_str().unwrap()).unwrap();
+    let endpoint_a = launch_a.control_socket.unwrap();
+    assert!(matches!(
+        control::request(&endpoint_a, Request::CardSettings {}).unwrap(),
+        Outcome::Success { .. }
+    ));
+
+    child.request(2, json!({"kind":"close_card"}));
+    assert_eq!(child.next()["view"]["desired_pi_name"], "Before");
+    assert_eq!(child.response(2)["outcome"]["result"]["closed"], true);
+
+    // Switch catalog.root to a fresh second catalog between passes on the same live child.
+    let catalog_b = f.fixture.directory.path().join("catalog-b");
+    f.fixture.ok(
+        &["config", "set", "catalog.root", catalog_b.to_str().unwrap()],
+        None,
+    );
+    f.fixture.ok(&["init", "--sync", "none"], None);
+    let stream_b = f.fixture.ok(&["create", "Work B"], None)["stream"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let session_b = f.fixture.ok(
+        &[
+            "session",
+            "attach",
+            &stream_b,
+            "--harness",
+            "pi",
+            "--session-id",
+            &f.id,
+            "--title",
+            "In catalog B",
+        ],
+        None,
+    )["session"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    f.snapshot.lock().unwrap()["workspaces"][0]["tokens"] = json!({});
+
+    child.request(3, json!({"kind":"attach"}));
+    assert_eq!(child.next()["view"]["desired_pi_name"], "In catalog B");
+    assert_eq!(child.response(3)["outcome"]["status"], "success");
+
+    // File watch must now observe catalog B.
+    f.fixture.ok(
+        &["session", "update", &session_b, "--title", "Updated in B"],
+        None,
+    );
+    assert_eq!(child.next()["view"]["desired_pi_name"], "Updated in B");
+
+    // Card control socket must be rebuilt for catalog B and the old one retired.
+    child.request(4, json!({"kind":"open_card"}));
+    assert_eq!(child.next()["view"]["desired_pi_name"], "Updated in B");
+    assert_eq!(child.response(4)["outcome"]["result"]["display"], "opened");
+    let open_b = f
+        .server
+        .requests()
+        .into_iter()
+        .rfind(|(method, _)| method == "plugin.pane.open")
+        .unwrap()
+        .1;
+    let launch_b: LaunchedCardContext =
+        serde_json::from_str(open_b["env"]["STREAMS_CARDS_CONTEXT"].as_str().unwrap()).unwrap();
+    let endpoint_b = launch_b.control_socket.unwrap();
+    assert_ne!(endpoint_a, endpoint_b);
+    assert!(control::request(&endpoint_a, Request::CardSettings {}).is_err());
+    assert!(matches!(
+        control::request(&endpoint_b, Request::CardSettings {}).unwrap(),
+        Outcome::Success { .. }
+    ));
+    assert_eq!(child.finish(), (0, String::new()));
+}
