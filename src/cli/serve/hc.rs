@@ -49,7 +49,7 @@ pub(super) fn remember_locator(
     };
     opened
         .locations()?
-        .remember_transcript(&session.stream_id, &session.id, locator)
+        .remember_transcript(&session.id, locator)
         .map_err(|error| {
             if error.is_uncertain() {
                 CliError::message("Pi session file retention is uncertain; inspect before retrying")

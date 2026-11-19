@@ -81,9 +81,8 @@ impl Fixture {
         .unwrap();
         self.locations
             .remember(
-                "stream",
+                BindingKey::Session(&session.id),
                 self.temp.path(),
-                Some(&session.id),
                 false,
                 None,
                 None,
@@ -302,7 +301,7 @@ fn reopen_launches_one_tab_per_requested_session_without_saved_addresses() {
     let bindings: Vec<_> = [&one, &two]
         .into_iter()
         .map(|session| {
-            let path = f.locations.path(&f.stream.id, Some(&session.id));
+            let path = f.locations.path(BindingKey::Session(&session.id));
             let before = fs::metadata(&path).unwrap().ino();
             (path, before)
         })
@@ -349,7 +348,7 @@ fn remembered_directory_is_preserved_unless_the_caller_supplies_a_replacement() 
     let (session, _) = f.session("directory");
     let original = f
         .locations
-        .read(&f.stream.id, Some(&session.id))
+        .read(BindingKey::Session(&session.id))
         .unwrap()
         .unwrap();
     let new = f.temp.path().join("replacement");
@@ -360,7 +359,7 @@ fn remembered_directory_is_preserved_unless_the_caller_supplies_a_replacement() 
         .unwrap();
     assert_eq!(
         f.locations
-            .read(&f.stream.id, Some(&session.id))
+            .read(BindingKey::Session(&session.id))
             .unwrap()
             .unwrap(),
         original
@@ -370,7 +369,7 @@ fn remembered_directory_is_preserved_unless_the_caller_supplies_a_replacement() 
         .unwrap();
     assert_eq!(
         f.locations
-            .read(&f.stream.id, Some(&session.id))
+            .read(BindingKey::Session(&session.id))
             .unwrap()
             .unwrap()
             .cwd,

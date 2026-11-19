@@ -263,8 +263,20 @@ pub fn remember_directory(
     directory: &Path,
 ) -> Result<()> {
     let locations = opened.locations()?;
-    locations.remember(stream_id, directory, None, true, None, None)?;
-    let binding = locations.remember(stream_id, directory, Some(session_id), true, None, None)?;
+    locations.remember(
+        crate::runtime::BindingKey::Stream(stream_id),
+        directory,
+        true,
+        None,
+        None,
+    )?;
+    let binding = locations.remember(
+        crate::runtime::BindingKey::Session(session_id),
+        directory,
+        true,
+        None,
+        None,
+    )?;
     if let Some(checkout) = binding.checkout {
         opened
             .registry()?

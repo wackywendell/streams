@@ -13,8 +13,13 @@ pub struct SelectedConversation<'a> {
 pub use resume::ResumeCommand;
 
 use super::{
-    Result, checkouts::canonical_directory, conversations::ConversationRoots, invalid,
-    launch::SessionCommand, locations::DirectoryBindings, native_markers::stream_tokens,
+    Result,
+    checkouts::canonical_directory,
+    conversations::ConversationRoots,
+    invalid,
+    launch::SessionCommand,
+    locations::{BindingKey, DirectoryBindings},
+    native_markers::stream_tokens,
 };
 use crate::{
     frontend::{
@@ -110,12 +115,12 @@ impl<'a> WorkspaceRuntime<'a> {
             return canonical_directory(path);
         }
         let selected = session
-            .map(|session| self.locations.read(&stream.id, Some(&session.id)))
+            .map(|session| self.locations.read(BindingKey::Session(&session.id)))
             .transpose()?
             .flatten();
         let saved = match selected {
             Some(saved) => Some(saved),
-            None => self.locations.read(&stream.id, None)?,
+            None => self.locations.read(BindingKey::Stream(&stream.id))?,
         };
         saved.map(|binding| binding.cwd).ok_or_else(|| {
             invalid(format!(
@@ -131,21 +136,18 @@ impl<'a> WorkspaceRuntime<'a> {
         cwd: &Path,
         if_missing: bool,
     ) -> Result<()> {
-        self.locations.remember(
-            &stream.id,
-            cwd,
-            session.map(|session| session.id.as_str()),
-            if_missing,
-            None,
-            None,
-        )?;
+        let key = match session {
+            Some(session) => BindingKey::Session(&session.id),
+            None => BindingKey::Stream(&stream.id),
+        };
+        self.locations.remember(key, cwd, if_missing, None, None)?;
         Ok(())
     }
     /// Each Session's saved transcript locator, in order.
-    pub fn locators(&self, stream: &Stream, sessions: &[Session]) -> Result<Vec<Option<PathBuf>>> {
+    pub fn locators(&self, sessions: &[Session]) -> Result<Vec<Option<PathBuf>>> {
         sessions
             .iter()
-            .map(|session| self.locations.transcript_file(&stream.id, &session.id))
+            .map(|session| self.locations.transcript_file(&session.id))
             .collect()
     }
     fn reference(&self, adapter: &dyn WorkspaceFrontend, workspace: &str) -> NativeRef {

@@ -1110,7 +1110,7 @@ fn hc_open_plan_uses_only_selected_work_and_positive_observations() {
         },
         model::{Session, Stream},
         runtime::{
-            CheckoutRegistry, DirectoryBindings,
+            BindingKey, CheckoutRegistry, DirectoryBindings,
             conversations::ConversationRoots,
             hc::{HcPresentation, RegisteredSources},
             workspace::{SelectedConversation, WorkspaceRuntime},
@@ -1135,7 +1135,7 @@ fn hc_open_plan_uses_only_selected_work_and_positive_observations() {
     let running = session("running");
     let absent = session("absent");
     locations
-        .remember("work", &cwd, None, true, None, None)
+        .remember(BindingKey::Stream("work"), &cwd, true, None, None)
         .unwrap();
     let transcript = cwd.join("saved.jsonl");
     fs::write(&transcript, "{\"type\":\"session\",\"id\":\"absent\"}\n").unwrap();

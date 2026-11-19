@@ -117,7 +117,7 @@ fn sdk_locator_is_verified_after_enrollment_and_on_a_later_read() {
         state.root(),
         CheckoutRegistry::new(config.checkout_state_dir(), host).unwrap(),
     );
-    assert_eq!(bindings.transcript_file(stream, session_id).unwrap(), None);
+    assert_eq!(bindings.transcript_file(session_id).unwrap(), None);
     fs::write(&file, "{\"type\":\"session\",\"id\":\"wrong\"}\n").unwrap();
     child.send(json!({"type":"request","id":2,"request":{"kind":"enroll","request":enrollment},"pi_context":pi}));
     let wrong = child.response(2);
@@ -127,14 +127,14 @@ fn sdk_locator_is_verified_after_enrollment_and_on_a_later_read() {
         wrong["outcome"]["warnings"],
         json!(["Pi session file could not be verified"])
     );
-    assert_eq!(bindings.transcript_file(stream, session_id).unwrap(), None);
+    assert_eq!(bindings.transcript_file(session_id).unwrap(), None);
     fs::write(&file, "{\"type\":\"session\",\"id\":\"pi-session\"}\n").unwrap();
     child.send(json!({"type":"request","id":3,"request":{"kind":"list_streams"},"pi_context":pi}));
     assert_eq!(child.response(3)["outcome"]["status"], "success");
     child.send(json!({"type":"request","id":4,"request":{"kind":"enroll","request":enrollment},"pi_context":context()}));
     assert_eq!(child.response(4)["outcome"]["status"], "success");
     assert_eq!(
-        bindings.transcript_file(stream, session_id).unwrap(),
+        bindings.transcript_file(session_id).unwrap(),
         Some(file.canonicalize().unwrap())
     );
     let replacement = home.join("replacement.jsonl");
@@ -146,7 +146,7 @@ fn sdk_locator_is_verified_after_enrollment_and_on_a_later_read() {
         "saved_with_warnings"
     );
     assert_eq!(
-        bindings.transcript_file(stream, session_id).unwrap(),
+        bindings.transcript_file(session_id).unwrap(),
         Some(file.canonicalize().unwrap())
     );
     fs::write(
@@ -159,7 +159,7 @@ fn sdk_locator_is_verified_after_enrollment_and_on_a_later_read() {
     child.send(json!({"type":"request","id":7,"request":{"kind":"enroll","request":enrollment},"pi_context":context()}));
     assert_eq!(child.response(7)["outcome"]["status"], "success");
     assert_eq!(
-        bindings.transcript_file(stream, session_id).unwrap(),
+        bindings.transcript_file(session_id).unwrap(),
         Some(replacement.canonicalize().unwrap())
     );
     assert_eq!(child.finish(), (0, String::new()));

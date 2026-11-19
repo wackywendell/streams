@@ -56,6 +56,13 @@ struct Current {
     transcript_file: Option<PathBuf>,
 }
 
+/// Identifies either a Stream-wide default binding or a Session-specific binding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BindingKey<'a> {
+    Stream(&'a str),
+    Session(&'a str),
+}
+
 /// Saved cwd intent scoped by Session identity, or by Stream for Stream-only defaults.
 #[derive(Debug, Clone)]
 pub struct DirectoryBindings {
@@ -73,24 +80,18 @@ impl DirectoryBindings {
     }
 
     /// Return the current hashed binding path, without creating a directory.
-    pub fn path(&self, stream_id: &str, session_id: Option<&str>) -> PathBuf {
-        if let Some(session_id) = session_id {
-            return self
+    pub fn path(&self, key: BindingKey<'_>) -> PathBuf {
+        match key {
+            BindingKey::Session(session_id) => self
                 .state_dir
                 .join("session-directories")
-                .join(format!("{}.json", digest(session_id.as_bytes())));
+                .join(format!("{}.json", digest(session_id.as_bytes()))),
+            BindingKey::Stream(stream_id) => self.stream_path(stream_id),
         }
-        self.stream_path(stream_id, None)
     }
 
-    fn stream_path(&self, stream_id: &str, session_id: Option<&str>) -> PathBuf {
-        let key = format!(
-            "[{}, {}]",
-            crate::codec::ascii_json(stream_id),
-            session_id
-                .map(crate::codec::ascii_json)
-                .unwrap_or_else(|| "null".into())
-        );
+    fn stream_path(&self, stream_id: &str) -> PathBuf {
+        let key = format!("[{}, null]", crate::codec::ascii_json(stream_id));
         self.state_dir
             .join("directories")
             .join(format!("{}.json", digest(key.as_bytes())))
@@ -126,22 +127,24 @@ impl DirectoryBindings {
         Ok(())
     }
 
-    fn selection(&self, stream_id: &str, session_id: Option<&str>) -> Result<Option<Current>> {
-        text(stream_id)?;
-        if let Some(id) = session_id {
-            text(id)?;
+    fn selection(&self, key: BindingKey<'_>) -> Result<Option<Current>> {
+        match key {
+            BindingKey::Stream(id) | BindingKey::Session(id) => text(id)?,
         }
-        let path = self.path(stream_id, session_id);
+        let path = self.path(key);
         let Some(selection) = read_json::<Current>(&path)? else {
             return Ok(None);
         };
         Self::validate(&selection)?;
-        if selection.session_id.as_deref() != session_id
-            || match session_id {
-                Some(_) => selection.stream_id.is_some(),
-                None => selection.stream_id.as_deref() != Some(stream_id),
+        let matches = match key {
+            BindingKey::Stream(stream_id) => {
+                selection.stream_id.as_deref() == Some(stream_id) && selection.session_id.is_none()
             }
-        {
+            BindingKey::Session(session_id) => {
+                selection.stream_id.is_none() && selection.session_id.as_deref() == Some(session_id)
+            }
+        };
+        if !matches {
             return Err(invalid(format!(
                 "directory binding identity or format mismatch; {}",
                 crate::codec::RESET_HINT
@@ -183,12 +186,8 @@ impl DirectoryBindings {
 
     /// Resolve current intent, revalidating moved checkout roots and relative cwd containment.
     /// Missing/corrupt targets are errors, never permission to pick another checkout.
-    pub fn read(
-        &self,
-        stream_id: &str,
-        session_id: Option<&str>,
-    ) -> Result<Option<DirectoryBinding>> {
-        self.selection(stream_id, session_id)?
+    pub fn read(&self, key: BindingKey<'_>) -> Result<Option<DirectoryBinding>> {
+        self.selection(key)?
             .map(|selection| self.resolve(selection))
             .transpose()
     }
@@ -196,11 +195,10 @@ impl DirectoryBindings {
     /// Resolve display hints using the same operation-local checkout observations as its documents.
     pub fn read_with_checkouts(
         &self,
-        stream_id: &str,
-        session_id: Option<&str>,
+        key: BindingKey<'_>,
         checkouts: &mut CheckoutSnapshot<'_>,
     ) -> Result<Option<DirectoryBinding>> {
-        self.selection(stream_id, session_id)?
+        self.selection(key)?
             .map(|selection| {
                 Self::resolve_with(selection, |id, within| checkouts.directory(id, within))
             })
@@ -208,9 +206,9 @@ impl DirectoryBindings {
     }
 
     /// Read only the saved locator; checking a running Session needs no cwd or registry access.
-    pub fn transcript_file(&self, stream_id: &str, session_id: &str) -> Result<Option<PathBuf>> {
+    pub fn transcript_file(&self, session_id: &str) -> Result<Option<PathBuf>> {
         Ok(self
-            .selection(stream_id, Some(session_id))?
+            .selection(BindingKey::Session(session_id))?
             .and_then(|current| current.transcript_file))
     }
 
@@ -218,24 +216,22 @@ impl DirectoryBindings {
     /// A normal replacement may repair a missing target, but never corrupt saved intent.
     pub fn remember(
         &self,
-        stream_id: &str,
+        key: BindingKey<'_>,
         cwd: &Path,
-        session_id: Option<&str>,
         if_missing: bool,
         repository_url: Option<&str>,
         checkout_id: Option<&str>,
     ) -> Result<DirectoryBinding> {
-        text(stream_id)?;
-        if let Some(id) = session_id {
-            text(id)?;
+        match key {
+            BindingKey::Stream(id) | BindingKey::Session(id) => text(id)?,
         }
         if let Some(url) = repository_url {
             text(url)?;
         }
         let directory = canonical_directory(cwd)?;
-        let path = self.path(stream_id, session_id);
+        let path = self.path(key);
         let _lock = lock(&path.with_extension("lock"))?;
-        let previous = self.selection(stream_id, session_id)?;
+        let previous = self.selection(key)?;
         if if_missing && let Some(previous) = &previous {
             return self.resolve(previous.clone());
         }
@@ -276,10 +272,14 @@ impl DirectoryBindings {
             }
             Location::Directory { cwd: directory }
         };
+        let (stream_id, session_id) = match key {
+            BindingKey::Stream(id) => (Some(id.to_owned()), None),
+            BindingKey::Session(id) => (None, Some(id.to_owned())),
+        };
         let current = Current {
             version: 4,
-            stream_id: session_id.is_none().then(|| stream_id.to_owned()),
-            session_id: session_id.map(str::to_owned),
+            stream_id,
+            session_id,
             location,
             transcript_file: previous.and_then(|previous| previous.transcript_file),
         };
@@ -290,27 +290,35 @@ impl DirectoryBindings {
     }
 
     /// Save the caller's verified locator without changing directory intent or recording liveness.
-    pub fn remember_transcript(
+    pub fn remember_transcript(&self, session_id: &str, transcript_file: &Path) -> Result<()> {
+        if !self.remember_transcript_if_bound(session_id, transcript_file)? {
+            return Err(invalid(
+                "select the Session directory before saving its transcript locator",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Save the caller's verified locator if the Session already has a directory binding.
+    pub fn remember_transcript_if_bound(
         &self,
-        stream_id: &str,
         session_id: &str,
         transcript_file: &Path,
-    ) -> Result<()> {
-        text(stream_id)?;
+    ) -> Result<bool> {
         text(session_id)?;
         absolute(transcript_file, "transcript file")?;
-        let path = self.path(stream_id, Some(session_id));
+        let key = BindingKey::Session(session_id);
+        let path = self.path(key);
         let _lock = lock(&path.with_extension("lock"))?;
-        let mut current = self
-            .selection(stream_id, Some(session_id))?
-            .ok_or_else(|| {
-                invalid("select the Session directory before saving its transcript locator")
-            })?;
+        let Some(mut current) = self.selection(key)? else {
+            return Ok(false);
+        };
         if current.transcript_file.as_deref() == Some(transcript_file) {
-            return Ok(());
+            return Ok(true);
         }
         current.transcript_file = Some(transcript_file.to_owned());
-        write_json(&path, &current)
+        write_json(&path, &current)?;
+        Ok(true)
     }
 }
 

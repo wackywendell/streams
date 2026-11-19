@@ -149,7 +149,7 @@ fn enrollment_retried_after_a_move_refuses_without_writing_or_retargeting_direct
     assert!(first.directory_selected);
     let session = first.session.unwrap();
     let binding = f.opened.locations().unwrap();
-    let selected_path = binding.path("a", Some(&session.id));
+    let selected_path = binding.path(streams::runtime::BindingKey::Session(&session.id));
     let selected = fs::read(&selected_path).unwrap();
     f.put(Stream::new("b", "B", None, f.opened.host().as_str()).unwrap());
     application::move_session_observed(
@@ -173,7 +173,12 @@ fn enrollment_retried_after_a_move_refuses_without_writing_or_retargeting_direct
         "{error}"
     );
     assert_eq!(fs::read(selected_path).unwrap(), selected);
-    assert!(binding.read("b", None).unwrap().is_none());
+    assert!(
+        binding
+            .read(streams::runtime::BindingKey::Stream("b"))
+            .unwrap()
+            .is_none()
+    );
     let events = f.events.lock().unwrap().clone();
     assert!(
         !events
@@ -188,7 +193,11 @@ fn directory_failure_preserves_accepted_records_without_claiming_local_completio
     let f = Fixture::new();
     let request = f.request(None);
     let effort = streams::agent::effort_id_for(f.opened.host().as_str(), Harness::Pi, NATIVE);
-    let directory_path = f.opened.locations().unwrap().path(&effort, None);
+    let directory_path = f
+        .opened
+        .locations()
+        .unwrap()
+        .path(streams::runtime::BindingKey::Stream(&effort));
     let blocked = directory_path.parent().unwrap();
     fs::create_dir_all(blocked.parent().unwrap()).unwrap();
     fs::write(blocked, "not a directory").unwrap();

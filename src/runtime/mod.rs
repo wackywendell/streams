@@ -17,7 +17,7 @@ pub mod state;
 pub mod workspace;
 
 pub use checkouts::{CheckoutLocation, CheckoutRegistry, RepositoryInspection};
-pub use locations::{BoundCheckout, DirectoryBinding, DirectoryBindings};
+pub use locations::{BindingKey, BoundCheckout, DirectoryBinding, DirectoryBindings};
 
 use std::path::Path;
 

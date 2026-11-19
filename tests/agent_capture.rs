@@ -14,7 +14,7 @@ use streams::{
     frontend::herdr::HerdrNativeSnapshot,
     model::{Record, Session, Stream, TitleDefaults},
     runtime::{
-        CheckoutRegistry, DirectoryBindings, conversations::ConversationRoots,
+        BindingKey, CheckoutRegistry, DirectoryBindings, conversations::ConversationRoots,
         native_markers::stream_tokens, state::RuntimeState,
     },
     storage::records::RecordAddress,
@@ -138,17 +138,14 @@ impl Fixture {
         let locations = self.locations();
         locations
             .remember(
-                &session.stream_id,
+                BindingKey::Session(&session.id),
                 self.temp.path(),
-                Some(&session.id),
                 false,
                 None,
                 None,
             )
             .unwrap();
-        locations
-            .remember_transcript(&session.stream_id, &session.id, locator)
-            .unwrap();
+        locations.remember_transcript(&session.id, locator).unwrap();
     }
 }
 fn native(kind: &str, value: Value) -> Value {
@@ -308,7 +305,7 @@ fn observed_id_uses_its_exact_retained_locator_without_discovering_closed_sessio
     f.retain(&session, &locator);
     // This unrelated saved input must not be opened or used to infer liveness.
     fs::write(
-        f.locations().path("effort", Some(&closed.id)),
+        f.locations().path(BindingKey::Session(&closed.id)),
         "unrelated malformed binding",
     )
     .unwrap();

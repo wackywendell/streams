@@ -111,9 +111,8 @@ impl App {
                             .as_ref()
                             .and_then(|checkout| checkout.repository_url.as_deref());
                         opened.locations()?.remember(
-                            &session.stream_id,
+                            streams::runtime::BindingKey::Session(&session.id),
                             &directory,
-                            Some(&session.id),
                             false,
                             url,
                             None,
@@ -218,16 +217,15 @@ impl App {
                         self.path(cwd.as_deref().expect("directory selection"))?
                     };
                     locations.remember(
-                        &session.stream_id,
+                        streams::runtime::BindingKey::Session(&session.id),
                         &directory,
-                        Some(&session.id),
                         false,
                         selected_url.as_deref(),
                         checkout_id.as_deref(),
                     )?;
                 }
                 let directory = locations
-                    .read(&session.stream_id, Some(&session.id))?
+                    .read(streams::runtime::BindingKey::Session(&session.id))?
                     .map(|binding| binding_data(&binding));
                 Ok(Output::value(
                     json!({"session_id":session.id,"host_id":session.host_id,"directory":directory}),

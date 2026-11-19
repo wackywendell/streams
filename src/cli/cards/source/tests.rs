@@ -101,7 +101,13 @@ fn direct_urls_resolve_explicit_defaults_without_selection_or_portable_checkout_
                 let plain = f.root.join("plain");
                 fs::create_dir(&plain).unwrap();
                 f.locations
-                    .remember("effort", &plain, Some("session"), false, None, None)
+                    .remember(
+                        streams::runtime::BindingKey::Session("session"),
+                        &plain,
+                        false,
+                        None,
+                        None,
+                    )
                     .unwrap();
             }
             let context = f.context();
@@ -128,9 +134,8 @@ fn selected_checkout_contributes_alias_free_hints_before_any_document_and_wins_o
     f.registry.set_default("repository", &default.id).unwrap();
     f.locations
         .remember(
-            "effort",
+            streams::runtime::BindingKey::Session("session"),
             &selected.directory,
-            Some("session"),
             false,
             None,
             Some(&selected.id),
@@ -211,13 +216,22 @@ fn broken_explicit_selection_and_unregistered_vcs_never_fall_back_to_a_valid_def
         let plain = f.root.join("plain");
         fs::create_dir(&plain).unwrap();
         f.locations
-            .remember("effort", &plain, Some("session"), false, None, None)
+            .remember(
+                streams::runtime::BindingKey::Session("session"),
+                &plain,
+                false,
+                None,
+                None,
+            )
             .unwrap();
         match broken {
             "removed" => fs::remove_dir(&plain).unwrap(),
-            "corrupt-binding" => {
-                fs::write(f.locations.path("effort", Some("session")), "invalid").unwrap()
-            }
+            "corrupt-binding" => fs::write(
+                f.locations
+                    .path(streams::runtime::BindingKey::Session("session")),
+                "invalid",
+            )
+            .unwrap(),
             "unregistered-vcs" => fs::create_dir(plain.join(".git")).unwrap(),
             _ => fs::write(f.registry.path(), "invalid").unwrap(),
         }

@@ -53,8 +53,8 @@ fn watched_inputs_have_one_canonical_session_and_stream_address_and_both_directo
                 .root()
                 .join(format!("hosts/{HOST}/streams/project%2Fname.json")),
             records.registry().unwrap().path().into(),
-            bindings.path(&scope.stream_id, Some(&scope.session_id)),
-            bindings.path(&scope.stream_id, None),
+            bindings.path(streams::runtime::BindingKey::Session(&scope.session_id)),
+            bindings.path(streams::runtime::BindingKey::Stream(&scope.stream_id)),
         ])
     );
     let destination = inputs.paths("destination").unwrap();

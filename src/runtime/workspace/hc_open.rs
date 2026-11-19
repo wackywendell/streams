@@ -46,7 +46,7 @@ impl WorkspaceRuntime<'_> {
         let locators: Vec<_> = sessions
             .iter()
             .map(
-                |session| match self.locations.transcript_file(&stream.id, &session.id) {
+                |session| match self.locations.transcript_file(&session.id) {
                     Ok(path) => path,
                     Err(_) => {
                         locator_failures.insert(session.id.clone());

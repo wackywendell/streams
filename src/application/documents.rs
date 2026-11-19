@@ -2,7 +2,7 @@
 
 use crate::{
     model::{ReferenceState, ReferenceTarget, Session, Stream},
-    runtime::{CheckoutRegistry, DirectoryBindings},
+    runtime::{BindingKey, CheckoutRegistry, DirectoryBindings},
 };
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -34,7 +34,7 @@ pub fn context(
     let selected = (|| -> Result<_, String> {
         let checkouts = snapshot.as_mut().map_err(|error| error.clone())?;
         let selected = locations
-            .read_with_checkouts(&stream.id, Some(&session.id), checkouts)
+            .read_with_checkouts(BindingKey::Session(&session.id), checkouts)
             .map_err(|error| error.to_string())?;
         if let Some(selected) = &selected {
             if let Some(checkout) = &selected.checkout {
@@ -123,12 +123,11 @@ pub fn context(
 
 fn selected_directory(
     locations: &DirectoryBindings,
-    stream: &Stream,
     session: &Session,
     checkouts: &mut crate::runtime::checkouts::CheckoutSnapshot<'_>,
 ) -> Result<crate::runtime::DirectoryBinding, String> {
     let selected = locations
-        .read_with_checkouts(&stream.id, Some(&session.id), checkouts)
+        .read_with_checkouts(BindingKey::Session(&session.id), checkouts)
         .map_err(|error| error.to_string())?
         .ok_or("no directory is selected for this Session; use streams session directory")?;
     if let Some(checkout) = &selected.checkout {
@@ -199,8 +198,8 @@ pub fn resolve(
         ));
     };
     let mut checkouts = registry.snapshot()?;
-    let selected = selected_directory(locations, stream, session, &mut checkouts)
-        .map_err(RuntimeError::Invalid)?;
+    let selected =
+        selected_directory(locations, session, &mut checkouts).map_err(RuntimeError::Invalid)?;
     let selected_id = selected
         .checkout
         .as_ref()
@@ -308,9 +307,8 @@ mod tests {
         let session = Session::new("session", "host", "stream", "pi", "native", "Session").unwrap();
         let selected = locations
             .remember(
-                "stream",
+                BindingKey::Session("session"),
                 &checkout,
-                Some("session"),
                 false,
                 Some("https://example.test/repo"),
                 None,
@@ -379,7 +377,7 @@ mod tests {
         let registry = CheckoutRegistry::new(root.join("state"), "host").unwrap();
         let locations = DirectoryBindings::new(root.join("bindings"), registry.clone());
         locations
-            .remember("stream", &root, Some("session"), false, None, None)
+            .remember(BindingKey::Session("session"), &root, false, None, None)
             .unwrap();
         std::fs::create_dir(root.join(".git")).unwrap();
         let mut stream = Stream::new("stream", "Stream", None, "host").unwrap();

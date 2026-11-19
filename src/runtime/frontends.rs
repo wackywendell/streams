@@ -126,11 +126,10 @@ fn effect(result: Effect<()>) -> Result<()> {
 /// Open through a Herdr or cmux workspace, with each Session's saved transcript locator.
 fn open_workspace(
     runtime: &WorkspaceRuntime<'_>,
-    stream: &Stream,
     sessions: &[Session],
     open: impl FnOnce(&AtomicBool, &[SelectedConversation<'_>]) -> Result<OpenResult>,
 ) -> Result<Opened> {
-    let locators = runtime.locators(stream, sessions)?;
+    let locators = runtime.locators(sessions)?;
     let selected: Vec<_> = sessions
         .iter()
         .zip(&locators)
@@ -243,7 +242,7 @@ impl Frontend for HerdrFrontend {
         self.native()?;
         let native = self.native.as_ref().expect("connected");
         let observed = self.snapshot.as_ref();
-        open_workspace(runtime, stream, sessions, |cancelled, selected| {
+        open_workspace(runtime, sessions, |cancelled, selected| {
             runtime.open_herdr(native, cancelled, stream, selected, cwd, observed)
         })
     }
@@ -290,7 +289,7 @@ impl Frontend for CmuxFrontend {
             )?);
         }
         let native = self.native.as_ref().expect("connected");
-        open_workspace(runtime, stream, sessions, |cancelled, selected| {
+        open_workspace(runtime, sessions, |cancelled, selected| {
             runtime.open_cmux(native, cancelled, stream, selected, cwd)
         })
     }

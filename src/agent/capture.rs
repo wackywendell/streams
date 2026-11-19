@@ -331,7 +331,7 @@ pub fn capture_inputs(
             (Some((*path).to_owned()), None)
         } else if let Some(session) = &context.session
             && let Some(path) = locations
-                .transcript_file(&session.stream_id, &session.id)
+                .transcript_file(&session.id)
                 .map_err(|error| ValidationError::new(error.to_string()))?
         {
             match conversation_file(Harness::Pi, &id, Some(&path), roots) {

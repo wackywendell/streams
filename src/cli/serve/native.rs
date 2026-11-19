@@ -265,9 +265,7 @@ impl Controller {
             Some(owner) => owner.clone(),
             None => {
                 let locator = if let Some(session) = &context.session {
-                    records
-                        .locations()?
-                        .transcript_file(&session.stream_id, &session.id)?
+                    records.locations()?.transcript_file(&session.id)?
                 } else {
                     None
                 };
@@ -589,7 +587,7 @@ impl Controller {
                 if let Some(path) = &pass.transcript {
                     records
                         .locations()?
-                        .remember_transcript(&stream.id, &session.id, path)?;
+                        .remember_transcript(&session.id, path)?;
                 }
                 pass.context.session = Some(session);
                 let stream_id = stream.id.clone();

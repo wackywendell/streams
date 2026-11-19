@@ -11,9 +11,12 @@ use streams::{
     file_store::records::{decode_record, relative_record_path},
     frontend::herdr::{HerdrClient, HerdrNativeSnapshot, events::EventPane},
     model::{Record, RecordKind, Session},
-    runtime::native_cards::{
-        CardPlacement, DisplayLifetime, LaunchedCardContext, NativeCardsConfig, SOURCE_ENV_KEYS,
-        publish_card_marker,
+    runtime::{
+        locations::BindingKey,
+        native_cards::{
+            CardPlacement, DisplayLifetime, LaunchedCardContext, NativeCardsConfig,
+            SOURCE_ENV_KEYS, publish_card_marker,
+        },
     },
     storage::records::{RecordAddress, RecordStore},
     tui::{
@@ -52,8 +55,8 @@ impl Inputs {
         let physical =
             |path: PathBuf| streams::config::resolve_path(&path).map_err(|e| e.to_string());
         let directories = [
-            physical(bindings.path(&scope.stream_id, Some(&scope.session_id)))?,
-            physical(bindings.path(&scope.stream_id, None))?,
+            physical(bindings.path(BindingKey::Session(&scope.session_id)))?,
+            physical(bindings.path(BindingKey::Stream(&scope.stream_id)))?,
         ];
         Ok(Self {
             root,

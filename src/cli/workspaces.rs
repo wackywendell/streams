@@ -184,7 +184,13 @@ impl App {
         let completion = (|| -> Result<Option<(Value, bool)>> {
             let directory = self.path(cwd.as_deref().unwrap_or(&self.cwd))?;
             let locations = opened.locations()?;
-            locations.remember(&stream.id, &directory, None, false, None, None)?;
+            locations.remember(
+                streams::runtime::BindingKey::Stream(&stream.id),
+                &directory,
+                false,
+                None,
+                None,
+            )?;
             let Creation::Workspace(requested) = creation else {
                 return Ok(None);
             };
@@ -321,7 +327,7 @@ impl App {
             }
         };
         let locations = opened.locations()?;
-        let locator = locations.transcript_file(&stream.id, &session.id)?;
+        let locator = locations.transcript_file(&session.id)?;
         let selected = SelectedConversation {
             session,
             locator: locator.as_deref(),

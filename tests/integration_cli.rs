@@ -29,12 +29,18 @@ fn owner_open_work_selects_admitted_sessions_and_keeps_paths_off_the_reply() {
     let locations = DirectoryBindings::new(state.root(), registry);
     let session = &fixture.sessions[0];
     locations
-        .remember("work", &root, Some(&session.id), false, None, None)
+        .remember(
+            streams::runtime::BindingKey::Session(&session.id),
+            &root,
+            false,
+            None,
+            None,
+        )
         .unwrap();
     let transcript = root.join("private-session.jsonl");
     std::fs::write(&transcript, "{\"type\":\"session\",\"id\":\"one\"}\n").unwrap();
     locations
-        .remember_transcript("work", &session.id, &transcript)
+        .remember_transcript(&session.id, &transcript)
         .unwrap();
     let program = root.join("pi");
     std::fs::write(&program, "#!/bin/sh\nexit 0\n").unwrap();
@@ -203,15 +209,27 @@ fn hc_public_open_and_start_preserve_runtime_shapes_and_current_lookup() {
     let locations = DirectoryBindings::new(state.root(), registry);
     let session = &fixture.sessions[0];
     locations
-        .remember("work", &root, Some(&session.id), false, None, None)
+        .remember(
+            streams::runtime::BindingKey::Session(&session.id),
+            &root,
+            false,
+            None,
+            None,
+        )
         .unwrap();
     locations
-        .remember("empty", &root, None, false, None, None)
+        .remember(
+            streams::runtime::BindingKey::Stream("empty"),
+            &root,
+            false,
+            None,
+            None,
+        )
         .unwrap();
     let transcript = root.join("one.jsonl");
     std::fs::write(&transcript, "{\"type\":\"session\",\"id\":\"one\"}\n").unwrap();
     locations
-        .remember_transcript("work", &session.id, &transcript)
+        .remember_transcript(&session.id, &transcript)
         .unwrap();
     let program = root.join("pi");
     std::fs::write(&program, "#!/bin/sh\nexit 0\n").unwrap();
@@ -1107,10 +1125,16 @@ fn hc_resume_checks_registered_presence_before_replacing_the_process() {
     .unwrap();
     let locations = DirectoryBindings::new(state.root(), registry);
     locations
-        .remember("work", &root, Some(&session.id), false, None, None)
+        .remember(
+            streams::runtime::BindingKey::Session(&session.id),
+            &root,
+            false,
+            None,
+            None,
+        )
         .unwrap();
     locations
-        .remember_transcript("work", &session.id, &transcript)
+        .remember_transcript(&session.id, &transcript)
         .unwrap();
     let observer = OwnerProcesses::new().unwrap();
     let claim = PiSourceClaim {
@@ -1287,11 +1311,15 @@ fn hc_resume_checks_registered_presence_before_replacing_the_process() {
         let path = root.join(format!("{native}.jsonl"));
         fs::write(&path, header).unwrap();
         locations
-            .remember("work", &root, Some(&other.id), false, None, None)
+            .remember(
+                streams::runtime::BindingKey::Session(&other.id),
+                &root,
+                false,
+                None,
+                None,
+            )
             .unwrap();
-        locations
-            .remember_transcript("work", &other.id, &path)
-            .unwrap();
+        locations.remember_transcript(&other.id, &path).unwrap();
         let executable = bin.join(harness);
         fs::write(&executable, "#!/bin/sh\nprintf '%s|%s|%s|%s' \"$1\" \"$2\" \"$STREAMS_STREAM_ID\" \"$HC_TERMINAL_ID\"\n").unwrap();
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
@@ -1355,9 +1383,8 @@ fn document_cli_resolves_saved_keys_and_pipes_only_owner_bytes_to_the_secure_pag
     let locations = DirectoryBindings::new(state.root(), registry);
     locations
         .remember(
-            "work",
+            streams::runtime::BindingKey::Session(&fixture.sessions[0].id),
             &repository,
-            Some(&fixture.sessions[0].id),
             false,
             Some(url),
             Some(&checkout.id),
@@ -2873,9 +2900,8 @@ fn frame_reads_and_reference_opening_resolve_enrolled_sessions_and_viewer_termin
     let locations = streams::runtime::DirectoryBindings::new(state.root(), registry);
     locations
         .remember(
-            "work",
+            streams::runtime::BindingKey::Session(&fixture.sessions[0].id),
             &repository,
-            Some(&fixture.sessions[0].id),
             false,
             Some(doc_url),
             Some(&checkout.id),

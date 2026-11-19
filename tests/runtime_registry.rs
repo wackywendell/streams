@@ -9,7 +9,9 @@ use std::sync::{Arc, Barrier, Mutex};
 use serde_json::{Value, json};
 use streams::process::{ProcessError, ProcessOutput, ProcessRequest, ProcessRunner};
 use streams::runtime::checkouts::{canonical_directory, inspect_directory_with_runner};
-use streams::runtime::{CheckoutRegistry, DirectoryBindings, RepositoryInspection, RuntimeError};
+use streams::runtime::{
+    BindingKey, CheckoutRegistry, DirectoryBindings, RepositoryInspection, RuntimeError,
+};
 
 fn fake_inspector(path: &Path) -> Result<Option<RepositoryInspection>, RuntimeError> {
     let current = canonical_directory(path)?;
@@ -72,7 +74,7 @@ fn legacy_binding_path(bindings: &DirectoryBindings, stream: &str, session: &str
         streams::codec::ascii_json(session)
     );
     bindings
-        .path(stream, None)
+        .path(BindingKey::Stream(stream))
         .with_file_name(format!("{:x}.json", Sha256::digest(wire.as_bytes())))
 }
 
@@ -212,9 +214,8 @@ fn explicit_move_preserves_identity_bindings_default_and_revalidates_selection()
     let bindings = f.bindings();
     bindings
         .remember(
-            "stream",
+            BindingKey::Session("session"),
             &root.join("src"),
-            Some("session"),
             false,
             Some("repo"),
             None,
@@ -223,14 +224,14 @@ fn explicit_move_preserves_identity_bindings_default_and_revalidates_selection()
     let moved = f.root.join("moved");
     fs::rename(&root, &moved).unwrap();
     assert!(f.registry.find(&moved).unwrap().is_none());
-    assert!(bindings.read("stream", Some("session")).is_err());
+    assert!(bindings.read(BindingKey::Session("session")).is_err());
     let updated = f.registry.move_checkout(&checkout.id, &moved).unwrap();
     assert_eq!(updated.id, checkout.id);
     assert_eq!(updated.repository_urls, checkout.repository_urls);
     assert_eq!(f.registry.resolve("repo", None, None).unwrap(), updated);
     assert_eq!(
         bindings
-            .read("stream", Some("session"))
+            .read(BindingKey::Session("session"))
             .unwrap()
             .unwrap()
             .cwd,
@@ -245,7 +246,7 @@ fn explicit_move_preserves_identity_bindings_default_and_revalidates_selection()
     let fresh = f.repo("fresh");
     f.registry.move_checkout(&checkout.id, &fresh).unwrap();
     assert!(moved.is_dir());
-    assert!(bindings.read("stream", Some("session")).is_err());
+    assert!(bindings.read(BindingKey::Session("session")).is_err());
 }
 
 #[test]
@@ -503,13 +504,13 @@ fn registry_state_lock_and_directory_binding_symlinks_are_refused() {
     symlink(&target, &lock).unwrap();
     assert!(f.registry.register(&root, None).is_err());
     let bindings = f.bindings();
-    let path = bindings.path("stream", Some("session"));
+    let path = bindings.path(BindingKey::Session("session"));
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     symlink(&target, &path).unwrap();
-    assert!(bindings.read("stream", Some("session")).is_err());
+    assert!(bindings.read(BindingKey::Session("session")).is_err());
     assert!(
         bindings
-            .remember("stream", &f.root, Some("session"), false, None, None)
+            .remember(BindingKey::Session("session"), &f.root, false, None, None)
             .is_err()
     );
     assert_eq!(fs::read_to_string(target).unwrap(), "sentinel");
@@ -543,22 +544,22 @@ fn nonregular_directory_bindings_and_binding_locks_are_rejected_without_blocking
     use std::os::unix::ffi::OsStrExt;
     let f = Fixture::new();
     let bindings = f.bindings();
-    let path = bindings.path("stream", None);
+    let path = bindings.path(BindingKey::Stream("stream"));
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::create_dir(&path).unwrap();
-    assert!(bindings.read("stream", None).is_err());
+    assert!(bindings.read(BindingKey::Stream("stream")).is_err());
     assert!(
         bindings
-            .remember("stream", &f.root, None, false, None, None)
+            .remember(BindingKey::Stream("stream"), &f.root, false, None, None)
             .is_err()
     );
     fs::remove_dir(&path).unwrap();
     let fifo = CString::new(path.as_os_str().as_bytes()).unwrap();
     assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
-    assert!(bindings.read("stream", None).is_err());
+    assert!(bindings.read(BindingKey::Stream("stream")).is_err());
     assert!(
         bindings
-            .remember("stream", &f.root, None, false, None, None)
+            .remember(BindingKey::Stream("stream"), &f.root, false, None, None)
             .is_err()
     );
     fs::remove_file(&path).unwrap();
@@ -568,7 +569,7 @@ fn nonregular_directory_bindings_and_binding_locks_are_rejected_without_blocking
     assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
     assert!(
         bindings
-            .remember("stream", &f.root, None, false, None, None)
+            .remember(BindingKey::Stream("stream"), &f.root, false, None, None)
             .is_err()
     );
     fs::remove_file(&lock).unwrap();
@@ -577,7 +578,7 @@ fn nonregular_directory_bindings_and_binding_locks_are_rejected_without_blocking
     symlink(&target, &lock).unwrap();
     assert!(
         bindings
-            .remember("stream", &f.root, None, false, None, None)
+            .remember(BindingKey::Stream("stream"), &f.root, false, None, None)
             .is_err()
     );
     assert_eq!(fs::read_to_string(target).unwrap(), "unchanged");
@@ -615,67 +616,97 @@ fn stream_and_session_directory_identity_and_if_missing_are_independent() {
     let first = f.repo("first");
     let second = f.repo("second");
     let stream = bindings
-        .remember("stream", &first, None, false, Some("repo"), None)
+        .remember(
+            BindingKey::Stream("stream"),
+            &first,
+            false,
+            Some("repo"),
+            None,
+        )
         .unwrap();
-    assert!(bindings.read("stream", Some("session")).unwrap().is_none());
+    assert!(
+        bindings
+            .read(BindingKey::Session("session"))
+            .unwrap()
+            .is_none()
+    );
     let session = bindings
         .remember(
-            "stream",
+            BindingKey::Session("session"),
             &second,
-            Some("session"),
             false,
             Some("repo"),
             None,
         )
         .unwrap();
     assert_ne!(stream.checkout, session.checkout);
-    let path = bindings.path("stream", Some("session"));
+    let path = bindings.path(BindingKey::Session("session"));
     let before = fs::read(&path).unwrap();
     assert_eq!(
         bindings
-            .remember("stream", &first, Some("session"), true, None, None)
+            .remember(BindingKey::Session("session"), &first, true, None, None)
             .unwrap(),
         session
     );
     assert_eq!(fs::read(&path).unwrap(), before);
-    assert_eq!(bindings.read("stream", None).unwrap(), Some(stream));
     assert_eq!(
-        bindings.read("other-stream", Some("session")).unwrap(),
+        bindings.read(BindingKey::Stream("stream")).unwrap(),
+        Some(stream)
+    );
+    assert_eq!(
+        bindings.read(BindingKey::Session("session")).unwrap(),
         Some(session)
     );
-    assert!(bindings.read("other-stream", None).unwrap().is_none());
     assert!(
         bindings
-            .read("stream", Some("other-session"))
+            .read(BindingKey::Stream("other-stream"))
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        bindings
+            .read(BindingKey::Session("other-session"))
             .unwrap()
             .is_none()
     );
     let other = bindings
         .remember(
-            "other-stream",
+            BindingKey::Session("other-session"),
             &first,
-            Some("other-session"),
             false,
             None,
             None,
         )
         .unwrap();
     assert_eq!(
-        bindings.read("stream", Some("other-session")).unwrap(),
+        bindings.read(BindingKey::Session("other-session")).unwrap(),
         Some(other)
     );
     assert_eq!(
         bindings
-            .read("other-stream", Some("session"))
+            .read(BindingKey::Session("session"))
             .unwrap()
             .unwrap()
             .cwd,
         second
     );
     bindings
-        .remember("other-stream", &second, None, false, None, None)
+        .remember(
+            BindingKey::Stream("other-stream"),
+            &second,
+            false,
+            None,
+            None,
+        )
         .unwrap();
-    assert_eq!(bindings.read("stream", None).unwrap().unwrap().cwd, first);
+    assert_eq!(
+        bindings
+            .read(BindingKey::Stream("stream"))
+            .unwrap()
+            .unwrap()
+            .cwd,
+        first
+    );
 }
 
 #[test]
@@ -685,24 +716,24 @@ fn missing_binding_targets_can_be_explicitly_repaired_but_not_with_if_missing() 
     let old = f.root.join("old");
     fs::create_dir(&old).unwrap();
     bindings
-        .remember("stream", &old, Some("session"), false, None, None)
+        .remember(BindingKey::Session("session"), &old, false, None, None)
         .unwrap();
     fs::remove_dir(old).unwrap();
-    let path = bindings.path("stream", Some("session"));
+    let path = bindings.path(BindingKey::Session("session"));
     let before = fs::read(&path).unwrap();
-    assert!(bindings.read("stream", Some("session")).is_err());
+    assert!(bindings.read(BindingKey::Session("session")).is_err());
     assert!(
         bindings
-            .remember("stream", &f.root, Some("session"), true, None, None)
+            .remember(BindingKey::Session("session"), &f.root, true, None, None)
             .is_err()
     );
     assert_eq!(fs::read(&path).unwrap(), before);
     bindings
-        .remember("stream", &f.root, Some("session"), false, None, None)
+        .remember(BindingKey::Session("session"), &f.root, false, None, None)
         .unwrap();
     assert_eq!(
         bindings
-            .read("stream", Some("session"))
+            .read(BindingKey::Session("session"))
             .unwrap()
             .unwrap()
             .cwd,
@@ -719,21 +750,13 @@ fn concurrent_if_missing_selection_keeps_the_first_locked_choice() {
     let barrier = Arc::new(Barrier::new(2));
     let threads: Vec<_> = [first, second]
         .into_iter()
-        .enumerate()
-        .map(|(index, cwd)| {
+        .map(|cwd| {
             let bindings = bindings.clone();
             let barrier = barrier.clone();
             std::thread::spawn(move || {
                 barrier.wait();
                 bindings
-                    .remember(
-                        &format!("stream-{index}"),
-                        &cwd,
-                        Some("session"),
-                        true,
-                        None,
-                        None,
-                    )
+                    .remember(BindingKey::Session("session"), &cwd, true, None, None)
                     .unwrap()
             })
         })
@@ -751,7 +774,7 @@ fn directory_selections_never_infer_checkout_identity_or_rewrite_on_read() {
     let f = Fixture::new();
     let root = f.repo("repo");
     let bindings = f.bindings();
-    let path = bindings.path("stream", Some("session"));
+    let path = bindings.path(BindingKey::Session("session"));
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     let current = json!({"version":4,"session_id":"session",
         "location":{"kind":"directory","cwd":root},"transcript_file":null});
@@ -759,7 +782,7 @@ fn directory_selections_never_infer_checkout_identity_or_rewrite_on_read() {
     let before = fs::read(&path).unwrap();
     assert!(
         bindings
-            .read("stream", Some("session"))
+            .read(BindingKey::Session("session"))
             .unwrap()
             .unwrap()
             .checkout
@@ -768,7 +791,10 @@ fn directory_selections_never_infer_checkout_identity_or_rewrite_on_read() {
     assert!(!f.registry.path().exists());
     f.registry.register(&root, None).unwrap();
     let registry_before = fs::read(f.registry.path()).unwrap();
-    let selected = bindings.read("stream", Some("session")).unwrap().unwrap();
+    let selected = bindings
+        .read(BindingKey::Session("session"))
+        .unwrap()
+        .unwrap();
     assert_eq!(selected.cwd, root);
     assert!(selected.checkout.is_none());
     assert_eq!(fs::read(&path).unwrap(), before);
@@ -781,9 +807,9 @@ fn malformed_bindings_cannot_be_read_or_overwritten() {
     let bindings = f.bindings();
     let root = f.repo("repo");
     bindings
-        .remember("stream", &root, Some("session"), false, None, None)
+        .remember(BindingKey::Session("session"), &root, false, None, None)
         .unwrap();
-    let path = bindings.path("stream", Some("session"));
+    let path = bindings.path(BindingKey::Session("session"));
     let good: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     let mut version = good.clone();
     version["version"] = json!(1);
@@ -799,10 +825,10 @@ fn malformed_bindings_cannot_be_read_or_overwritten() {
         duplicate.into_bytes(),
     ] {
         fs::write(&path, &bytes).unwrap();
-        assert!(bindings.read("stream", Some("session")).is_err());
+        assert!(bindings.read(BindingKey::Session("session")).is_err());
         assert!(
             bindings
-                .remember("stream", &f.root, Some("session"), false, None, None)
+                .remember(BindingKey::Session("session"), &f.root, false, None, None)
                 .is_err()
         );
         assert_eq!(fs::read(&path).unwrap(), bytes);
@@ -813,10 +839,13 @@ fn malformed_bindings_cannot_be_read_or_overwritten() {
 fn malformed_current_binding_reports_the_missing_location_field() {
     let f = Fixture::new();
     let bindings = f.bindings();
-    let path = bindings.path("stream", None);
+    let path = bindings.path(BindingKey::Stream("stream"));
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(&path, br#"{"version":4,"stream_id":"stream","session_id":null,"location":{"kind":"checkout","id":"saved-id","repository_url":null},"transcript_file":null}"#).unwrap();
-    let error = bindings.read("stream", None).unwrap_err().to_string();
+    let error = bindings
+        .read(BindingKey::Stream("stream"))
+        .unwrap_err()
+        .to_string();
     assert!(error.contains("within"), "{error}");
     assert!(!error.contains("untagged"), "{error}");
 }
@@ -831,9 +860,8 @@ fn explicit_checkout_must_contain_cwd_and_have_requested_binding() {
     assert!(
         bindings
             .remember(
-                "stream",
+                BindingKey::Session("session"),
                 &other,
-                Some("session"),
                 false,
                 None,
                 Some(&checkout.id)
@@ -843,9 +871,8 @@ fn explicit_checkout_must_contain_cwd_and_have_requested_binding() {
     assert!(
         bindings
             .remember(
-                "stream",
+                BindingKey::Session("session"),
                 &root,
-                Some("session"),
                 false,
                 Some("other-repo"),
                 Some(&checkout.id)
@@ -855,9 +882,8 @@ fn explicit_checkout_must_contain_cwd_and_have_requested_binding() {
     assert!(
         bindings
             .remember(
-                "stream",
+                BindingKey::Session("session"),
                 &f.root,
-                Some("session"),
                 false,
                 Some("repo"),
                 None
@@ -866,9 +892,8 @@ fn explicit_checkout_must_contain_cwd_and_have_requested_binding() {
     );
     let binding = bindings
         .remember(
-            "stream",
+            BindingKey::Session("session"),
             &root,
-            Some("session"),
             false,
             Some("repo"),
             Some(&checkout.id),
@@ -891,7 +916,7 @@ fn current_registry_and_binding_fixtures_read_without_rewriting_or_registering()
     assert_eq!(checkout.repository_urls, ["https://example.test/repo.git"]);
     assert_eq!(fs::read(f.registry.path()).unwrap(), registry_fixture);
     let bindings = f.bindings();
-    let path = bindings.path("stream", Some("session"));
+    let path = bindings.path(BindingKey::Session("session"));
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     let root = f.repo("checkout");
     let mut state = f.state();
@@ -900,7 +925,7 @@ fn current_registry_and_binding_fixtures_read_without_rewriting_or_registering()
     fs::write(&path, include_bytes!("fixtures/runtime/directory-v4.json")).unwrap();
     assert_eq!(
         bindings
-            .read("stream", Some("session"))
+            .read(BindingKey::Session("session"))
             .unwrap()
             .unwrap()
             .cwd,
@@ -940,12 +965,15 @@ fn non_uuid_registry_ids_load_in_current_directory_bindings() {
         Err(RuntimeError::NotFound(_))
     ));
     let bindings = f.bindings();
-    let path = bindings.path("stream", Some("session"));
+    let path = bindings.path(BindingKey::Session("session"));
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     let current = include_str!("fixtures/runtime/directory-v4.json")
         .replace("b9345696-ffbf-42d1-8255-6fdc9d2ab7d2", "legacy-checkout-1");
     fs::write(&path, &current).unwrap();
-    let binding = bindings.read("stream", Some("session")).unwrap().unwrap();
+    let binding = bindings
+        .read(BindingKey::Session("session"))
+        .unwrap()
+        .unwrap();
     assert_eq!(binding.cwd, root);
     let bound = binding.checkout.unwrap();
     assert_eq!(bound.id, "legacy-checkout-1");
@@ -966,11 +994,17 @@ fn invalid_inferred_relative_cwd_never_creates_or_changes_registry_state() {
         let bindings = f.bindings();
         assert!(
             bindings
-                .remember("stream", &cwd, Some("session"), false, Some("repo"), None)
+                .remember(
+                    BindingKey::Session("session"),
+                    &cwd,
+                    false,
+                    Some("repo"),
+                    None
+                )
                 .is_err()
         );
         assert!(!f.registry.path().exists());
-        assert!(!bindings.path("stream", Some("session")).exists());
+        assert!(!bindings.path(BindingKey::Session("session")).exists());
         let existing = f.repo("existing");
         f.registry
             .register(&existing, Some("existing-repo"))
@@ -978,7 +1012,13 @@ fn invalid_inferred_relative_cwd_never_creates_or_changes_registry_state() {
         let before = fs::read(f.registry.path()).unwrap();
         assert!(
             bindings
-                .remember("stream", &cwd, Some("session"), false, Some("repo"), None)
+                .remember(
+                    BindingKey::Session("session"),
+                    &cwd,
+                    false,
+                    Some("repo"),
+                    None
+                )
                 .is_err()
         );
         assert_eq!(fs::read(f.registry.path()).unwrap(), before);
@@ -990,16 +1030,16 @@ fn directory_hash_keeps_stream_tuple_compatibility_and_uses_session_identity() {
     use sha2::{Digest, Sha256};
     let f = Fixture::new();
     let bindings = f.bindings();
-    for (stream, session, wire) in [
-        ("stream", Some("session"), "session"),
-        ("雪😀", None, "[\"\\u96ea\\ud83d\\ude00\", null]"),
-        ("quoted\"", Some("s\\"), "s\\"),
+    for (key, wire) in [
+        (BindingKey::Session("session"), "session"),
+        (
+            BindingKey::Stream("雪😀"),
+            "[\"\\u96ea\\ud83d\\ude00\", null]",
+        ),
+        (BindingKey::Session("s\\"), "s\\"),
     ] {
         let expected = format!("{:x}.json", Sha256::digest(wire.as_bytes()));
-        assert_eq!(
-            bindings.path(stream, session).file_name().unwrap(),
-            expected.as_str()
-        );
+        assert_eq!(bindings.path(key).file_name().unwrap(), expected.as_str());
     }
 }
 
@@ -1008,24 +1048,24 @@ fn retained_transcript_is_exact_inert_and_survives_membership_and_directory_chan
     let f = Fixture::new();
     let bindings = f.bindings();
     let initial = bindings
-        .remember("stream", &f.root, Some("session"), false, None, None)
+        .remember(BindingKey::Session("session"), &f.root, false, None, None)
         .unwrap();
     assert!(initial.transcript_file.is_none());
     let transcript = f.root.join("no-discovery").join("exact.jsonl");
     bindings
-        .remember_transcript("stream", "session", &transcript)
+        .remember_transcript("session", &transcript)
         .unwrap();
     assert!(!transcript.exists());
-    let path = bindings.path("stream", Some("session"));
+    let path = bindings.path(BindingKey::Session("session"));
     let before = fs::read(&path).unwrap();
     let stamp = fs::metadata(&path).unwrap().modified().unwrap();
     bindings
-        .remember_transcript("destination", "session", &transcript)
+        .remember_transcript("session", &transcript)
         .unwrap();
     assert_eq!(fs::read(&path).unwrap(), before);
     assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), stamp);
     let selected = bindings
-        .read("destination", Some("session"))
+        .read(BindingKey::Session("session"))
         .unwrap()
         .unwrap();
     assert_eq!(selected.cwd, initial.cwd);
@@ -1036,7 +1076,7 @@ fn retained_transcript_is_exact_inert_and_survives_membership_and_directory_chan
     let next = f.root.join("next");
     fs::create_dir(&next).unwrap();
     let selected = bindings
-        .remember("destination", &next, Some("session"), false, None, None)
+        .remember(BindingKey::Session("session"), &next, false, None, None)
         .unwrap();
     assert_eq!(
         selected.transcript_file.as_deref(),
@@ -1044,7 +1084,7 @@ fn retained_transcript_is_exact_inert_and_survives_membership_and_directory_chan
     );
     assert_eq!(selected.cwd, next);
     let default = bindings
-        .remember("stream", &f.root, None, false, None, None)
+        .remember(BindingKey::Stream("stream"), &f.root, false, None, None)
         .unwrap();
     assert!(default.transcript_file.is_none());
 }
@@ -1054,20 +1094,20 @@ fn transcript_save_does_not_create_or_repair_missing_or_invalid_session_bindings
     let f = Fixture::new();
     let bindings = f.bindings();
     let transcript = f.root.join("exact.jsonl");
-    let path = bindings.path("stream", Some("session"));
+    let path = bindings.path(BindingKey::Session("session"));
     assert!(
         bindings
-            .remember_transcript("stream", "session", &transcript)
+            .remember_transcript("session", &transcript)
             .is_err()
     );
     assert!(!path.exists());
     bindings
-        .remember("stream", &f.root, Some("session"), false, None, None)
+        .remember(BindingKey::Session("session"), &f.root, false, None, None)
         .unwrap();
     let before = fs::read(&path).unwrap();
     assert!(
         bindings
-            .remember_transcript("stream", "session", Path::new("relative"))
+            .remember_transcript("session", Path::new("relative"))
             .is_err()
     );
     assert_eq!(fs::read(&path).unwrap(), before);
@@ -1078,10 +1118,10 @@ fn transcript_save_does_not_create_or_repair_missing_or_invalid_session_bindings
     fs::write(&path, &old).unwrap();
     assert!(
         bindings
-            .remember_transcript("stream", "session", &transcript)
+            .remember_transcript("session", &transcript)
             .is_err()
     );
-    assert!(bindings.read("stream", Some("session")).is_err());
+    assert!(bindings.read(BindingKey::Session("session")).is_err());
     assert_eq!(fs::read(&path).unwrap(), old);
 }
 
@@ -1090,24 +1130,23 @@ fn current_session_selection_survives_membership_move_without_rewrite() {
     let f = Fixture::new();
     let bindings = f.bindings();
     let before = bindings
-        .remember("old-stream", &f.root, Some("session"), false, None, None)
+        .remember(BindingKey::Session("session"), &f.root, false, None, None)
         .unwrap();
-    let canonical = bindings.path("old-stream", Some("session"));
+    let canonical = bindings.path(BindingKey::Session("session"));
     let bytes = fs::read(&canonical).unwrap();
     assert_eq!(
-        bindings.read("new-stream", Some("session")).unwrap(),
+        bindings.read(BindingKey::Session("session")).unwrap(),
         Some(before)
     );
-    assert_eq!(bindings.path("new-stream", Some("session")), canonical);
     assert_eq!(fs::read(&canonical).unwrap(), bytes);
     let updated = f.root.join("updated");
     fs::create_dir(&updated).unwrap();
     bindings
-        .remember("new-stream", &updated, Some("session"), false, None, None)
+        .remember(BindingKey::Session("session"), &updated, false, None, None)
         .unwrap();
     assert_eq!(
         bindings
-            .read("old-stream", Some("session"))
+            .read(BindingKey::Session("session"))
             .unwrap()
             .unwrap()
             .cwd,
@@ -1117,7 +1156,7 @@ fn current_session_selection_survives_membership_move_without_rewrite() {
     assert_eq!(saved["version"], 4);
     assert!(saved.get("stream_id").is_none());
     fs::write(&canonical, serde_json::to_vec(&json!({"version":2,"stream_id":"old-stream","session_id":"session","location":{"kind":"directory","cwd":f.root}})).unwrap()).unwrap();
-    assert!(bindings.read("new-stream", Some("session")).is_err());
+    assert!(bindings.read(BindingKey::Session("session")).is_err());
 }
 
 #[test]
@@ -1132,13 +1171,18 @@ fn unrelated_legacy_choices_do_not_change_point_reads_or_explicit_current_writes
         fs::write(&path, &bytes).unwrap();
         old.push((path, bytes));
     }
-    assert!(bindings.read("third", Some("session")).unwrap().is_none());
+    assert!(
+        bindings
+            .read(BindingKey::Session("session"))
+            .unwrap()
+            .is_none()
+    );
     bindings
-        .remember("third", &f.root, Some("session"), false, None, None)
+        .remember(BindingKey::Session("session"), &f.root, false, None, None)
         .unwrap();
     assert_eq!(
         bindings
-            .read("third", Some("session"))
+            .read(BindingKey::Session("session"))
             .unwrap()
             .unwrap()
             .cwd,
@@ -1147,8 +1191,8 @@ fn unrelated_legacy_choices_do_not_change_point_reads_or_explicit_current_writes
     for (path, bytes) in old {
         assert_eq!(fs::read(path).unwrap(), bytes);
     }
-    fs::write(bindings.path("third", Some("session")), "malformed").unwrap();
-    assert!(bindings.read("third", Some("session")).is_err());
+    fs::write(bindings.path(BindingKey::Session("session")), "malformed").unwrap();
+    assert!(bindings.read(BindingKey::Session("session")).is_err());
 }
 
 #[test]
@@ -1157,22 +1201,22 @@ fn canonical_session_special_files_and_old_format_are_not_absence() {
     use std::os::unix::ffi::OsStrExt;
     let f = Fixture::new();
     let bindings = f.bindings();
-    let canonical = bindings.path("source", Some("session"));
+    let canonical = bindings.path(BindingKey::Session("session"));
     fs::create_dir_all(canonical.parent().unwrap()).unwrap();
     let fifo = CString::new(canonical.as_os_str().as_bytes()).unwrap();
     assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
-    assert!(bindings.read("destination", Some("session")).is_err());
+    assert!(bindings.read(BindingKey::Session("session")).is_err());
     assert!(
         bindings
-            .remember("destination", &f.root, Some("session"), false, None, None)
+            .remember(BindingKey::Session("session"), &f.root, false, None, None)
             .is_err()
     );
     fs::remove_file(&canonical).unwrap();
     fs::write(&canonical, serde_json::to_vec(&json!({"version":2,"stream_id":"source","session_id":"session","location":{"kind":"directory","cwd":f.root}})).unwrap()).unwrap();
-    assert!(bindings.read("source", Some("session")).is_err());
+    assert!(bindings.read(BindingKey::Session("session")).is_err());
     assert!(
         bindings
-            .remember("source", &f.root, Some("session"), false, None, None)
+            .remember(BindingKey::Session("session"), &f.root, false, None, None)
             .is_err()
     );
 }
@@ -1181,13 +1225,13 @@ fn canonical_session_special_files_and_old_format_are_not_absence() {
 fn current_session_filename_must_match_its_stored_identity() {
     let f = Fixture::new();
     let bindings = f.bindings();
-    let path = bindings.path("stream", Some("session"));
+    let path = bindings.path(BindingKey::Session("session"));
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(&path, serde_json::to_vec(&json!({"version":4,"session_id":"wrong-session","location":{"kind":"directory","cwd":f.root},"transcript_file":null})).unwrap()).unwrap();
-    assert!(bindings.read("destination", Some("session")).is_err());
+    assert!(bindings.read(BindingKey::Session("session")).is_err());
     assert!(
         bindings
-            .remember("destination", &f.root, Some("session"), false, None, None)
+            .remember(BindingKey::Session("session"), &f.root, false, None, None)
             .is_err()
     );
 }
@@ -1201,14 +1245,14 @@ fn unreadable_legacy_files_are_not_runtime_inputs() {
     fs::write(&path, b"broken legacy record").unwrap();
     assert!(
         bindings
-            .read("destination", Some("session"))
+            .read(BindingKey::Session("session"))
             .unwrap()
             .is_none()
     );
     bindings
-        .remember("destination", &f.root, Some("session"), true, None, None)
+        .remember(BindingKey::Session("session"), &f.root, true, None, None)
         .unwrap();
-    assert!(bindings.path("destination", Some("session")).exists());
+    assert!(bindings.path(BindingKey::Session("session")).exists());
     assert_eq!(fs::read(path).unwrap(), b"broken legacy record");
 }
 
