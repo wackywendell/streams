@@ -22,10 +22,9 @@ use streams::{
             events::{EventFilter, EventKind, SubscriptionCancel, SubscriptionUpdate},
         },
     },
-    integration::LifecycleEvent,
     runtime::{
         conversations::Harness,
-        native_cards::{NativeCardEngine, NativeCardsConfig, OpenMode, PiOwner},
+        native_cards::{LifecycleEvent, NativeCardEngine, NativeCardsConfig, OpenMode, PiOwner},
         native_markers,
     },
 };

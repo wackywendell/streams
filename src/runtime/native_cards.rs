@@ -18,7 +18,11 @@ pub use config::NativeCardsConfig;
 pub use display::{CardPlacement, DisplayLifetime};
 pub use launch_context::LaunchedCardContext;
 pub use owner::PiOwner;
-pub use projection::{NameOutcome, NameReport, publish_card_marker};
+pub use projection::{
+    AssociationIntent, CompanionDisposition, CompanionIntent, DesiredProjection, InactiveReason,
+    LifecycleEvent, LifecycleReport, NameIntent, NameOutcome, NameReport, NativeStatus,
+    ProjectionResult, SessionProjection, StreamDisplay, publish_card_marker,
+};
 
 use super::{Result, digest, invalid, native_markers::stream_tokens};
 use crate::{

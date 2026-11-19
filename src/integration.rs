@@ -537,99 +537,7 @@ pub struct OpenEffects {
     pub presentation: PresentationResult,
     pub viewer_actions: Vec<ViewerAction>,
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NameIntent {
-    LeaveUnchanged,
-    Set(String),
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CompanionIntent {
-    Keep,
-    Show,
-    Hide,
-}
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AssociationIntent {
-    Keep,
-    Bind { space: NativeRef },
-}
-#[derive(Debug, Clone)]
-pub struct StreamDisplay {
-    pub title: String,
-    pub goal_short: Option<String>,
-}
-#[derive(Debug, Clone)]
-pub struct SessionProjection {
-    pub view: SessionView,
-    pub conversation: ConversationId,
-    pub name: NameIntent,
-    pub companion: CompanionIntent,
-}
-#[derive(Debug, Clone)]
-pub struct DesiredProjection {
-    pub stream: String,
-    pub space: Option<NativeRef>,
-    pub stream_display: StreamDisplay,
-    pub association: AssociationIntent,
-    pub stream_name: NameIntent,
-    pub sessions: Vec<SessionProjection>,
-}
-impl DesiredProjection {
-    /// Saved data and explicit outgoing switches only; no observation or inference.
-    pub fn for_session(
-        stream: &crate::model::Stream,
-        session: &Session,
-        space: NativeRef,
-        association: AssociationIntent,
-        stream_naming: bool,
-        session_naming: bool,
-        companion: CompanionIntent,
-    ) -> Self {
-        Self {
-            stream: stream.id.clone(),
-            space: Some(space),
-            stream_display: StreamDisplay {
-                title: stream.title.clone(),
-                goal_short: stream.goal_short.clone(),
-            },
-            association,
-            stream_name: if stream_naming {
-                NameIntent::Set(stream.title.clone())
-            } else {
-                NameIntent::LeaveUnchanged
-            },
-            sessions: vec![SessionProjection {
-                view: SessionView::from(session),
-                conversation: ConversationId::from(session),
-                name: if session_naming {
-                    NameIntent::Set(session.title.clone())
-                } else {
-                    NameIntent::LeaveUnchanged
-                },
-                companion,
-            }],
-        }
-    }
-}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, strum::EnumString, strum::VariantNames)]
-#[serde(rename_all = "snake_case")]
-#[strum(serialize_all = "snake_case")]
-pub enum CompanionDisposition {
-    Opened,
-    Existing,
-    Suppressed,
-    Deferred,
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, strum::EnumString, strum::VariantNames)]
-#[serde(rename_all = "snake_case")]
-#[strum(serialize_all = "snake_case")]
-pub enum InactiveReason {
-    OutsideFrontend,
-    NotEnrolled,
-    Unavailable,
-    Stopped,
-}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, strum::EnumString, strum::VariantNames)]
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
@@ -637,45 +545,8 @@ pub enum CompanionVisibility {
     Shown,
     Hidden,
 }
-crate::codec::deserialize_string_enum!(CompanionDisposition, InactiveReason, CompanionVisibility);
+crate::codec::deserialize_string_enum!(CompanionVisibility);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ProjectionResult {
-    #[serde(deserialize_with = "required_nullable")]
-    pub companion: Option<CompanionDisposition>,
-    #[serde(deserialize_with = "required_nullable")]
-    pub desired_pi_name: Option<String>,
-    pub warnings: Vec<String>,
-}
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum NativeStatus {
-    Active,
-    Inactive { reason: InactiveReason },
-}
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct LifecycleReport {
-    pub native: NativeStatus,
-    pub projection: ProjectionResult,
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LifecycleEvent {
-    Started,
-    NewlyBound,
-    Reattached,
-}
-
-impl LifecycleEvent {
-    pub fn companion_intent(self, automatic: bool) -> CompanionIntent {
-        if automatic && matches!(self, Self::Started | Self::NewlyBound) {
-            CompanionIntent::Show
-        } else {
-            CompanionIntent::Keep
-        }
-    }
-}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum FrameContext {
