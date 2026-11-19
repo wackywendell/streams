@@ -68,8 +68,7 @@ impl HcSource {
         request: &Request,
         stopping: &streams::cancellation::Cancellation,
         cancelled: &AtomicBool,
-        opened_out: &mut Option<streams::application::OpenedRecords>,
-    ) -> Result<Output> {
+    ) -> Result<(Output, streams::application::OpenedRecords)> {
         if matches!(request, Request::OpenCard {} | Request::CloseCard {}) {
             return Err(CliError::message(
                 "hc native strip is managed by herdr-app layout",
@@ -90,8 +89,18 @@ impl HcSource {
             ));
         };
         let opened = streams::application::open_records(&app.config)?;
-        let resolved = hc::resolve_session(app, Some(&opened), &server.session_id, true)?;
-        *opened_out = Some(opened);
+        let resolved = hc::resolve_session(&opened, &server.session_id)?;
+        // Best effort: a directory that cannot be remembered leaves the Session as it is.
+        if let Some(session) = &resolved.session
+            && let Ok(directory) = streams::runtime::checkouts::canonical_directory(&app.cwd)
+        {
+            let _ = streams::application::remember_directory(
+                &opened,
+                &session.stream_id,
+                &session.id,
+                &directory,
+            );
+        }
         send(
             &server.output,
             &ServerFrame::View {
@@ -101,17 +110,20 @@ impl HcSource {
             },
         )?;
         let Some(session) = resolved.session else {
-            return Ok(Output::value(serde_json::json!({
-                "backend": "hc",
-                "report": {
-                    "native": { "kind": "inactive", "reason": "not_enrolled" },
-                    "projection": {
-                        "companion": null,
-                        "desired_pi_name": null,
-                        "warnings": []
+            return Ok((
+                Output::value(serde_json::json!({
+                    "backend": "hc",
+                    "report": {
+                        "native": { "kind": "inactive", "reason": "not_enrolled" },
+                        "projection": {
+                            "companion": null,
+                            "desired_pi_name": null,
+                            "warnings": []
+                        }
                     }
-                }
-            })));
+                })),
+                opened,
+            ));
         };
         let mut warnings = Vec::new();
         if let Err(error) = source
@@ -120,27 +132,30 @@ impl HcSource {
         {
             warnings.push(error.to_string());
         }
-        Ok(Output::value(serde_json::json!({
-            "backend": "hc",
-            "report": {
-                "native": { "kind": "active" },
-                "projection": {
-                    "companion": "existing",
-                    "desired_pi_name": resolved.desired_pi_name,
-                    "warnings": warnings
+        Ok((
+            Output::value(serde_json::json!({
+                "backend": "hc",
+                "report": {
+                    "native": { "kind": "active" },
+                    "projection": {
+                        "companion": "existing",
+                        "desired_pi_name": resolved.desired_pi_name,
+                        "warnings": warnings
+                    }
                 }
-            }
-        })))
+            })),
+            opened,
+        ))
     }
     fn after_save(
         &self,
         server: &Server,
         app: &App,
-        opened: Option<&streams::application::OpenedRecords>,
+        opened: &streams::application::OpenedRecords,
         bind_space: bool,
         stopping: &streams::cancellation::Cancellation,
     ) -> Result<()> {
-        let resolved = hc::resolve_session(app, opened, &server.session_id, false)?;
+        let resolved = hc::resolve_session(opened, &server.session_id)?;
         send(
             &server.output,
             &ServerFrame::View {
@@ -274,6 +289,48 @@ impl Server {
         dispatch::execute(&self.app()?, &self.session_id, request)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn after_write(
+        &self,
+        controllers: &mut NativeControllers,
+        app: &App,
+        opened: Option<&streams::application::OpenedRecords>,
+        hc_selected: bool,
+        bind_space: bool,
+        notify_herdr: bool,
+        cancelled: &Arc<AtomicBool>,
+        stopping: &streams::cancellation::Cancellation,
+        output: &mut Output,
+    ) -> Result<()> {
+        if !output.wrote {
+            return Ok(());
+        }
+        if notify_herdr
+            && let Some(controller) = controllers.herdr.as_mut()
+            && let Err(error) = controller.saved(cancelled.clone())
+        {
+            output.notices.push(error.to_string());
+        }
+        if hc_selected {
+            let result = match opened {
+                Some(opened) => controllers
+                    .hc
+                    .after_save(self, app, opened, bind_space, stopping),
+                None => streams::application::open_records(&app.config)
+                    .map_err(CliError::from)
+                    .and_then(|opened| {
+                        controllers
+                            .hc
+                            .after_save(self, app, &opened, bind_space, stopping)
+                    }),
+            };
+            if let Err(error) = result {
+                self.warning(&error)?;
+            }
+        }
+        Ok(())
+    }
+
     fn native_request(
         &self,
         controllers: &mut NativeControllers,
@@ -303,22 +360,19 @@ impl Server {
                 if pi_context.is_none() {
                     return Err(CliError::message("hc Pi request context is unavailable"));
                 }
-                return controllers.hc.request(
-                    self,
-                    &app,
-                    &request,
-                    stopping,
-                    &cancelled,
-                    &mut opened_for_locator,
-                );
+                let (output, opened) =
+                    controllers
+                        .hc
+                        .request(self, &app, &request, stopping, &cancelled)?;
+                opened_for_locator = Some(opened);
+                return Ok(output);
             }
-            let controller = &mut controllers.herdr;
             match request {
                 Request::SessionStarted {}
                 | Request::Attach {}
                 | Request::OpenCard {}
                 | Request::CloseCard {} => {
-                    let controller = controller.get_or_insert_with(|| {
+                    let controller = controllers.herdr.get_or_insert_with(|| {
                         native::Controller::new(
                             app.clone(),
                             self.session_id.clone(),
@@ -332,7 +386,7 @@ impl Server {
                 }
                 Request::Enroll { request } => {
                     let value = serde_json::Value::Object(request);
-                    let output = match controller {
+                    let mut output = match controllers.herdr.as_mut() {
                         Some(controller) => {
                             controller.enroll(&app, value, frontend, cancelled.clone())
                         }
@@ -343,71 +397,51 @@ impl Server {
                             result
                         }
                     }?;
-                    if hc_selected
-                        && output.wrote
-                        && let Err(error) = controllers.hc.after_save(
-                            self,
-                            &app,
-                            opened_for_locator.as_ref(),
-                            true,
-                            stopping,
-                        )
-                    {
-                        self.warning(&error)?;
-                    }
-                    Ok(output)
-                }
-                Request::Apply { request } => {
-                    let current_app = controller
-                        .as_ref()
-                        .map(|controller| &controller.app)
-                        .unwrap_or(&app);
-                    let opened = streams::application::open_records(&current_app.config)?;
-                    let applied = current_app
-                        .apply_request_opened(&opened, serde_json::Value::Object(request));
-                    opened_for_locator = Some(opened);
-                    let mut output = applied?;
-                    if output.wrote {
-                        if let Some(controller) = controller
-                            && let Err(error) = controller.saved(cancelled.clone())
-                        {
-                            output.notices.push(error.to_string());
-                        }
-                        if hc_selected
-                            && let Err(error) = controllers.hc.after_save(
-                                self,
-                                &app,
-                                opened_for_locator.as_ref(),
-                                false,
-                                stopping,
-                            )
-                        {
-                            self.warning(&error)?;
-                        }
-                    }
+                    self.after_write(
+                        controllers,
+                        &app,
+                        opened_for_locator.as_ref(),
+                        hc_selected,
+                        true,
+                        false,
+                        &cancelled,
+                        stopping,
+                        &mut output,
+                    )?;
                     Ok(output)
                 }
                 request => {
                     let mut output = {
-                        let current_app = controller
+                        let current_app = controllers
+                            .herdr
                             .as_ref()
                             .map(|controller| &controller.app)
                             .unwrap_or(&app);
-                        dispatch::execute(current_app, &self.session_id, request)?
+                        match request {
+                            Request::Apply { request } => {
+                                let opened =
+                                    streams::application::open_records(&current_app.config)?;
+                                let applied = current_app.apply_request_opened(
+                                    &opened,
+                                    serde_json::Value::Object(request),
+                                );
+                                opened_for_locator = Some(opened);
+                                applied?
+                            }
+                            request => dispatch::execute(current_app, &self.session_id, request)?,
+                        }
                     };
-                    if output.wrote {
-                        if let Some(controller) = controller
-                            && let Err(error) = controller.saved(cancelled.clone())
-                        {
-                            output.notices.push(error.to_string());
-                        }
-                        if hc_selected
-                            && let Err(error) =
-                                controllers.hc.after_save(self, &app, None, false, stopping)
-                        {
-                            self.warning(&error)?;
-                        }
-                    }
+                    self.after_write(
+                        controllers,
+                        &app,
+                        opened_for_locator.as_ref(),
+                        hc_selected,
+                        false,
+                        true,
+                        &cancelled,
+                        stopping,
+                        &mut output,
+                    )?;
                     Ok(output)
                 }
             }
@@ -424,10 +458,21 @@ impl Server {
                         "Pi session file was not retained because the request was cancelled".into(),
                     );
                 }
-            } else if let Err(error) = self
-                .app()
-                .and_then(|app| hc::remember_locator(&app, opened_for_locator.as_ref(), context))
-            {
+            } else if let Err(error) = hc::verified_locator(context).and_then(|locator| {
+                let Some(locator) = locator else {
+                    return Ok(());
+                };
+                match opened_for_locator.as_ref() {
+                    Some(opened) => {
+                        hc::remember_locator(opened, &context.conversation.native_id, &locator)
+                    }
+                    None => {
+                        let app = self.app()?;
+                        let opened = streams::application::open_records(&app.config)?;
+                        hc::remember_locator(&opened, &context.conversation.native_id, &locator)
+                    }
+                }
+            }) {
                 match &mut outcome {
                     Ok(output) if output.accepted_save => output.notices.push(error.to_string()),
                     _ => self.warning(&error)?,
@@ -601,9 +646,14 @@ fn native_worker(
             )?,
             NativeWork::Locator(context, cancelled) => {
                 if !cancelled.load(Ordering::Acquire)
-                    && let Err(error) = server
-                        .app()
-                        .and_then(|app| hc::remember_locator(&app, None, &context))
+                    && let Err(error) = hc::verified_locator(&context).and_then(|locator| {
+                        let Some(locator) = locator else {
+                            return Ok(());
+                        };
+                        let app = server.app()?;
+                        let opened = streams::application::open_records(&app.config)?;
+                        hc::remember_locator(&opened, &context.conversation.native_id, &locator)
+                    })
                 {
                     server.warning(&error)?;
                 }

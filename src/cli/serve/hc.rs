@@ -18,42 +18,38 @@ use streams::{
     storage::records::{RecordAddress, RecordStore},
 };
 
-/// Retain only the exact SDK-supplied file for an already enrolled Session.
-/// Missing files before Pi persists them are not failures and never trigger discovery.
-pub(super) fn remember_locator(
-    app: &App,
-    opened: Option<&super::super::application::OpenedRecords>,
+/// Verify the exact SDK-supplied session file before any catalog open.
+/// Missing files before Pi persists them return `Ok(None)` and never trigger discovery.
+pub(super) fn verified_locator(
     context: &streams::child_protocol::PiRequestContext,
-) -> Result<()> {
+) -> Result<Option<std::path::PathBuf>> {
     let Some(file) = context.session_file.as_deref() else {
-        return Ok(());
+        return Ok(None);
     };
-    let locator = match conversation_file(
+    match conversation_file(
         Harness::Pi,
         &context.conversation.native_id,
         Some(file),
         &ConversationRoots::default(),
     ) {
-        Ok(path) => path,
-        Err(RuntimeError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(());
-        }
-        Err(_) => return Err(CliError::message("Pi session file could not be verified")),
-    };
-    let owned;
-    let opened = match opened {
-        Some(opened) => opened,
-        None => {
-            owned = super::super::application::open_records(&app.config)?;
-            &owned
-        }
-    };
-    let Some(session) = pi_session(opened, &context.conversation.native_id)? else {
+        Ok(path) => Ok(Some(path)),
+        Err(RuntimeError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(_) => Err(CliError::message("Pi session file could not be verified")),
+    }
+}
+
+/// Retain a verified SDK-supplied file for an already enrolled Session.
+pub(super) fn remember_locator(
+    opened: &super::super::application::OpenedRecords,
+    native_id: &str,
+    locator: &std::path::Path,
+) -> Result<()> {
+    let Some(session) = pi_session(opened, native_id)? else {
         return Ok(());
     };
     opened
         .locations()?
-        .remember_transcript(&session.stream_id, &session.id, &locator)
+        .remember_transcript(&session.stream_id, &session.id, locator)
         .map_err(|error| {
             if error.is_uncertain() {
                 CliError::message("Pi session file retention is uncertain; inspect before retrying")
@@ -194,19 +190,9 @@ pub(super) struct SessionResolution {
 }
 
 pub(super) fn resolve_session(
-    app: &App,
-    opened: Option<&super::super::application::OpenedRecords>,
+    opened: &super::super::application::OpenedRecords,
     session_id: &str,
-    remember_directory: bool,
 ) -> Result<SessionResolution> {
-    let owned;
-    let opened = match opened {
-        Some(opened) => opened,
-        None => {
-            owned = super::super::application::open_records(&app.config)?;
-            &owned
-        }
-    };
     let host = opened.host().as_str();
     let scope = streams::integration::WorkScope {
         catalog: opened.source_id().into(),
@@ -219,17 +205,6 @@ pub(super) fn resolve_session(
             desired_pi_name: None,
         });
     };
-    // Best effort: a directory that cannot be remembered leaves the Session as it is.
-    if remember_directory
-        && let Ok(directory) = streams::runtime::checkouts::canonical_directory(&app.cwd)
-    {
-        let _ = super::super::application::remember_directory(
-            opened,
-            &session.stream_id,
-            &session.id,
-            &directory,
-        );
-    }
     let desired_pi_name = opened
         .settings()
         .pi
