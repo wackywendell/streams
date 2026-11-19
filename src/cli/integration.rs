@@ -78,8 +78,8 @@ impl App {
         let facade = application::integration::Streams::admit(&opened, &scope)?;
         let resolved = facade.resolve_saved_reference(
             &reference,
-            &opened.registry(&self.config)?,
-            &opened.locations(&self.config)?,
+            &opened.registry()?,
+            &opened.locations()?,
         )?;
         let ResolvedTarget::Document {
             checkout_root,
@@ -308,10 +308,10 @@ impl App {
         let mode = mode_override.unwrap_or(settings.herdr.viewer_mode);
         let placement = placement_override.unwrap_or(settings.herdr.viewer_placement);
         let registry = records
-            .registry(&self.config)
+            .registry()
             .map_err(|_| WireError::unavailable("owner checkouts are unavailable"))?;
         let locations = records
-            .locations(&self.config)
+            .locations()
             .map_err(|_| WireError::unavailable("owner locations are unavailable"))?;
         let resolved = match facade.resolve_saved_reference(reference, &registry, &locations) {
             Ok(value) => value,
@@ -506,7 +506,7 @@ impl App {
             .select_open(&request.stream, &request.sessions)
             .map_err(|_| WireError::unavailable("selected work is unavailable"))?;
         let locations = records
-            .locations(&self.config)
+            .locations()
             .map_err(|_| WireError::unavailable("owner locations are unavailable"))?;
         let socket = frontend::hc::HcEndpoint::resolve(&self.environment, &self.cwd)
             .map_err(|_| WireError::unavailable("hc connection is unavailable"))?;

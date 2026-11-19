@@ -145,12 +145,8 @@ pub(super) fn apply(
     )?))
 }
 
-pub(super) fn apply_opened(
-    opened: &OpenedRecords,
-    request: serde_json::Value,
-    defaults: streams::model::TitleDefaults,
-) -> Result<Output> {
-    let update = agent::parse_record_update(request, opened.source_id(), defaults)?;
+pub(super) fn apply_opened(opened: &OpenedRecords, request: serde_json::Value) -> Result<Output> {
+    let update = agent::parse_record_update(request, opened.source_id(), opened.settings().naming)?;
     let before_status = if update.target().kind() == streams::model::RecordKind::Stream {
         opened
             .records()

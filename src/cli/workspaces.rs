@@ -183,7 +183,7 @@ impl App {
         }
         let completion = (|| -> Result<Option<(Value, bool)>> {
             let directory = self.path(cwd.as_deref().unwrap_or(&self.cwd))?;
-            let locations = opened.locations(&self.config)?;
+            let locations = opened.locations()?;
             locations.remember(&stream.id, &directory, None, false, None, None)?;
             let Creation::Workspace(requested) = creation else {
                 return Ok(None);
@@ -257,7 +257,7 @@ impl App {
         };
         let sessions = selected_sessions(&opened, &stream, &session, inventory.as_deref())?;
         let mut frontend = frontend.ok_or_else(no_frontend)?;
-        let locations = opened.locations(&self.config)?;
+        let locations = opened.locations()?;
         let roots = ConversationRoots::from_environment()?;
         let runtime = WorkspaceRuntime::new(
             opened.host().as_str(),
@@ -320,7 +320,7 @@ impl App {
                 });
             }
         };
-        let locations = opened.locations(&self.config)?;
+        let locations = opened.locations()?;
         let locator = locations.transcript_file(&stream.id, &session.id)?;
         let selected = SelectedConversation {
             session,

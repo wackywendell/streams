@@ -25,9 +25,6 @@ impl NativeCardsConfig {
         cwd: &Path,
         plugin_root: &Path,
     ) -> Result<Self> {
-        if !cwd.is_absolute() {
-            return Err(invalid("native reader cwd must be absolute"));
-        }
         let config = Config::new(environment, cwd).map_err(|e| invalid(e.to_string()))?;
         let settings = config.load().map_err(|e| invalid(e.to_string()))?;
         Self::from_settings(&settings, config.config_path(), cwd, plugin_root)

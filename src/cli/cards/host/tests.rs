@@ -39,8 +39,8 @@ fn watched_inputs_have_one_canonical_session_and_stream_address_and_both_directo
         harness: "pi".into(),
         native_session_id: native_id.into(),
     };
-    let inputs = Inputs::new(&app, &records, &scope).unwrap();
-    let bindings = records.locations(&app.config).unwrap();
+    let inputs = Inputs::new(&records, &scope).unwrap();
+    let bindings = records.locations().unwrap();
     let paths = inputs.paths(&scope.stream_id).unwrap();
     assert_eq!(
         paths,
@@ -52,7 +52,7 @@ fn watched_inputs_have_one_canonical_session_and_stream_address_and_both_directo
             records
                 .root()
                 .join(format!("hosts/{HOST}/streams/project%2Fname.json")),
-            records.registry(&app.config).unwrap().path().into(),
+            records.registry().unwrap().path().into(),
             bindings.path(&scope.stream_id, Some(&scope.session_id)),
             bindings.path(&scope.stream_id, None),
         ])
@@ -82,7 +82,7 @@ fn watched_inputs_have_one_canonical_session_and_stream_address_and_both_directo
             "harness" => invalid.harness = "codex".into(),
             _ => unreachable!(),
         };
-        assert!(Inputs::new(&app, &records, &invalid).is_err());
+        assert!(Inputs::new(&records, &invalid).is_err());
     }
     let stream = streams::model::Stream::new(&scope.stream_id, "Work", None, HOST).unwrap();
     let session = Session::new(

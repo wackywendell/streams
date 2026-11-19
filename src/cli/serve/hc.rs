@@ -44,7 +44,7 @@ pub(super) fn remember_locator(
         return Ok(());
     };
     opened
-        .locations(&app.config)?
+        .locations()?
         .remember_transcript(&session.stream_id, &session.id, &locator)
         .map_err(|error| {
             if error.is_uncertain() {
@@ -209,7 +209,6 @@ pub(super) fn resolve_session(
         && let Ok(directory) = streams::runtime::checkouts::canonical_directory(&app.cwd)
     {
         let _ = super::super::application::remember_directory(
-            &app.config,
             &opened,
             &session.stream_id,
             &session.id,

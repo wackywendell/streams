@@ -6,7 +6,6 @@ use serde::Serialize;
 use super::{OpenedRecords, Result};
 use crate::{
     agent::{EnrollmentRequest, RecordContext, effort_id_for},
-    config::Config,
     model::{Record, RecordKind, Session, Status, Stream, ValidationError},
     operations::DomainOutcome,
     storage::records::{RecordAddress, RecordChange, RecordSave, RecordStore},
@@ -192,7 +191,6 @@ impl EnrollmentReceipt {
 /// remember the directory and reopen a closed Stream that gains an active Session. A
 /// failure after the first save is reported in the receipt, never retried.
 pub fn enroll(
-    config: &Config,
     opened: &OpenedRecords,
     request: &EnrollmentRequest,
     observed: &RecordContext,
@@ -234,7 +232,7 @@ pub fn enroll(
         let (stream_id, session_id) = (dependency.id.clone(), session.id.clone());
         receipt.stream = Some(dependency);
         receipt.session = Some(session);
-        remember_directory(config, opened, &stream_id, &session_id, directory)?;
+        remember_directory(opened, &stream_id, &session_id, directory)?;
         if reopen
             && let Some(reopened) = super::lifecycle::reopen_closed_stream(opened, &stream_id)?
             && let Record::Stream(updated) = reopened.current.record
@@ -259,18 +257,17 @@ pub fn enroll(
 /// Remember that `directory` serves this Stream and Session, and bind the repositories of
 /// the checkout it is in.
 pub fn remember_directory(
-    config: &Config,
     opened: &OpenedRecords,
     stream_id: &str,
     session_id: &str,
     directory: &Path,
 ) -> Result<()> {
-    let locations = opened.locations(config)?;
+    let locations = opened.locations()?;
     locations.remember(stream_id, directory, None, true, None, None)?;
     let binding = locations.remember(stream_id, directory, Some(session_id), true, None, None)?;
     if let Some(checkout) = binding.checkout {
         opened
-            .registry(config)?
+            .registry()?
             .bind_inferred_repositories(&checkout.id, &crate::process::NativeProcessRunner)?;
     }
     Ok(())

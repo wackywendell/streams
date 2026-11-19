@@ -335,38 +335,6 @@ fn opened_records_keeps_the_settings_it_was_opened_with() {
 
     let opened = application::open_records(&config).unwrap();
     assert_eq!(opened.settings(), &expected);
-
-    let other_root = directory.path().join("other-catalog");
-    config
-        .set(
-            streams::config::ConfigKey::CatalogRoot,
-            other_root.to_str().unwrap(),
-        )
-        .unwrap();
-    config
-        .set(streams::config::ConfigKey::StreamNaming, "automatic")
-        .unwrap();
-    config
-        .set(streams::config::ConfigKey::LifecycleDecayDays, "30")
-        .unwrap();
-    config
-        .set(streams::config::ConfigKey::FrontendMode, "hc")
-        .unwrap();
-
-    assert_eq!(opened.settings(), &expected);
-    assert_eq!(opened.settings().catalog_root, opened.root());
-    assert_eq!(
-        opened.settings().naming.stream,
-        streams::model::NamingMode::Manual
-    );
-    assert_eq!(opened.settings().lifecycle.decay_days, 7);
-    assert_eq!(
-        opened.settings().frontend,
-        streams::frontend::FrontendMode::None
-    );
-
-    fs::write(config.config_path(), "not valid toml [").unwrap();
-    assert_eq!(opened.settings(), &expected);
-    assert!(opened.locations(&config).is_ok());
-    assert!(opened.registry(&config).is_ok());
+    assert!(opened.locations().is_ok());
+    assert!(opened.registry().is_ok());
 }

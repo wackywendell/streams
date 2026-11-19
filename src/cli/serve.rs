@@ -287,7 +287,8 @@ impl Server {
                 return Err(CliError::message("request cancelled before dispatch"));
             }
             let app = self.app()?;
-            let hc_selected = app.selection(None)?.resolved == Some(FrontendId::Hc);
+            let hc_selected =
+                app.selection(app.config.load()?.frontend, None)?.resolved == Some(FrontendId::Hc);
             if matches!(
                 request,
                 Request::SessionStarted {}

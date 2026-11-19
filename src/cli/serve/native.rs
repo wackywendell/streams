@@ -244,7 +244,7 @@ impl Controller {
             None => {
                 let locator = if let Some(session) = &context.session {
                     records
-                        .locations(&self.app.config)?
+                        .locations()?
                         .transcript_file(&session.stream_id, &session.id)?
                 } else {
                     None
@@ -358,8 +358,13 @@ impl Controller {
     /// Whether the frontend selection for this Pi's environment and settings is Herdr.
     fn in_herdr(&self) -> bool {
         self.app
-            .selection(None)
-            .is_ok_and(|selection| selection.resolved == Some(streams::frontend::FrontendId::Herdr))
+            .config
+            .load()
+            .ok()
+            .and_then(|settings| self.app.selection(settings.frontend, None).ok())
+            .is_some_and(|selection| {
+                selection.resolved == Some(streams::frontend::FrontendId::Herdr)
+            })
     }
     pub fn request(&mut self, request: &Request, cancelled: Arc<AtomicBool>) -> Result<Output> {
         use streams::{child_protocol::CardTarget, config::CardMode};
@@ -550,11 +555,9 @@ impl Controller {
         {
             let completion = (|| -> Result<()> {
                 if let Some(path) = &pass.transcript {
-                    records.locations(&self.app.config)?.remember_transcript(
-                        &stream.id,
-                        &session.id,
-                        path,
-                    )?;
+                    records
+                        .locations()?
+                        .remember_transcript(&stream.id, &session.id, path)?;
                 }
                 pass.context.session = Some(session.clone());
                 pass.context.sessions = vec![session];

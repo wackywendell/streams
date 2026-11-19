@@ -113,7 +113,7 @@ impl App {
                             .checkout
                             .as_ref()
                             .and_then(|checkout| checkout.repository_url.as_deref());
-                        opened.locations(&self.config)?.remember(
+                        opened.locations()?.remember(
                             &session.stream_id,
                             &directory,
                             Some(&session.id),
@@ -177,7 +177,7 @@ impl App {
                         "--repository requires --cwd or --checkout",
                     ));
                 }
-                let locations = opened.locations(&self.config)?;
+                let locations = opened.locations()?;
                 if cwd.is_some() || checkout_id.is_some() {
                     let portable_url = session
                         .checkout
@@ -218,7 +218,7 @@ impl App {
                     }
                     let directory = if let Some(id) = checkout_id.as_deref() {
                         opened
-                            .registry(&self.config)?
+                            .registry()?
                             .directory(id, within.as_deref().unwrap_or("."))?
                     } else {
                         self.path(cwd.as_deref().expect("directory selection"))?

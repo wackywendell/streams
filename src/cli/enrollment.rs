@@ -46,7 +46,7 @@ impl App {
         observed: &RecordContext,
     ) -> Result<LocalEnrollment> {
         let directory = canonical_directory(&self.path(std::path::Path::new(request.cwd()))?)?;
-        let receipt = application::enroll(&self.config, opened, request, observed, &directory)?;
+        let receipt = application::enroll(opened, request, observed, &directory)?;
         Ok(LocalEnrollment {
             output: Output {
                 value: serde_json::to_value(&receipt)?,

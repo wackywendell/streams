@@ -396,9 +396,13 @@ impl App {
             herdr: None,
         })
     }
-    fn selection(&self, requested: Option<FrontendRequest>) -> Result<FrontendSelection> {
+    fn selection(
+        &self,
+        configured: FrontendMode,
+        requested: Option<FrontendRequest>,
+    ) -> Result<FrontendSelection> {
         Ok(frontend::resolve_frontend(
-            self.config.load()?.frontend,
+            configured,
             requested,
             &self.environment,
         )?)
@@ -410,14 +414,10 @@ impl App {
         requested: Option<FrontendRequest>,
         timeout: f64,
     ) -> Result<Option<Box<dyn Frontend>>> {
-        frontend::resolve_frontend(
-            opened.settings().frontend.clone(),
-            requested,
-            &self.environment,
-        )?
-        .resolved
-        .map(|id| self.connect_frontend(id, opened, timeout))
-        .transpose()
+        self.selection(opened.settings().frontend.clone(), requested)?
+            .resolved
+            .map(|id| self.connect_frontend(id, opened, timeout))
+            .transpose()
     }
     fn connect_frontend(
         &self,
@@ -476,18 +476,9 @@ impl App {
             streams::model::check_text(id, "STREAMS_STREAM_ID", false)?;
             return Ok(id.to_owned());
         }
-        let selection = frontend::resolve_frontend(
-            opened.settings().frontend.clone(),
-            requested,
-            &self.environment,
-        )?;
-        let mut frontend = selection
-            .resolved
-            .map(|id| self.connect_frontend(id, opened, 30.0))
-            .transpose()?
-            .ok_or_else(|| {
-                CliError::message("--current requires an explicit Stream key or a frontend")
-            })?;
+        let mut frontend = self.frontend(opened, requested, 30.0)?.ok_or_else(|| {
+            CliError::message("--current requires an explicit Stream key or a frontend")
+        })?;
         frontend.caller_stream()?.ok_or_else(|| {
             CliError::message(
                 "calling workspace has no Stream selector; pass an explicit reference",
@@ -497,14 +488,11 @@ impl App {
     /// Tell the caller's views that this command saved records.
     /// A caller with no usable frontend context has no views to tell.
     pub(super) fn notify_saved(&self) -> Result<()> {
-        let Ok(FrontendSelection {
-            resolved: Some(id), ..
-        }) = self.selection(None)
-        else {
+        let opened = application::open_records(&self.config)?;
+        let Ok(Some(mut frontend)) = self.frontend(&opened, None, 5.0) else {
             return Ok(());
         };
-        let opened = application::open_records(&self.config)?;
-        Ok(self.connect_frontend(id, &opened, 5.0)?.notify_saved()?)
+        Ok(frontend.notify_saved()?)
     }
     fn record_target(
         &self,
@@ -668,7 +656,7 @@ impl App {
             Command::Frontend {
                 command: FrontendCommand::Get { frontend },
             } => {
-                let selection = self.selection(frontend)?;
+                let selection = self.selection(self.config.load()?.frontend, frontend)?;
                 Ok(Output::value(
                     json!({"configured":mode(&selection.configured),
                     "requested":selection.requested.map(|request| match request { FrontendRequest::Auto=>"auto".into(), FrontendRequest::Explicit(id)=>id.to_string() }),
@@ -876,12 +864,9 @@ impl App {
         let opened = application::open_records(&self.config)?;
         // Capture reads open state from Herdr's topology only.
         let native = (|| -> Result<_> {
-            if frontend::resolve_frontend(
-                opened.settings().frontend.clone(),
-                None,
-                &self.environment,
-            )?
-            .resolved
+            if self
+                .selection(opened.settings().frontend.clone(), None)?
+                .resolved
                 != Some(frontend::FrontendId::Herdr)
             {
                 return Err(CliError::message(
@@ -900,8 +885,8 @@ impl App {
             (None, None) => CaptureTarget::Inventory,
             _ => return Err(CliError::message("select a stream or workspace, not both")),
         };
-        let registry = opened.registry(&self.config)?;
-        let locations = opened.locations(&self.config)?;
+        let registry = opened.registry()?;
+        let locations = opened.locations()?;
         Ok(Output::value(agent::capture_inputs(
             &opened,
             native,
@@ -961,12 +946,7 @@ impl App {
             |request| self.context_from_records(&opened, request, naming),
         )?;
         let documents = if let (Some(stream), Some(session)) = (&context.stream, &context.session) {
-            documents::context(
-                &opened.registry(&self.config)?,
-                &opened.locations(&self.config)?,
-                stream,
-                session,
-            )
+            documents::context(&opened.registry()?, &opened.locations()?, stream, session)
         } else {
             json!({"checkouts":[],"document_locations":[]})
         };
@@ -996,7 +976,7 @@ impl App {
 
     fn apply_request(&self, request: serde_json::Value) -> Result<Output> {
         let opened = application::open_records(&self.config)?;
-        catalog::apply_opened(&opened, request, opened.settings().naming)
+        catalog::apply_opened(&opened, request)
     }
 }
 

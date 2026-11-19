@@ -1,3 +1,4 @@
+//! An open card keeps showing the catalog it was launched for.
 use super::{
     App, Config, Options, application, build,
     events::{Change, Events, Native, Routes},
@@ -33,7 +34,7 @@ struct Inputs {
     directories: [PathBuf; 2],
 }
 impl Inputs {
-    fn new(app: &App, records: &application::OpenedRecords, scope: &Scope) -> Result<Self> {
+    fn new(records: &application::OpenedRecords, scope: &Scope) -> Result<Self> {
         if scope.catalog_source != records.source_id()
             || scope.host_id != records.host().as_str()
             || scope.harness != "pi"
@@ -46,8 +47,8 @@ impl Inputs {
         let session = RecordAddress::new(&scope.host_id, RecordKind::Session, &scope.session_id)
             .map_err(|e| e.to_string())?;
         let session_path = root.join(relative_record_path(&session).map_err(|e| e.to_string())?);
-        let registry = records.registry(&app.config).map_err(|e| e.to_string())?;
-        let bindings = records.locations(&app.config).map_err(|e| e.to_string())?;
+        let registry = records.registry().map_err(|e| e.to_string())?;
+        let bindings = records.locations().map_err(|e| e.to_string())?;
         let physical =
             |path: PathBuf| streams::config::resolve_path(&path).map_err(|e| e.to_string());
         let directories = [
@@ -225,7 +226,7 @@ impl Host {
         let reader = self.reader(None)?;
         let records =
             Arc::new(application::open_records(&reader.config).map_err(|error| error.to_string())?);
-        let inputs = Inputs::new(&reader, &records, self.lifetime.context().scope())?;
+        let inputs = Inputs::new(&records, self.lifetime.context().scope())?;
         self.files = Some(Files::new(
             inputs.paths(&self.stream)?,
             self.events.clone(),
@@ -283,15 +284,11 @@ impl Host {
         self.placement = placement.clone();
         Ok(placement)
     }
-    fn watch_scope(&mut self, scope: &Scope, placement: &CardPlacement) -> Result<()> {
+    fn watch_scope(&mut self, scope: &Scope) -> Result<()> {
         if &self.inputs.as_ref().unwrap().scope == scope {
             return Ok(());
         }
-        let next = Inputs::new(
-            &self.reader(Some(placement))?,
-            self.records.as_ref().unwrap(),
-            scope,
-        )?;
+        let next = Inputs::new(self.records.as_ref().unwrap(), scope)?;
         self.files
             .as_mut()
             .unwrap()
@@ -349,7 +346,7 @@ impl Host {
         let session = inputs.session(self.files.as_ref().unwrap())?;
         let mut scope = inputs.scope.clone();
         scope.stream_id = session.stream_id.clone();
-        self.watch_scope(&scope, &placement)?;
+        self.watch_scope(&scope)?;
         self.lifetime
             .context()
             .owner

@@ -85,8 +85,8 @@ impl ApplicationSource {
     }
     pub(super) fn display(&self, records: CardRecords) -> Result<CardSnapshot> {
         let documents: Documents = serde_json::from_value(documents::context(
-            &self.records.registry(&self.app.config)?,
-            &self.records.locations(&self.app.config)?,
+            &self.records.registry()?,
+            &self.records.locations()?,
             records.stream(),
             records.session(),
         ))?;
@@ -168,8 +168,8 @@ impl ApplicationSource {
                 },
                 viewing_session: target.scope.session_id.clone(),
             },
-            &self.records.registry(&self.app.config)?,
-            &self.records.locations(&self.app.config)?,
+            &self.records.registry()?,
+            &self.records.locations()?,
         )?;
         let streams::integration::ResolvedTarget::Document {
             path: file,
