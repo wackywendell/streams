@@ -17,8 +17,7 @@ fn proposal(r#ref: Option<&str>) -> AutomaticReferenceValue {
 fn session(repository_url: &str) -> Session {
     let mut session = Session::new("session", "host", "stream", "pi", "native", "Title").unwrap();
     session.checkout = Some(Checkout {
-        repository: "repo".into(),
-        repository_url: Some(repository_url.into()),
+        repository_url: repository_url.into(),
         r#ref: "topic".into(),
         directory_within_checkout: ".".into(),
     });

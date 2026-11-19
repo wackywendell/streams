@@ -591,7 +591,6 @@ fn malformed_objects_unknown_fields_enum_maps_and_duplicate_json_are_rejected() 
         "/catalog",
         "/catalog/session",
         "/catalog/stream",
-        "/catalog/sessions/0",
         "/request",
         "/request/before",
         "/request/inputs/0",

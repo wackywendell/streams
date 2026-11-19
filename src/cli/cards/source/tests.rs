@@ -92,10 +92,8 @@ fn direct_urls_resolve_explicit_defaults_without_selection_or_portable_checkout_
             f.registry.set_default("repository", &checkout.id).unwrap();
             f.document("repository", "plan.md");
             if portable_url {
-                let mut portable =
-                    streams::model::Checkout::new("not-an-alias", "main", ".").unwrap();
-                portable.repository_url = Some("repository".into());
-                f.session.checkout = Some(portable);
+                f.session.checkout =
+                    Some(streams::model::Checkout::new("repository", "main", ".").unwrap());
             }
             if plain_directory {
                 let plain = f.root.join("plain");
@@ -165,9 +163,8 @@ fn selected_checkout_contributes_alias_free_hints_before_any_document_and_wins_o
         f.context()["document_locations"][1]["checkout_id"],
         foreign.id
     );
-    let mut portable = streams::model::Checkout::new("alias", "main", ".").unwrap();
-    portable.repository_url = Some("foreign-repository".into());
-    f.session.checkout = Some(portable);
+    f.session.checkout =
+        Some(streams::model::Checkout::new("foreign-repository", "main", ".").unwrap());
     assert!(
         f.context()["document_locations"][1]["error"]
             .as_str()

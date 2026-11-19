@@ -101,14 +101,15 @@ test('StreamCli validates strict catalog fields and nullable document provenance
   const value=structuredClone(initial);if(ref===undefined)delete value.stream.references[0].target.ref;else value.stream.references[0].target.ref=ref;
   assert.deepEqual((await read(value)).stream.references,value.stream.references);
  }
- const pinned=structuredClone(initial);pinned.session.checkout={repository:'old-app',repository_url:'https://example.test/original.git',ref:'topic',directory_within_checkout:'services/api'};
+ const pinned=structuredClone(initial);pinned.session.checkout={repository_url:'https://example.test/original.git',ref:'topic',directory_within_checkout:'services/api'};
  assert.deepEqual((await read(pinned)).session,pinned.session);
  for(const membership_epoch of [0,1,5]) {const value=structuredClone(initial);value.session.membership_epoch=membership_epoch;assert.deepEqual((await read(value)).session,value.session);}
  for(const change of [
   value=>{value.session.title_mode='other';},
   ...[null,-1,1.5,'1',[1]].map(epoch=>value=>{value.session.membership_epoch=epoch;}),
-  value=>{value.session.checkout={repository:'app',repository_url:42,ref:'topic',directory_within_checkout:'.'};},
-  value=>{value.session.checkout={repository:'app',repository_url:'',ref:'topic',directory_within_checkout:'.'};},
+  value=>{value.session.checkout={repository_url:42,ref:'topic',directory_within_checkout:'.'};},
+  value=>{value.session.checkout={repository_url:'',ref:'topic',directory_within_checkout:'.'};},
+  value=>{value.session.checkout={repository:'app',repository_url:'https://example.test/original.git',ref:'topic',directory_within_checkout:'.'};},
   value=>{value.stream.goal_mode='other';},value=>{value.stream.status='active';},value=>{value.host_id='';},
   ...['',' ',42,false].map(ref=>value=>{value.stream.references[0].target.ref=ref;}),
   value=>{value.stream.references[0].target.commit='';},value=>{value.stream.references[0].target.source_session_id=42;},

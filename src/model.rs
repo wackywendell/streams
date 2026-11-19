@@ -467,10 +467,7 @@ impl Reference {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Checkout {
-    /// Legacy Stream-local label; an explicit URL takes precedence after reassociation.
-    pub repository: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub repository_url: Option<String>,
+    pub repository_url: String,
     pub r#ref: String,
     #[serde(default = "checkout_directory")]
     pub directory_within_checkout: String,
@@ -479,13 +476,12 @@ pub struct Checkout {
 impl Checkout {
     /// Requires a portable relative directory; `.` denotes the checkout root.
     pub fn new(
-        repository: impl Into<String>,
+        repository_url: impl Into<String>,
         r#ref: impl Into<String>,
         directory_within_checkout: impl Into<String>,
     ) -> Result<Self, ValidationError> {
         let checkout = Self {
-            repository: repository.into(),
-            repository_url: None,
+            repository_url: repository_url.into(),
             r#ref: r#ref.into(),
             directory_within_checkout: directory_within_checkout.into(),
         };
@@ -495,10 +491,7 @@ impl Checkout {
 
     /// Check portable checkout fields.
     pub fn validate(&self) -> Result<(), ValidationError> {
-        check_text(&self.repository, "checkout.repository", false)?;
-        if let Some(url) = &self.repository_url {
-            check_text(url, "checkout.repository_url", false)?;
-        }
+        check_text(&self.repository_url, "checkout.repository_url", false)?;
         check_text(&self.r#ref, "checkout.ref", false)?;
         check_relative_path(
             &self.directory_within_checkout,
@@ -656,21 +649,12 @@ impl Session {
         uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, identity.as_bytes()).to_string()
     }
 
-    /// The portable record format requires a direct identity and self-contained checkout.
+    /// The portable record format requires a direct identity.
     pub fn validate_portable(&self) -> Result<(), ValidationError> {
         self.validate()?;
         if self.id != Self::id_for(&self.host_id, &self.harness, &self.harness_session_id) {
             return Err(ValidationError::new(format!(
                 "session ID does not match its native identity; {RESET_HINT}"
-            )));
-        }
-        if self
-            .checkout
-            .as_ref()
-            .is_some_and(|checkout| checkout.repository_url.is_none())
-        {
-            return Err(ValidationError::new(format!(
-                "session checkout must contain its portable repository URL; {RESET_HINT}"
             )));
         }
         Ok(())

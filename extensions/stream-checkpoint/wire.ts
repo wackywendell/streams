@@ -37,7 +37,7 @@ export type SessionWire = {
   title: string; title_mode: TitleMode; status: Status;
   recap?: string; recap_short?: string | null;
   state: string; state_short: string | null; remaining: string; remaining_short?: string | null;
-  checkout: { repository: string; repository_url?: string | null; ref: string; directory_within_checkout: string } | null;
+  checkout: { repository_url: string; ref: string; directory_within_checkout: string } | null;
   revision: number; updated_at_ms: number;
 };
 /** The JSON schema of one field's value: a string, a choice, or either of two. */
@@ -158,8 +158,8 @@ export function isSession(value: unknown): value is SessionWire {
       identity(stream) && Array.isArray(entries) && entries.every(entry => object(entry) && identity(entry.name) && identity(entry.description))
       && new Set(entries.map(entry => entry.name)).size === entries.length))
     && (value.checkout === null || object(value.checkout)
-      && identity(value.checkout.repository) && identity(value.checkout.ref) && text(value.checkout.directory_within_checkout)
-      && (value.checkout.repository_url === undefined || value.checkout.repository_url === null || identity(value.checkout.repository_url)));
+      && onlyFields(value.checkout, ['repository_url', 'ref', 'directory_within_checkout'])
+      && identity(value.checkout.repository_url) && identity(value.checkout.ref) && text(value.checkout.directory_within_checkout));
 }
 
 const fieldRows = (value: unknown) => Array.isArray(value) && value.every(row => object(row) && typeof row.field === 'string' && object(row.schema) && typeof row.short === 'boolean');

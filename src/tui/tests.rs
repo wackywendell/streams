@@ -259,9 +259,8 @@ fn reference_groups_labels_states_and_document_qualifiers_use_saved_values() {
     assert!(rendered.find("Issue Track work").unwrap() < rendered.find("Link Dashboard").unwrap());
     assert!(rendered.contains("Dependency · Fulfilled"));
     assert!(rendered.contains("Background · Active"));
-    let mut checkout = Checkout::new("unused-alias", "main", ".").unwrap();
-    checkout.repository_url = Some("https://example.com/lib".into());
-    snapshot.records.session.checkout = Some(checkout);
+    snapshot.records.session.checkout =
+        Some(Checkout::new("https://example.com/lib", "main", ".").unwrap());
     assert!(text(&snapshot).contains("Document Design · Brief · Active"));
     let mut other = document_reference("other.md", "Other");
     document_mut(&mut other).repository_url = "ssh://another/repository".into();

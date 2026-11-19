@@ -196,9 +196,9 @@ test('records carry their revision and update time', () => {
   }
 });
 
-test('checkout wire permits absent repository URL without guessing it', () => {
-  const checkout = {repository:'repo', repository_url:'https://example.test/repo', ref:'main', directory_within_checkout:'.'};
+test('checkout wire requires repository_url and rejects legacy repository alias', () => {
+  const checkout = {repository_url:'https://example.test/repo', ref:'main', directory_within_checkout:'.'};
   assert.equal(isSession({...session, checkout}), true);
-  for (const repository_url of [undefined, null]) assert.equal(isSession({...session, checkout:{...checkout, repository_url}}), true);
-  for (const repository_url of ['', '  ']) assert.equal(isSession({...session, checkout:{...checkout, repository_url}}), false);
+  assert.equal(isSession({...session, checkout:{...checkout, repository:'repo'}}), false);
+  for (const repository_url of [undefined, null, '', '  ']) assert.equal(isSession({...session, checkout:{...checkout, repository_url}}), false);
 });

@@ -49,9 +49,7 @@ impl AutomaticReferenceValue {
                 let checkout_ref = session
                     .checkout
                     .as_ref()
-                    .filter(|checkout| {
-                        checkout.repository_url.as_deref() == Some(document.repository_url.as_str())
-                    })
+                    .filter(|checkout| checkout.repository_url == document.repository_url)
                     .map(|checkout| checkout.r#ref.clone());
                 ReferenceTarget::Document(RepositoryDocument {
                     repository_url: document.repository_url.clone(),

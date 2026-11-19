@@ -596,10 +596,10 @@ fn reference_documents_assign_and_preserve_recovery_without_aliases() {
             let before = stream("a");
             let mut captured = session();
             if matching_checkout {
-                let mut checkout =
-                    streams::model::Checkout::new("repo", "checkout-ref", ".").unwrap();
-                checkout.repository_url = Some("git@example.test:repo".into());
-                captured.checkout = Some(checkout);
+                captured.checkout = Some(
+                    streams::model::Checkout::new("git@example.test:repo", "checkout-ref", ".")
+                        .unwrap(),
+                );
             }
             put(&store, Record::Session(captured.clone()));
             let mut row = doc_row();

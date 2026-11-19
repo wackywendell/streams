@@ -171,10 +171,10 @@ fn positional_nested_arrays_are_not_wire_objects() {
         );
     }
     let mut data = session();
-    data["checkout"] = json!({"repository": "repo", "ref": "main"});
+    data["checkout"] = json!({"repository_url": "https://example.test/repo", "ref": "main"});
     record_from_data(RecordKind::Session, &data).unwrap();
     serde_json::from_value::<Session>(data.clone()).unwrap();
-    data["checkout"] = json!(["repo", "main", "."]);
+    data["checkout"] = json!(["https://example.test/repo", "main", "."]);
     assert!(serde_json::from_value::<Session>(data.clone()).is_err());
     let error = record_from_data(RecordKind::Session, &data).unwrap_err();
     assert!(error.to_string().contains("must be an object"), "{error}");
@@ -212,7 +212,11 @@ fn unknown_fields_are_rejected_at_every_record_level() {
         );
     }
     let mut data = session();
-    data["checkout"] = json!({"repository": "repo", "ref": "main", "extra": true});
+    data["checkout"] =
+        json!({"repository_url": "https://example.test/repo", "ref": "main", "extra": true});
+    assert!(record_from_data(RecordKind::Session, &data).is_err());
+    data["checkout"] =
+        json!({"repository": "repo", "repository_url": "https://example.test/repo", "ref": "main"});
     assert!(record_from_data(RecordKind::Session, &data).is_err());
 }
 
@@ -272,7 +276,7 @@ fn defaults_apply_only_to_missing_nonnullable_fields() {
         );
     }
     let mut data = session();
-    data["checkout"] = json!({"repository": "repo", "ref": "main"});
+    data["checkout"] = json!({"repository_url": "https://example.test/repo", "ref": "main"});
     assert_eq!(
         roundtrip(RecordKind::Session, &data)["checkout"]["directory_within_checkout"],
         "."

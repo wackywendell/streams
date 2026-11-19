@@ -71,10 +71,11 @@ impl App {
                         let url = stream.repositories.get(alias).ok_or_else(|| {
                             CliError::message(format!("unknown repository alias: {alias:?}"))
                         })?;
-                        let mut checkout =
-                            Checkout::new(alias, reference, directory_within_checkout)?;
-                        checkout.repository_url = Some(url.url.clone());
-                        Some(checkout)
+                        Some(Checkout::new(
+                            &url.url,
+                            reference,
+                            directory_within_checkout,
+                        )?)
                     }
                     (None, None) if directory_within_checkout == "." => None,
                     (None, _) => {
@@ -109,7 +110,7 @@ impl App {
                         let url = session
                             .checkout
                             .as_ref()
-                            .and_then(|checkout| checkout.repository_url.as_deref());
+                            .map(|checkout| checkout.repository_url.as_str());
                         opened.locations()?.remember(
                             streams::runtime::BindingKey::Session(&session.id),
                             &directory,
@@ -175,7 +176,7 @@ impl App {
                     let portable_url = session
                         .checkout
                         .as_ref()
-                        .and_then(|checkout| checkout.repository_url.as_deref());
+                        .map(|checkout| checkout.repository_url.as_str());
                     let selected_url = if let Some(alias) = repository.as_deref() {
                         let stream = opened.records().with_reader(
                             |reader| -> application::Result<Stream> {

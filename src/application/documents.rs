@@ -23,12 +23,8 @@ pub fn context(
         })
         .collect();
     let mut urls: BTreeSet<String> = documents.iter().map(|d| d.repository_url.clone()).collect();
-    if let Some(url) = session
-        .checkout
-        .as_ref()
-        .and_then(|checkout| checkout.repository_url.as_ref())
-    {
-        urls.insert(url.clone());
+    if let Some(checkout) = &session.checkout {
+        urls.insert(checkout.repository_url.clone());
     }
     let mut snapshot = registry.snapshot().map_err(|error| error.to_string());
     let selected = (|| -> Result<_, String> {
@@ -69,7 +65,7 @@ pub fn context(
         session
             .checkout
             .as_ref()
-            .and_then(|portable| portable.repository_url.as_deref())
+            .map(|portable| portable.repository_url.as_str())
             .or_else(|| binding.and_then(|checkout| checkout.repository_url.as_deref()))
     });
     let mut checkouts = Vec::new();
@@ -155,7 +151,7 @@ fn preferred_repository_url<'a>(
     session
         .checkout
         .as_ref()
-        .and_then(|portable| portable.repository_url.as_deref())
+        .map(|portable| portable.repository_url.as_str())
         .or_else(|| {
             selected
                 .and_then(|binding| binding.checkout.as_ref())

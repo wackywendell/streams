@@ -17,8 +17,7 @@ fn records() -> (Session, Stream, Stream, MoveIntent) {
     session.state_short = Some("Progress".into());
     session.remaining = "More work".into();
     session.checkout = Some(Checkout {
-        repository: "old-label".into(),
-        repository_url: Some("https://example.com/original.git".into()),
+        repository_url: "https://example.com/original.git".into(),
         r#ref: "feature".into(),
         directory_within_checkout: "src".into(),
     });
@@ -107,18 +106,6 @@ fn every_record_must_belong_to_the_configured_producer() {
     foreign_session.host_id = "other".into();
     foreign_session.id = Session::id_for("other", "pi", "native");
     assert!(apply_move(&foreign_session, &a, &b, &intent).is_err());
-}
-
-#[test]
-fn incomplete_portable_checkout_is_not_repaired_by_a_move() {
-    let (mut session, a, b, intent) = records();
-    session.checkout.as_mut().unwrap().repository_url = None;
-    assert!(
-        apply_move(&session, &a, &b, &intent)
-            .unwrap_err()
-            .to_string()
-            .contains("portable repository URL")
-    );
 }
 
 #[test]

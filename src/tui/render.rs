@@ -198,7 +198,7 @@ fn reference_blocks(snapshot: &CardSnapshot, width: usize) -> Vec<ReferenceBlock
         .session()
         .checkout
         .as_ref()
-        .and_then(|c| c.repository_url.as_deref());
+        .map(|c| c.repository_url.as_str());
     let mut blocks = Vec::new();
     let mut document_index = 0;
     let mut url_index = 0;
