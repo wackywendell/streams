@@ -98,7 +98,6 @@ revision: 7
 updated_at_ms: 1767225600000
 
 checkout:
-  repository: streams
   repository_url: https://github.com/wackywendell/streams
   ref: lifecycle-design
   directory_within_checkout: "."
