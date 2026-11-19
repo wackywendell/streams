@@ -183,7 +183,7 @@ impl App {
         }
         let completion = (|| -> Result<Option<(Value, bool)>> {
             let directory = self.path(cwd.as_deref().unwrap_or(&self.cwd))?;
-            let locations = self.locations(opened.root(), opened.host().as_str())?;
+            let locations = opened.locations(&self.config)?;
             locations.remember(&stream.id, &directory, None, false, None, None)?;
             let Creation::Workspace(requested) = creation else {
                 return Ok(None);
@@ -240,12 +240,6 @@ impl App {
         cwd: Option<PathBuf>,
     ) -> Result<Output> {
         let opened = application::open_records(&self.config)?;
-        let settings = self.config.load()?;
-        if settings.catalog_root != opened.root() {
-            return Err(CliError::message(
-                "catalog root setting changed during open",
-            ));
-        }
         let inventory = (!target.current).then(|| opened.inventory()).transpose()?;
         let explicit = self.explicit_workspace_target(
             &opened,
@@ -263,7 +257,7 @@ impl App {
         };
         let sessions = selected_sessions(&opened, &stream, &session, inventory.as_deref())?;
         let mut frontend = frontend.ok_or_else(no_frontend)?;
-        let locations = self.locations(opened.root(), opened.host().as_str())?;
+        let locations = opened.locations(&self.config)?;
         let roots = ConversationRoots::from_environment()?;
         let runtime = WorkspaceRuntime::new(
             opened.host().as_str(),
@@ -289,12 +283,6 @@ impl App {
         cwd: Option<PathBuf>,
     ) -> Result<Output> {
         let opened = application::open_records(&self.config)?;
-        let settings = self.config.load()?;
-        if settings.catalog_root != opened.root() {
-            return Err(CliError::message(
-                "catalog root setting changed during resume",
-            ));
-        }
         let inventory = (!target.current).then(|| opened.inventory()).transpose()?;
         let explicit = self.explicit_workspace_target(
             &opened,
@@ -306,7 +294,7 @@ impl App {
         }
         // Resume executes here; observed reuse is best effort, without discovery.
         let id = streams::frontend::resolve_resume_frontend(
-            settings.frontend,
+            opened.settings().frontend.clone(),
             target.frontend,
             &self.environment,
         )?;
@@ -332,7 +320,7 @@ impl App {
                 });
             }
         };
-        let locations = self.locations(opened.root(), opened.host().as_str())?;
+        let locations = opened.locations(&self.config)?;
         let locator = locations.transcript_file(&stream.id, &session.id)?;
         let selected = SelectedConversation {
             session,

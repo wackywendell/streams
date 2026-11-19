@@ -1,6 +1,6 @@
 //! Record-local enrollment and host-local directory selection. Native admission belongs to the driver.
 
-use super::{App, CliError, Output, Result, application};
+use super::{App, Output, Result, application};
 use streams::{
     agent::{ContextRequest, EnrollmentRequest, RecordContext},
     model::{Session, Stream},
@@ -25,12 +25,6 @@ impl App {
     pub(super) fn enroll_request(&self, request: serde_json::Value) -> Result<Output> {
         let opened = application::open_records(&self.config)?;
         let request = EnrollmentRequest::parse(request, opened.source_id())?;
-        let settings = self.config.load()?;
-        if settings.catalog_root != opened.root() {
-            return Err(CliError::message(
-                "catalog root setting changed during enrollment",
-            ));
-        }
         let observed = self.context_from_records(
             &opened,
             ContextRequest {
@@ -40,7 +34,7 @@ impl App {
                 environment_stream_id: None,
                 workspace_stream_id: None,
             },
-            settings.naming,
+            opened.settings().naming,
         )?;
         Ok(self.enroll_records(&opened, &request, &observed)?.output)
     }

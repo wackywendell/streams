@@ -9,7 +9,6 @@ use crate::{
     config::Config,
     model::{Record, RecordKind, Session, Status, Stream, ValidationError},
     operations::DomainOutcome,
-    runtime::CheckoutRegistry,
     storage::records::{RecordAddress, RecordChange, RecordSave, RecordStore},
 };
 
@@ -266,12 +265,12 @@ pub fn remember_directory(
     session_id: &str,
     directory: &Path,
 ) -> Result<()> {
-    let host = opened.host().as_str();
-    let locations = OpenedRecords::locations(config, opened.root(), host)?;
+    let locations = opened.locations(config)?;
     locations.remember(stream_id, directory, None, true, None, None)?;
     let binding = locations.remember(stream_id, directory, Some(session_id), true, None, None)?;
     if let Some(checkout) = binding.checkout {
-        CheckoutRegistry::new(config.checkout_state_dir(), host)?
+        opened
+            .registry(config)?
             .bind_inferred_repositories(&checkout.id, &crate::process::NativeProcessRunner)?;
     }
     Ok(())

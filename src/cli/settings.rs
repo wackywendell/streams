@@ -22,7 +22,7 @@ impl App {
                 },
             )?
             .mode()?;
-        let global = self.config.load()?.herdr.cards_auto_open;
+        let global = records.settings().herdr.cards_auto_open;
         Ok(Output::value(
             json!({"global":global,"session":session,"effective":session.resolve(global)}),
         ))

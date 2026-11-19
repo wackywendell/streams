@@ -78,8 +78,8 @@ impl App {
         let facade = application::integration::Streams::admit(&opened, &scope)?;
         let resolved = facade.resolve_saved_reference(
             &reference,
-            &self.registry(&scope.host)?,
-            &self.locations(opened.root(), &scope.host)?,
+            &opened.registry(&self.config)?,
+            &opened.locations(&self.config)?,
         )?;
         let ResolvedTarget::Document {
             checkout_root,
@@ -165,11 +165,7 @@ impl App {
         let result = (|| {
             let records = application::open_records(&self.config)
                 .map_err(|_| WireError::unavailable("configured catalog is unavailable"))?;
-            let decay_days = self
-                .config
-                .load()
-                .map(|settings| settings.lifecycle.decay_days)
-                .unwrap_or(0);
+            let decay_days = records.settings().lifecycle.decay_days;
             let facade = application::integration::Streams::admit(&records, &request.scope)
                 .map_err(|_| {
                     WireError::unavailable(
@@ -228,19 +224,12 @@ impl App {
                             },
                         )
                         .map_err(|_| WireError::unavailable("saved views are unavailable"))?;
-                    let herdr_config = self
-                        .config
-                        .load()
-                        .map(|settings| streams::integration::HerdrConfig {
-                            tab_naming: settings.herdr.tab_naming,
-                            viewer_mode: settings.herdr.viewer_mode,
-                            viewer_placement: settings.herdr.viewer_placement,
-                        })
-                        .unwrap_or(streams::integration::HerdrConfig {
-                            tab_naming: true,
-                            viewer_mode: streams::config::ViewerMode::Editor,
-                            viewer_placement: streams::config::ViewerPlacement::PaneRight,
-                        });
+                    let herdr = &records.settings().herdr;
+                    let herdr_config = streams::integration::HerdrConfig {
+                        tab_naming: herdr.tab_naming,
+                        viewer_mode: herdr.viewer_mode,
+                        viewer_placement: herdr.viewer_placement,
+                    };
                     Ok(ModResult::Read {
                         values,
                         notification_key: facade.scope().notification_key(),
@@ -315,18 +304,14 @@ impl App {
                 reason: reason.into(),
             },
         };
-        let settings = self
-            .config
-            .load()
-            .map_err(|_| WireError::unavailable("configuration is unavailable"))?;
+        let settings = records.settings();
         let mode = mode_override.unwrap_or(settings.herdr.viewer_mode);
         let placement = placement_override.unwrap_or(settings.herdr.viewer_placement);
-        let host = &facade.scope().host;
-        let registry = self
-            .registry(host)
+        let registry = records
+            .registry(&self.config)
             .map_err(|_| WireError::unavailable("owner checkouts are unavailable"))?;
-        let locations = self
-            .locations(records.root(), host)
+        let locations = records
+            .locations(&self.config)
             .map_err(|_| WireError::unavailable("owner locations are unavailable"))?;
         let resolved = match facade.resolve_saved_reference(reference, &registry, &locations) {
             Ok(value) => value,
@@ -520,8 +505,8 @@ impl App {
         let (stream, sessions) = facade
             .select_open(&request.stream, &request.sessions)
             .map_err(|_| WireError::unavailable("selected work is unavailable"))?;
-        let locations = self
-            .locations(records.root(), &facade.scope().host)
+        let locations = records
+            .locations(&self.config)
             .map_err(|_| WireError::unavailable("owner locations are unavailable"))?;
         let socket = frontend::hc::HcEndpoint::resolve(&self.environment, &self.cwd)
             .map_err(|_| WireError::unavailable("hc connection is unavailable"))?;

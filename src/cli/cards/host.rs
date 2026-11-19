@@ -10,13 +10,9 @@ use streams::{
     file_store::records::{decode_record, relative_record_path},
     frontend::herdr::{HerdrClient, HerdrNativeSnapshot, events::EventPane},
     model::{Record, RecordKind, Session},
-    runtime::{
-        checkouts::CheckoutRegistry,
-        locations::DirectoryBindings,
-        native_cards::{
-            CardPlacement, DisplayLifetime, LaunchedCardContext, NativeCardsConfig,
-            SOURCE_ENV_KEYS, publish_card_marker,
-        },
+    runtime::native_cards::{
+        CardPlacement, DisplayLifetime, LaunchedCardContext, NativeCardsConfig, SOURCE_ENV_KEYS,
+        publish_card_marker,
     },
     storage::records::{RecordAddress, RecordStore},
     tui::{
@@ -50,12 +46,8 @@ impl Inputs {
         let session = RecordAddress::new(&scope.host_id, RecordKind::Session, &scope.session_id)
             .map_err(|e| e.to_string())?;
         let session_path = root.join(relative_record_path(&session).map_err(|e| e.to_string())?);
-        let registry = CheckoutRegistry::new(app.config.checkout_state_dir(), &scope.host_id)
-            .map_err(|e| e.to_string())?;
-        let runtime = app
-            .state(&root, &scope.host_id)
-            .map_err(|e| e.to_string())?;
-        let bindings = DirectoryBindings::new(runtime.root(), registry.clone());
+        let registry = records.registry(&app.config).map_err(|e| e.to_string())?;
+        let bindings = records.locations(&app.config).map_err(|e| e.to_string())?;
         let physical =
             |path: PathBuf| streams::config::resolve_path(&path).map_err(|e| e.to_string());
         let directories = [
@@ -376,15 +368,6 @@ impl Host {
             placement.owner.clone(),
         )?;
         let reader = self.reader(Some(&placement))?;
-        if reader
-            .config
-            .load()
-            .map_err(|error| error.to_string())?
-            .catalog_root
-            != self.records.as_ref().unwrap().root()
-        {
-            return Err("catalog root setting changed during card read".into());
-        }
         let source = ApplicationSource::new(
             reader,
             self.records.as_ref().unwrap().clone(),

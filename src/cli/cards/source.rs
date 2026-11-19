@@ -48,11 +48,6 @@ impl ApplicationSource {
                 (stream, session, context.catalog_source)
             }
             None => {
-                if self.app.config.load()?.catalog_root != self.records.root() {
-                    return Err(CliError::message(
-                        "catalog root setting changed during card read",
-                    ));
-                }
                 let application = application::integration::Streams::new(&self.records);
                 let (stream, session) = application
                     .conversation_records(&streams::integration::ConversationId {
@@ -90,10 +85,8 @@ impl ApplicationSource {
     }
     pub(super) fn display(&self, records: CardRecords) -> Result<CardSnapshot> {
         let documents: Documents = serde_json::from_value(documents::context(
-            &self.app.registry(self.records.host().as_str())?,
-            &self
-                .app
-                .locations(self.records.root(), self.records.host().as_str())?,
+            &self.records.registry(&self.app.config)?,
+            &self.records.locations(&self.app.config)?,
             records.stream(),
             records.session(),
         ))?;
@@ -175,10 +168,8 @@ impl ApplicationSource {
                 },
                 viewing_session: target.scope.session_id.clone(),
             },
-            &self.app.registry(self.records.host().as_str())?,
-            &self
-                .app
-                .locations(self.records.root(), self.records.host().as_str())?,
+            &self.records.registry(&self.app.config)?,
+            &self.records.locations(&self.app.config)?,
         )?;
         let streams::integration::ResolvedTarget::Document {
             path: file,

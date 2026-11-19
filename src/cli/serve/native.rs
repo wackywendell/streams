@@ -42,6 +42,7 @@ enum FileBaseline {
 
 struct Pass {
     newly_bound: bool,
+    records: Arc<application::OpenedRecords>,
     context: RecordContext,
     config: NativeCardsConfig,
     transcript: Option<std::path::PathBuf>,
@@ -58,7 +59,6 @@ pub(super) struct Controller {
     subscription: Option<SubscriptionCancel>,
     thread: Option<JoinHandle<()>>,
     files: Option<Files>,
-    records: Option<Arc<application::OpenedRecords>>,
     control: Option<super::control::Control>,
     enabled: bool,
     binding: Binding,
@@ -85,7 +85,6 @@ impl Controller {
             subscription: None,
             thread: None,
             files: None,
-            records: None,
             control: None,
             enabled: false,
             binding: Binding::Unobserved,
@@ -102,11 +101,11 @@ impl Controller {
             },
         )
     }
-    fn config(&self) -> Result<NativeCardsConfig> {
-        NativeCardsConfig::load(&self.app.environment, &self.app.cwd, &self.plugin_root)
-            .map_err(Into::into)
-    }
-    fn ensure(&mut self, config: &NativeCardsConfig) -> Result<()> {
+    fn ensure(
+        &mut self,
+        config: &NativeCardsConfig,
+        records: &Arc<application::OpenedRecords>,
+    ) -> Result<()> {
         if self.client.is_some() {
             return Ok(());
         }
@@ -116,14 +115,12 @@ impl Controller {
             self.stopping.clone(),
         )
         .map_err(streams::runtime::RuntimeError::from)?;
-        if self.records.is_none() {
-            let records = Arc::new(application::open_records(&self.app.config)?);
-            self.files = Some(Files::new(&records, &self.session_id, self.sender.clone())?);
-            self.records = Some(records);
+        if self.files.is_none() {
+            self.files = Some(Files::new(records, &self.session_id, self.sender.clone())?);
         }
         if self.control.is_none() {
             let preferences = self.app.conversation_card_settings(
-                self.records.as_ref().unwrap(),
+                records,
                 &streams::integration::ConversationId {
                     harness: "pi".into(),
                     native_id: self.session_id.clone(),
@@ -187,8 +184,15 @@ impl Controller {
         Ok(())
     }
     fn observe(&mut self, cancelled: &AtomicBool, baseline: FileBaseline) -> Result<Pass> {
-        let mut config = self.config()?;
-        self.ensure(&config)?;
+        let records = Arc::new(application::open_records(&self.app.config)?);
+        let settings = records.settings();
+        let mut config = NativeCardsConfig::from_settings(
+            settings,
+            self.app.config.config_path(),
+            &self.app.cwd,
+            &self.plugin_root,
+        )?;
+        self.ensure(&config, &records)?;
         if cancelled.load(Ordering::Acquire) {
             return Err(crate::cli::CliError::message("native request cancelled"));
         }
@@ -206,13 +210,6 @@ impl Controller {
                 .map_err(streams::runtime::RuntimeError::from)?,
         )
         .map_err(streams::runtime::RuntimeError::from)?;
-        let settings = self.app.config.load()?;
-        let records = self.records.as_ref().unwrap().clone();
-        if settings.catalog_root != records.root() {
-            return Err(crate::cli::CliError::message(
-                "catalog root setting changed during native pass",
-            ));
-        }
         config = config.with_auto_open(
             self.app
                 .conversation_card_settings(
@@ -246,8 +243,8 @@ impl Controller {
             Some(owner) => owner.clone(),
             None => {
                 let locator = if let Some(session) = &context.session {
-                    self.app
-                        .locations(records.root(), records.host().as_str())?
+                    records
+                        .locations(&self.app.config)?
                         .transcript_file(&session.stream_id, &session.id)?
                 } else {
                     None
@@ -319,6 +316,7 @@ impl Controller {
         let newly_bound = self.observe_binding(&context);
         Ok(Pass {
             newly_bound,
+            records,
             context,
             config,
             transcript,
@@ -347,7 +345,7 @@ impl Controller {
             },
             pass.config,
             cancelled,
-            self.records.clone(),
+            Some(pass.records),
             Some(pass.context),
         )
     }
@@ -512,7 +510,7 @@ impl Controller {
             return fallback.enroll_request(request);
         }
         let mut pass = self.observe(&cancelled, FileBaseline::Required)?;
-        let records = self.records.as_ref().unwrap().clone();
+        let records = pass.records.clone();
         let request = EnrollmentRequest::parse(request, records.source_id())?;
         let target = request
             .stream_id()
@@ -552,9 +550,11 @@ impl Controller {
         {
             let completion = (|| -> Result<()> {
                 if let Some(path) = &pass.transcript {
-                    self.app
-                        .locations(records.root(), records.host().as_str())?
-                        .remember_transcript(&stream.id, &session.id, path)?;
+                    records.locations(&self.app.config)?.remember_transcript(
+                        &stream.id,
+                        &session.id,
+                        path,
+                    )?;
                 }
                 pass.context.session = Some(session.clone());
                 pass.context.sessions = vec![session];

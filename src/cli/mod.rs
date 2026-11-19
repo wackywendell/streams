@@ -42,9 +42,8 @@ use streams::{
     model::{Record, Session, Stream, TitleMode, ValidationError},
     operations::{Actor, patches::StreamPatch},
     runtime::{
-        self, CheckoutRegistry, DirectoryBindings,
+        self,
         frontends::{self, Frontend},
-        state::RuntimeState,
     },
     sync::outcomes,
 };
@@ -404,25 +403,6 @@ impl App {
             &self.environment,
         )?)
     }
-    fn registry(&self, host: &str) -> Result<CheckoutRegistry> {
-        Ok(CheckoutRegistry::new(
-            self.config.checkout_state_dir(),
-            host,
-        )?)
-    }
-    fn state(&self, root: &Path, host: &str) -> Result<RuntimeState> {
-        Ok(RuntimeState::new(
-            self.config.runtime_state_dir_for(root)?,
-            host,
-        )?)
-    }
-    fn locations(&self, root: &Path, host: &str) -> Result<DirectoryBindings> {
-        Ok(application::OpenedRecords::locations(
-            &self.config,
-            root,
-            host,
-        )?)
-    }
     /// The selected frontend, serving the caller of this command on `opened`'s records.
     fn frontend(
         &self,
@@ -430,10 +410,14 @@ impl App {
         requested: Option<FrontendRequest>,
         timeout: f64,
     ) -> Result<Option<Box<dyn Frontend>>> {
-        self.selection(requested)?
-            .resolved
-            .map(|id| self.connect_frontend(id, opened, timeout))
-            .transpose()
+        frontend::resolve_frontend(
+            opened.settings().frontend.clone(),
+            requested,
+            &self.environment,
+        )?
+        .resolved
+        .map(|id| self.connect_frontend(id, opened, timeout))
+        .transpose()
     }
     fn connect_frontend(
         &self,
@@ -488,12 +472,15 @@ impl App {
         opened: &application::OpenedRecords,
         requested: Option<FrontendRequest>,
     ) -> Result<String> {
-        let configured = self.config.load()?.frontend;
         if let Some(id) = self.environment.get("STREAMS_STREAM_ID") {
             streams::model::check_text(id, "STREAMS_STREAM_ID", false)?;
             return Ok(id.to_owned());
         }
-        let selection = frontend::resolve_frontend(configured, requested, &self.environment)?;
+        let selection = frontend::resolve_frontend(
+            opened.settings().frontend.clone(),
+            requested,
+            &self.environment,
+        )?;
         let mut frontend = selection
             .resolved
             .map(|id| self.connect_frontend(id, opened, 30.0))
@@ -696,9 +683,10 @@ impl App {
                 refresh,
             } => {
                 let opened = application::open_records(&self.config)?;
-                let settings = self.config.load()?;
-                let cutoff_ms =
-                    streams::operations::decay_cutoff_ms(settings.lifecycle.decay_days, now_ms());
+                let cutoff_ms = streams::operations::decay_cutoff_ms(
+                    opened.settings().lifecycle.decay_days,
+                    now_ms(),
+                );
                 let publication = if refresh {
                     Some(self.refresh_records(&opened)?)
                 } else {
@@ -745,16 +733,15 @@ impl App {
                 fields,
             } => {
                 let opened = application::open_records(&self.config)?;
-                let settings = self.config.load()?;
-                if settings.catalog_root != opened.root() {
-                    return Err(CliError::message(
-                        "catalog root setting changed during update",
-                    ));
-                }
                 let stream = self.record_target(&opened, &target)?;
-                catalog::update_record(&opened, &stream, title, &fields, settings.naming, |path| {
-                    self.read_text(path)
-                })
+                catalog::update_record(
+                    &opened,
+                    &stream,
+                    title,
+                    &fields,
+                    opened.settings().naming,
+                    |path| self.read_text(path),
+                )
             }
             Command::Close { target } => {
                 self.set_stream_status(&target, streams::model::Status::Closed)
@@ -768,8 +755,7 @@ impl App {
             }
             Command::Tidy { days } => {
                 let opened = application::open_records(&self.config)?;
-                let settings = self.config.load()?;
-                let decay_days = days.unwrap_or(settings.lifecycle.decay_days);
+                let decay_days = days.unwrap_or(opened.settings().lifecycle.decay_days);
                 let summary =
                     application::lifecycle::decay_host_records(&opened, decay_days, now_ms())?;
                 let plain = format!(
@@ -802,12 +788,6 @@ impl App {
     }
     fn set_stream_status(&self, target: &Target, status: streams::model::Status) -> Result<Output> {
         let opened = application::open_records(&self.config)?;
-        let settings = self.config.load()?;
-        if settings.catalog_root != opened.root() {
-            return Err(CliError::message(
-                "catalog root setting changed during status update",
-            ));
-        }
         let stream = self.record_target(&opened, target)?;
         catalog::save_stream_edit(
             &opened,
@@ -816,7 +796,7 @@ impl App {
                 status: Some(status),
                 ..StreamPatch::default()
             },
-            settings.naming,
+            opened.settings().naming,
         )
     }
     fn configure(&self, overrides_flag: bool, action: Option<ConfigCommand>) -> Result<Output> {
@@ -892,21 +872,18 @@ impl App {
     }
     fn capture_inputs(&self, stream: Option<&str>, workspace: Option<&str>) -> Result<Output> {
         use agent::CaptureTarget;
-        use streams::runtime::{conversations::ConversationRoots, state::RuntimeState};
+        use streams::runtime::conversations::ConversationRoots;
         let opened = application::open_records(&self.config)?;
-        let settings = self.config.load()?;
-        if settings.catalog_root != opened.root() {
-            return Err(CliError::message(
-                "catalog root setting changed during capture inspection",
-            ));
-        }
-        let state = RuntimeState::new(
-            self.config.runtime_state_dir_for(opened.root())?,
-            opened.host().as_str(),
-        )?;
         // Capture reads open state from Herdr's topology only.
         let native = (|| -> Result<_> {
-            if self.selection(None)?.resolved != Some(frontend::FrontendId::Herdr) {
+            if frontend::resolve_frontend(
+                opened.settings().frontend.clone(),
+                None,
+                &self.environment,
+            )?
+            .resolved
+                != Some(frontend::FrontendId::Herdr)
+            {
                 return Err(CliError::message(
                     "Herdr topology unavailable; open state unknown",
                 ));
@@ -923,13 +900,13 @@ impl App {
             (None, None) => CaptureTarget::Inventory,
             _ => return Err(CliError::message("select a stream or workspace, not both")),
         };
-        let registry = self.registry(opened.host().as_str())?;
-        let locations = DirectoryBindings::new(state.root(), registry.clone());
+        let registry = opened.registry(&self.config)?;
+        let locations = opened.locations(&self.config)?;
         Ok(Output::value(agent::capture_inputs(
             &opened,
             native,
             target,
-            settings.naming,
+            opened.settings().naming,
             &locations,
             &ConversationRoots::from_environment()?,
             |stream, session| documents::context(&registry, &locations, stream, session),
@@ -961,12 +938,7 @@ impl App {
         stream_id: Option<&str>,
     ) -> Result<AgentObservation> {
         let opened = application::open_records(&self.config)?;
-        let settings = self.config.load()?;
-        if settings.catalog_root != opened.root() {
-            return Err(CliError::message(
-                "catalog root setting changed during observation",
-            ));
-        }
+        let naming = opened.settings().naming;
         let request = ContextRequest {
             harness,
             native_id: session_id,
@@ -978,7 +950,7 @@ impl App {
             workspace_stream_id: None,
         };
         let context = application::with_workspace_stream(
-            self.context_from_records(&opened, request, settings.naming)?,
+            self.context_from_records(&opened, request, naming)?,
             request,
             || {
                 self.frontend(&opened, None, 5.0)
@@ -986,12 +958,12 @@ impl App {
                     .flatten()
                     .and_then(|mut frontend| frontend.context_stream())
             },
-            |request| self.context_from_records(&opened, request, settings.naming),
+            |request| self.context_from_records(&opened, request, naming),
         )?;
         let documents = if let (Some(stream), Some(session)) = (&context.stream, &context.session) {
             documents::context(
-                &self.registry(opened.host().as_str())?,
-                &self.locations(opened.root(), opened.host().as_str())?,
+                &opened.registry(&self.config)?,
+                &opened.locations(&self.config)?,
                 stream,
                 session,
             )
@@ -1024,13 +996,7 @@ impl App {
 
     fn apply_request(&self, request: serde_json::Value) -> Result<Output> {
         let opened = application::open_records(&self.config)?;
-        let settings = self.config.load()?;
-        if settings.catalog_root != opened.root() {
-            return Err(CliError::message(
-                "catalog root setting changed during apply",
-            ));
-        }
-        catalog::apply_opened(&opened, request, settings.naming)
+        catalog::apply_opened(&opened, request, opened.settings().naming)
     }
 }
 

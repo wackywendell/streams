@@ -113,7 +113,7 @@ impl App {
                             .checkout
                             .as_ref()
                             .and_then(|checkout| checkout.repository_url.as_deref());
-                        self.locations(opened.root(), host)?.remember(
+                        opened.locations(&self.config)?.remember(
                             &session.stream_id,
                             &directory,
                             Some(&session.id),
@@ -139,12 +139,6 @@ impl App {
                 fields: intent,
             } => {
                 let before = select_session(&opened.inventory()?, &reference)?;
-                let settings = self.config.load()?;
-                if settings.catalog_root != opened.root() {
-                    return Err(CliError::message(
-                        "catalog root setting changed during Session update",
-                    ));
-                }
                 let mut patch =
                     fields::session(&before, &intent, &mut |path| self.read_text(path))?;
                 if title.is_some() {
@@ -159,7 +153,7 @@ impl App {
                     opened.records(),
                     &before,
                     patch,
-                    settings.naming,
+                    opened.settings().naming,
                 )?))
             }
             SessionCommand::Directory {
@@ -183,7 +177,7 @@ impl App {
                         "--repository requires --cwd or --checkout",
                     ));
                 }
-                let locations = self.locations(opened.root(), opened.host().as_str())?;
+                let locations = opened.locations(&self.config)?;
                 if cwd.is_some() || checkout_id.is_some() {
                     let portable_url = session
                         .checkout
@@ -223,7 +217,8 @@ impl App {
                         ));
                     }
                     let directory = if let Some(id) = checkout_id.as_deref() {
-                        self.registry(opened.host().as_str())?
+                        opened
+                            .registry(&self.config)?
                             .directory(id, within.as_deref().unwrap_or("."))?
                     } else {
                         self.path(cwd.as_deref().expect("directory selection"))?

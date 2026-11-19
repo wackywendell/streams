@@ -47,9 +47,8 @@ pub(super) fn execute(app: &App, session_id: &str, request: Request) -> Result<O
         Request::Apply { request } => app.apply_request(Value::Object(request)),
         Request::ListStreams {} => {
             let opened = application::open_records(&app.config)?;
-            let settings = app.config.load()?;
             let cutoff_ms = streams::operations::decay_cutoff_ms(
-                settings.lifecycle.decay_days,
+                opened.settings().lifecycle.decay_days,
                 super::super::now_ms(),
             );
             catalog::list_records(&opened, None, &[], false, false, cutoff_ms, None)

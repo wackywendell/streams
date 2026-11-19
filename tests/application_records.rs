@@ -311,3 +311,62 @@ fn fresh_initialization_does_not_create_a_producer_for_an_existing_nonempty_root
     assert!(!root.join(".catalog-local").exists());
     assert_eq!(fs::read_to_string(path).unwrap(), "leave intact");
 }
+
+#[test]
+fn opened_records_keeps_the_settings_it_was_opened_with() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = fixture_config(directory.path());
+    config
+        .set(streams::config::ConfigKey::StreamNaming, "manual")
+        .unwrap();
+    config
+        .set(streams::config::ConfigKey::LifecycleDecayDays, "7")
+        .unwrap();
+    config
+        .set(streams::config::ConfigKey::FrontendMode, "none")
+        .unwrap();
+
+    let initialized =
+        application::initialize_records(&config, streams::config::Strategy::None, None, "main")
+            .unwrap();
+    let expected = config.load().unwrap();
+    assert_eq!(initialized.settings(), &expected);
+    assert_eq!(initialized.settings().catalog_root, initialized.root());
+
+    let opened = application::open_records(&config).unwrap();
+    assert_eq!(opened.settings(), &expected);
+
+    let other_root = directory.path().join("other-catalog");
+    config
+        .set(
+            streams::config::ConfigKey::CatalogRoot,
+            other_root.to_str().unwrap(),
+        )
+        .unwrap();
+    config
+        .set(streams::config::ConfigKey::StreamNaming, "automatic")
+        .unwrap();
+    config
+        .set(streams::config::ConfigKey::LifecycleDecayDays, "30")
+        .unwrap();
+    config
+        .set(streams::config::ConfigKey::FrontendMode, "hc")
+        .unwrap();
+
+    assert_eq!(opened.settings(), &expected);
+    assert_eq!(opened.settings().catalog_root, opened.root());
+    assert_eq!(
+        opened.settings().naming.stream,
+        streams::model::NamingMode::Manual
+    );
+    assert_eq!(opened.settings().lifecycle.decay_days, 7);
+    assert_eq!(
+        opened.settings().frontend,
+        streams::frontend::FrontendMode::None
+    );
+
+    fs::write(config.config_path(), "not valid toml [").unwrap();
+    assert_eq!(opened.settings(), &expected);
+    assert!(opened.locations(&config).is_ok());
+    assert!(opened.registry(&config).is_ok());
+}

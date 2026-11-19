@@ -40,7 +40,7 @@ fn watched_inputs_have_one_canonical_session_and_stream_address_and_both_directo
         native_session_id: native_id.into(),
     };
     let inputs = Inputs::new(&app, &records, &scope).unwrap();
-    let bindings = app.locations(records.root(), HOST).unwrap();
+    let bindings = records.locations(&app.config).unwrap();
     let paths = inputs.paths(&scope.stream_id).unwrap();
     assert_eq!(
         paths,
@@ -52,7 +52,7 @@ fn watched_inputs_have_one_canonical_session_and_stream_address_and_both_directo
             records
                 .root()
                 .join(format!("hosts/{HOST}/streams/project%2Fname.json")),
-            app.registry(HOST).unwrap().path().into(),
+            records.registry(&app.config).unwrap().path().into(),
             bindings.path(&scope.stream_id, Some(&scope.session_id)),
             bindings.path(&scope.stream_id, None),
         ])

@@ -43,7 +43,8 @@ pub(super) fn remember_locator(
     let Some(session) = pi_session(&opened, &context.conversation.native_id)? else {
         return Ok(());
     };
-    app.locations(opened.root(), opened.host().as_str())?
+    opened
+        .locations(&app.config)?
         .remember_transcript(&session.stream_id, &session.id, &locator)
         .map_err(|error| {
             if error.is_uncertain() {
@@ -215,12 +216,11 @@ pub(super) fn resolve_session(
             &directory,
         );
     }
-    let session_naming = app
-        .config
-        .load()
-        .map(|settings| settings.pi.session_naming)
-        .unwrap_or(true);
-    let desired_pi_name = session_naming.then(|| session.title.clone());
+    let desired_pi_name = opened
+        .settings()
+        .pi
+        .session_naming
+        .then(|| session.title.clone());
     Ok(SessionResolution {
         scope,
         session: Some(session),

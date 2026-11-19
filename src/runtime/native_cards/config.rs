@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use unicode_general_category::{GeneralCategory, get_general_category};
 
 use super::super::{Result, invalid};
-use crate::config::Config;
+use crate::config::{Config, Settings};
 
 #[derive(Clone)]
 pub struct NativeCardsConfig {
@@ -28,13 +28,26 @@ impl NativeCardsConfig {
         if !cwd.is_absolute() {
             return Err(invalid("native reader cwd must be absolute"));
         }
+        let config = Config::new(environment, cwd).map_err(|e| invalid(e.to_string()))?;
+        let settings = config.load().map_err(|e| invalid(e.to_string()))?;
+        Self::from_settings(&settings, config.config_path(), cwd, plugin_root)
+    }
+
+    /// Build Herdr card settings from settings that have already been loaded.
+    pub fn from_settings(
+        settings: &Settings,
+        source_path: &Path,
+        cwd: &Path,
+        plugin_root: &Path,
+    ) -> Result<Self> {
+        if !cwd.is_absolute() {
+            return Err(invalid("native reader cwd must be absolute"));
+        }
         let plugin_root = if plugin_root.is_absolute() {
             plugin_root.to_owned()
         } else {
             cwd.join(plugin_root)
         };
-        let config = Config::new(environment, cwd).map_err(|e| invalid(e.to_string()))?;
-        let settings = config.load().map_err(|e| invalid(e.to_string()))?;
         Ok(Self {
             automatic_open: settings.herdr.cards_auto_open != crate::config::CardMode::Manual,
             workspace_naming: settings.herdr.workspace_naming,
@@ -43,7 +56,7 @@ impl NativeCardsConfig {
             timeout_seconds: f64::from(settings.herdr.timeout_ms) / 1000.0,
             pane_height_fraction: settings.herdr.pane_height_fraction,
             plugin_root,
-            source_path: config.config_path().to_path_buf(),
+            source_path: source_path.to_path_buf(),
         })
     }
 

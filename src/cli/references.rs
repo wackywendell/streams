@@ -41,18 +41,12 @@ impl App {
         if matches!(command, ReferenceCommand::List { .. }) {
             return Ok(list(&stream));
         }
-        let settings = self.config.load()?;
-        if settings.catalog_root != opened.root() {
-            return Err(CliError::message(
-                "catalog root changed during reference edit",
-            ));
-        }
         let change = mutation(&stream, &command)?;
         Ok(catalog::finish_record(application::save_user_references(
             opened.records(),
             &stream,
             vec![change],
-            settings.naming,
+            opened.settings().naming,
         )?))
     }
 }

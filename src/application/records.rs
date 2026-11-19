@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use crate::{
-    config::{Config, HostIdentity, Strategy, source_id},
+    config::{Config, HostIdentity, Settings, Strategy, source_id},
     file_store::records::{FileRecordStore, RecordIoEvent},
     model::{Record, RecordKind, Session, Stream},
     runtime::{CheckoutRegistry, DirectoryBindings, conversations::Harness, state::RuntimeState},
@@ -18,6 +18,7 @@ pub struct OpenedRecords {
     records: FileRecordStore,
     host: HostIdentity,
     source_id: String,
+    settings: Settings,
 }
 
 impl OpenedRecords {
@@ -27,13 +28,28 @@ impl OpenedRecords {
     pub fn host(&self) -> &HostIdentity {
         &self.host
     }
-    /// This host's directory bindings for the catalog at `root`.
-    pub fn locations(config: &Config, root: &Path, host: &str) -> Result<DirectoryBindings> {
-        let state = RuntimeState::new(config.runtime_state_dir_for(root)?, host)?;
-        Ok(DirectoryBindings::new(
-            state.root(),
-            CheckoutRegistry::new(config.checkout_state_dir(), host)?,
-        ))
+    /// The settings loaded when this catalog was opened.
+    pub fn settings(&self) -> &Settings {
+        &self.settings
+    }
+    /// This host's checkout registry.
+    pub fn registry(&self, config: &Config) -> Result<CheckoutRegistry> {
+        Ok(CheckoutRegistry::new(
+            config.checkout_state_dir(),
+            self.host.as_str(),
+        )?)
+    }
+    /// This host's runtime state directory for this catalog.
+    pub fn runtime_state(&self, config: &Config) -> Result<RuntimeState> {
+        Ok(RuntimeState::new(
+            config.runtime_state_dir_for(self.root())?,
+            self.host.as_str(),
+        )?)
+    }
+    /// This host's directory bindings for this catalog.
+    pub fn locations(&self, config: &Config) -> Result<DirectoryBindings> {
+        let state = self.runtime_state(config)?;
+        Ok(DirectoryBindings::new(state.root(), self.registry(config)?))
     }
     pub fn source_id(&self) -> &str {
         &self.source_id
@@ -136,6 +152,7 @@ pub fn initialize_records(
         records,
         host,
         source_id,
+        settings,
     })
 }
 
@@ -170,5 +187,6 @@ fn open(
         records,
         host,
         source_id,
+        settings,
     })
 }
