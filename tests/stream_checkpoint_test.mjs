@@ -57,7 +57,7 @@ function makeSnapshotActions(initial = defaultConfigSnapshot(), hook) {
   unsetConfig: async key => {if (hook) await hook('unset', key); if (key === 'pi.reporting.model') snap.pi.reporting.model = null; return structuredClone(snap);},
  };
 }
-const stream = { id:'effort', title:'Work', title_mode:'manual', goal:'Goal', goal_mode:'automatic', goal_short:null, status:'active', owner:{host_id:'host'},revision:1,updated_at_ms:0, repositories:{repo:{url:'https://example.com/repo'}}, references:[] };
+const stream = { id:'effort', title:'Work', title_mode:'manual', goal:'Goal', goal_mode:'automatic', goal_short:null, owner:{host_id:'host'},revision:1,updated_at_ms:0, repositories:{repo:{url:'https://example.com/repo'}}, references:[] };
 const session = { id:sessionId('host','pi','native'), host_id:'host',revision:1,updated_at_ms:0,membership_epoch:0,stream_id:'effort', harness:'pi', harness_session_id:'native', title:'Session', title_mode:'automatic', status:'active', state:'', state_short:null, remaining:'', checkout:null };
 const context = () => withPatchSchemas(structuredClone({catalog_source:'source-a',host_id:'host',stream,session,sessions:[session],title_defaults:{stream:'automatic',session:'automatic'}}));
 const localSync = async () => ({local:'unchanged',sharing:'local-only',domain:null});
@@ -109,7 +109,7 @@ test('StreamCli validates strict catalog fields and nullable document provenance
   ...[null,-1,1.5,'1',[1]].map(epoch=>value=>{value.session.membership_epoch=epoch;}),
   value=>{value.session.checkout={repository:'app',repository_url:42,ref:'topic',directory_within_checkout:'.'};},
   value=>{value.session.checkout={repository:'app',repository_url:'',ref:'topic',directory_within_checkout:'.'};},
-  value=>{value.stream.goal_mode='other';},value=>{value.stream.status=['active'];},value=>{value.host_id='';},
+  value=>{value.stream.goal_mode='other';},value=>{value.stream.status='active';},value=>{value.host_id='';},
   ...['',' ',42,false].map(ref=>value=>{value.stream.references[0].target.ref=ref;}),
   value=>{value.stream.references[0].target.commit='';},value=>{value.stream.references[0].target.source_session_id=42;},
   value=>{value.stream.references.push({...value.stream.references[0],target:{...value.stream.references[0].target,ref:'other'}});},
@@ -118,13 +118,14 @@ test('StreamCli validates strict catalog fields and nullable document provenance
  ]) {const value=structuredClone(initial);change(value);await assert.rejects(read(value),StreamsCliError);}
 });
 test('catalog list accepts only the current object contract',async()=>{
+ const listed={...stream,status:'active'};
  const unreadable=[{kind:'stream',host:'host',path:'hosts/host/streams/broken.yaml',cause:'unknown field `archived`',repair:'Delete or fix the file.'}];
- for(const value of [[],[stream],null,{},{streams:[stream]},{streams:[{...stream,title_mode:'other'}],unreadable:[]},{streams:[stream],unreadable:[{...unreadable[0],kind:'other'}]},{streams:[stream],unreadable:[{kind:'stream',path:'p'}]},{streams:[stream],unreadable:[{...unreadable[0],repair:undefined}]},{streams:[stream],unreadable:[{...unreadable[0],host:42}]}]) {
+ for(const value of [[],[listed],null,{},{streams:[listed]},{streams:[stream],unreadable:[]},{streams:[{...listed,title_mode:'other'}],unreadable:[]},{streams:[listed],unreadable:[{...unreadable[0],kind:'other'}]},{streams:[listed],unreadable:[{kind:'stream',path:'p'}]},{streams:[listed],unreadable:[{...unreadable[0],repair:undefined}]},{streams:[listed],unreadable:[{...unreadable[0],host:42}]}]) {
   const cli=new StreamCli('/tmp',async()=>({status:'success',result:value}));
   await assert.rejects(cli.list(),StreamsCliError);
  }
- const cli=new StreamCli('/tmp',async()=>({status:'success',result:{streams:[stream],unreadable}}));
- assert.deepEqual(await cli.list(),{streams:[stream],unreadable});
+ const cli=new StreamCli('/tmp',async()=>({status:'success',result:{streams:[listed],unreadable}}));
+ assert.deepEqual(await cli.list(),{streams:[listed],unreadable});
 });
 test('the chooser offers readable Streams and names this host\'s records it could not read',async()=>{
  const repair='Run /streams reset in a conversation on that Stream, or delete or fix the file.';
@@ -532,7 +533,7 @@ test('automatic reset unlocks manual names before fresh inference and keeps life
   {kind:'session',actor:'user',changes:{title_mode:'automatic'}},
   {kind:'stream',actor:'user',changes:{title_mode:'automatic',goal_mode:'automatic'}},
  ]);
- assert.equal(catalog.stream.status,'active');
+ assert.equal(catalog.session.status,'active');
 });
 test('reporting settings have explicit stable knobs and reject invalid cadence',()=>{
  const custom={...defaults,reporting:'manual',enrollment:'manual',frequency:3,context:'full',model:{provider:'custom',id:'helper'},session_logging:true};
@@ -905,19 +906,19 @@ test('bound chooser never lists or switches, and live card offers no switch/crea
  const ctx={hasUI:true,sessionManager:{getSessionId:()=> 'native'},ui:{select:async(title,rows)=>{calls.push({title,rows});return 'Close';}}};
  assert.match((await chooseInitial(ctx,cli,{title:'Another'},()=>assert.fail())).status,/already-bound/);
  await openCard(ctx,cli,{discussion:{input:'',messages:[]},edits:new Map()},{receipt:()=>{},discuss:()=>assert.fail(),settings:()=>assert.fail(),report:()=>assert.fail()});
- assert.ok(calls[0].rows.includes('Session · Finish…'));assert.ok(calls[0].rows.includes('Stream · Finish…'));
+ assert.ok(calls[0].rows.includes('Session · Finish…'));assert.ok(!calls[0].rows.includes('Stream · Finish…'));
  assert.ok(calls[0].rows.every(row=>! /switch|create|attach/i.test(row)));
 });
 for(const intent of ['reply','automatic','user'])test(`card discussion ${intent} has typed intent and no redundant confirmation`,async()=>{
  const handlers=new Map(),receipts=[],writes=[],history=[];let openPanel,submitted=false;const menu=['Discuss…','Close'];
  const visible=context();visible.sessions.push({...session,id:'sibling',host_id:'other-host'});
  const cli={sync:localSync,context:async()=>structuredClone(visible),apply:async req=>{writes.push(req);return {save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}};}};
- const edit=intent==='reply'?undefined:{kind:'stream',actor:intent,changes:intent==='user'?{status:'parked'}:{goal:'Current descriptive goal'}};
+ const edit=intent==='reply'?undefined:{kind:'stream',actor:intent,changes:intent==='user'?{goal_mode:'manual'}:{goal:'Current descriptive goal'}};
  registerWorkCard({on:(name,fn)=>handlers.set(name,fn),registerCommand:(_name,options)=>{openPanel=ctx=>options.handler('card',ctx);},registerTool:()=>{},registerShortcut:()=>assert.fail('no shortcuts'),appendEntry:(type,value)=>receipts.push({type,value})},{settings:{...defaults,reporting:'manual'},cli,infer:async(_ctx,req)=>{assert.equal(req.type,'discussion');assert.match(req.discussion.at(-1).text,/card question/);return {reply:'Discussed without assuming extra intent',...(edit?{edit}:{})};}});
  const ctx={mode:'tui',hasUI:true,cwd:'/repo',sessionManager:{getSessionId:()=> 'native',getLeafId:()=> 'leaf',getBranch:()=>[{id:'leaf'}],buildSessionProjection:()=>({messages:[]})},ui:{select:async()=>menu.shift(),confirm:()=>assert.fail('explicit direction needs no second confirmation'),notify:()=>{},setStatus:()=>{},custom:async factory=>new Promise(resolve=>{const component=factory({terminal:{rows:30},requestRender(){}},{fg:(_color,text)=>text,bold:text=>text},{},resolve);if(component.render(80).join("\n").includes("1: Actions")){const action=menu.shift();if(action==="Discuss…"){component.handleInput("\x1b[B");component.handleInput("\r");}else component.handleInput("\x1b");return;}history.push(component.render(80).join('\n'));if(!submitted){submitted=true;component.handleInput('card question');component.handleInput('\r');}else component.handleInput('\x1b');})}};
  await handlers.get('session_start')({},ctx);await openPanel(ctx);
  assert.equal(writes.length,intent==='reply'?0:1);assert.match(history.at(-1),/Discussed without assuming extra intent/);
- if(intent!=='reply'){assert.equal(writes[0].actor,intent);assert.equal(writes[0].catalog_source,'source-a');assert.equal(Object.hasOwn(writes[0],'ownership_token'),false);assert.equal(receipts.length,1);assert.equal(writes[0].before.status,'active');assert.deepEqual(writes[0].inputs.map(input=>input.record.id),intent==='automatic'?[session.id]:[]);}
+ if(intent!=='reply'){assert.equal(writes[0].actor,intent);assert.equal(writes[0].catalog_source,'source-a');assert.equal(Object.hasOwn(writes[0],'ownership_token'),false);assert.equal(receipts.length,1);assert.equal(writes[0].before.id,'effort');assert.deepEqual(writes[0].inputs.map(input=>input.record.id),intent==='automatic'?[session.id]:[]);}
 });
 test('discussion partial receipt retains every refused source and blocks another reference write',async()=>{
  const handlers=new Map(),receipts=[],writes=[],notices=[],history=[];let openPanel,main=0,composer=0,models=0,managerScreen='';
@@ -1322,13 +1323,13 @@ test('cancelled clean editor leaves no retained badge; failed edit reopens actio
  let menus=0;await editField({ui:{editor:()=>assert.fail('retain before edit'),select:async(title,rows)=>{menus++;assert.match(title,/Stale status/);assert.ok(rows.includes('Discard input'));return 'Keep input and close';},notify:text=>notifications.push(text)}},cli,context(),'session','status',state,()=>{});
  assert.equal(menus,1);assert.equal(state.edits.get('session:status').value,'blocked');
 });
-test('a refused short goal stays retained and archive has one confirmation',async()=>{
+test('a refused short goal stays retained and finishing a Session has one confirmation',async()=>{
  const catalog=context();catalog.stream.goal=null;const state={discussion:{input:'',messages:[]},edits:new Map()};
  const edit=new FieldEdit('stream',catalog,'goal_short');edit.value='No source goal';state.edits.set('stream:goal_short',edit);let menus=0;
  await editField({ui:{select:async(title)=>{if(menus++===0)return 'Save field';assert.match(title,/goal/i);return 'Keep input and close';},notify:()=>{}}},{apply:async()=>{throw Error('invalid captured edit: stream.goal_short requires a goal');}},catalog,'stream','goal_short',state,()=>{});
  assert.equal(edit.value,'No source goal');assert.match(edit.error,/goal/);
- const actions=['Stream · Close…','Close'];let confirmations=0,writes=0;
- await openCard({sessionManager:{getSessionId:()=> 'native'},ui:{select:async(title,rows)=>{assert.ok(rows.some(row=>row.startsWith('Stream · goal_short')));return actions.shift();},confirm:async()=>{confirmations++;return true;},notify:()=>{}}},{context:async()=>catalog,apply:async req=>{writes++;assert.deepEqual(req.changes,{status:'closed'});return {save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}};}},state,{receipt:()=>{},discuss:()=>{},settings:()=>{},report:()=>{}});
+ const actions=['Session · Finish…','Close'];let confirmations=0,writes=0;
+ await openCard({sessionManager:{getSessionId:()=> 'native'},ui:{select:async(title,rows)=>{assert.ok(rows.some(row=>row.startsWith('Stream · goal_short')));return actions.shift();},confirm:async()=>{confirmations++;return true;},notify:()=>{}}},{context:async()=>catalog,apply:async req=>{writes++;assert.equal(req.kind,'session');assert.deepEqual(req.changes,{status:'done'});return {save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}};}},state,{receipt:()=>{},discuss:()=>{},settings:()=>{},report:()=>{}});
  assert.equal(confirmations,1);assert.equal(writes,1);
 });
 test('fallback reference manager selects identical metadata by exact keys for edit and drop',async()=>{
@@ -1539,7 +1540,7 @@ test('infer normalizes null remaining/state, empty nullable fields and echoed no
  const sessionResult=await infer(ctx({title:'  ',state:null,state_short:`${'x'.repeat(90)}\nline`,remaining:null}),{type:'session',catalog:context(),messages:[],reset:true},new AbortController().signal);
  assert.deepEqual(sessionResult,{changes:{state:'',state_short:`${'x'.repeat(90)}\nline`,remaining:''}});
  const streamCatalog=context();streamCatalog.stream.goal=null;
- const streamResult=await infer(ctx({title:'Echoed manual',status:'active',goal:'   ',goal_short:'Orphan short'}),{type:'stream',catalog:streamCatalog,messages:[],reset:true},new AbortController().signal);
+ const streamResult=await infer(ctx({title:'Echoed manual',goal:'   ',goal_short:'Orphan short'}),{type:'stream',catalog:streamCatalog,messages:[],reset:true},new AbortController().signal);
  assert.deepEqual(streamResult,{changes:{goal:null,goal_short:'Orphan short'}});
 });
 test('a superseded report retains its receipt without retrying inference; a later explicit reset remains possible',async()=>{
@@ -1623,7 +1624,8 @@ test('openCard renders 3-tab Pi TUI (Actions, Stream, Session) and edits fields 
  assert.match(renders[2],/\[ 3: Session \]/);
  assert.match(renders[0],/Reset Stream and Session…/);
  assert.doesNotMatch(renders[0],/Finish…|Close…|Archive…|edit fields/);
- assert.match(renders[1],/Reset…[\s\S]*Finish…[\s\S]*Close…/);
+ assert.match(renders[1],/References…[\s\S]*Reset…/);
+ assert.doesNotMatch(renders[1],/Finish…|Close…|Restore…/);
  assert.match(renders[2],/Reset…[\s\S]*Finish…/);
  assert.doesNotMatch(renders[2],/Close…|Archive…|Restore…/);
  for(const rendered of renders)assert.doesNotMatch(rendered,/Whole [Ee]ffort|This [Tt]ab|archived…|⟳/);
@@ -1669,31 +1671,21 @@ for(const [tab,target] of [['1','all'],['2','stream'],['3','session']])for(const
  assert.deepEqual(resets,mode?[{auto:mode==='Restore automatic naming',target}]:[]);
  assert.equal(opened,mode?1:2);
 });
-for(const [tab,kind] of [['2','stream'],['3','session']])for(const confirmed of [true,false])test(`panel Finish ${kind} ${confirmed?'saves':'cancels'} only that record`,async()=>{
+for(const confirmed of [true,false])test(`panel Finish session ${confirmed?'saves':'cancels'} only that record`,async()=>{
  const saved=[],confirmations=[];let opened=0;
  const ctx={sessionManager:{getSessionId:()=> 'native'},ui:{notify:assert.fail,
   confirm:async(title,body)=>{confirmations.push({title,body});return confirmed;},
-  custom:async factory=>new Promise(resolve=>{const component=factory({terminal:{rows:36},requestRender(){}},{fg:(_c,t)=>t,bold:t=>t},{},resolve);if(opened++===0)selectCardRow(component,tab,'Finish…');else component.handleInput('\x1b');}),
+  custom:async factory=>new Promise(resolve=>{const component=factory({terminal:{rows:36},requestRender(){}},{fg:(_c,t)=>t,bold:t=>t},{},resolve);if(opened++===0)selectCardRow(component,'3','Finish…');else component.handleInput('\x1b');}),
  }};
  await openCard(ctx,{context:async()=>context(),apply:async req=>{saved.push(req);return {save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}};}},{discussion:{input:'',messages:[]},edits:new Map()},{receipt:()=>{},discuss:assert.fail,settings:assert.fail,report:assert.fail});
- assert.equal(confirmations.length,1);assert.equal(confirmations[0].title,kind==='stream'?'Finish Stream?':'Finish Session?');
+ assert.equal(confirmations.length,1);assert.equal(confirmations[0].title,'Finish Session?');
  assert.doesNotMatch(confirmations[0].body,/effort/i);
- assert.deepEqual(saved.map(req=>({kind:req.kind,changes:req.changes})),confirmed?[{kind,changes:{status:'done'}}]:[]);
+ assert.deepEqual(saved.map(req=>({kind:req.kind,changes:req.changes})),confirmed?[{kind:'session',changes:{status:'done'}}]:[]);
 });
-for(const closed of [true,false])test(`panel ${closed?'Restore':'Close'} is only on Stream and has one confirmation`,async()=>{
- const catalog=context();catalog.stream.status=closed?'closed':'active';
- const saved=[];let opened=0,confirmed=0;
- const ctx={sessionManager:{getSessionId:()=> 'native'},ui:{notify:assert.fail,
-  confirm:async title=>{confirmed++;assert.equal(title,closed?'Restore Stream?':'Close Stream?');return true;},
-  custom:async factory=>new Promise(resolve=>{const component=factory({terminal:{rows:36},requestRender(){}},{fg:(_c,t)=>t,bold:t=>t},{},resolve);if(opened++===0)selectCardRow(component,'2',closed?'Restore…':'Close…');else component.handleInput('\x1b');}),
- }};
- await openCard(ctx,{context:async()=>catalog,apply:async req=>{saved.push(req);return {save:{local:'persisted',sharing:'local-only',domain:{outcome:'changes'}}};}},{discussion:{input:'',messages:[]},edits:new Map()},{receipt:()=>{},discuss:assert.fail,settings:assert.fail,report:assert.fail});
- assert.equal(confirmed,1);assert.deepEqual(saved.map(req=>({kind:req.kind,changes:req.changes})),[{kind:'stream',changes:{status:closed?'active':'closed'}}]);
-});
-test('close failures remain reachable via retained status edit',async()=>{
- const state={discussion:{input:'',messages:[]},edits:new Map()},choices=['Stream · Close…','Stream · status… *','Discard input','Close'];let confirmations=0,writes=0;
+test('finish failures remain reachable via retained session status edit',async()=>{
+ const state={discussion:{input:'',messages:[]},edits:new Map()},choices=['Session · Finish…','Session · status… *','Discard input','Close'];let confirmations=0,writes=0;
  const ctx={sessionManager:{getSessionId:()=> 'native'},ui:{notify:()=>{},confirm:async()=>{confirmations++;return true;},select:async(_title,rows)=>{
-  assert.ok(rows.every(row=>!row.startsWith('Stream · archived')));
+  assert.ok(rows.every(row=>!row.startsWith('Stream · archived')&&!row.startsWith('Stream · status')&&!row.startsWith('Stream · Close')&&!row.startsWith('Stream · Finish')));
   const choice=choices.shift();assert.ok(rows.includes(choice),choice);return choice;
  }}};
  await openCard(ctx,{context:async()=>context(),apply:async()=>{writes++;throw Error('Save failed');}},state,{receipt:assert.fail,discuss:assert.fail,settings:assert.fail,report:assert.fail});

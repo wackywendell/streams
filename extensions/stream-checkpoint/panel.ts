@@ -226,8 +226,6 @@ export async function openCard(ctx: ExtensionContext, cli: StreamCli, state: Car
   streamItems.push(
    {value: "references", label: "References…", description: "Manage saved references, including Dropped entries"},
    {value: "reset:stream", label: "Reset…", description: "Regenerate only the Stream's automatic fields"},
-   {value: "finish:stream", label: "Finish…", description: "Mark the Stream as done; Sessions remain unchanged"},
-   {value: "close:stream", label: stream.status === "closed" ? "Restore…" : "Close…", description: stream.status === "closed" ? "Reopen this closed Stream as active" : "Close this Stream as abandoned"},
   );
   const sessionItems: SelectItem[] = session ? patchFields(catalog, "session", "user").map(({field}) => ({
    value: `field:session:${field}`,
@@ -236,7 +234,7 @@ export async function openCard(ctx: ExtensionContext, cli: StreamCli, state: Car
   })) : [{value: "noop", label: "Not yet enrolled", description: "Run /streams attach or /streams report to enroll this session"}];
   if (session) sessionItems.push(
    {value: "reset:session", label: "Reset…", description: "Regenerate only this Session's automatic fields"},
-   {value: "finish:session", label: "Finish…", description: "Mark this Session as done; the Stream remains unchanged"},
+   {value: "finish:session", label: "Finish…", description: "Mark this Session as done"},
   );
   const fallbackItems = [...actionItems, ...streamItems.map(item => ({...item, label: `Stream · ${item.label}`})), ...sessionItems.map(item => ({...item, label: `Session · ${item.label}`}))];
   let action: string | undefined;
@@ -281,7 +279,7 @@ export async function openCard(ctx: ExtensionContext, cli: StreamCli, state: Car
       width,
      );
      const summary = [
-      ` ${section("Stream")} · ${clean(stream.title)} ${theme.fg("muted", `[${stream.status} · title:${stream.title_mode} · goal:${stream.goal_mode}]`)}`,
+      ` ${section("Stream")} · ${clean(stream.title)} ${theme.fg("muted", `[title:${stream.title_mode} · goal:${stream.goal_mode}]`)}`,
       ...line(`Goal: ${stream.goal ?? "—"}`, 2),
       ` ${section("Session")} · ${clean(session?.title ?? "Not yet enrolled")} ${session ? theme.fg("muted", `[${session.status} · title:${session.title_mode}]`) : ""}`,
       ...(session ? [
@@ -325,16 +323,10 @@ export async function openCard(ctx: ExtensionContext, cli: StreamCli, state: Car
   }
   if (action === "settings") {await actions.settings();continue;}
   if (action === "report") {actions.report();return;}
-  if (action.startsWith("finish:")) {
-   const kind = action.split(":")[1] as "stream" | "session";
-   if (!await ctx.ui.confirm(kind === "session" ? "Finish Session?" : "Finish Stream?", kind === "session" ? "Finish only this Session; the Stream remains unchanged?" : "Mark the Stream done? Other Sessions are not automatically finished.")) continue;
-   const edit = new FieldEdit(kind, catalog, "status");edit.value = "done";
-   try {await edit.save(cli, actions.receipt);} catch(error) {state.edits.set(`${kind}:status`, edit);ctx.ui.notify(String(error), "error");}
-  } else if (action === "close:stream") {
-   const restoring = stream.status === "closed";
-   if (!await ctx.ui.confirm(restoring ? "Restore Stream?" : "Close Stream?", restoring ? "Reopen this closed Stream as active?" : "Mark this Stream closed (abandoned)?")) continue;
-   const edit = new FieldEdit("stream", catalog, "status");edit.value = restoring ? "active" : "closed";
-   try {await edit.save(cli, actions.receipt);} catch(error) {state.edits.set("stream:status", edit);ctx.ui.notify(String(error), "error");}
+  if (action === "finish:session") {
+   if (!await ctx.ui.confirm("Finish Session?", "Mark this Session as done?")) continue;
+   const edit = new FieldEdit("session", catalog, "status");edit.value = "done";
+   try {await edit.save(cli, actions.receipt);} catch(error) {state.edits.set("session:status", edit);ctx.ui.notify(String(error), "error");}
   }
  }
 }

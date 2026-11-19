@@ -19,7 +19,7 @@ const { StreamCli } = await load('streams');
 const { defaults } = await load('settings');
 const { helperSessionLogger } = await load('helper-log');
 const model = {provider:'fake', id:'chosen', contextWindow:100000};
-const stream = {id:'effort', title:'Work', title_mode:'automatic', goal:'Old goal', goal_short:'Old', goal_mode:'automatic', status:'active', owner:{host_id:'host'},revision:1,updated_at_ms:0, repositories:{}, references:[]};
+const stream = {id:'effort', title:'Work', title_mode:'automatic', goal:'Old goal', goal_short:'Old', goal_mode:'automatic', owner:{host_id:'host'},revision:1,updated_at_ms:0, repositories:{}, references:[]};
 const session = {id:sessionId('host','pi','native'),host_id:'host',revision:1,updated_at_ms:0,membership_epoch:0,stream_id:'effort',harness:'pi',harness_session_id:'native',title:'Lane',title_mode:'automatic',status:'active',state:'Old state',state_short:'Old',remaining:'Old remaining',checkout:null};
 const catalog = native => {
  const card = {...session,id:sessionId('host','pi',native),harness_session_id:native};

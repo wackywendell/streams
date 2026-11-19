@@ -14,7 +14,7 @@
         "status": "done"
       }
     },
-    "rejected_fields": ["recap", "recap_short", "state", "state_short", "remaining", "remaining_short"]
+    "rejected_fields": ["recap", "recap_short", "state", "state_short", "remaining", "remaining_short", "status"]
   },
   {
     "name": "prefixed Session fields returned for a Stream report",
@@ -34,6 +34,6 @@
         "session_remaining_short": "Verify"
       }
     },
-    "rejected_fields": ["session_title", "session_status", "session_recap", "session_recap_short", "session_state", "session_state_short", "session_remaining", "session_remaining_short"]
+    "rejected_fields": ["status", "session_title", "session_status", "session_recap", "session_recap_short", "session_state", "session_state_short", "session_remaining"]
   }
 ]

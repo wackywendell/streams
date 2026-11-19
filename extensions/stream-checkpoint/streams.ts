@@ -2,7 +2,7 @@ import type { ArtifactRequest, ChildRequest, ConfigSnapshot, DomainObject, Runne
 export type { CardMode, CardSettings, ConfigSnapshot } from "./child-protocol.ts";
 export type { Runner } from "./child-protocol.ts";
 
-import { parseLocalContext, isReferenceValue, isResourceKey, isStream as stream, isSession as session, type ResourceKey, type ReferenceValue, type StreamWire, type SessionWire, type LocalContext, type Mode } from "./wire.ts";
+import { parseLocalContext, isReferenceValue, isResourceKey, isListedStream as listedStream, isStream as stream, isSession as session, type ResourceKey, type ReferenceValue, type ListedStreamWire, type StreamWire, type SessionWire, type LocalContext, type Mode } from "./wire.ts";
 export { isReferenceText } from "./wire.ts";
 export type { Status, Mode, Reference, ReferenceValue, ReferenceTarget, ResourceKey, StreamWire, SessionWire, LocalContext } from "./wire.ts";
 export type ReferenceResult = {key: ResourceKey; desired: ReferenceValue | null; action: "add" | "update" | "drop" | "restore" | "delete"; outcome: "changes" | "no-change" | "superseded" | "conflict"; reason: string};
@@ -64,7 +64,7 @@ export function receiptHasWarning(value: Receipt): boolean {
 export type DiscardedCard = {session: string | null; stream: string | null};
 /** A record file the catalog listing could not decode, with the repair Streams chose for its kind. */
 export type UnreadableRecord = {kind: "host" | "stream" | "session"; host: string; path: string; cause: string; repair: string};
-export type StreamListing = {streams: StreamWire[]; unreadable: UnreadableRecord[]};
+export type StreamListing = {streams: ListedStreamWire[]; unreadable: UnreadableRecord[]};
 const unreadableRecord = (value: unknown): value is UnreadableRecord => object(value) && ["host", "stream", "session"].includes(value.kind) && text(value.host) && text(value.path) && text(value.cause) && text(value.repair);
 /** Names the records a listing skipped, each with its repair; empty when every record was read. */
 export function unreadableNotice(unreadable: UnreadableRecord[]): string {
@@ -100,7 +100,7 @@ export class StreamCli {
  async list(): Promise<StreamListing> {
   const value = await this.run({kind:"list_streams"});
   const rows = value?.streams, unreadable = value?.unreadable;
-  if (!Array.isArray(rows) || !rows.every(stream) || !Array.isArray(unreadable) || !unreadable.every(unreadableRecord)) throw new StreamsCliError("Invalid catalog list");
+  if (!Array.isArray(rows) || !rows.every(listedStream) || !Array.isArray(unreadable) || !unreadable.every(unreadableRecord)) throw new StreamsCliError("Invalid catalog list");
   return {streams: rows, unreadable};
  }
  async captureInputs(target?: {kind: "stream" | "workspace"; id: string}, signal?: AbortSignal): Promise<unknown> {
@@ -145,7 +145,7 @@ export class StreamCli {
  async unsetConfig(key: string): Promise<ConfigSnapshot> {return this.configSnapshotValue(await this.run({kind:"unset_config", key}));}
  async lifecycle(action: "resume" | "park"): Promise<DomainObject> {
   const value = await this.run({kind:"lifecycle", action});
-  if (!object(value) || typeof value.session_changed !== "boolean" || typeof value.stream_changed !== "boolean") throw new StreamsCliError("Invalid lifecycle result");
+  if (!object(value) || typeof value.session_changed !== "boolean") throw new StreamsCliError("Invalid lifecycle result");
   return value;
  }
 }

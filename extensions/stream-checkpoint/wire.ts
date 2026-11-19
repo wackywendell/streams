@@ -24,11 +24,12 @@ export type Reference = ReferenceValue;
 
 export type StreamWire = {
   id: string; title: string; title_mode: TitleMode; goal: string | null; goal_short: string | null;
-  goal_mode: Mode; status: Status; owner: { host_id: string };
+  goal_mode: Mode; owner: { host_id: string };
   repositories: Record<string, { url: string }>; references: Reference[];
   /** The store's compare-and-swap token and last change time; user edits send them back unchanged. */
   revision: number; updated_at_ms: number;
 };
+export type ListedStreamWire = StreamWire & { status: Status };
 export type SessionWire = {
   id: string; host_id: string; stream_id: string; harness: string; harness_session_id: string;
   membership_epoch: number;
@@ -123,10 +124,10 @@ export function isReferenceValue(value: unknown): value is ReferenceValue {
   return object(value) && onlyFields(value, referenceFields) && referenceValueFields(value);
 }
 
-export function isStream(value: unknown): value is StreamWire {
+function isStreamBase(value: unknown): value is StreamWire {
   if (!object(value) || !identity(value.id) || !text(value.title) || !titleMode(value.title_mode)
     || !nullableText(value.goal) || !nullableText(value.goal_short) || !mode(value.goal_mode)
-    || !status(value.status) || !stamped(value) || !object(value.owner) || !identity(value.owner.host_id)
+    || !stamped(value) || !object(value.owner) || !identity(value.owner.host_id)
     || !object(value.repositories) || !Object.entries(value.repositories).every(([alias, repo]) => identity(alias) && object(repo) && identity(repo.url))
     || ['documents', 'issues', 'prs'].some(key => Object.hasOwn(value, key))
     || !Array.isArray(value.references) || !value.references.every(isReferenceValue)) return false;
@@ -134,6 +135,14 @@ export function isStream(value: unknown): value is StreamWire {
     const key = resourceKey(ref.target);
     return JSON.stringify(key.kind === 'url' ? ['url', key.url] : ['document', key.repository_url, key.path]);
   })).size === value.references.length;
+}
+
+export function isStream(value: unknown): value is StreamWire {
+  return isStreamBase(value) && !Object.hasOwn(value, 'status');
+}
+
+export function isListedStream(value: unknown): value is ListedStreamWire {
+  return isStreamBase(value) && status((value as Record<string, unknown>).status);
 }
 
 export function isSession(value: unknown): value is SessionWire {
