@@ -255,8 +255,7 @@ pub fn revalidate(
 mod tests {
     use super::*;
     use crate::model::{
-        Reference, ReferenceRole, ReferenceState, ReferenceTarget, ReferenceValue, Repository,
-        RepositoryDocument,
+        Reference, ReferenceRole, ReferenceState, ReferenceTarget, Repository, RepositoryDocument,
     };
     use crate::runtime::{Result, checkouts::RepositoryInspection};
     use std::path::Path;
@@ -269,7 +268,7 @@ mod tests {
     }
 
     fn doc_ref(repo_url: &str, path: &str, name: &str) -> Reference {
-        Reference::new(ReferenceValue {
+        let reference = Reference {
             name: name.into(),
             purpose: "Guide".into(),
             role: ReferenceRole::Brief,
@@ -281,8 +280,9 @@ mod tests {
                 commit: None,
                 source_session_id: None,
             }),
-        })
-        .unwrap()
+        };
+        reference.validate().unwrap();
+        reference
     }
 
     #[test]

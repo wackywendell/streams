@@ -327,7 +327,7 @@ fn reference() -> Value {
 
 #[test]
 fn standalone_references_have_strict_shapes_and_exact_resource_keys() {
-    use streams::model::{Reference, ReferenceTarget, ReferenceValue, ResourceKey};
+    use streams::model::{Reference, ReferenceTarget, ResourceKey};
     for kind in ["pr", "issue", "link", "document"] {
         let mut wire = reference();
         wire["target"] = if kind == "document" {
@@ -344,7 +344,6 @@ fn standalone_references_have_strict_shapes_and_exact_resource_keys() {
             serde_json::from_value::<ResourceKey>(json!(key)).unwrap(),
             key
         );
-        assert_eq!(Reference::new(saved.value()).unwrap(), saved);
         if kind == "document" {
             let mut changed = saved.clone();
             if let ReferenceTarget::Document(document) = &mut changed.target {
@@ -394,12 +393,6 @@ fn standalone_references_have_strict_shapes_and_exact_resource_keys() {
                 "{field}"
             );
         }
-        let mut value = wire;
-        let desired: ReferenceValue = serde_json::from_value(value.clone()).unwrap();
-        desired.validate().unwrap();
-        assert_eq!(serde_json::to_value(desired).unwrap(), value);
-        value["revision"] = json!("extra");
-        assert!(serde_json::from_value::<ReferenceValue>(value).is_err());
     }
 }
 

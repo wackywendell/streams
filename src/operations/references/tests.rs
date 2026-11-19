@@ -24,7 +24,7 @@ fn session(repository_url: &str) -> Session {
     });
     session
 }
-fn document(value: &ReferenceValue) -> &RepositoryDocument {
+fn document(value: &Reference) -> &RepositoryDocument {
     match &value.target {
         ReferenceTarget::Document(document) => document,
         _ => panic!("document target"),
@@ -47,7 +47,7 @@ fn materialized_hints_come_from_the_saved_row_or_a_matching_checkout() {
         document.commit = Some("commit".into());
         document.source_session_id = Some("origin".into());
     }
-    let saved = Reference::new(saved).unwrap();
+    saved.validate().unwrap();
     let kept = proposal(None).materialize(Some(&saved), &session("https://example.com/repo"));
     assert_eq!(kept.target, saved.target);
     let replaced = proposal(Some("replacement"))

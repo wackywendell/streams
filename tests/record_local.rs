@@ -18,25 +18,22 @@ use streams::{
 fn user_reference_edits_swap_on_the_stream_revision_and_a_landed_retry_writes_nothing() {
     use streams::{
         application::save_user_references,
-        model::{
-            Reference, ReferenceRole, ReferenceState, ReferenceTarget, ReferenceValue,
-            TitleDefaults,
-        },
+        model::{Reference, ReferenceRole, ReferenceState, ReferenceTarget, TitleDefaults},
         operations::{DomainOutcome, references::ReferenceChange},
     };
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();
     let store = FileRecordStore::new(root, "host").unwrap();
     store.initialize().unwrap();
-    let value = |url: &str| ReferenceValue {
+    let value = |url: &str| Reference {
         name: "Reference".into(),
         purpose: "Guide work".into(),
         role: ReferenceRole::Brief,
         state: ReferenceState::Active,
         target: ReferenceTarget::Link { url: url.into() },
     };
-    let a = Reference::new(value("https://example.test/a")).unwrap();
-    let b = Reference::new(value("https://example.test/b")).unwrap();
+    let a = value("https://example.test/a");
+    let b = value("https://example.test/b");
     let mut stream = Stream::new("stream", "Stream", None, "host").unwrap();
     stream.references = vec![a.clone(), b.clone()];
     let record = Record::Stream(stream);

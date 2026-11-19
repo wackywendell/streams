@@ -33,7 +33,7 @@ fn current(document: bool) -> Stream {
     stream
 }
 
-fn desired(stream: &Stream, arguments: &[&str]) -> ReferenceValue {
+fn desired(stream: &Stream, arguments: &[&str]) -> Reference {
     let ReferenceChange::UserSet { desired, .. } = mutation(stream, &parse(arguments)).unwrap()
     else {
         panic!("set")
@@ -171,7 +171,7 @@ fn edit_preserves_metadata_and_document_correction_copies_recovery() {
             "Updated",
         ],
     );
-    let mut expected = stream.references[0].value();
+    let mut expected = stream.references[0].clone();
     expected.name = "Updated".into();
     assert_eq!(value, expected);
     let value = desired(
@@ -218,7 +218,7 @@ fn edit_preserves_metadata_and_document_correction_copies_recovery() {
             "Plan",
         ],
     );
-    assert_eq!(no_op, stream.references[0].value());
+    assert_eq!(no_op, stream.references[0]);
     assert!(
         mutation(
             &stream,

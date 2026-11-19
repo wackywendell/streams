@@ -538,7 +538,7 @@ fn saved_reference_resolution_checks_link_kind_and_retains_moved_artifact_proven
         config::{Config, Strategy},
         model::{
             Record, Reference as ModelReference, ReferenceRole, ReferenceState, ReferenceTarget,
-            ReferenceValue, Stream,
+            Stream,
         },
         operations::membership::MoveIntent,
         runtime::{CheckoutRegistry, DirectoryBindings},
@@ -553,30 +553,24 @@ fn saved_reference_resolution_checks_link_kind_and_retains_moved_artifact_proven
     let records = application::initialize_records(&config, Strategy::None, None, "main").unwrap();
     let host = records.host().as_str();
     let mut stream = Stream::new("work", "Work", None, host).unwrap();
-    stream.references.push(
-        ModelReference::new(ReferenceValue {
-            name: "Issue".into(),
-            purpose: "Issue".into(),
-            role: ReferenceRole::Dependency,
-            state: ReferenceState::Active,
-            target: ReferenceTarget::Issue {
-                url: "https://example.test/issue/1".into(),
-            },
-        })
-        .unwrap(),
-    );
-    stream.references.push(
-        ModelReference::new(ReferenceValue {
-            name: "Review".into(),
-            purpose: "Review".into(),
-            role: ReferenceRole::Deliverable,
-            state: ReferenceState::Active,
-            target: ReferenceTarget::Pr {
-                url: "https://example.test/pull/2".into(),
-            },
-        })
-        .unwrap(),
-    );
+    stream.references.push(ModelReference {
+        name: "Issue".into(),
+        purpose: "Issue".into(),
+        role: ReferenceRole::Dependency,
+        state: ReferenceState::Active,
+        target: ReferenceTarget::Issue {
+            url: "https://example.test/issue/1".into(),
+        },
+    });
+    stream.references.push(ModelReference {
+        name: "Review".into(),
+        purpose: "Review".into(),
+        role: ReferenceRole::Deliverable,
+        state: ReferenceState::Active,
+        target: ReferenceTarget::Pr {
+            url: "https://example.test/pull/2".into(),
+        },
+    });
     application::create_record(records.records(), &Record::Stream(stream)).unwrap();
     application::create_record(
         records.records(),

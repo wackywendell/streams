@@ -7,8 +7,8 @@ use serde_json::json;
 
 use super::{Actor, DomainOutcome, Reconciliation};
 use crate::model::{
-    Record, Reference, ReferenceRole, ReferenceState, ReferenceTarget, ReferenceValue,
-    RepositoryDocument, ResourceKey, Session, Stream, ValidationError,
+    Record, Reference, ReferenceRole, ReferenceState, ReferenceTarget, RepositoryDocument,
+    ResourceKey, Session, Stream, ValidationError,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -39,7 +39,7 @@ pub struct AutomaticReferenceValue {
 
 impl AutomaticReferenceValue {
     /// Materialize only runtime-owned recovery hints; omitted ref preserves a saved hint.
-    pub fn materialize(&self, captured: Option<&Reference>, session: &Session) -> ReferenceValue {
+    pub fn materialize(&self, captured: Option<&Reference>, session: &Session) -> Reference {
         let target = match &self.target {
             AutomaticReferenceTarget::Document(document) => {
                 let old = captured.and_then(|reference| match &reference.target {
@@ -74,7 +74,7 @@ impl AutomaticReferenceValue {
             AutomaticReferenceTarget::Issue { url } => ReferenceTarget::Issue { url: url.clone() },
             AutomaticReferenceTarget::Link { url } => ReferenceTarget::Link { url: url.clone() },
         };
-        ReferenceValue {
+        Reference {
             name: self.name.clone(),
             purpose: self.purpose.clone(),
             role: self.role,
@@ -92,7 +92,7 @@ pub enum ReferenceChange {
     },
     UserSet {
         key: ResourceKey,
-        desired: ReferenceValue,
+        desired: Reference,
     },
     UserDelete {
         key: ResourceKey,
@@ -139,7 +139,7 @@ pub struct ReferenceResult {
     /// The value this row saves, or would save if refused, with runtime-owned recovery
     /// hints filled in; null for a deletion. A frontend adopts an automatic proposal as a
     /// user edit from this value.
-    pub desired: Option<ReferenceValue>,
+    pub desired: Option<Reference>,
     pub action: ReferenceAction,
     pub outcome: DomainOutcome,
     pub reason: String,
@@ -293,7 +293,7 @@ impl ReferenceChanges {
                 ReferenceChange::UserSet { desired, .. } => Some(desired.clone()),
                 ReferenceChange::UserDelete { .. } => None,
             };
-            let landed = desired.as_ref() == actual.map(Reference::value).as_ref();
+            let landed = desired.as_ref() == actual;
             let action = match (old, &desired) {
                 (None, _) => ReferenceAction::Add,
                 (_, None) => ReferenceAction::Delete,
@@ -347,11 +347,11 @@ impl ReferenceChanges {
                     .position(|reference| reference.target.key() == *key);
                 match &desired {
                     Some(desired) => {
-                        let reference = Reference::new(desired.clone())?;
+                        desired.validate()?;
                         if let Some(index) = index {
-                            next.references[index] = reference;
+                            next.references[index] = desired.clone();
                         } else {
-                            next.references.push(reference);
+                            next.references.push(desired.clone());
                         }
                     }
                     None => {

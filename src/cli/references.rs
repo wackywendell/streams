@@ -5,10 +5,7 @@ use serde::Serialize;
 use serde_json::json;
 use streams::{
     application,
-    model::{
-        Reference, ReferenceState, ReferenceTarget, ReferenceValue, RepositoryDocument,
-        ResourceKey, Stream,
-    },
+    model::{Reference, ReferenceState, ReferenceTarget, RepositoryDocument, ResourceKey, Stream},
     operations::references::ReferenceChange,
 };
 use unicode_general_category::{GeneralCategory, get_general_category};
@@ -167,7 +164,7 @@ fn recovery(target: &mut ReferenceTarget, fields: &ReferenceFields) -> Result<()
     Ok(())
 }
 
-fn add_value(selector: &ReferenceSelector, fields: &ReferenceFields) -> Result<ReferenceValue> {
+fn add_value(selector: &ReferenceSelector, fields: &ReferenceFields) -> Result<Reference> {
     if has_correction(fields)
         || fields.clear_ref
         || fields.clear_commit
@@ -180,7 +177,7 @@ fn add_value(selector: &ReferenceSelector, fields: &ReferenceFields) -> Result<R
     let kind = fields
         .kind
         .ok_or_else(|| CliError::message("add requires --kind"))?;
-    let mut value = ReferenceValue {
+    let mut value = Reference {
         name: fields
             .name
             .clone()
@@ -200,7 +197,7 @@ fn add_value(selector: &ReferenceSelector, fields: &ReferenceFields) -> Result<R
     Ok(value)
 }
 
-fn edit_value(reference: &Reference, fields: &ReferenceFields) -> Result<ReferenceValue> {
+fn edit_value(reference: &Reference, fields: &ReferenceFields) -> Result<Reference> {
     if fields.name.is_none()
         && fields.purpose.is_none()
         && fields.kind.is_none()
@@ -239,7 +236,7 @@ fn edit_value(reference: &Reference, fields: &ReferenceFields) -> Result<Referen
             ));
         }
     };
-    let mut value = reference.value();
+    let mut value = reference.clone();
     value.target = target(
         fields.kind.unwrap_or_else(|| kind(&reference.target)),
         &corrected,
@@ -294,7 +291,7 @@ fn mutation(stream: &Stream, command: &ReferenceCommand) -> Result<ReferenceChan
                         safe_reference_json(&key)
                     ))
                 })?;
-            let mut desired = reference.value();
+            let mut desired = reference.clone();
             match command {
                 ReferenceCommand::Edit { fields, .. } => desired = edit_value(reference, fields)?,
                 ReferenceCommand::Drop { .. } => desired.state = ReferenceState::Dropped,

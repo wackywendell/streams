@@ -6,8 +6,8 @@ use std::sync::OnceLock;
 
 use serde_json::{Value, json};
 use streams::model::{
-    NamingMode, Record, Reference, ReferenceRole, ReferenceState, ReferenceTarget, ReferenceValue,
-    Session, Stream, TitleDefaults, TitleMode,
+    NamingMode, Record, Reference, ReferenceRole, ReferenceState, ReferenceTarget, Session, Stream,
+    TitleDefaults, TitleMode,
 };
 use streams::operations::edits::{
     ReportAdmission, SessionEdit, StreamEdit, report_admission_context,
@@ -500,18 +500,15 @@ fn non_prose_metadata_edits_and_session_work_remain_orthogonal_to_stream_admissi
     // leave admission booleans unchanged and do not cause Conflict on automatic reports.
     world.session.title_mode = TitleMode::Automatic;
     world.stream_a.title_mode = TitleMode::Automatic;
-    world.stream_a.references.push(
-        Reference::new(ReferenceValue {
-            name: "Issue 1".into(),
-            purpose: "Supply context".into(),
-            role: ReferenceRole::Background,
-            state: ReferenceState::Active,
-            target: ReferenceTarget::Issue {
-                url: "https://example.com/issue/1".into(),
-            },
-        })
-        .unwrap(),
-    );
+    world.stream_a.references.push(Reference {
+        name: "Issue 1".into(),
+        purpose: "Supply context".into(),
+        role: ReferenceRole::Background,
+        state: ReferenceState::Active,
+        target: ReferenceTarget::Issue {
+            url: "https://example.com/issue/1".into(),
+        },
+    });
     assert_eq!(world.project().booleans, baseline);
 
     let Reconciliation::Changes { record, .. } = world.session_report.apply(

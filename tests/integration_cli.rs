@@ -501,49 +501,40 @@ impl SavedFixture {
                 );
                 stream.references = ["z.md", "a.md"]
                     .into_iter()
-                    .map(|path| {
-                        streams::model::Reference::new(streams::model::ReferenceValue {
-                            name: path.into(),
-                            purpose: format!("Saved {path}"),
-                            role: streams::model::ReferenceRole::Deliverable,
-                            state: streams::model::ReferenceState::Active,
-                            target: streams::model::ReferenceTarget::Document(
-                                streams::model::RepositoryDocument {
-                                    repository_url: "https://example.test/source.git".into(),
-                                    path: path.into(),
-                                    r#ref: Some("saved-ref".into()),
-                                    commit: Some("saved-commit".into()),
-                                    source_session_id: None,
-                                },
-                            ),
-                        })
-                        .unwrap()
-                    })
-                    .collect();
-                stream.references.push(
-                    streams::model::Reference::new(streams::model::ReferenceValue {
-                        name: "Saved issue".into(),
-                        purpose: "Saved issue".into(),
-                        role: streams::model::ReferenceRole::Dependency,
-                        state: streams::model::ReferenceState::Active,
-                        target: streams::model::ReferenceTarget::Issue {
-                            url: "https://example.test/shared-issue".into(),
-                        },
-                    })
-                    .unwrap(),
-                );
-                stream.references.push(
-                    streams::model::Reference::new(streams::model::ReferenceValue {
-                        name: "Saved PR".into(),
-                        purpose: "Saved PR".into(),
+                    .map(|path| streams::model::Reference {
+                        name: path.into(),
+                        purpose: format!("Saved {path}"),
                         role: streams::model::ReferenceRole::Deliverable,
                         state: streams::model::ReferenceState::Active,
-                        target: streams::model::ReferenceTarget::Pr {
-                            url: "https://example.test/shared-pr".into(),
-                        },
+                        target: streams::model::ReferenceTarget::Document(
+                            streams::model::RepositoryDocument {
+                                repository_url: "https://example.test/source.git".into(),
+                                path: path.into(),
+                                r#ref: Some("saved-ref".into()),
+                                commit: Some("saved-commit".into()),
+                                source_session_id: None,
+                            },
+                        ),
                     })
-                    .unwrap(),
-                );
+                    .collect();
+                stream.references.push(streams::model::Reference {
+                    name: "Saved issue".into(),
+                    purpose: "Saved issue".into(),
+                    role: streams::model::ReferenceRole::Dependency,
+                    state: streams::model::ReferenceState::Active,
+                    target: streams::model::ReferenceTarget::Issue {
+                        url: "https://example.test/shared-issue".into(),
+                    },
+                });
+                stream.references.push(streams::model::Reference {
+                    name: "Saved PR".into(),
+                    purpose: "Saved PR".into(),
+                    role: streams::model::ReferenceRole::Deliverable,
+                    state: streams::model::ReferenceState::Active,
+                    target: streams::model::ReferenceTarget::Pr {
+                        url: "https://example.test/shared-pr".into(),
+                    },
+                });
             }
             application::create_record(records.records(), &Record::Stream(stream)).unwrap();
         }
@@ -1529,8 +1520,8 @@ fn link_actions_revalidate_saved_kind_and_url_without_native_or_owner_path_discl
     use streams::{
         application,
         model::{
-            Record, Reference, ReferenceRole, ReferenceState, ReferenceTarget, ReferenceValue,
-            Stream, TitleDefaults,
+            Record, Reference, ReferenceRole, ReferenceState, ReferenceTarget, Stream,
+            TitleDefaults,
         },
         operations::references::ReferenceChange,
     };
@@ -1543,18 +1534,15 @@ fn link_actions_revalidate_saved_kind_and_url_without_native_or_owner_path_discl
         "javascript:alert(1)",
         "file:///owner-private/file",
     ];
-    stream.references.push(
-        Reference::new(ReferenceValue {
-            name: "Issue".into(),
-            purpose: "Issue".into(),
-            role: ReferenceRole::Dependency,
-            state: ReferenceState::Active,
-            target: ReferenceTarget::Issue {
-                url: urls[0].into(),
-            },
-        })
-        .unwrap(),
-    );
+    stream.references.push(Reference {
+        name: "Issue".into(),
+        purpose: "Issue".into(),
+        role: ReferenceRole::Dependency,
+        state: ReferenceState::Active,
+        target: ReferenceTarget::Issue {
+            url: urls[0].into(),
+        },
+    });
     let Record::Stream(stream) =
         application::create_record(fixture.records.records(), &Record::Stream(stream.clone()))
             .unwrap()

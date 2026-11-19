@@ -447,24 +447,6 @@ impl ResourceKey {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ReferenceValue {
-    pub name: String,
-    pub purpose: String,
-    pub role: ReferenceRole,
-    pub state: ReferenceState,
-    pub target: ReferenceTarget,
-}
-
-impl ReferenceValue {
-    pub fn validate(&self) -> Result<(), ValidationError> {
-        check_text(&self.name, "reference.name", false)?;
-        check_text(&self.purpose, "reference.purpose", false)?;
-        self.target.validate()
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Reference {
     pub name: String,
     pub purpose: String,
@@ -474,32 +456,10 @@ pub struct Reference {
 }
 
 impl Reference {
-    pub fn new(value: ReferenceValue) -> Result<Self, ValidationError> {
-        let reference = Self {
-            name: value.name,
-            purpose: value.purpose,
-            role: value.role,
-            state: value.state,
-            target: value.target,
-        };
-        reference.validate()?;
-        Ok(reference)
-    }
-
     pub fn validate(&self) -> Result<(), ValidationError> {
         check_text(&self.name, "reference.name", false)?;
         check_text(&self.purpose, "reference.purpose", false)?;
         self.target.validate()
-    }
-
-    pub fn value(&self) -> ReferenceValue {
-        ReferenceValue {
-            name: self.name.clone(),
-            purpose: self.purpose.clone(),
-            role: self.role,
-            state: self.state,
-            target: self.target.clone(),
-        }
     }
 }
 

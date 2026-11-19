@@ -1118,7 +1118,7 @@ fn reference_constructor_rejects_overlap_and_foreign_captures() {
     before.references = vec![reference("https://example.test/a")];
     let user = |old: &str, new: &str| ReferenceChange::UserSet {
         key: ResourceKey::Url { url: old.into() },
-        desired: reference(new).value(),
+        desired: reference(new),
     };
     for changes in [
         vec![
