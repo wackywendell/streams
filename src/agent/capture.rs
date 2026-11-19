@@ -265,7 +265,7 @@ pub fn capture_inputs(
             .inventory()
             .map_err(|error| ValidationError::new(error.to_string()))?
             .into_iter()
-            .filter_map(|read| match read.record {
+            .filter_map(|read| match read {
                 Record::Stream(stream) if stream.owner_host_id == host => {
                     Some(record_to_data(&Record::Stream(stream)))
                 }

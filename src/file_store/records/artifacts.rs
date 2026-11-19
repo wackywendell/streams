@@ -7,10 +7,10 @@ use crate::{
     },
     file_io::{atomic_write, ensure_directory, sync_directory},
     file_store::encode_component,
-    model::RecordKind,
+    model::{Record, RecordKind},
     storage::{
         StorageError,
-        records::{RecordAddress, RecordChange, RecordRead, RecordReader},
+        records::{RecordAddress, RecordChange, RecordReader},
     },
 };
 use std::{
@@ -108,7 +108,7 @@ impl ArtifactStore for FileRecordStore {
         content: ContentChange,
         apply: impl FnOnce(
             &dyn RecordReader,
-            Option<&RecordRead>,
+            Option<&Record>,
         ) -> Result<(RecordChange<T>, ArtifactKey), E>,
     ) -> Result<ArtifactSave<T>, E> {
         if target.host() != self.host || target.kind() != RecordKind::Session {

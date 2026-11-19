@@ -1,10 +1,10 @@
 //! Session-owned attachment metadata and separately stored output text.
 
 use crate::{
-    model::{Session, ValidationError, check_text},
+    model::{Record, Session, ValidationError, check_text},
     storage::{
         StorageError,
-        records::{RecordAddress, RecordChange, RecordRead, RecordReader, RecordSave, RecordStore},
+        records::{RecordAddress, RecordChange, RecordReader, RecordSave, RecordStore},
     },
 };
 use serde::{Deserialize, Serialize};
@@ -231,7 +231,7 @@ pub trait ArtifactStore: RecordStore {
         content: ContentChange,
         apply: impl FnOnce(
             &dyn RecordReader,
-            Option<&RecordRead>,
+            Option<&Record>,
         ) -> Result<(RecordChange<T>, ArtifactKey), E>,
     ) -> Result<ArtifactSave<T>, E>;
 }

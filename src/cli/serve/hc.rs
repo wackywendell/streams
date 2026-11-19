@@ -76,7 +76,7 @@ fn pi_session(
     let Some(found) = found else {
         return Ok(None);
     };
-    let Record::Session(session) = found.record else {
+    let Record::Session(session) = found else {
         return Err(CliError::message("Pi Session is unavailable"));
     };
     if session.host_id != host || session.harness != "pi" || session.harness_session_id != native_id

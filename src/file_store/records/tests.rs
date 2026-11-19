@@ -61,7 +61,7 @@ fn reads<T>(f: impl FnOnce() -> T) -> (T, Vec<PathBuf>) {
     (result, paths)
 }
 
-fn read(store: &FileRecordStore, key: &RecordAddress) -> Result<Option<RecordRead>, StorageError> {
+fn read(store: &FileRecordStore, key: &RecordAddress) -> Result<Option<Record>, StorageError> {
     store.with_reader(|reader| reader.read(key))
 }
 
@@ -230,7 +230,7 @@ fn named_reads_and_saves_do_not_scan_or_depend_on_unrelated_records_or_history()
     assert_eq!(next_reads, expected);
     let (saved, save_reads) = reads(|| put(&store, stream("work", "Edited")));
     assert_eq!(save_reads, expected);
-    assert!(saved.current.record.same_content(&stream("work", "Edited")));
+    assert!(saved.current.same_content(&stream("work", "Edited")));
     assert!(!store.root.join(".catalog-sync").exists());
     assert!(!store.root.join(".git").exists());
     assert!(!store.root.join("save.json").exists());
@@ -268,17 +268,15 @@ fn shell_reads_only_explicit_dependencies_and_save_returns_without_reopening() {
                     reader
                         .read(&RecordAddress::for_record(&source))?
                         .unwrap()
-                        .record
                         .same_content(&source)
                 );
                 assert!(
                     reader
                         .read(&RecordAddress::for_record(&destination))?
                         .unwrap()
-                        .record
                         .same_content(&destination)
                 );
-                let Record::Session(mut moved) = before.unwrap().record.clone() else {
+                let Record::Session(mut moved) = before.unwrap().clone() else {
                     unreachable!()
                 };
                 moved.stream_id = "destination".into();
@@ -308,7 +306,7 @@ fn shell_reads_only_explicit_dependencies_and_save_returns_without_reopening() {
         .unwrap(),
         old_bytes
     );
-    let Record::Session(moved) = saved.current.record else {
+    let Record::Session(moved) = saved.current else {
         unreachable!()
     };
     assert_eq!(moved.stream_id, "destination");
@@ -323,14 +321,14 @@ fn only_changed_saves_write_and_advance_the_stamps() {
     let first = put(&store, record.clone());
     assert!(first.written);
     assert_eq!(first.local(), "persisted");
-    let stamps = first.current.record.stamps().unwrap();
+    let stamps = first.current.stamps().unwrap();
     assert_eq!(stamps.revision, 1);
     assert!(stamps.updated_at_ms > 0);
     let bytes = fs::read(&path).unwrap();
     // The file is the record itself.
     assert_eq!(
         serde_json::from_slice::<Value>(&bytes).unwrap(),
-        record_to_data(&first.current.record)
+        record_to_data(&first.current)
     );
 
     // Saving the same content, or returning the current record to skip, writes nothing.
@@ -339,7 +337,7 @@ fn only_changed_saves_write_and_advance_the_stamps() {
     let skipped = store
         .save::<_, StorageError>(&key, |_, before| {
             Ok(RecordChange {
-                record: before.unwrap().record.clone(),
+                record: before.unwrap().clone(),
                 outcome: (),
             })
         })
@@ -359,7 +357,7 @@ fn only_changed_saves_write_and_advance_the_stamps() {
         updated_at_ms: 1,
     });
     let changed = put(&store, edited);
-    let next = changed.current.record.stamps().unwrap();
+    let next = changed.current.stamps().unwrap();
     assert!(changed.written);
     assert_eq!(next.revision, 2);
     assert!(next.updated_at_ms >= stamps.updated_at_ms);

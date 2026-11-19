@@ -5,7 +5,7 @@ use streams::{
     model::TitleDefaults,
     storage::{
         StorageError,
-        records::{RecordAddress, RecordChange, RecordRead, RecordReader, RecordSave, RecordStore},
+        records::{RecordAddress, RecordChange, RecordReader, RecordSave, RecordStore},
     },
 };
 
@@ -43,8 +43,7 @@ fn captured_apply_is_target_local_and_a_landed_retry_writes_nothing_without_publ
                 })
             })
             .unwrap()
-            .current
-            .record;
+            .current;
         // A broken transport configuration cannot block an ordinary local save.
         std::fs::write(root.join(".catalog-local/transport.json"), "not JSON").unwrap();
         let others = root.join("hosts/other/streams");
@@ -154,7 +153,7 @@ fn partial_reference_conflict_keeps_the_accepted_rows_and_safe_diagnostics() {
     let created = application::create_record(f.opened.records(), &Record::Stream(stream)).unwrap();
     let captured = json!({
         "version":2,"catalog_source":"logical-source",
-        "actor":"user","kind":"stream","before":record_to_data(&created.current.record),
+        "actor":"user","kind":"stream","before":record_to_data(&created.current),
         "changes":{"reference_changes":[
             {"key":{"kind":"document","repository_url":"repo\u{202e}","path":"plan.md"},
              "desired":{"name":"Moved","purpose":"Guide work","role":"brief","state":"active","target":{"kind":"pr","url":"https://example.test/taken"}}},
@@ -220,10 +219,7 @@ impl RecordStore for FailedWrite {
     fn save<T, E: From<StorageError>>(
         &self,
         _: &RecordAddress,
-        _: impl FnOnce(
-            &dyn RecordReader,
-            Option<&RecordRead>,
-        ) -> std::result::Result<RecordChange<T>, E>,
+        _: impl FnOnce(&dyn RecordReader, Option<&Record>) -> std::result::Result<RecordChange<T>, E>,
     ) -> std::result::Result<RecordSave<T>, E> {
         Err(StorageError::uncertain("replacement flush failed").into())
     }
@@ -284,7 +280,6 @@ fn apply_opened_session_status_writes_only_its_session_without_scans_or_stream_w
         application::create_record(opened.records(), &Record::Session(target))
             .unwrap()
             .current
-            .record
     else {
         panic!()
     };

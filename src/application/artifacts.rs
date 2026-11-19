@@ -7,7 +7,7 @@ mod tests;
 use crate::{
     artifacts::{self, ArtifactKey, ArtifactStore, ArtifactSummary, ContentChange},
     model::{Record, RecordKind, Session, ValidationError},
-    storage::records::{RecordAddress, RecordChange, RecordRead, RecordReader},
+    storage::records::{RecordAddress, RecordChange, RecordReader},
 };
 use serde::Serialize;
 
@@ -23,10 +23,7 @@ pub struct WriteArtifact {
 fn session(reader: &dyn RecordReader, host: &str, id: &str) -> Result<Session> {
     let key = RecordAddress::new(host, RecordKind::Session, id)?;
     match reader.read(&key)? {
-        Some(RecordRead {
-            record: Record::Session(session),
-            ..
-        }) => Ok(session),
+        Some(Record::Session(session)) => Ok(session),
         _ => Err(ValidationError::new("producing Session is missing").into()),
     }
 }
@@ -60,11 +57,7 @@ pub fn list_stream_artifacts(
         for id in reader.stream_producers(host, stream)? {
             // An unattached leftover directory is not an artifact reference.
             let key = RecordAddress::new(host, RecordKind::Session, id)?;
-            if let Some(RecordRead {
-                record: Record::Session(session),
-                ..
-            }) = reader.read(&key)?
-            {
+            if let Some(Record::Session(session)) = reader.read(&key)? {
                 outputs.extend(artifacts::summaries(&session, stream));
             }
         }
@@ -94,12 +87,9 @@ pub fn read_artifact(store: &impl ArtifactStore, key: &ArtifactKey) -> Result<Ar
     })
 }
 
-fn before_session(before: Option<&RecordRead>) -> Result<&Session> {
+fn before_session(before: Option<&Record>) -> Result<&Session> {
     match before {
-        Some(RecordRead {
-            record: Record::Session(session),
-            ..
-        }) => Ok(session),
+        Some(Record::Session(session)) => Ok(session),
         _ => Err(ValidationError::new("producing Session is missing").into()),
     }
 }

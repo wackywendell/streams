@@ -49,7 +49,6 @@ fn selected_session_key_reads_only_its_record_without_catalog_discovery() {
             application::create_record(opened.records(), &Record::Stream(stream.clone()))
                 .unwrap()
                 .current
-                .record
         else {
             unreachable!()
         };
@@ -57,7 +56,6 @@ fn selected_session_key_reads_only_its_record_without_catalog_discovery() {
             application::create_record(opened.records(), &Record::Session(member.clone()))
                 .unwrap()
                 .current
-                .record
         else {
             unreachable!()
         };
@@ -126,7 +124,7 @@ fn selected_session_key_reads_only_its_record_without_catalog_discovery() {
     }
 }
 
-fn session(host: &str, stream: &str, native: &str, status: Status) -> RecordRead {
+fn session(host: &str, stream: &str, native: &str, status: Status) -> Record {
     let mut session = Session::new(
         Session::id_for(host, "pi", native),
         host,
@@ -137,9 +135,7 @@ fn session(host: &str, stream: &str, native: &str, status: Status) -> RecordRead
     )
     .unwrap();
     session.status = status;
-    RecordRead {
-        record: Record::Session(session),
-    }
+    Record::Session(session)
 }
 
 #[test]
@@ -152,9 +148,7 @@ fn reopen_selects_current_active_local_members_not_native_or_saved_layout_state(
         session("local", "other", "moved", Status::Active),
         session("remote", "work", "replica", Status::Active),
         session("local", "work", "second", Status::Active),
-        RecordRead {
-            record: Record::Stream(stream.clone()),
-        },
+        Record::Stream(stream.clone()),
     ];
     let selected = requested_sessions(&stream, &records, None).unwrap();
     assert_eq!(selected.len(), 3);
@@ -198,7 +192,7 @@ fn explicit_session_selection_can_resume_done_or_closed_but_never_another_member
         requested_sessions(&stream, &records, Some("Lane")),
         Err(CliError::Ambiguous { .. })
     ));
-    let Record::Session(moved) = &records[2].record else {
+    let Record::Session(moved) = &records[2] else {
         unreachable!()
     };
     assert!(matches!(

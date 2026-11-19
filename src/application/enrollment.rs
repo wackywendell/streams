@@ -29,14 +29,14 @@ pub fn enroll_stream(
     let requested = Record::Stream(stream);
     store.save(&address, |reader, before| {
         if let Some(before) = before {
-            if !before.record.same_content(&requested) {
+            if !before.same_content(&requested) {
                 return Err(ValidationError::new(
                     "effort already exists; attach to it or create work in another conversation",
                 )
                 .into());
             }
             return Ok(RecordChange {
-                record: before.record.clone(),
+                record: before.clone(),
                 outcome: DomainOutcome::NoChange,
             });
         }
@@ -87,7 +87,7 @@ pub fn enroll_session_observed(
     let saved = store.save::<_, super::ApplicationError>(&address, |reader, before| {
         let session = match before {
             Some(current) => {
-                let Record::Session(current) = &current.record else {
+                let Record::Session(current) = current else {
                     return Err(ValidationError::new("enrollment target must be a Session").into());
                 };
                 if current.host_id != host
@@ -123,7 +123,7 @@ pub fn enroll_session_observed(
                     "Stream is missing; create it before enrolling the conversation",
                 )
             })?;
-        let Record::Stream(stream) = stream.record else {
+        let Record::Stream(stream) = stream else {
             return Err(ValidationError::new("enrollment dependency must be a Stream").into());
         };
         if stream.owner_host_id != host {
@@ -223,14 +223,14 @@ pub fn enroll(
                 request,
             )?);
             // Reported even if the Session save below fails; that save replaces it.
-            if let Record::Stream(stream) = created.current.record {
+            if let Record::Stream(stream) = created.current {
                 receipt.stream = Some(stream);
             }
         }
         let enrolled = enroll_session_observed(opened.records(), opened.host().as_str(), request)?;
         let dependency = enrolled.stream;
         let saved = receipt.persist(enrolled.save);
-        let Record::Session(session) = saved.current.record else {
+        let Record::Session(session) = saved.current else {
             return Err(
                 ValidationError::new("enrollment returned a non-Session conversation").into(),
             );

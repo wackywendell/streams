@@ -9,13 +9,10 @@ use streams::{
     storage::records::RecordStore,
 };
 
-fn select_session(
-    records: &[streams::storage::records::RecordRead],
-    reference: &str,
-) -> Result<Session> {
+fn select_session(records: &[Record], reference: &str) -> Result<Session> {
     let sessions: Vec<_> = records
         .iter()
-        .filter_map(|read| match &read.record {
+        .filter_map(|read| match read {
             Record::Session(session) => Some(session),
             _ => None,
         })
@@ -38,7 +35,7 @@ impl App {
                     .transpose()?;
                 let sessions: Vec<_> = records
                     .iter()
-                    .filter_map(|read| match &read.record {
+                    .filter_map(|read| match read {
                         Record::Session(session)
                             if stream.is_none_or(|stream| {
                                 session.host_id == stream.owner_host_id
@@ -102,7 +99,7 @@ impl App {
                 session.checkout = checkout;
                 let saved =
                     application::create_record(opened.records(), &Record::Session(session))?;
-                let Record::Session(session) = saved.current.record.clone() else {
+                let Record::Session(session) = saved.current.clone() else {
                     unreachable!("Session creation target")
                 };
                 let mut output = catalog::finish_created(saved);

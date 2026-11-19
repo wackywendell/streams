@@ -14,9 +14,7 @@ fn record_selector_discovers_host_qualified_identity_and_refuses_duplicate_uuid_
     let id = "11234567-89ab-4def-8123-456789abcdef";
     let records: Vec<_> = ["a", "b"]
         .into_iter()
-        .map(|host| streams::storage::records::RecordRead {
-            record: Record::Stream(Stream::new(id, "Shared", None, host).unwrap()),
-        })
+        .map(|host| Record::Stream(Stream::new(id, "Shared", None, host).unwrap()))
         .collect();
     assert!(select_stream(&records, id).is_err());
     assert!(select_stream(&records, "Shared").is_err());
@@ -81,7 +79,7 @@ impl Fixture {
                 },
             )
             .unwrap();
-        record_to_data(&saved.current.record)
+        record_to_data(&saved.current)
     }
     fn attach_session(
         &self,
@@ -102,7 +100,7 @@ impl Fixture {
         session.status = status;
         let saved =
             application::create_record(self.opened.records(), &Record::Session(session)).unwrap();
-        let Record::Session(saved) = saved.current.record else {
+        let Record::Session(saved) = saved.current else {
             unreachable!()
         };
         saved
@@ -152,7 +150,7 @@ impl Fixture {
             TitleDefaults::default(),
         )
         .unwrap();
-        let Record::Session(updated) = saved.current.record else {
+        let Record::Session(updated) = saved.current else {
             unreachable!()
         };
         updated
@@ -163,7 +161,7 @@ impl Fixture {
                 .inventory()
                 .unwrap()
                 .into_iter()
-                .map(|read| record_to_data(&read.record))
+                .map(|read| record_to_data(&read))
                 .collect::<Vec<_>>()
         )
     }

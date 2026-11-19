@@ -20,8 +20,7 @@ use crate::{
     storage::{
         StorageError,
         records::{
-            RecordAddress, RecordChange, RecordRead, RecordReader, RecordSave, RecordStore,
-            UnreadableRecord,
+            RecordAddress, RecordChange, RecordReader, RecordSave, RecordStore, UnreadableRecord,
         },
     },
 };
@@ -233,15 +232,12 @@ struct Reader<'a> {
 /// Decode already-observed bytes with exactly the same strict checks as a store read.
 /// Watchers can establish the Stream watch before requesting context, without another read.
 /// Every reader reports an undecodable record by kind and catalog path, with the cause.
-pub fn decode_record(
-    address: &RecordAddress,
-    bytes: &[u8],
-) -> Result<RecordRead, UnreadableRecord> {
+pub fn decode_record(address: &RecordAddress, bytes: &[u8]) -> Result<Record, UnreadableRecord> {
     decode_record_bytes(address, bytes)
         .map_err(|error| UnreadableRecord::new(address, record_path(address), error.to_string()))
 }
 
-fn decode_record_bytes(address: &RecordAddress, bytes: &[u8]) -> Result<RecordRead, StorageError> {
+fn decode_record_bytes(address: &RecordAddress, bytes: &[u8]) -> Result<Record, StorageError> {
     let text = std::str::from_utf8(bytes).map_err(invalid)?;
     let record =
         record_from_data(address.kind(), &load_json(text).map_err(invalid)?).map_err(invalid)?;
@@ -251,11 +247,11 @@ fn decode_record_bytes(address: &RecordAddress, bytes: &[u8]) -> Result<RecordRe
             "record identity does not match its physical location",
         ));
     }
-    Ok(RecordRead { record })
+    Ok(record)
 }
 
 impl RecordReader for Reader<'_> {
-    fn read(&self, address: &RecordAddress) -> Result<Option<RecordRead>, StorageError> {
+    fn read(&self, address: &RecordAddress) -> Result<Option<Record>, StorageError> {
         let Some(bytes) = self.store.read_named(&relative_record_path(address)?)? else {
             return Ok(None);
         };
@@ -274,7 +270,7 @@ impl RecordStore for FileRecordStore {
     fn save<T, E: From<StorageError>>(
         &self,
         target: &RecordAddress,
-        apply: impl FnOnce(&dyn RecordReader, Option<&RecordRead>) -> Result<RecordChange<T>, E>,
+        apply: impl FnOnce(&dyn RecordReader, Option<&Record>) -> Result<RecordChange<T>, E>,
     ) -> Result<RecordSave<T>, E> {
         if target.host() != self.host {
             return Err(StorageError::new("cannot write another host's partition").into());
@@ -291,7 +287,7 @@ impl FileRecordStore {
         &self,
         scope: &Reader<'_>,
         target: &RecordAddress,
-        apply: impl FnOnce(&dyn RecordReader, Option<&RecordRead>) -> Result<RecordChange<T>, E>,
+        apply: impl FnOnce(&dyn RecordReader, Option<&Record>) -> Result<RecordChange<T>, E>,
     ) -> Result<RecordSave<T>, E> {
         let previous = scope.read(target)?;
         let RecordChange {
@@ -305,11 +301,11 @@ impl FileRecordStore {
         // Stamps are the store's; compare the content the callback chose.
         let stamps = previous
             .as_ref()
-            .and_then(|read| read.record.stamps())
+            .and_then(|record| record.stamps())
             .unwrap_or_default();
         record.set_stamps(stamps);
         if let Some(current) = previous
-            && current.record == record
+            && current == record
         {
             return Ok(RecordSave {
                 current,
@@ -323,7 +319,7 @@ impl FileRecordStore {
         });
         self.write_record(target, &record)?;
         Ok(RecordSave {
-            current: RecordRead { record },
+            current: record,
             outcome,
             written: true,
         })

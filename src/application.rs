@@ -90,17 +90,12 @@ pub fn move_session_observed(
         let Some(before) = before else {
             return Err(ValidationError::new("native conversation is not enrolled").into());
         };
-        let Record::Session(session) = &before.record else {
+        let Record::Session(session) = before else {
             return Err(ValidationError::new("membership target must be a Session").into());
         };
         let source_key =
             RecordAddress::new(&session.host_id, RecordKind::Stream, &session.stream_id)?;
-        let source = reader.read(&source_key)?;
-        let Some(crate::storage::records::RecordRead {
-            record: Record::Stream(source),
-            ..
-        }) = source
-        else {
+        let Some(Record::Stream(source)) = reader.read(&source_key)? else {
             return Err(ValidationError::new("current Stream is missing or invalid").into());
         };
         let destination = if source.id == intent.destination_stream_id() {
@@ -111,11 +106,7 @@ pub fn move_session_observed(
                 RecordKind::Stream,
                 intent.destination_stream_id(),
             )?;
-            let Some(crate::storage::records::RecordRead {
-                record: Record::Stream(destination),
-                ..
-            }) = reader.read(&key)?
-            else {
+            let Some(Record::Stream(destination)) = reader.read(&key)? else {
                 return Err(ValidationError::new(
                     "destination Stream is missing; create it before moving",
                 )

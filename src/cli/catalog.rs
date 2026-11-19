@@ -82,13 +82,10 @@ pub(super) fn list_records(
     Ok(output)
 }
 
-pub(super) fn select_stream<'a>(
-    records: &'a [streams::storage::records::RecordRead],
-    reference: &str,
-) -> Result<&'a Stream> {
+pub(super) fn select_stream<'a>(records: &'a [Record], reference: &str) -> Result<&'a Stream> {
     let streams: Vec<_> = records
         .iter()
-        .filter_map(|read| match &read.record {
+        .filter_map(|read| match read {
             Record::Stream(stream) => Some(stream),
             _ => None,
         })
@@ -170,11 +167,11 @@ pub(super) fn finish_created(saved: RecordSave<DomainOutcome>) -> Output {
 
 pub(super) fn finish_record(saved: RecordSave<EditOutcome>) -> Output {
     let ok = saved.outcome.accepted();
-    let kind = saved.current.record.kind().as_ref().to_owned();
+    let kind = saved.current.kind().as_ref().to_owned();
     let mut output = Output::receipt(
         json!({
             "save":{"local":saved.local(),"domain":saved.outcome},
-            (kind):record_to_data(&saved.current.record),
+            (kind):record_to_data(&saved.current),
         }),
         ok,
     );
@@ -219,14 +216,14 @@ pub(super) fn check(opened: &OpenedRecords, reference: Option<&str>) -> Result<O
         .transpose()?;
     let streams: BTreeSet<_> = records
         .iter()
-        .filter_map(|read| match &read.record {
+        .filter_map(|read| match read {
             Record::Stream(stream) => Some((stream.owner_host_id.as_str(), stream.id.as_str())),
             _ => None,
         })
         .collect();
     let sessions: Vec<_> = records
         .iter()
-        .filter_map(|read| match &read.record {
+        .filter_map(|read| match read {
             Record::Session(session)
                 if selected.is_none_or(|stream| {
                     session.host_id == stream.owner_host_id && session.stream_id == stream.id

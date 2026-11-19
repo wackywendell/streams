@@ -46,7 +46,7 @@ fn user_reference_edits_swap_on_the_stream_revision_and_a_landed_retry_writes_no
             })
         })
         .unwrap();
-    let Record::Stream(before) = saved.current.record else {
+    let Record::Stream(before) = saved.current else {
         unreachable!()
     };
     let mut desired = value("https://example.test/a");
@@ -63,7 +63,7 @@ fn user_reference_edits_swap_on_the_stream_revision_and_a_landed_retry_writes_no
     let first =
         save_user_references(&store, &before, changes.clone(), TitleDefaults::default()).unwrap();
     assert_eq!(first.outcome.outcome, DomainOutcome::Changes);
-    let Record::Stream(after) = &first.current.record else {
+    let Record::Stream(after) = &first.current else {
         unreachable!()
     };
     assert_eq!(after.references.len(), 1);
@@ -147,7 +147,7 @@ fn public_observer_names_actual_session_stream_and_fixed_file_reads() {
     store
         .with_reader::<_, StorageError>(|reader| {
             let current = reader.read(&session_key)?.unwrap();
-            let Record::Session(session) = current.record else {
+            let Record::Session(session) = current else {
                 unreachable!()
             };
             let stream =
@@ -169,7 +169,7 @@ fn public_observer_names_actual_session_stream_and_fixed_file_reads() {
     drop(store);
     drop(directory);
     let decoded = decode_record(&session_key, &bytes).unwrap();
-    let Record::Session(session) = decoded.record else {
+    let Record::Session(session) = decoded else {
         unreachable!()
     };
     assert_eq!(session.stream_id, stream_key.id());
@@ -245,7 +245,7 @@ fn membership_save_reads_only_three_records_and_a_repeated_move_writes_nothing()
             RecordIoEvent::Read(b_path.clone()),
         ]
     );
-    let Record::Session(current) = retry.current.record else {
+    let Record::Session(current) = retry.current else {
         unreachable!()
     };
     assert_eq!(current.stream_id, "b");

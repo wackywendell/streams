@@ -29,7 +29,7 @@ pub fn save_record_update(
                     .transpose()
                     .map(Option::flatten)
             };
-            let decision = match (&update.edit, &target.record) {
+            let decision = match (&update.edit, target) {
                 (CapturedEdit::Session(edit), Record::Session(session)) => {
                     let stream = reader
                         .read_stream(&session.host_id, &session.stream_id)?
@@ -44,13 +44,13 @@ pub fn save_record_update(
                     let session = captured_session(edit.captured_session())?;
                     let result = edit.apply(stream, session.as_ref())?;
                     let outcome = result.outcome();
-                    let mut change = change(&target.record, result.reconciliation);
+                    let mut change = change(target, result.reconciliation);
                     change.outcome = outcome;
                     return Ok(change);
                 }
                 _ => return Err(ValidationError::new("captured edit target kind changed").into()),
             };
-            Ok(change(&target.record, decision))
+            Ok(change(target, decision))
         },
     )
 }

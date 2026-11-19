@@ -64,7 +64,7 @@ fn stream(store: &FileRecordStore, host: &str) -> Stream {
         .with_reader::<_, StorageError>(|reader| reader.read(&address))
         .unwrap()
         .unwrap();
-    let Record::Stream(stream) = read.record else {
+    let Record::Stream(stream) = read else {
         unreachable!()
     };
     stream

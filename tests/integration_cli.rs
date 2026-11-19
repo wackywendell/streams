@@ -561,7 +561,6 @@ impl SavedFixture {
                 application::create_record(records.records(), &Record::Session(session))
                     .unwrap()
                     .current
-                    .record
             else {
                 unreachable!()
             };
@@ -1547,7 +1546,6 @@ fn link_actions_revalidate_saved_kind_and_url_without_native_or_owner_path_discl
         application::create_record(fixture.records.records(), &Record::Stream(stream.clone()))
             .unwrap()
             .current
-            .record
     else {
         unreachable!()
     };

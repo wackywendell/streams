@@ -83,9 +83,8 @@ impl Inputs {
         let bytes = files
             .bytes(&self.session_path)?
             .ok_or("watched Session is missing")?;
-        let Record::Session(session) = decode_record(&self.session, bytes)
-            .map_err(|e| e.to_string())?
-            .record
+        let Record::Session(session) =
+            decode_record(&self.session, bytes).map_err(|e| e.to_string())?
         else {
             return Err("card input is not a Session".into());
         };
@@ -110,9 +109,8 @@ impl Inputs {
             .root
             .join(relative_record_path(&address).map_err(|error| error.to_string())?);
         let bytes = files.bytes(&path)?.ok_or("watched Stream is missing")?;
-        let Record::Stream(stream) = decode_record(&address, bytes)
-            .map_err(|error| error.to_string())?
-            .record
+        let Record::Stream(stream) =
+            decode_record(&address, bytes).map_err(|error| error.to_string())?
         else {
             return Err("card input is not a Stream".into());
         };

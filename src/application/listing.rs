@@ -49,7 +49,7 @@ pub fn list_streams(
     let listing = opened.listing()?;
     let mut sessions_by_stream: BTreeMap<(String, String), Vec<Session>> = BTreeMap::new();
     for read in &listing.records {
-        if let Record::Session(session) = &read.record {
+        if let Record::Session(session) = read {
             sessions_by_stream
                 .entry((session.host_id.clone(), session.stream_id.clone()))
                 .or_default()
@@ -59,7 +59,7 @@ pub fn list_streams(
     let mut streams: Vec<_> = listing
         .records
         .into_iter()
-        .filter_map(|read| match read.record {
+        .filter_map(|read| match read {
             Record::Stream(stream) => {
                 let members = sessions_by_stream
                     .get(&(stream.owner_host_id.clone(), stream.id.clone()))

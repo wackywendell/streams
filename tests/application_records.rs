@@ -99,7 +99,7 @@ fn one_record_creation_reads_only_its_target_and_membership_and_a_retry_writes_n
             fs::metadata(marker).unwrap().len() as usize + bytes.len()
         );
         assert!(record_io::writes(&trace).is_empty());
-        let Record::Session(created) = &created.current.record else {
+        let Record::Session(created) = &created.current else {
             panic!("created a Session")
         };
         application::save_session_edit(

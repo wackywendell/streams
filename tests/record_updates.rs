@@ -43,7 +43,6 @@ fn stored(store: &FileRecordStore, record: Record) -> Record {
         .with_reader::<_, StorageError>(|reader| reader.read(&RecordAddress::for_record(&record)))
         .unwrap()
         .unwrap()
-        .record
 }
 fn stored_session(store: &FileRecordStore) -> Session {
     let Record::Session(session) = stored(store, Record::Session(session())) else {
@@ -97,7 +96,7 @@ fn session_report_reads_its_current_stream_after_a_valid_move() {
     let observed = events.clone();
     let store = store.with_io_observer(move |event| observed.lock().unwrap().push(event));
     let result = update(&store, &request);
-    let Record::Session(current) = result.current.record else {
+    let Record::Session(current) = result.current else {
         unreachable!()
     };
     assert_eq!(current.stream_id, "b");
@@ -219,19 +218,13 @@ fn stream_report_checks_membership_period_without_retargeting_old_prose() {
     .unwrap();
     let result = update(&store, &request);
     assert_eq!(result.outcome.outcome, DomainOutcome::Superseded);
-    assert!(
-        result
-            .current
-            .record
-            .same_content(&Record::Stream(stream("a")))
-    );
+    assert!(result.current.same_content(&Record::Stream(stream("a"))));
     let destination = RecordAddress::new("host", RecordKind::Stream, "b").unwrap();
     assert!(
         store
             .with_reader::<_, StorageError>(|reader| reader.read(&destination))
             .unwrap()
             .unwrap()
-            .record
             .same_content(&Record::Stream(stream("b")))
     );
 }
@@ -251,7 +244,7 @@ fn saved_records_hold_only_the_current_work_text() {
                 json!(saved.outcome),
                 json!({"outcome":"changes","conflicts":[],"reason":""})
             );
-            let Record::Session(session) = saved.current.record else {
+            let Record::Session(session) = saved.current else {
                 unreachable!()
             };
             current = session;
@@ -300,7 +293,7 @@ fn no_change_and_refused_report_retries_decide_again_without_writing() {
     }
     let repeated = update(&store, &unchanged);
     assert!(!repeated.written);
-    let Record::Session(current) = repeated.current.record else {
+    let Record::Session(current) = repeated.current else {
         unreachable!()
     };
     assert_eq!(current.state, "current");
@@ -313,7 +306,7 @@ fn accepted_report_retry_after_later_edits_keeps_them() {
     let mut original = wire(&session(), "automatic", "accepted");
     original["changes"]["title"] = json!("Accepted generated name");
     let first = update(&store, &original);
-    let Record::Session(before) = &first.current.record else {
+    let Record::Session(before) = &first.current else {
         unreachable!()
     };
     update(&store, &wire(before, "user", "current work"));
@@ -336,7 +329,7 @@ fn accepted_report_retry_after_later_edits_keeps_them() {
     // The retry finds later work in place and leaves it there.
     assert!(!repeated.written);
     assert_eq!(repeated.outcome.outcome, DomainOutcome::Superseded);
-    let Record::Session(current) = repeated.current.record else {
+    let Record::Session(current) = repeated.current else {
         unreachable!()
     };
     assert_eq!(current.state, "current work");
@@ -357,16 +350,11 @@ fn stale_never_applied_inherited_title_is_superseded_but_unrelated_progress_is_n
     };
     let result = update_with_defaults(&store, &request, manual);
     assert_eq!(result.outcome.outcome, DomainOutcome::Superseded);
-    assert!(
-        result
-            .current
-            .record
-            .same_content(&Record::Session(session()))
-    );
+    assert!(result.current.same_content(&Record::Session(session())));
     let progress =
         update_with_defaults(&store, &wire(&session(), "automatic", "fresh work"), manual);
     assert_eq!(progress.outcome.outcome, DomainOutcome::Changes);
-    let Record::Session(current) = progress.current.record else {
+    let Record::Session(current) = progress.current else {
         unreachable!()
     };
     assert_eq!(current.state, "fresh work");
@@ -397,7 +385,7 @@ fn accepted_stream_title_retry_after_default_drift_and_move_is_no_change() {
     );
     assert!(!repeated.written);
     assert_eq!(repeated.outcome.outcome, DomainOutcome::NoChange);
-    assert_eq!(repeated.current.record, first.current.record);
+    assert_eq!(repeated.current, first.current);
     assert!(record_io::writes(&events.lock().unwrap()).is_empty());
 }
 
@@ -410,7 +398,7 @@ fn explicit_title_modes_do_not_depend_on_changed_global_defaults() {
             &store,
             &json!({"version":2,"title_default":"automatic","catalog_source":"source","kind":"session","actor":"user","before":stored_session(&store),"changes":{"title_mode":mode},"inputs":[]}),
         );
-        let Record::Session(before) = policy.current.record else {
+        let Record::Session(before) = policy.current else {
             unreachable!()
         };
         let mut request = wire(&before, "automatic", "progress");
@@ -424,7 +412,7 @@ fn explicit_title_modes_do_not_depend_on_changed_global_defaults() {
             },
         );
         assert_eq!(result.outcome.outcome, DomainOutcome::Changes);
-        let Record::Session(current) = result.current.record else {
+        let Record::Session(current) = result.current else {
             unreachable!()
         };
         assert_eq!(
@@ -531,7 +519,7 @@ fn manual_stream_edit_has_no_session_dependency_even_after_membership_changes() 
     let store = store.with_io_observer(move |event| observed.lock().unwrap().push(event));
     let result = update(&store, &request);
     assert_eq!(result.outcome.outcome, DomainOutcome::Changes);
-    let Record::Stream(current) = result.current.record else {
+    let Record::Stream(current) = result.current else {
         unreachable!()
     };
     assert_eq!(current.goal.as_deref(), Some("manual goal"));
@@ -593,7 +581,7 @@ fn doc_row() -> Value {
             "target":{"kind":"document","repository_url":"git@example.test:repo","path":"docs/design.md"}}})
 }
 fn saved_stream(save: &RecordSave<EditOutcome>) -> Stream {
-    let Record::Stream(stream) = &save.current.record else {
+    let Record::Stream(stream) = &save.current else {
         unreachable!()
     };
     stream.clone()

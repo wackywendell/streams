@@ -66,9 +66,7 @@ fn network_calls_leave_catalog_writable_and_push_only_the_prepared_snapshot() {
         let published =
             RecordSync::tree(&Git::new(&remote, 30.0), "refs/heads/records-v2").unwrap();
         let Record::Stream(published) =
-            crate::file_store::records::decode_record(&address, &published[&path])
-                .unwrap()
-                .record
+            crate::file_store::records::decode_record(&address, &published[&path]).unwrap()
         else {
             unreachable!()
         };
@@ -82,9 +80,7 @@ fn network_calls_leave_catalog_writable_and_push_only_the_prepared_snapshot() {
             let published =
                 RecordSync::tree(&Git::new(&remote, 30.0), "refs/heads/records-v2").unwrap();
             let Record::Stream(published) =
-                crate::file_store::records::decode_record(&address, &published[&path])
-                    .unwrap()
-                    .record
+                crate::file_store::records::decode_record(&address, &published[&path]).unwrap()
             else {
                 unreachable!()
             };

@@ -19,7 +19,6 @@ fn put(store: &FileRecordStore, record: Record) -> Record {
         })
         .unwrap()
         .current
-        .record
 }
 
 fn request(native_id: &str) -> ContextRequest<'_> {

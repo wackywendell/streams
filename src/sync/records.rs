@@ -108,7 +108,7 @@ impl RecordSync {
         }
         let records = FileRecordStore::new(root, host)?.inventory()?;
         for record in &records {
-            if crate::storage::records::RecordAddress::for_record(&record.record).host() != host {
+            if crate::storage::records::RecordAddress::for_record(record).host() != host {
                 return Err(invalid(
                     "a fresh baseline may contain only this producer's records",
                 ));

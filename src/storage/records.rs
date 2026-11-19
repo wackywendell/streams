@@ -81,11 +81,6 @@ impl RecordAddress {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RecordRead {
-    pub record: Record,
-}
-
 /// A record file whose bytes cannot be decoded, named by kind and catalog path, with the cause.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -140,13 +135,13 @@ impl std::fmt::Display for UnreadableRecord {
 /// unreadable file never hides the rest. The catalog layout itself must still be readable.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct RecordListing {
-    pub records: Vec<RecordRead>,
+    pub records: Vec<Record>,
     pub unreadable: Vec<UnreadableRecord>,
 }
 
 impl RecordListing {
     /// For callers that act on every record: the first unreadable record fails the call.
-    pub fn complete(self) -> Result<Vec<RecordRead>, StorageError> {
+    pub fn complete(self) -> Result<Vec<Record>, StorageError> {
         match self.unreadable.into_iter().next() {
             Some(unreadable) => Err(unreadable.into()),
             None => Ok(self.records),
@@ -163,7 +158,7 @@ pub struct RecordChange<T> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordSave<T> {
-    pub current: RecordRead,
+    pub current: Record,
     pub outcome: T,
     /// False when the record was already as requested, so nothing was written.
     pub written: bool,
@@ -174,8 +169,8 @@ impl<T> RecordSave<T> {
     pub fn target(&self) -> String {
         format!(
             "{}:{}",
-            self.current.record.kind().as_ref(),
-            self.current.record.key().id()
+            self.current.kind().as_ref(),
+            self.current.key().id()
         )
     }
 
@@ -191,15 +186,13 @@ impl<T> RecordSave<T> {
 
 /// The shell may read named dependencies; it has no enumeration or write capability.
 pub trait RecordReader {
-    fn read(&self, address: &RecordAddress) -> Result<Option<RecordRead>, StorageError>;
+    fn read(&self, address: &RecordAddress) -> Result<Option<Record>, StorageError>;
 
     /// The Stream `host` owns with this ID.
     fn read_stream(&self, host: &str, id: &str) -> Result<Option<Stream>, StorageError> {
         match self.read(&RecordAddress::new(host, RecordKind::Stream, id)?)? {
             None => Ok(None),
-            Some(RecordRead {
-                record: Record::Stream(stream),
-            }) => Ok(Some(stream)),
+            Some(Record::Stream(stream)) => Ok(Some(stream)),
             Some(_) => Err(StorageError::new("a Stream address holds another record")),
         }
     }
@@ -208,9 +201,7 @@ pub trait RecordReader {
     fn read_session(&self, host: &str, id: &str) -> Result<Option<Session>, StorageError> {
         match self.read(&RecordAddress::new(host, RecordKind::Session, id)?)? {
             None => Ok(None),
-            Some(RecordRead {
-                record: Record::Session(session),
-            }) => Ok(Some(session)),
+            Some(Record::Session(session)) => Ok(Some(session)),
             Some(_) => Err(StorageError::new("a Session address holds another record")),
         }
     }
@@ -218,7 +209,7 @@ pub trait RecordReader {
 
 /// Explicit human discovery, inspection and sync, separate from a point reader's capability.
 pub trait RecordInventory {
-    fn inventory(&self) -> Result<Vec<RecordRead>, StorageError>;
+    fn inventory(&self) -> Result<Vec<Record>, StorageError>;
     /// Every host's records, without the relationship checks `inventory` applies.
     fn listing(&self) -> Result<RecordListing, StorageError>;
     fn host_sessions(&self, host: &str) -> Result<RecordListing, StorageError>;
@@ -240,6 +231,6 @@ pub trait RecordStore {
     fn save<T, E: From<StorageError>>(
         &self,
         target: &RecordAddress,
-        apply: impl FnOnce(&dyn RecordReader, Option<&RecordRead>) -> Result<RecordChange<T>, E>,
+        apply: impl FnOnce(&dyn RecordReader, Option<&Record>) -> Result<RecordChange<T>, E>,
     ) -> Result<RecordSave<T>, E>;
 }

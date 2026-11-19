@@ -79,7 +79,7 @@ fn save_session_status(
             let Some(before) = before else {
                 return Err(ValidationError::new("Session is missing").into());
             };
-            let Record::Session(mut session) = before.record.clone() else {
+            let Record::Session(mut session) = before.clone() else {
                 return Err(ValidationError::new("lifecycle target must be a Session").into());
             };
             let current_status = session.status;
@@ -102,7 +102,7 @@ fn save_session_status(
             })
         },
     )?;
-    let Record::Session(session) = saved.current.record.clone() else {
+    let Record::Session(session) = saved.current.clone() else {
         return Err(ValidationError::new("lifecycle target must be a Session").into());
     };
     Ok((session, saved.written.then_some(saved)))
@@ -121,7 +121,7 @@ fn transition_session_status(
     let Some(read) = opened.records().with_reader(|r| r.read(&addr))? else {
         return Ok(LifecycleOutcome::unchanged(None));
     };
-    let Record::Session(existing) = read.record else {
+    let Record::Session(existing) = read else {
         return Ok(LifecycleOutcome::unchanged(None));
     };
     if !allowed(existing.status) || existing.status == next_status {
@@ -187,7 +187,7 @@ pub(crate) fn plan_decay(
     };
     let mut plan = DecayPlan::default();
     for read in opened.host_sessions()?.complete()? {
-        let Record::Session(session) = read.record else {
+        let Record::Session(session) = read else {
             continue;
         };
         if session.status.is_open() && is_stale_ms(session.updated_at_ms, Some(cutoff_ms)) {
@@ -319,7 +319,6 @@ mod tests {
             .with_reader(|r| r.read(&addr))
             .unwrap()
             .unwrap()
-            .record
         {
             Record::Session(s) => s.status,
             _ => panic!("expected session"),
@@ -339,7 +338,7 @@ mod tests {
             .complete()
             .unwrap()
             .into_iter()
-            .filter_map(|read| match read.record {
+            .filter_map(|read| match read {
                 Record::Session(s) if s.stream_id == stream_id => Some(s),
                 _ => None,
             })
@@ -502,7 +501,6 @@ mod tests {
             create_record(opened.records(), &Record::Session(s_raced.clone()))
                 .unwrap()
                 .current
-                .record
         else {
             panic!("created a Session")
         };
@@ -532,7 +530,6 @@ mod tests {
             .with_reader(|r| r.read(&raced_addr))
             .unwrap()
             .unwrap()
-            .record
             .stamps();
 
         let summary = apply_decay_plan(&opened, &plan);
@@ -552,7 +549,6 @@ mod tests {
             .with_reader(|r| r.read(&raced_addr))
             .unwrap()
             .unwrap()
-            .record
             .stamps();
         assert_eq!(raced_rev_before, raced_rev_after);
         assert_eq!(read_session_status(&opened, "n-done"), Status::Done);
@@ -576,7 +572,6 @@ mod tests {
         let Record::Session(active) = create_record(opened.records(), &Record::Session(active))
             .unwrap()
             .current
-            .record
         else {
             panic!("created a Session")
         };
@@ -703,7 +698,6 @@ mod tests {
             )
             .unwrap()
             .current
-            .record
             else {
                 panic!()
             };
@@ -753,7 +747,7 @@ mod tests {
             assert_eq!(derived_stream_status(&observed, "work"), Status::Done);
 
             // 2. Automatic report via save_record_update (Done -> Active).
-            let Record::Session(done_target) = saved.current.record else {
+            let Record::Session(done_target) = saved.current else {
                 panic!()
             };
             let edit = SessionEdit::new(

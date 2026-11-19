@@ -5,7 +5,7 @@ use crate::{
     integration::{ConversationId, LinkKind, Reference, ResolvedTarget, SessionView, WorkScope},
     model::{Record, RecordKind, Session, Stream, ValidationError},
     operations::{decay_cutoff_ms, derived_stream_status, stream_activity_ms},
-    storage::records::{RecordAddress, RecordRead, RecordReader, RecordStore, UnreadableRecord},
+    storage::records::{RecordAddress, RecordReader, RecordStore, UnreadableRecord},
 };
 
 pub struct Streams<'a> {
@@ -67,7 +67,7 @@ impl<'a> Streams<'a> {
                     .complete()?
                     .into_iter()
                     .filter_map(|value| {
-                        let Record::Session(session) = value.record else {
+                        let Record::Session(session) = value else {
                             unreachable!("Session partition")
                         };
                         (session.stream_id == stream.id && session.status.is_open_eligible())
@@ -263,7 +263,7 @@ impl<'a> Streams<'a> {
         }
         let mut summaries = Vec::with_capacity(stream_reads.len());
         for read in stream_reads {
-            let Record::Stream(stream) = read.record else {
+            let Record::Stream(stream) = read else {
                 unreachable!("Stream partition")
             };
             let (active_sessions, total_sessions) =
@@ -573,7 +573,7 @@ impl<'a> Streams<'a> {
             let Some(value) = reader.read(&key)? else {
                 return Err(ValidationError::new("current Stream is missing").into());
             };
-            let Record::Stream(stream) = value.record else {
+            let Record::Stream(stream) = value else {
                 unreachable!("addressed Stream record")
             };
             Ok(Some((stream, session)))
@@ -691,7 +691,7 @@ impl<'a> Streams<'a> {
         let value = reader
             .read(&key)?
             .ok_or_else(|| ValidationError::new("saved Stream is unavailable"))?;
-        let Record::Stream(stream) = value.record else {
+        let Record::Stream(stream) = value else {
             unreachable!("addressed Stream record")
         };
         Ok(stream)
@@ -700,7 +700,7 @@ impl<'a> Streams<'a> {
     fn session(&self, reader: &dyn RecordReader, id: &str) -> Result<Option<Session>> {
         let key = RecordAddress::new(&self.scope.host, RecordKind::Session, id)?;
         Ok(reader.read(&key)?.map(|value| {
-            let Record::Session(session) = value.record else {
+            let Record::Session(session) = value else {
                 unreachable!("addressed Session record")
             };
             session
@@ -717,11 +717,11 @@ enum Enrollment {
     Unavailable(String),
 }
 
-fn sessions_by_id(reads: Vec<RecordRead>) -> std::collections::BTreeMap<String, Session> {
+fn sessions_by_id(reads: Vec<Record>) -> std::collections::BTreeMap<String, Session> {
     reads
         .into_iter()
         .map(|value| {
-            let Record::Session(session) = value.record else {
+            let Record::Session(session) = value else {
                 unreachable!("Session partition");
             };
             (session.id.clone(), session)

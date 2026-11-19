@@ -7,7 +7,7 @@ use streams::{
         conversations::ConversationRoots,
         workspace::{SelectedConversation, WorkspaceRuntime},
     },
-    storage::records::{RecordRead, RecordStore},
+    storage::records::RecordStore,
 };
 
 pub(super) enum Creation {
@@ -40,10 +40,10 @@ fn exact_stream(opened: &application::OpenedRecords, id: &str) -> Result<Stream>
         })?)
 }
 
-fn member_sessions<'a>(stream: &Stream, inventory: &'a [RecordRead]) -> Vec<&'a Session> {
+fn member_sessions<'a>(stream: &Stream, inventory: &'a [Record]) -> Vec<&'a Session> {
     inventory
         .iter()
-        .filter_map(|read| match &read.record {
+        .filter_map(|read| match read {
             Record::Session(session)
                 if session.stream_id == stream.id && session.host_id == stream.owner_host_id =>
             {
@@ -56,7 +56,7 @@ fn member_sessions<'a>(stream: &Stream, inventory: &'a [RecordRead]) -> Vec<&'a 
 
 fn requested_sessions<'a>(
     stream: &Stream,
-    inventory: &'a [RecordRead],
+    inventory: &'a [Record],
     reference: Option<&str>,
 ) -> Result<Vec<&'a Session>> {
     let members = member_sessions(stream, inventory);
@@ -75,7 +75,7 @@ fn selected_sessions(
     opened: &application::OpenedRecords,
     stream: &Stream,
     selection: &SessionSelection,
-    inventory: Option<&[RecordRead]>,
+    inventory: Option<&[Record]>,
 ) -> Result<Vec<Session>> {
     if let Some(key) = &selection.key {
         let (host, id) = key
@@ -124,7 +124,7 @@ impl App {
         &self,
         opened: &application::OpenedRecords,
         target: &Target,
-        inventory: &[RecordRead],
+        inventory: &[Record],
     ) -> Result<Option<Stream>> {
         if target.current {
             if target.reference.is_some() {
@@ -174,7 +174,7 @@ impl App {
         let opened = application::open_records(&self.config)?;
         let stream = self.proposed_stream(opened.host().as_str(), title, &fields)?;
         let saved = application::create_record(opened.records(), &Record::Stream(stream))?;
-        let Record::Stream(stream) = saved.current.record.clone() else {
+        let Record::Stream(stream) = saved.current.clone() else {
             unreachable!("Stream creation target")
         };
         let mut output = catalog::finish_created(saved);

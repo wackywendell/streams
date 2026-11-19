@@ -8,7 +8,7 @@ use crate::{
     model::{Record, RecordKind},
     storage::{
         StorageError,
-        records::{RecordAddress, RecordInventory, RecordListing, RecordRead, UnreadableRecord},
+        records::{RecordAddress, RecordInventory, RecordListing, UnreadableRecord},
     },
 };
 use std::{
@@ -88,9 +88,9 @@ fn old_format(path: &Path) -> StorageError {
     ))
 }
 
-fn relationships(records: &BTreeMap<RecordAddress, RecordRead>) -> Result<(), StorageError> {
-    for read in records.values() {
-        if let Record::Session(session) = &read.record {
+fn relationships(records: &BTreeMap<RecordAddress, Record>) -> Result<(), StorageError> {
+    for record in records.values() {
+        if let Record::Session(session) = record {
             let stream =
                 RecordAddress::new(&session.host_id, RecordKind::Stream, &session.stream_id)?;
             if !records.contains_key(&stream) {
@@ -102,9 +102,7 @@ fn relationships(records: &BTreeMap<RecordAddress, RecordRead>) -> Result<(), St
 }
 
 /// Decode a complete tracked tree without I/O, including physical identity and live relationships.
-pub fn decode_record_tree(
-    files: &BTreeMap<PathBuf, Vec<u8>>,
-) -> Result<Vec<RecordRead>, StorageError> {
+pub fn decode_record_tree(files: &BTreeMap<PathBuf, Vec<u8>>) -> Result<Vec<Record>, StorageError> {
     let mut records = BTreeMap::new();
     for (path, bytes) in files {
         if super::artifacts::artifact_key_from_path(path).is_ok() {
@@ -116,8 +114,8 @@ pub fn decode_record_tree(
         }
     }
     relationships(&records)?;
-    for read in records.values() {
-        let Record::Session(session) = &read.record else {
+    for record in records.values() {
+        let Record::Session(session) = record else {
             continue;
         };
         for stream in session.artifacts.keys() {
@@ -213,7 +211,7 @@ impl RecordInventory for FileRecordStore {
         self.host_partition(host, RecordKind::Stream, "Stream")
     }
 
-    fn inventory(&self) -> Result<Vec<RecordRead>, StorageError> {
+    fn inventory(&self) -> Result<Vec<Record>, StorageError> {
         let _scope = self.scope(false)?;
         decode_record_tree(&self.read_locked_tree()?)
     }
@@ -285,9 +283,9 @@ impl FileRecordStore {
 
 /// A decode failure names its record in the listing; any other failure fails the listing
 /// before it reaches here.
-fn list(listing: &mut RecordListing, decoded: Result<RecordRead, UnreadableRecord>) {
+fn list(listing: &mut RecordListing, decoded: Result<Record, UnreadableRecord>) {
     match decoded {
-        Ok(read) => listing.records.push(read),
+        Ok(record) => listing.records.push(record),
         Err(unreadable) => listing.unreadable.push(unreadable),
     }
 }
@@ -295,7 +293,7 @@ fn list(listing: &mut RecordListing, decoded: Result<RecordRead, UnreadableRecor
 fn sorted(mut listing: RecordListing) -> RecordListing {
     listing
         .records
-        .sort_by_cached_key(|read| RecordAddress::for_record(&read.record));
+        .sort_by_cached_key(RecordAddress::for_record);
     listing
         .unreadable
         .sort_by(|left, right| left.path.cmp(&right.path));

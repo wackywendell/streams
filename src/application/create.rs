@@ -15,14 +15,14 @@ pub fn create_record(
         &RecordAddress::for_record(record),
         |reader, before| -> Result<RecordChange<DomainOutcome>> {
             if let Some(before) = before {
-                if !before.record.same_content(record) {
+                if !before.same_content(record) {
                     return Err(ValidationError::new(
                         "record already exists; inspect or update it instead",
                     )
                     .into());
                 }
                 return Ok(RecordChange {
-                    record: before.record.clone(),
+                    record: before.clone(),
                     outcome: DomainOutcome::NoChange,
                 });
             }
@@ -34,7 +34,7 @@ pub fn create_record(
                         &session.stream_id,
                     )?)?
                     .ok_or_else(|| ValidationError::new("Session's same-host Stream is missing"))?;
-                let Record::Stream(stream) = dependency.record else {
+                let Record::Stream(stream) = dependency else {
                     return Err(ValidationError::new("expected Session's Stream").into());
                 };
                 if stream.owner_host_id != session.host_id || stream.id != session.stream_id {

@@ -7,7 +7,7 @@ use crate::{
     file_store::records::{FileRecordStore, RecordIoEvent},
     model::{Record, RecordKind, Session, Stream},
     runtime::{CheckoutRegistry, DirectoryBindings, conversations::Harness, state::RuntimeState},
-    storage::records::{RecordAddress, RecordInventory, RecordListing, RecordRead, RecordStore},
+    storage::records::{RecordAddress, RecordInventory, RecordListing, RecordStore},
     sync::records::RecordSync,
 };
 
@@ -71,7 +71,7 @@ impl OpenedRecords {
         Ok(self.records.host_streams(self.host.as_str())?)
     }
     /// Explicit human discovery/inspection only; ordinary commands use `records()`.
-    pub fn inventory(&self) -> Result<Vec<RecordRead>> {
+    pub fn inventory(&self) -> Result<Vec<Record>> {
         Ok(self.records.inventory()?)
     }
     /// Every host's readable records for display, naming the ones that cannot be decoded.
@@ -104,11 +104,7 @@ impl OpenedRecords {
         let session = self
             .records
             .with_reader(|reader| reader.read(&session_address))?;
-        let Some(RecordRead {
-            record: Record::Session(session),
-            ..
-        }) = session
-        else {
+        let Some(Record::Session(session)) = session else {
             return Ok(DiscardedCard::default());
         };
         let stream_address = RecordAddress::new(host, RecordKind::Stream, &session.stream_id)?;

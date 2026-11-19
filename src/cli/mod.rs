@@ -562,7 +562,7 @@ impl App {
                 .host_sessions()?
                 .records
                 .into_iter()
-                .filter_map(|read| match read.record {
+                .filter_map(|read| match read {
                     Record::Session(session)
                         if session.stream_id == stream.id
                             && session.host_id == stream.owner_host_id =>
@@ -587,7 +587,7 @@ impl App {
             let stream = catalog::select_stream(&records, reference)?;
             let sessions: Vec<_> = records
                 .iter()
-                .filter_map(|read| match &read.record {
+                .filter_map(|read| match read {
                     Record::Session(session)
                         if session.stream_id == stream.id
                             && session.host_id == stream.owner_host_id =>
@@ -973,7 +973,7 @@ impl App {
                 .host_sessions()?
                 .records
                 .into_iter()
-                .filter_map(|read| match read.record {
+                .filter_map(|read| match read {
                     Record::Session(session)
                         if session.stream_id == stream.id
                             && session.host_id == stream.owner_host_id =>

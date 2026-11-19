@@ -45,7 +45,6 @@ fn exact_context_does_not_connect_or_read_native_placement_to_read_its_session()
         application::create_record(opened.records(), &Record::Stream(stream.clone()))
             .unwrap()
             .current
-            .record
     else {
         unreachable!()
     };
@@ -53,7 +52,6 @@ fn exact_context_does_not_connect_or_read_native_placement_to_read_its_session()
         application::create_record(opened.records(), &Record::Session(session.clone()))
             .unwrap()
             .current
-            .record
     else {
         unreachable!()
     };
@@ -102,7 +100,6 @@ fn operation_uses_the_settings_that_opened_the_records() {
         application::create_record(opened.records(), &Record::Stream(stream))
             .unwrap()
             .current
-            .record
     else {
         unreachable!()
     };
@@ -119,7 +116,6 @@ fn operation_uses_the_settings_that_opened_the_records() {
         application::create_record(opened.records(), &Record::Session(session))
             .unwrap()
             .current
-            .record
     else {
         unreachable!()
     };

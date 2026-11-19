@@ -41,7 +41,7 @@ fn direct_human_edit_retry_after_a_later_edit_conflicts_and_keeps_the_later_reco
         retry.outcome.outcome,
         streams::operations::DomainOutcome::Conflict
     );
-    assert_eq!(record_to_data(&retry.current.record), later["stream"]);
+    assert_eq!(record_to_data(&retry.current), later["stream"]);
     assert_eq!(f.snapshot(), bytes);
 }
 

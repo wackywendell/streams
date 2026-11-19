@@ -26,7 +26,7 @@ fn read_session(store: &FileRecordStore) -> Option<Session> {
                     )
                     .unwrap(),
                 )?
-                .map(|read| match read.record {
+                .map(|read| match read {
                     Record::Session(session) => session,
                     _ => unreachable!(),
                 }))
@@ -96,7 +96,7 @@ fn existing_enrollment_does_not_edit_text_or_replace_membership() {
     assert!(enroll_session(&store, "host", &request(Some("missing"))).is_err());
     let observed = enroll_session_observed(&store, "host", &initial).unwrap();
     assert_eq!(observed.stream.id, "b");
-    let Record::Session(current) = observed.save.current.record else {
+    let Record::Session(current) = observed.save.current else {
         unreachable!()
     };
     assert_eq!(current.stream_id, "b");
@@ -115,7 +115,7 @@ fn enrolled_session_size_is_independent_of_stream_prose() {
         let saved = observed.save;
         assert_eq!(saved.outcome, DomainOutcome::Changes);
         let path = crate::file_store::records::relative_record_path(&RecordAddress::for_record(
-            &saved.current.record,
+            &saved.current,
         ))
         .unwrap();
         std::fs::read(directory.path().join(path)).unwrap()

@@ -91,7 +91,7 @@ pub fn record_context(
     )?;
     let session = reader
         .read(&address)?
-        .map(|read| match read.record {
+        .map(|read| match read {
             Record::Session(session) => Ok(session),
             _ => Err(ValidationError::new("expected addressed Session record")),
         })
@@ -135,7 +135,7 @@ pub fn record_context(
                 )
                 .into());
             };
-            let Record::Stream(stream) = read.record else {
+            let Record::Stream(stream) = read else {
                 return Err(ValidationError::new("expected addressed Stream record").into());
             };
             if stream.owner_host_id != host {
