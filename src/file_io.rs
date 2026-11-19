@@ -255,7 +255,7 @@ mod tests {
             let root = tempfile::tempdir().unwrap();
             let parent = root.path().join("records");
             let staging = root.path().join("staging");
-            let path = parent.join("target.yaml");
+            let path = parent.join("target.json");
             atomic_write(&path, b"old bytes", &staging).unwrap();
             let bytes = br#"{"record":"new","receipts":{"accepted":true}}"#;
             let error = atomic_write_with_sync(&path, bytes, &staging, |directory| {

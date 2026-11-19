@@ -125,7 +125,7 @@ mod tests {
     #[test]
     fn access_notifications_do_not_invalidate_catalog_context() {
         let root = tempfile::tempdir().unwrap();
-        let own = root.path().join("own.yaml");
+        let own = root.path().join("own.json");
         fs::write(&own, "context").unwrap();
         let mut files = Files::new([own.clone()].into(), events()).unwrap();
         for kind in [
@@ -148,11 +148,11 @@ mod tests {
     #[test]
     fn exact_names_atomic_rename_and_duplicate_notifications_cost_one_logical_read() {
         let root = tempfile::tempdir().unwrap();
-        let own = root.path().join("own.yaml");
+        let own = root.path().join("own.json");
         fs::write(&own, "before").unwrap();
         let mut files = Files::new([own.clone()].into(), events()).unwrap();
         let other = Event::new(EventKind::Modify(notify::event::ModifyKind::Any))
-            .add_path(root.path().join("other.yaml"));
+            .add_path(root.path().join("other.json"));
         assert!(!file_watch::relevant(
             &BTreeSet::from([own.clone()]),
             &other

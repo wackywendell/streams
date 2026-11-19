@@ -151,9 +151,9 @@ fn blob_observer_batches_distinct_objects_and_caches_exact_bytes() {
     let oid = "a".repeat(40);
     let second = "b".repeat(40);
     let tree = [
-        format!("100644 blob {oid}\tstreams/one.yaml\0"),
-        format!("100644 blob {oid}\tstreams/copy.yaml\0"),
-        format!("100644 blob {second}\tstreams/two.yaml\0"),
+        format!("100644 blob {oid}\tstreams/one.json\0"),
+        format!("100644 blob {oid}\tstreams/copy.json\0"),
+        format!("100644 blob {second}\tstreams/two.json\0"),
     ]
     .concat();
     let mut batch = format!("{oid} blob 4\n").into_bytes();
@@ -171,9 +171,9 @@ fn blob_observer_batches_distinct_objects_and_caches_exact_bytes() {
     ]);
     for revision in ["first", "second"] {
         let files = git.files(revision).unwrap();
-        assert_eq!(files["streams/one.yaml"], b"a\0b\n");
-        assert_eq!(files["streams/copy.yaml"], b"a\0b\n");
-        assert_eq!(files["streams/two.yaml"], b"next\n");
+        assert_eq!(files["streams/one.json"], b"a\0b\n");
+        assert_eq!(files["streams/copy.json"], b"a\0b\n");
+        assert_eq!(files["streams/two.json"], b"next\n");
     }
     assert!(pending.lock().unwrap().is_empty());
 }

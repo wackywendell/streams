@@ -311,7 +311,7 @@ fn source_reuses_supplied_records_and_each_later_read_addresses_only_its_session
         let neighbor = records.root().join("hosts/unrelated/streams");
         fs::create_dir_all(&neighbor).unwrap();
         for index in 0..unrelated {
-            fs::write(neighbor.join(format!("bad-{index}.yaml")), "not a record").unwrap();
+            fs::write(neighbor.join(format!("bad-{index}.json")), "not a record").unwrap();
         }
         let owner=HerdrInventoryPane::parse(&json!({"pane_id":"pi","tab_id":"tab","workspace_id":"workspace","terminal_id":"terminal"})).unwrap();
         let context = app

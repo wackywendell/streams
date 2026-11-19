@@ -1,4 +1,4 @@
-//! Strict physical field mapping shared by JSON-compatible encoders and YAML.
+//! Strict physical JSON field mapping for records and wire payloads.
 
 use std::collections::BTreeMap;
 use std::fmt;

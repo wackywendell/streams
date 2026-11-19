@@ -196,7 +196,7 @@ mod tests {
             "no legacy candidates, environment hint or claim watches"
         );
         let unrelated = Event::new(EventKind::Create(CreateKind::File))
-            .add_path(path.with_file_name("unrelated.yaml"));
+            .add_path(path.with_file_name("unrelated.json"));
         assert!(!files.relevant(&unrelated));
         let mut observations = 0;
         for _ in 0..32 {

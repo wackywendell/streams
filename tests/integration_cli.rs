@@ -2654,7 +2654,7 @@ fn frame_reads_and_reference_opening_resolve_enrolled_sessions_and_viewer_termin
     );
     assert_eq!(core.finish().len(), 4);
 
-    // Corrupting the enrolled Session YAML yields FrameContext::Unavailable (never Unenrolled).
+    // Corrupting the enrolled Session JSON yields FrameContext::Unavailable (never Unenrolled).
     let session_file = fixture
         .records
         .root()
@@ -2665,8 +2665,8 @@ fn frame_reads_and_reference_opening_resolve_enrolled_sessions_and_viewer_termin
             "{}.json",
             streams::file_store::encode_component(&fixture.sessions[0].id)
         ));
-    let saved_yaml = std::fs::read(&session_file).unwrap();
-    std::fs::write(&session_file, b":::corrupt yaml:::").unwrap();
+    let saved_json = std::fs::read(&session_file).unwrap();
+    std::fs::write(&session_file, b":::corrupt json:::").unwrap();
     let corrupt_core = FakeCore::new(vec![Step(
         "terminal.get",
         json!({"terminal":"t1"}),
@@ -2693,7 +2693,7 @@ fn frame_reads_and_reference_opening_resolve_enrolled_sessions_and_viewer_termin
         ])
         .output()
         .unwrap();
-    std::fs::write(&session_file, &saved_yaml).unwrap();
+    std::fs::write(&session_file, &saved_json).unwrap();
     assert!(corrupt_out.status.success());
     let corrupt_reply =
         ModReply::decode(std::str::from_utf8(&corrupt_out.stdout).unwrap()).unwrap();

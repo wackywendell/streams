@@ -109,7 +109,7 @@ fn explicit_discovery_rejects_symlinks_unknown_directories_and_malformed_records
         let directory = tempfile::tempdir().unwrap();
         let store = FileRecordStore::new(directory.path(), "host").unwrap();
         store.initialize().unwrap();
-        let target = directory.path().join("hosts/host/streams/a.yaml");
+        let target = directory.path().join("hosts/host/streams/a.json");
         fs::create_dir_all(target.parent().unwrap()).unwrap();
         match failure {
             "symlink" => symlink(directory.path().join("missing"), &target).unwrap(),

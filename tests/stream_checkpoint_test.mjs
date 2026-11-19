@@ -119,7 +119,7 @@ test('StreamCli validates strict catalog fields and nullable document provenance
 });
 test('catalog list accepts only the current object contract',async()=>{
  const listed={...stream,status:'active'};
- const unreadable=[{kind:'stream',host:'host',path:'hosts/host/streams/broken.yaml',cause:'unknown field `archived`',repair:'Delete or fix the file.'}];
+ const unreadable=[{kind:'stream',host:'host',path:'hosts/host/streams/broken.json',cause:'unknown field `archived`',repair:'Delete or fix the file.'}];
  for(const value of [[],[listed],null,{},{streams:[listed]},{streams:[stream],unreadable:[]},{streams:[{...listed,title_mode:'other'}],unreadable:[]},{streams:[listed],unreadable:[{...unreadable[0],kind:'other'}]},{streams:[listed],unreadable:[{kind:'stream',path:'p'}]},{streams:[listed],unreadable:[{...unreadable[0],repair:undefined}]},{streams:[listed],unreadable:[{...unreadable[0],host:42}]}]) {
   const cli=new StreamCli('/tmp',async()=>({status:'success',result:value}));
   await assert.rejects(cli.list(),StreamsCliError);
@@ -129,13 +129,13 @@ test('catalog list accepts only the current object contract',async()=>{
 });
 test('the chooser offers readable Streams and names this host\'s records it could not read',async()=>{
  const repair='Run /streams reset in a conversation on that Stream, or delete or fix the file.';
- const unreadable=[{kind:'stream',host:'host',path:'hosts/host/streams/broken.yaml',cause:'unknown field `archived`',repair},{kind:'host',host:'other',path:'hosts/other/host.yaml',cause:'newer format',repair:'Delete or fix the file.'}];
+ const unreadable=[{kind:'stream',host:'host',path:'hosts/host/streams/broken.json',cause:'unknown field `archived`',repair},{kind:'host',host:'other',path:'hosts/other/host.json',cause:'newer format',repair:'Delete or fix the file.'}];
  const calls=[];const cli={context:async()=>({...context(),stream:null,session:null}),list:async()=>({streams:[stream],unreadable})};
  const ctx={hasUI:true,sessionManager:{getSessionId:()=> 'native'},ui:{select:async(title,rows)=>{calls.push({title,rows});return 'Cancel';}}};
  assert.equal((await chooseInitial(ctx,cli,{},()=>assert.fail())).status,'cancelled');
  assert.deepEqual(calls[0].rows,['effort · Work','Create…','Cancel']);
- assert.equal(calls[0].title,`Initial work card attachment\n1 unreadable record is not listed:\nhosts/host/streams/broken.yaml: unknown field \`archived\`\n ${repair}`);
- await assert.rejects(chooseInitial(ctx,cli,{streamId:'broken'},()=>assert.fail()),/exact catalog stream ID[\s\S]*broken\.yaml: unknown field/);
+ assert.equal(calls[0].title,`Initial work card attachment\n1 unreadable record is not listed:\nhosts/host/streams/broken.json: unknown field \`archived\`\n ${repair}`);
+ await assert.rejects(chooseInitial(ctx,cli,{streamId:'broken'},()=>assert.fail()),/exact catalog stream ID[\s\S]*broken\.json: unknown field/);
 });
 test('context is bound to the child while the caller still admits only its own Session',async()=>{
  const calls=[];const cli=new StreamCli('/tmp',async request=>{calls.push(request);return {status:'success',result:context()};});
@@ -247,7 +247,7 @@ test('a refused reference save keeps the progress receipt and does not retry or 
 });
 
 test('a reset discards an unreadable card before capturing it and enrolls again when the Session was discarded',async()=>{
- const reason='Session record hosts/host/conversations/s.yaml is unreadable: missing field `title`';
+ const reason='Session record hosts/host/conversations/s.json is unreadable: missing field `title`';
  const attached=context(),catalog={...context(),stream:null,session:null},events=[],notices=[];
  const saved=await runReport({kind:'reset',target:'all',auto:false},{signal:new AbortController().signal,automaticEnrollment:false,
   discardUnreadable:async()=>{events.push('discard');return {session:reason,stream:null};},

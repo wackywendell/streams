@@ -227,7 +227,7 @@ test('failed deferred startup blocks report inference and manual reads until rel
  assert.deepEqual(f.inferences,[]);assert.deepEqual(f.enrollments,[]);assert.deepEqual(f.steps,['session_started']);
 });
 test('a reset discards the unreadable card that failed native startup, then starts again and rebuilds it',async t=>{
- environment(t);const f=paneFixture(t,{attached:true,realClient:true,unreadable:'Stream record hosts/host/streams/effort.yaml is unreadable: unknown field `archived`'});
+ environment(t);const f=paneFixture(t,{attached:true,realClient:true,unreadable:'Stream record hosts/host/streams/effort.json is unreadable: unknown field `archived`'});
  await f.start();await until(()=>f.notices.some(text=>text.includes('unknown field `archived`')));
  await f.run('report');await until(()=>f.notices.filter(text=>text.includes('unknown field `archived`')).length===2);
  assert.deepEqual(f.inferences,[],'a report still waits for a native startup that failed');
