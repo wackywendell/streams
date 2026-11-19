@@ -24,9 +24,17 @@ impl App {
 
     pub(super) fn enroll_request(&self, request: serde_json::Value) -> Result<Output> {
         let opened = application::open_records(&self.config)?;
+        self.enroll_request_opened(&opened, request)
+    }
+
+    pub(super) fn enroll_request_opened(
+        &self,
+        opened: &application::OpenedRecords,
+        request: serde_json::Value,
+    ) -> Result<Output> {
         let request = EnrollmentRequest::parse(request, opened.source_id())?;
         let observed = self.context_from_records(
-            &opened,
+            opened,
             ContextRequest {
                 harness: request.harness(),
                 native_id: request.harness_session_id(),
@@ -36,7 +44,7 @@ impl App {
             },
             opened.settings().naming,
         )?;
-        Ok(self.enroll_records(&opened, &request, &observed)?.output)
+        Ok(self.enroll_records(opened, &request, &observed)?.output)
     }
 
     pub(super) fn enroll_records(

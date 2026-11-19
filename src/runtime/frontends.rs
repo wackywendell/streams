@@ -366,12 +366,6 @@ impl HcFrontend {
         }
         Ok(self.connection.as_mut().expect("connected"))
     }
-
-    /// Each association or save notice is one hc operation on its own connection.
-    fn effect_connection(&mut self) -> Result<&mut HcOperation> {
-        self.connection = None;
-        Ok(&mut self.connection()?.1)
-    }
 }
 impl Frontend for HcFrontend {
     fn caller_stream(&mut self) -> Result<Option<String>> {
@@ -403,7 +397,8 @@ impl Frontend for HcFrontend {
         };
         let scope = self.caller.scope.clone();
         effect(
-            self.effect_connection()?
+            self.connection()?
+                .1
                 .bind_caller_terminal(&scope, &terminal, stream_id),
         )
     }
@@ -412,7 +407,7 @@ impl Frontend for HcFrontend {
             return Ok(());
         };
         let scope = self.caller.scope.clone();
-        effect(self.effect_connection()?.notify_saved(&scope, &terminal))
+        effect(self.connection()?.1.notify_saved(&scope, &terminal))
     }
     fn open(
         &mut self,

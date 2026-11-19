@@ -1009,7 +1009,15 @@ impl App {
 
     fn apply_request(&self, request: serde_json::Value) -> Result<Output> {
         let opened = application::open_records(&self.config)?;
-        catalog::apply_opened(&opened, request)
+        self.apply_request_opened(&opened, request)
+    }
+
+    fn apply_request_opened(
+        &self,
+        opened: &application::OpenedRecords,
+        request: serde_json::Value,
+    ) -> Result<Output> {
+        catalog::apply_opened(opened, request)
     }
 }
 

@@ -374,7 +374,6 @@ fn hc_enrollment_and_apply_bind_space_route_terminal_project_name_and_emit_save_
     let socket = directory.path().join("s");
     let listener = UnixListener::bind(&socket).unwrap();
     let stream_for_server = stream_id.clone();
-    let scope_for_server = scope.clone();
     let work_for_server = expected_work.clone();
     let notice_key_for_server = expected_notice_key.clone();
 
@@ -438,7 +437,7 @@ fn hc_enrollment_and_apply_bind_space_route_terminal_project_name_and_emit_save_
         reply(&mut conn, &get_caller, terminal(json!({})));
         drop(conn);
 
-        // 3. Enroll follow-on: bind_session (binds unassociated space s1 + writes streams.work)
+        // 3. Enroll follow-on: bind_session + notify_saved share ONE connection.
         let mut conn = BufReader::new(listener.accept().unwrap().0);
         respond_hello(&mut conn);
         let doc_streams = request(&mut conn, "doc.get");
@@ -471,11 +470,6 @@ fn hc_enrollment_and_apply_bind_space_route_terminal_project_name_and_emit_save_
             &set_work,
             terminal(json!({"streams.work":work_for_server})),
         );
-        drop(conn);
-
-        // 4. Enroll follow-on: notify_saved
-        let mut conn = BufReader::new(listener.accept().unwrap().0);
-        respond_hello(&mut conn);
         let set_notice = request(&mut conn, "terminal.label");
         let first_token = set_notice["params"]["labels"][&notice_key_for_server]
             .as_str()
@@ -489,51 +483,15 @@ fn hc_enrollment_and_apply_bind_space_route_terminal_project_name_and_emit_save_
         );
         drop(conn);
 
-        // 5. Apply follow-on: bind_session (space s1 is already associated -> no doc.set, only streams.work)
-        let mut conn = BufReader::new(listener.accept().unwrap().0);
-        respond_hello(&mut conn);
-        let doc_streams = request(&mut conn, "doc.get");
-        reply(
-            &mut conn,
-            &doc_streams,
-            json!({
-                "name": "streams",
-                "version": 1,
-                "updated_at": 2,
-                "value": {
-                    "version": 1,
-                    "spaces": {
-                        "s1": {
-                            "scope": scope_for_server,
-                            "stream": stream_for_server,
-                            "space": {
-                                "adapter": "hc",
-                                "endpoint": "core",
-                                "key": "s1"
-                            }
-                        }
-                    }
-                }
-            }),
-        );
-        let doc_layout = request(&mut conn, "doc.get");
-        reply(&mut conn, &doc_layout, layout_doc());
-        let set_work = request(&mut conn, "terminal.label");
-        assert_eq!(
-            set_work["params"],
-            json!({"terminal":"t1","labels":{"streams.work":work_for_server}})
-        );
-        reply(
-            &mut conn,
-            &set_work,
-            terminal(json!({"streams.work":work_for_server})),
-        );
-        drop(conn);
-
-        // 6. Apply follow-on: notify_saved fails (simulate rejected label write) -> warning frame, save still succeeds!
+        // 4. Apply follow-on: notify_saved ONLY (no space binding), and rejected label write -> warning frame, save still succeeds!
         let mut conn = BufReader::new(listener.accept().unwrap().0);
         respond_hello(&mut conn);
         let set_notice2 = request(&mut conn, "terminal.label");
+        assert!(
+            set_notice2["params"]["labels"]
+                .get(&notice_key_for_server)
+                .is_some()
+        );
         writeln!(
             conn.get_mut(),
             "{}",
@@ -542,7 +500,7 @@ fn hc_enrollment_and_apply_bind_space_route_terminal_project_name_and_emit_save_
         .unwrap();
         drop(conn);
 
-        // 7. Retire on EOF
+        // 5. Retire on EOF
         let mut conn = BufReader::new(listener.accept().unwrap().0);
         respond_hello(&mut conn);
         let retire = request(&mut conn, "terminal.label");
@@ -757,7 +715,7 @@ fn hc_lifecycle_emits_save_notice_when_changed_and_none_on_noop() {
         let source_label_key = register_source(&mut conn);
         drop(conn);
 
-        // 2. Enroll follow-on: bind_session + notify_saved
+        // 2. Enroll follow-on: bind_session + notify_saved on ONE connection.
         let mut conn = BufReader::new(listener.accept().unwrap().0);
         respond_hello(&mut conn);
         let doc_streams = request(&mut conn, "doc.get");
@@ -789,10 +747,6 @@ fn hc_lifecycle_emits_save_notice_when_changed_and_none_on_noop() {
             &set_work,
             terminal(json!({"streams.work": work_for_server})),
         );
-        drop(conn);
-
-        let mut conn = BufReader::new(listener.accept().unwrap().0);
-        respond_hello(&mut conn);
         let set_notice = request(&mut conn, "terminal.label");
         let tok = set_notice["params"]["labels"][&notice_key_for_server]
             .as_str()
@@ -894,6 +848,258 @@ fn hc_lifecycle_emits_save_notice_when_changed_and_none_on_noop() {
     assert_eq!(resp5["id"], 5);
     assert_eq!(resp5["outcome"]["status"], "success");
     assert_eq!(resp5["outcome"]["result"]["session_changed"], true);
+
+    assert_eq!(child.finish(), (0, String::new()));
+    server.join().unwrap();
+}
+
+#[test]
+fn hc_noop_apply_skips_notice_association_and_vcs_while_writing_apply_notifies_without_vcs() {
+    use std::os::unix::fs::PermissionsExt;
+    use streams::integration::WorkScope;
+
+    let f = Fixture::new();
+    let (saved, _) = f.capture();
+    let stream_id = saved["stream"]["id"].as_str().unwrap().to_string();
+    let catalog_source = saved["catalog_source"].as_str().unwrap().to_string();
+    let host_id = saved["host_id"].as_str().unwrap().to_string();
+    let scope = WorkScope {
+        catalog: catalog_source.clone(),
+        host: host_id,
+    };
+    let expected_work = streams::runtime::hc::labels::work_value(&scope, &stream_id).unwrap();
+    let expected_notice_key = scope.notification_key();
+
+    let directory = tempfile::Builder::new()
+        .prefix("hc-apply-")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let socket = directory.path().join("s");
+    let listener = UnixListener::bind(&socket).unwrap();
+
+    // Fake `git` and `jj` on PATH that record any invocation once `trap_armed` exists.
+    let trap_bin = directory.path().join("bin");
+    fs::create_dir_all(&trap_bin).unwrap();
+    let trap_armed = directory.path().join("trap_armed");
+    let vcs_log = directory.path().join("vcs.log");
+    for tool in ["git", "jj"] {
+        let script = trap_bin.join(tool);
+        fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nif [ -f \"{}\" ]; then echo \"{} $*\" >> \"{}\"; exit 99; fi\nexit 1\n",
+                trap_armed.display(),
+                tool,
+                vcs_log.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let work_for_server = expected_work;
+    let notice_key_for_server = expected_notice_key;
+
+    let server = thread::spawn(move || {
+        let respond_hello = |reader: &mut BufReader<UnixStream>| {
+            let frame = request(reader, "hello");
+            reply(
+                reader,
+                &frame,
+                json!({
+                    "generation": 1,
+                    "framed": false,
+                    "core": { "id": "core" },
+                    "methods": ["hello", "terminal.get", "terminal.label", "doc.get", "doc.set"]
+                }),
+            );
+        };
+
+        // 1. SessionStarted: registers source.
+        let mut conn = BufReader::new(listener.accept().unwrap().0);
+        let source_label_key = register_source(&mut conn);
+        drop(conn);
+
+        // 2. Enroll follow-on: associate_caller + notify_saved on ONE connection.
+        let mut conn = BufReader::new(listener.accept().unwrap().0);
+        respond_hello(&mut conn);
+        let doc_streams = request(&mut conn, "doc.get");
+        reply(
+            &mut conn,
+            &doc_streams,
+            json!({"name":"streams","version":0,"updated_at":0,"value":null}),
+        );
+        let doc_layout = request(&mut conn, "doc.get");
+        reply(
+            &mut conn,
+            &doc_layout,
+            json!({
+                "name": "herdr-app",
+                "version": 1,
+                "updated_at": 1,
+                "value": { "spaces": [{ "id": "s1", "name": "S1", "tabs": [{ "id": "tab1", "name": "T1", "root": { "id": "p1", "type": "block", "content": { "terminal": "t1" } } }] }] }
+            }),
+        );
+        let doc_set = request(&mut conn, "doc.set");
+        reply(
+            &mut conn,
+            &doc_set,
+            json!({"name":"streams","version":1,"updated_at":2,"value":doc_set["params"]["value"]}),
+        );
+        let set_work = request(&mut conn, "terminal.label");
+        reply(
+            &mut conn,
+            &set_work,
+            terminal(json!({"streams.work": work_for_server})),
+        );
+        let set_notice = request(&mut conn, "terminal.label");
+        let tok1 = set_notice["params"]["labels"][&notice_key_for_server]
+            .as_str()
+            .unwrap()
+            .to_string();
+        reply(
+            &mut conn,
+            &set_notice,
+            terminal(json!({(&notice_key_for_server): tok1})),
+        );
+        drop(conn);
+
+        // 3. No-op Apply makes ZERO hc connections.
+        // 4. Writing Apply sends ONLY notify_saved (no doc.get/doc.set/streams.work).
+        let mut conn = BufReader::new(listener.accept().unwrap().0);
+        respond_hello(&mut conn);
+        let set_notice2 = request(&mut conn, "terminal.label");
+        let labels = set_notice2["params"]["labels"].as_object().unwrap();
+        assert_eq!(labels.len(), 1);
+        let tok2 = labels[&notice_key_for_server].as_str().unwrap().to_string();
+        assert_ne!(tok2, tok1);
+        reply(
+            &mut conn,
+            &set_notice2,
+            terminal(json!({(&notice_key_for_server): tok2})),
+        );
+        drop(conn);
+
+        // 5. Repeat of the writing Apply is a no-op and makes ZERO hc connections.
+        // 6. Retire on EOF.
+        let mut conn = BufReader::new(listener.accept().unwrap().0);
+        respond_hello(&mut conn);
+        let retire = request(&mut conn, "terminal.label");
+        assert_eq!(
+            retire["params"],
+            json!({"terminal":"t1","labels":{source_label_key:""}})
+        );
+        reply(&mut conn, &retire, terminal(json!({})));
+    });
+
+    f.ok(&["config", "set", "frontend.mode", "auto"], None);
+    let mut command = f.command();
+    let existing_path = std::env::var("PATH").unwrap_or_default();
+    command
+        .env("HC_SOCKET", &socket)
+        .env("HC_TERMINAL_ID", "t1")
+        .env("PATH", format!("{}:{existing_path}", trap_bin.display()));
+    let mut child = Transport::start(command, "pi-session");
+    assert_eq!(
+        child.next(),
+        json!({"type":"ready","protocol":2,"source":streams::child_protocol::SOURCE_DIGEST})
+    );
+
+    child.send(json!({"type":"request","id":1,"request":{"kind":"session_started"},"pi_context":context()}));
+    assert_eq!(child.next()["type"], "view");
+    assert_eq!(child.response(1)["outcome"]["status"], "success");
+
+    let enrollment = json!({
+        "version": 2,
+        "catalog_source": catalog_source,
+        "harness": "pi",
+        "harness_session_id": "pi-session",
+        "actor": "user",
+        "cwd": f.directory.path(),
+        "stream_id": stream_id,
+        "session": { "title": "Initial Title" }
+    });
+    child.send(json!({"type":"request","id":2,"request":{"kind":"enroll","request":enrollment},"pi_context":context()}));
+    assert_eq!(child.next()["type"], "view");
+    let resp2 = child.response(2);
+    assert_eq!(resp2["outcome"]["status"], "success");
+    let enrolled_session = resp2["outcome"]["result"]["session"].clone();
+
+    // Place a `.git` marker in cwd and arm the VCS trap before every Apply.
+    fs::create_dir_all(f.directory.path().join(".git")).unwrap();
+    fs::write(&trap_armed, "armed").unwrap();
+
+    // No-op Apply (same title, no changes): no view frame, no hc notice/association, no VCS.
+    let noop_apply = json!({
+        "version": 2,
+        "catalog_source": catalog_source,
+        "actor": "automatic",
+        "kind": "session",
+        "before": enrolled_session,
+        "changes": {},
+        "inputs": [],
+        "title_default": "automatic"
+    });
+    child.send(json!({"type":"request","id":3,"request":{"kind":"apply","request":noop_apply},"pi_context":context()}));
+    let resp3 = child.next();
+    assert_eq!(
+        resp3["type"], "response",
+        "no-op apply emitted unexpected frame: {resp3}"
+    );
+    assert_eq!(resp3["id"], 3);
+    assert_eq!(resp3["outcome"]["status"], "success");
+    assert_eq!(resp3["outcome"]["result"]["save"]["local"], "unchanged");
+    assert_eq!(
+        resp3["outcome"]["result"]["save"]["domain"]["outcome"],
+        "no-change"
+    );
+    assert!(
+        !vcs_log.exists(),
+        "no-op apply spawned VCS: {:?}",
+        fs::read_to_string(&vcs_log)
+    );
+
+    // Writing Apply: emits view + save notice, no space association, no VCS.
+    let write_apply = json!({
+        "version": 2,
+        "catalog_source": catalog_source,
+        "actor": "user",
+        "kind": "session",
+        "before": enrolled_session,
+        "changes": { "title": "Updated Title" },
+        "inputs": [],
+        "title_default": "automatic"
+    });
+    child.send(json!({"type":"request","id":4,"request":{"kind":"apply","request":write_apply},"pi_context":context()}));
+    let view4 = child.next();
+    assert_eq!(
+        view4,
+        json!({"type":"view","view":{"desired_pi_name":"Updated Title"}})
+    );
+    let resp4 = child.response(4);
+    assert_eq!(resp4["outcome"]["status"], "success");
+    assert_eq!(resp4["outcome"]["result"]["save"]["local"], "persisted");
+    assert!(
+        !vcs_log.exists(),
+        "writing apply spawned VCS: {:?}",
+        fs::read_to_string(&vcs_log)
+    );
+
+    // Repeating the same Apply is now a no-op: no view, no hc notice, no VCS.
+    child.send(json!({"type":"request","id":5,"request":{"kind":"apply","request":write_apply},"pi_context":context()}));
+    let resp5 = child.next();
+    assert_eq!(
+        resp5["type"], "response",
+        "repeat apply emitted unexpected frame: {resp5}"
+    );
+    assert_eq!(resp5["id"], 5);
+    assert_eq!(resp5["outcome"]["status"], "success");
+    assert_eq!(resp5["outcome"]["result"]["save"]["local"], "unchanged");
+    assert!(
+        !vcs_log.exists(),
+        "repeat apply spawned VCS: {:?}",
+        fs::read_to_string(&vcs_log)
+    );
 
     assert_eq!(child.finish(), (0, String::new()));
     server.join().unwrap();

@@ -68,7 +68,7 @@ impl HcSource {
         request: &Request,
         stopping: &streams::cancellation::Cancellation,
         cancelled: &AtomicBool,
-        plugin_root: &std::path::Path,
+        opened_out: &mut Option<streams::application::OpenedRecords>,
     ) -> Result<Output> {
         if matches!(request, Request::OpenCard {} | Request::CloseCard {}) {
             return Err(CliError::message(
@@ -89,7 +89,9 @@ impl HcSource {
                 "hc Pi source is unavailable; reload required",
             ));
         };
-        let resolved = hc::resolve_session(app, &server.session_id, plugin_root, true)?;
+        let opened = streams::application::open_records(&app.config)?;
+        let resolved = hc::resolve_session(app, Some(&opened), &server.session_id, true)?;
+        *opened_out = Some(opened);
         send(
             &server.output,
             &ServerFrame::View {
@@ -134,11 +136,11 @@ impl HcSource {
         &self,
         server: &Server,
         app: &App,
+        opened: Option<&streams::application::OpenedRecords>,
         bind_space: bool,
         stopping: &streams::cancellation::Cancellation,
-        plugin_root: &std::path::Path,
     ) -> Result<()> {
-        let resolved = hc::resolve_session(app, &server.session_id, plugin_root, bind_space)?;
+        let resolved = hc::resolve_session(app, opened, &server.session_id, false)?;
         send(
             &server.output,
             &ServerFrame::View {
@@ -282,6 +284,7 @@ impl Server {
         plugin_root: &std::path::Path,
     ) -> Result<()> {
         let cancelled = self.cancelled(id)?;
+        let mut opened_for_locator = None;
         let mut outcome = (|| {
             if cancelled.load(Ordering::Acquire) {
                 return Err(CliError::message("request cancelled before dispatch"));
@@ -306,7 +309,7 @@ impl Server {
                     &request,
                     stopping,
                     &cancelled,
-                    plugin_root,
+                    &mut opened_for_locator,
                 );
             }
             let controller = &mut controllers.herdr;
@@ -333,35 +336,38 @@ impl Server {
                         Some(controller) => {
                             controller.enroll(&app, value, frontend, cancelled.clone())
                         }
-                        None => app.enroll_request(value),
+                        None => {
+                            let opened = streams::application::open_records(&app.config)?;
+                            let result = app.enroll_request_opened(&opened, value);
+                            opened_for_locator = Some(opened);
+                            result
+                        }
                     }?;
                     if hc_selected
                         && output.accepted_save
-                        && let Err(error) =
-                            controllers
-                                .hc
-                                .after_save(self, &app, true, stopping, plugin_root)
+                        && let Err(error) = controllers.hc.after_save(
+                            self,
+                            &app,
+                            opened_for_locator.as_ref(),
+                            true,
+                            stopping,
+                        )
                     {
                         self.warning(&error)?;
                     }
                     Ok(output)
                 }
-                request => {
-                    let is_apply = matches!(request, Request::Apply { .. });
-                    let is_lifecycle = matches!(request, Request::Lifecycle { .. });
-                    let is_discard = matches!(request, Request::DiscardUnreadableCard {});
-                    let config_change = matches!(
-                        request,
-                        Request::SetConfig { .. } | Request::UnsetConfig { .. }
-                    );
-                    let mut output = {
-                        let current_app = controller
-                            .as_ref()
-                            .map(|controller| &controller.app)
-                            .unwrap_or(&app);
-                        dispatch::execute(current_app, &self.session_id, request)?
-                    };
-                    if (is_apply || is_lifecycle || is_discard) && output.accepted_save {
+                Request::Apply { request } => {
+                    let current_app = controller
+                        .as_ref()
+                        .map(|controller| &controller.app)
+                        .unwrap_or(&app);
+                    let opened = streams::application::open_records(&current_app.config)?;
+                    let applied = current_app
+                        .apply_request_opened(&opened, serde_json::Value::Object(request));
+                    opened_for_locator = Some(opened);
+                    let mut output = applied?;
+                    if output.accepted_save {
                         if let Some(controller) = controller
                             && let Err(error) = controller.saved(cancelled.clone())
                         {
@@ -371,14 +377,25 @@ impl Server {
                             && let Err(error) = controllers.hc.after_save(
                                 self,
                                 &app,
-                                is_apply,
+                                opened_for_locator.as_ref(),
+                                false,
                                 stopping,
-                                plugin_root,
                             )
                         {
                             self.warning(&error)?;
                         }
-                    } else if config_change && output.accepted_save {
+                    }
+                    Ok(output)
+                }
+                request => {
+                    let mut output = {
+                        let current_app = controller
+                            .as_ref()
+                            .map(|controller| &controller.app)
+                            .unwrap_or(&app);
+                        dispatch::execute(current_app, &self.session_id, request)?
+                    };
+                    if output.accepted_save {
                         if let Some(controller) = controller
                             && let Err(error) = controller.saved(cancelled.clone())
                         {
@@ -386,9 +403,7 @@ impl Server {
                         }
                         if hc_selected
                             && let Err(error) =
-                                controllers
-                                    .hc
-                                    .after_save(self, &app, false, stopping, plugin_root)
+                                controllers.hc.after_save(self, &app, None, false, stopping)
                         {
                             self.warning(&error)?;
                         }
@@ -411,7 +426,7 @@ impl Server {
                 }
             } else if let Err(error) = self
                 .app()
-                .and_then(|app| hc::remember_locator(&app, context))
+                .and_then(|app| hc::remember_locator(&app, opened_for_locator.as_ref(), context))
             {
                 match &mut outcome {
                     Ok(output) if output.accepted_save => output.notices.push(error.to_string()),
@@ -588,7 +603,7 @@ fn native_worker(
                 if !cancelled.load(Ordering::Acquire)
                     && let Err(error) = server
                         .app()
-                        .and_then(|app| hc::remember_locator(&app, &context))
+                        .and_then(|app| hc::remember_locator(&app, None, &context))
                 {
                     server.warning(&error)?;
                 }

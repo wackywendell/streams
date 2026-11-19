@@ -88,3 +88,97 @@ fn cmux_names_no_stream_and_sees_nothing_running() {
 fn an_hc_opening_always_reports_the_hc_backend() {
     assert_eq!(serde_json::to_value(HcBackend).unwrap(), "hc");
 }
+
+#[test]
+fn hc_associate_caller_and_notify_saved_share_one_connection_even_after_correlated_error() {
+    use serde_json::{Value, json};
+    use std::{
+        io::{BufRead, BufReader, Write},
+        os::unix::net::UnixListener,
+        thread,
+    };
+
+    let temp = tempfile::Builder::new()
+        .prefix("frontends-hc-")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let socket = temp.path().join("hc.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+
+    let server = thread::spawn(move || {
+        // Accepts strictly ONE connection for both associate_caller and notify_saved.
+        let (stream, _) = listener.accept().unwrap();
+        let mut reader = BufReader::new(stream);
+        let next = |reader: &mut BufReader<std::os::unix::net::UnixStream>| -> Value {
+            let mut line = String::new();
+            assert_ne!(reader.read_line(&mut line).unwrap(), 0);
+            serde_json::from_str(&line).unwrap()
+        };
+
+        let hello = next(&mut reader);
+        assert_eq!(hello["method"], "hello");
+        writeln!(
+            reader.get_mut(),
+            "{}",
+            json!({
+                "jsonrpc": "2.0",
+                "id": hello["id"],
+                "result": {
+                    "generation": 1,
+                    "framed": false,
+                    "core": { "id": "core" },
+                    "methods": ["hello", "terminal.get", "terminal.label", "doc.get", "doc.set"]
+                }
+            })
+        )
+        .unwrap();
+
+        // associate_caller starts with doc.get("streams"); reply with a correlated JSON-RPC error.
+        let doc_get = next(&mut reader);
+        assert_eq!(doc_get["method"], "doc.get");
+        writeln!(
+            reader.get_mut(),
+            "{}",
+            json!({
+                "jsonrpc": "2.0",
+                "id": doc_get["id"],
+                "error": { "code": -32602, "message": "simulated doc error", "data": { "kind": "invalid_params" } }
+            })
+        )
+        .unwrap();
+
+        // notify_saved reuses the SAME connection and succeeds.
+        let label = next(&mut reader);
+        assert_eq!(label["method"], "terminal.label");
+        let labels = label["params"]["labels"].clone();
+        writeln!(
+            reader.get_mut(),
+            "{}",
+            json!({
+                "jsonrpc": "2.0",
+                "id": label["id"],
+                "result": {
+                    "address": "t1",
+                    "state": "live",
+                    "pid": std::process::id(),
+                    "labels": labels
+                }
+            })
+        )
+        .unwrap();
+
+        // Connection closes cleanly with no further requests.
+        let mut eof = String::new();
+        assert_eq!(reader.read_line(&mut eof).unwrap(), 0);
+    });
+
+    let environment = BTreeMap::from([
+        ("HC_SOCKET".into(), socket.to_str().unwrap().into()),
+        ("HC_TERMINAL_ID".into(), "t1".into()),
+    ]);
+    let mut frontend = connect(FrontendId::Hc, caller(environment));
+    assert!(frontend.associate_caller("stream").is_err());
+    frontend.notify_saved().unwrap();
+    drop(frontend);
+    server.join().unwrap();
+}

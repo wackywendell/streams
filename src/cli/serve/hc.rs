@@ -22,6 +22,7 @@ use streams::{
 /// Missing files before Pi persists them are not failures and never trigger discovery.
 pub(super) fn remember_locator(
     app: &App,
+    opened: Option<&super::super::application::OpenedRecords>,
     context: &streams::child_protocol::PiRequestContext,
 ) -> Result<()> {
     let Some(file) = context.session_file.as_deref() else {
@@ -39,8 +40,15 @@ pub(super) fn remember_locator(
         }
         Err(_) => return Err(CliError::message("Pi session file could not be verified")),
     };
-    let opened = super::super::application::open_records(&app.config)?;
-    let Some(session) = pi_session(&opened, &context.conversation.native_id)? else {
+    let owned;
+    let opened = match opened {
+        Some(opened) => opened,
+        None => {
+            owned = super::super::application::open_records(&app.config)?;
+            &owned
+        }
+    };
+    let Some(session) = pi_session(opened, &context.conversation.native_id)? else {
         return Ok(());
     };
     opened
@@ -187,17 +195,24 @@ pub(super) struct SessionResolution {
 
 pub(super) fn resolve_session(
     app: &App,
+    opened: Option<&super::super::application::OpenedRecords>,
     session_id: &str,
-    _plugin_root: &std::path::Path,
     remember_directory: bool,
 ) -> Result<SessionResolution> {
-    let opened = super::super::application::open_records(&app.config)?;
+    let owned;
+    let opened = match opened {
+        Some(opened) => opened,
+        None => {
+            owned = super::super::application::open_records(&app.config)?;
+            &owned
+        }
+    };
     let host = opened.host().as_str();
     let scope = streams::integration::WorkScope {
         catalog: opened.source_id().into(),
         host: host.into(),
     };
-    let Some(session) = pi_session(&opened, session_id)? else {
+    let Some(session) = pi_session(opened, session_id)? else {
         return Ok(SessionResolution {
             scope,
             session: None,
@@ -209,7 +224,7 @@ pub(super) fn resolve_session(
         && let Ok(directory) = streams::runtime::checkouts::canonical_directory(&app.cwd)
     {
         let _ = super::super::application::remember_directory(
-            &opened,
+            opened,
             &session.stream_id,
             &session.id,
             &directory,
