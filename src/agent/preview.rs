@@ -10,7 +10,7 @@ use crate::{
         stream_from_data,
     },
     model::{Record, Session, Stream, TitleDefaults, ValidationError, check_text},
-    operations::{Reconciliation, patches::PatchSchemas},
+    operations::{Reconciliation, derived_stream_status, patches::PatchSchemas},
 };
 
 use super::{
@@ -45,6 +45,8 @@ struct ContextWire {
     // Derived from the records; the projection recomputes it.
     #[serde(default, rename = "patch_schemas")]
     _patch_schemas: Option<Value>,
+    #[serde(default, rename = "stream_status")]
+    _stream_status: Option<Value>,
 }
 
 struct Snapshot {
@@ -115,7 +117,14 @@ impl Snapshot {
         Ok(())
     }
     fn project(mut self) -> Value {
+        let members: Vec<&Session> = self.session.iter().collect();
+        let stream_status = self
+            .stream
+            .as_ref()
+            .map(|stream| derived_stream_status(stream, &members, None));
         self.original.insert("stream".into(), json!(self.stream));
+        self.original
+            .insert("stream_status".into(), json!(stream_status));
         self.original.insert("session".into(), json!(self.session));
         self.original.insert(
             "sessions".into(),

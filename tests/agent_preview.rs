@@ -51,10 +51,12 @@ fn envelope(context: &Value, action: &str, request: &Value) -> Value {
 fn project(context: &Value, action: &str, request: &Value) -> Value {
     preview(&envelope(context, action, request).to_string()).unwrap()
 }
-/// The projected records, without the patch schemas the projection derives from them.
+/// The projected records, without the fields the projection derives from them.
 fn records(catalog: &Value) -> Value {
     let mut records = catalog.clone();
-    records.as_object_mut().unwrap().remove("patch_schemas");
+    let map = records.as_object_mut().unwrap();
+    map.remove("patch_schemas");
+    map.remove("stream_status");
     records
 }
 fn reject(context: &Value, action: &str, request: &Value) {

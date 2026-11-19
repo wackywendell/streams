@@ -159,11 +159,16 @@ fn sample_context(
                 ),
                 None => fallback.cloned(),
             };
+            let members: Vec<&Session> = session.iter().collect();
+            let stream_status = stream
+                .as_ref()
+                .map(|stream| crate::operations::derived_stream_status(stream, &members, None));
             Ok(super::RecordContext {
                 catalog_source: opened.source_id().into(),
                 host_id: host.into(),
                 title_defaults: defaults,
                 stream,
+                stream_status,
                 sessions: session.iter().cloned().collect(),
                 session,
             })

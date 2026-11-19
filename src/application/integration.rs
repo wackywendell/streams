@@ -5,8 +5,8 @@ use crate::{
     integration::{
         ConversationId, LinkKind, ReadReply, Reference, ResolvedTarget, SessionView, WorkScope,
     },
-    model::{Record, RecordKind, Session, Status, Stream, ValidationError},
-    operations::{decay_cutoff_ms, project_stream_status, stream_activity_ms},
+    model::{Record, RecordKind, Session, Stream, ValidationError},
+    operations::{decay_cutoff_ms, derived_stream_status, stream_activity_ms},
     storage::records::{RecordAddress, RecordRead, RecordReader, RecordStore, UnreadableRecord},
 };
 
@@ -263,10 +263,6 @@ impl<'a> Streams<'a> {
         }
     }
 
-    fn projected_status(&self, sessions: &[&Session], last_updated_ms: u64) -> Status {
-        project_stream_status(sessions, last_updated_ms, self.lifecycle_cutoff)
-    }
-
     /// A row's counts, status and recency reflect its readable Sessions only. An unreadable
     /// Session's Stream is unknown, so it is named among the listing's unreadable records and
     /// counted nowhere.
@@ -307,7 +303,7 @@ impl<'a> Streams<'a> {
                 .map(Vec::as_slice)
                 .unwrap_or(&[]);
             let last_updated_ms = stream_activity_ms(&stream, members);
-            let status = self.projected_status(members, last_updated_ms);
+            let status = derived_stream_status(&stream, members, self.lifecycle_cutoff);
             summaries.push(StreamSummary {
                 id: stream.id,
                 title: stream.title,
@@ -576,8 +572,7 @@ impl<'a> Streams<'a> {
                 }
             }
         }
-        let last_updated_ms = stream_activity_ms(&stream, &members);
-        let status = self.projected_status(&members, last_updated_ms);
+        let status = derived_stream_status(&stream, &members, self.lifecycle_cutoff);
         Ok(StreamView {
             id: stream.id,
             title: stream.title,

@@ -134,7 +134,7 @@ These are editing criteria for saved text, not just criteria for new facts. Shor
 const streamGoalPrompt = `The Stream goal is the whole effort's enduring user purpose: who it helps and what they want to do, not the reporting Session's assignment, progress or implementation. The saved goal is the baseline. Keep a fitting goal unchanged when a Session starts, finishes or changes topic; a Session contribution is not evidence that the effort's purpose changed. Do not append that Session's subject, feature, milestone or verification work to the goal. The supplied Sessions are not a complete roster and must not narrow or expand the effort to their lanes.
 Change the goal only when the supplied evidence establishes a changed whole-effort purpose, or to cut implementation detail already obscuring that purpose. Prefer the user's stated goal over implementation summaries; do not invent a motivation, audience or missing scope. Usually one short sentence is enough. If the original purpose is absent from the supplied cards, do not reconstruct it from a Session's topic.
 Name the effort for its enduring subject, project or system. Prefer the established project name when the evidence supplies one. Use 1–3 words; do not expand a recognizable project name into a description of its features, architecture or current milestone. Keep a fitting title when only progress or wording changes; change it only if it misidentifies the effort or the effort itself has changed.
-This task does not update Session recap, state, remaining, their short forms, status or names, or Stream lifecycle or field modes.`;
+This task does not update Session recap, state, remaining, their short forms, status or names, or Stream field modes.`;
 const literalUnion = (values: string[]) => Type.Union(values.map(value => Type.Literal(value)));
 const referenceKeySchema = Type.Union([
  Type.Object({kind:Type.Literal("url"), url:Type.String()}, {additionalProperties:false}),
@@ -160,7 +160,7 @@ export function buildInferencePayload(request: Inference, timestamp = 0): Infere
   schema = Type.Object({changes: changesSchema(request.type, request.catalog, "automatic"), ...(request.type === "session" ? {reference_proposals:Type.Optional(Type.Array(referenceValueSchema("automatic")))} : {})}, {additionalProperties: false});
  }
  const messages = request.type === "stream" ? [] : convertToLlm(request.messages);
- const {catalog_source: _source, patch_schemas: _schemas, ...visibleCatalog} = structuredClone(request.catalog);
+ const {catalog_source: _source, patch_schemas: _schemas, stream_status: _streamStatus, ...visibleCatalog} = structuredClone(request.catalog);
  const automatic = (field: string) => patchFields(request.catalog, "stream", "automatic").some(row => row.field === field);
  const resetting = "reset" in request && request.reset;
  if (resetting) {
@@ -202,7 +202,7 @@ export function parseInferenceResponse<T extends Inference>(request: T, response
   const before = request.catalog[request.type]!, rows = patchFields(request.catalog, request.type, "automatic"), changes = rawArgs.changes as Record<string, unknown>;
   for (const [key, value] of Object.entries(changes)) {
    const row = rows.find(row => row.field === key);
-   if (!row) {if (!key.endsWith("_mode") && Object.hasOwn(before, key)) delete changes[key];continue;}
+   if (!row) {if (!key.endsWith("_mode") && (Object.hasOwn(before, key) || request.type === "stream" && key === "status")) delete changes[key];continue;}
    // Empty text means nothing: null where the field clears, no change where it needs text.
    const text = textSchema(row.schema), clears = allowsNull(row.schema);
    if (value === null && text && !clears && !text.minLength) changes[key] = "";

@@ -420,6 +420,7 @@ fn record_local_cli_initializes_enrolls_reports_and_retries_without_scans_or_pub
     );
     let shown: Value = serde_json::from_slice(&shown.stdout).unwrap();
     assert_eq!(shown["stream"], current["stream"]);
+    assert_eq!(shown["status"], json!("active"));
     assert!(shown.get("sessions").is_none());
     let id = current["stream"]["id"].as_str().unwrap();
     assert!(uuid::Uuid::parse_str(id).is_ok());

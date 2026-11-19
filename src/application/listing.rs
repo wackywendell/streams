@@ -8,7 +8,7 @@ use serde::Serialize;
 use super::{OpenedRecords, Result};
 use crate::{
     model::{Record, Session, Status, Stream},
-    operations::{project_stream_status, stream_activity_ms},
+    operations::derived_stream_status,
     storage::records::UnreadableRecord,
 };
 
@@ -68,8 +68,7 @@ pub fn list_streams(
                 let refs: Vec<&_> = members.iter().collect();
                 let stream_cutoff =
                     cutoff_ms.filter(|_| stream.owner_host_id == opened.host().as_str());
-                let last_updated_ms = stream_activity_ms(&stream, &refs);
-                let status = project_stream_status(&refs, last_updated_ms, stream_cutoff);
+                let status = derived_stream_status(&stream, &refs, stream_cutoff);
                 Some(ListedStream { stream, status })
             }
             _ => None,

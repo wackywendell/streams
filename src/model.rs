@@ -44,6 +44,11 @@ impl Status {
     pub const REPORT_VARIANTS: &'static [&'static str] =
         &["active", "waiting", "blocked", "parked", "done"];
 
+    /// Whether an automatic Session report may set this status.
+    pub const fn reportable(self) -> bool {
+        !matches!(self, Self::Closed)
+    }
+
     /// Precedence order for deriving a Stream's status as `max(sessions)`:
     /// `active > blocked > waiting > parked > done > closed`.
     pub const fn precedence(self) -> u8 {

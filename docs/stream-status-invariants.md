@@ -37,7 +37,7 @@ Every view that reports a Stream's status satisfies three rules observable from 
 Three components carry out the model.
 
 1. Record model and format version (`src/model.rs`, `src/file_store/records.rs`). `Status::precedence` defines `active (5) > blocked (4) > waiting (3) > parked (2) > done (1) > closed (0)`. `Stream` has no `status` field, and `FORMAT_VERSION` is 4.
-2. Pure view derivation (`src/operations.rs`). `operations::stream_status(sessions)` returns the maximum status by `Status::precedence`, or `Status::Active` when `sessions` is empty. `operations::project_stream_status(sessions, last_updated_ms, cutoff_ms)` applies the existing read-time age decay check when the derived status is open.
+2. Pure view derivation (`src/operations.rs`). `operations::derived_stream_status(stream, members, cutoff_ms)` returns the maximum status by `Status::precedence`, or `Status::Active` when `members` is empty. When that status is open and the Stream's latest activity precedes `cutoff_ms`, it returns `Status::Done` if any member is done, otherwise `Status::Closed`, matching what `streams tidy` persists. Every view, including `streams list`, both `streams show` paths, `HostListing`, `StreamView` and `RecordContext`, derives Stream status through this one function.
 3. Scoped write surfaces (`src/operations/patches.rs`, `src/operations/edits.rs`, `src/application/lifecycle.rs`, `src/cli/`, `extensions/stream-checkpoint/`).
    - `StreamPatch`, `streams create`, `streams start`, `streams update`, and the Pi `/streams` Stream tab expose no Stream status field; `streams close` and `streams restore` are removed.
    - Automatic Session reports (`Actor::Automatic`) may set active, blocked, waiting, parked or done (`Status::REPORT_VARIANTS`). Rust rejects `closed` from automatic reports in both `PatchSchemas` and `SessionEdit::new`.
@@ -53,15 +53,15 @@ Three components carry out the model.
       +---------+---------+
                 |
                 v
-     operations::stream_status
+     operations::derived_stream_status
        max(done, done, closed) = done
                 |
                 v
      Read views: streams list, streams show,
-                 HostListing, StreamView
+                 HostListing, StreamView, RecordContext
 ```
 
-Every Stream status shown to a user or UI comes directly from `operations::stream_status` over the Stream's saved Sessions.
+Every Stream status shown to a user or UI comes directly from `operations::derived_stream_status` over the Stream's saved Sessions.
 
 ### Walkthrough
 

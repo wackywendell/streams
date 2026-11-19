@@ -1540,7 +1540,7 @@ test('infer normalizes null remaining/state, empty nullable fields and echoed no
  const sessionResult=await infer(ctx({title:'  ',state:null,state_short:`${'x'.repeat(90)}\nline`,remaining:null}),{type:'session',catalog:context(),messages:[],reset:true},new AbortController().signal);
  assert.deepEqual(sessionResult,{changes:{state:'',state_short:`${'x'.repeat(90)}\nline`,remaining:''}});
  const streamCatalog=context();streamCatalog.stream.goal=null;
- const streamResult=await infer(ctx({title:'Echoed manual',goal:'   ',goal_short:'Orphan short'}),{type:'stream',catalog:streamCatalog,messages:[],reset:true},new AbortController().signal);
+ const streamResult=await infer(ctx({title:'Echoed manual',status:'active',goal:'   ',goal_short:'Orphan short'}),{type:'stream',catalog:streamCatalog,messages:[],reset:true},new AbortController().signal);
  assert.deepEqual(streamResult,{changes:{goal:null,goal_short:'Orphan short'}});
 });
 test('a superseded report retains its receipt without retrying inference; a later explicit reset remains possible',async()=>{
@@ -1592,7 +1592,7 @@ test('receiptText formats human-readable summaries on success and background rep
  await handlers.get('session_shutdown')({},ctx);
 });
 test('openCard renders 3-tab Pi TUI (Actions, Stream, Session) and edits fields directly from Stream/Session tabs',async()=>{
- const state={discussion:{input:'',messages:[]},edits:new Map()},live=context();
+ const state={discussion:{input:'',messages:[]},edits:new Map()},live={...context(),stream_status:'done'};
  const renders=[],saved=[];let step=0;
  const ctx={
   sessionManager:{getSessionId:()=> 'native'},
@@ -1624,6 +1624,7 @@ test('openCard renders 3-tab Pi TUI (Actions, Stream, Session) and edits fields 
  assert.match(renders[2],/\[ 3: Session \]/);
  assert.match(renders[0],/Reset Stream and Session…/);
  assert.doesNotMatch(renders[0],/Finish…|Close…|Archive…|edit fields/);
+ assert.match(renders[1],/Stream · Work \[done · title:manual · goal:automatic\]/);
  assert.match(renders[1],/References…[\s\S]*Reset…/);
  assert.doesNotMatch(renders[1],/Finish…|Close…|Restore…/);
  assert.match(renders[2],/Reset…[\s\S]*Finish…/);

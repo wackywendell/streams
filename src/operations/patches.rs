@@ -151,6 +151,10 @@ pub trait PatchField: Copy + PartialEq + 'static {
     fn name(self) -> &'static str;
     fn access(self) -> Access;
     fn schema(self) -> FieldSchema;
+    fn schema_for(self, actor: Actor) -> FieldSchema {
+        let _ = actor;
+        self.schema()
+    }
 }
 
 /// What edits need from either patch, so one reconciliation serves both record kinds.
@@ -180,7 +184,7 @@ macro_rules! patch {
     (
         $(#[$meta:meta])*
         $patch:ident, $field_enum:ident for $record:ident, check $check:ident {
-            $($field:ident => $variant:ident: $ty:ty, $access:ident, $schema:expr;)*
+            $($field:ident => $variant:ident: $ty:ty, $access:ident, $schema:expr $(, auto $auto_schema:expr)?;)*
         }
     ) => {
         $(#[$meta])*
@@ -217,6 +221,16 @@ macro_rules! patch {
                 match self {
                     $(Self::$variant => <$ty as Optionality>::schema($schema),)*
                 }
+            }
+
+            fn schema_for(self, actor: Actor) -> FieldSchema {
+                if actor == Actor::Automatic {
+                    match self {
+                        $($(Self::$variant => return <$ty as Optionality>::schema($auto_schema),)?)*
+                        _ => {}
+                    }
+                }
+                self.schema()
             }
         }
 
@@ -282,7 +296,7 @@ patch! {
     SessionPatch, SessionField for Session, check validate_portable {
         title => Title: String, Report, ValueSchema::NONEMPTY;
         title_mode => TitleMode: TitleMode, User, ValueSchema::choice(TitleMode::VARIANTS);
-        status => Status: Status, Report, ValueSchema::choice(Status::VARIANTS);
+        status => Status: Status, Report, ValueSchema::choice(Status::VARIANTS), auto ValueSchema::choice(Status::REPORT_VARIANTS);
         recap => Recap: String, Report, ValueSchema::TEXT;
         recap_short => RecapShort: Option<String>, Report, ValueSchema::SHORT;
         state => State: String, Report, ValueSchema::TEXT;
@@ -398,7 +412,7 @@ pub struct PatchSchemas {
 
 impl ActorSchemas {
     /// Automatic rows leave out the fields the record protects from automatic reports.
-    fn new<F: PatchField>(protected: &[F], schema_for: impl Fn(F, Actor) -> FieldSchema) -> Self {
+    fn new<F: PatchField>(protected: &[F]) -> Self {
         let rows = |actor: Actor| {
             F::ALL
                 .iter()
@@ -406,7 +420,7 @@ impl ActorSchemas {
                 .filter(|field| field.access().permits(actor, Channel::Agent))
                 .filter(|field| actor != Actor::Automatic || !protected.contains(field))
                 .map(|field| {
-                    let schema = schema_for(field, actor);
+                    let schema = field.schema_for(actor);
                     FieldRow {
                         field: field.name(),
                         short: schema.value() == ValueSchema::SHORT,
@@ -429,22 +443,10 @@ impl PatchSchemas {
         defaults: TitleDefaults,
     ) -> Self {
         Self {
-            stream: stream.map(|stream| {
-                ActorSchemas::new(
-                    &StreamPatch::protected(stream, defaults.stream),
-                    |field, _| field.schema(),
-                )
-            }),
+            stream: stream
+                .map(|stream| ActorSchemas::new(&StreamPatch::protected(stream, defaults.stream))),
             session: session.map(|session| {
-                ActorSchemas::new(
-                    &SessionPatch::protected(session, defaults.session),
-                    |field, actor| match (field, actor) {
-                        (SessionField::Status, Actor::Automatic) => {
-                            FieldSchema::Value(ValueSchema::choice(Status::REPORT_VARIANTS))
-                        }
-                        _ => field.schema(),
-                    },
-                )
+                ActorSchemas::new(&SessionPatch::protected(session, defaults.session))
             }),
         }
     }

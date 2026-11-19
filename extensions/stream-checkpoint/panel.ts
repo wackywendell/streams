@@ -278,8 +278,11 @@ export async function openCard(ctx: ExtensionContext, cli: StreamCli, state: Car
       ` ${tabLabel("actions", "1: Actions")} ${tabLabel("stream", "2: Stream")} ${tabLabel("session", "3: Session")}   ${theme.fg("dim", "Tab/←→/1-3 switch · Esc close")}`,
       width,
      );
+     const streamMeta = catalog.stream_status
+      ? `[${catalog.stream_status} · title:${stream.title_mode} · goal:${stream.goal_mode}]`
+      : `[title:${stream.title_mode} · goal:${stream.goal_mode}]`;
      const summary = [
-      ` ${section("Stream")} · ${clean(stream.title)} ${theme.fg("muted", `[title:${stream.title_mode} · goal:${stream.goal_mode}]`)}`,
+      ` ${section("Stream")} · ${clean(stream.title)} ${theme.fg("muted", streamMeta)}`,
       ...line(`Goal: ${stream.goal ?? "—"}`, 2),
       ` ${section("Session")} · ${clean(session?.title ?? "Not yet enrolled")} ${session ? theme.fg("muted", `[${session.status} · title:${session.title_mode}]`) : ""}`,
       ...(session ? [

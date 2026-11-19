@@ -5,8 +5,10 @@ use std::collections::BTreeSet;
 use serde::Serialize;
 
 use crate::{
-    model::{Record, RecordKind, Session, Stream, TitleDefaults, ValidationError, check_text},
-    operations::patches::PatchSchemas,
+    model::{
+        Record, RecordKind, Session, Status, Stream, TitleDefaults, ValidationError, check_text,
+    },
+    operations::{derived_stream_status, patches::PatchSchemas},
     runtime::conversations::Harness,
     storage::{
         StorageError,
@@ -44,6 +46,7 @@ pub struct RecordContext {
     pub host_id: String,
     pub title_defaults: TitleDefaults,
     pub stream: Option<Stream>,
+    pub stream_status: Option<Status>,
     pub session: Option<Session>,
     pub sessions: Vec<Session>,
 }
@@ -144,12 +147,17 @@ pub fn record_context(
             Ok(stream)
         })
         .transpose()?;
+    let members: Vec<&Session> = session.iter().collect();
+    let stream_status = stream
+        .as_ref()
+        .map(|stream| derived_stream_status(stream, &members, None));
     Ok(RecordContext {
         catalog_source: catalog_source.into(),
         host_id: host.into(),
         title_defaults,
         sessions: session.iter().cloned().collect(),
         stream,
+        stream_status,
         session,
     })
 }

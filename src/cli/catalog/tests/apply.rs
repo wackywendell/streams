@@ -238,3 +238,91 @@ fn a_failed_save_is_an_error_and_the_record_state_decides_a_retry() {
         .is_err()
     );
 }
+
+#[test]
+fn apply_opened_session_status_writes_only_its_session_without_scans_or_stream_writes() {
+    use std::sync::{Arc, Mutex};
+    use streams::file_store::records::{RecordIoEvent, relative_record_path};
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let env = BTreeMap::from([
+        ("HOME".into(), root.display().to_string()),
+        (
+            "XDG_CONFIG_HOME".into(),
+            root.join("cfg").display().to_string(),
+        ),
+        (
+            "XDG_DATA_HOME".into(),
+            root.join("data").display().to_string(),
+        ),
+    ]);
+    let config = Config::new(&env, &root).unwrap();
+    let opened = application::initialize_records(&config, Strategy::None, None, "main").unwrap();
+    let host = opened.host().as_str().to_owned();
+    let stream = Stream::new("work", "Work", None, &host).unwrap();
+    application::create_record(opened.records(), &Record::Stream(stream)).unwrap();
+
+    let mut target = streams::model::Session::new(
+        streams::model::Session::id_for(&host, "pi", "target"),
+        &host,
+        "work",
+        "pi",
+        "target",
+        "Target",
+    )
+    .unwrap();
+    target.status = Status::Active;
+    let Record::Session(target) =
+        application::create_record(opened.records(), &Record::Session(target))
+            .unwrap()
+            .current
+            .record
+    else {
+        panic!()
+    };
+    for i in 0..16 {
+        let mut sibling = streams::model::Session::new(
+            streams::model::Session::id_for(&host, "pi", &format!("sib-{i}")),
+            &host,
+            "work",
+            "pi",
+            format!("sib-{i}"),
+            format!("Sibling {i}"),
+        )
+        .unwrap();
+        sibling.status = Status::Done;
+        application::create_record(opened.records(), &Record::Session(sibling)).unwrap();
+    }
+
+    let target_path = opened
+        .root()
+        .join(relative_record_path(&RecordAddress::session(&target)).unwrap());
+    let events = Arc::new(Mutex::new(Vec::<RecordIoEvent>::new()));
+    let sink = events.clone();
+    let observed =
+        application::open_records_observed(&config, move |ev| sink.lock().unwrap().push(ev))
+            .unwrap();
+    events.lock().unwrap().clear();
+
+    let request = json!({
+        "version": 2,
+        "catalog_source": observed.source_id(),
+        "actor": "automatic",
+        "kind": "session",
+        "before": record_to_data(&Record::Session(target)),
+        "changes": {"status": "done"},
+        "inputs": [],
+        "title_default": "automatic"
+    });
+    let output = apply_opened(&observed, request).unwrap();
+    assert_eq!(output.code, 0, "{}", output.value);
+    assert_eq!(output.value["session"]["status"], "done");
+    let trace = events.lock().unwrap().clone();
+    assert!(!trace.iter().any(|ev| matches!(ev, RecordIoEvent::List(_))));
+    let written: Vec<_> = trace
+        .iter()
+        .filter_map(|ev| ev.written().map(|(p, _)| p.to_path_buf()))
+        .collect();
+    assert_eq!(written, vec![target_path]);
+}

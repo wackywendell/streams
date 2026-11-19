@@ -39,6 +39,7 @@ Both local-only and Git catalogs require explicit `streams init`. If setup is mi
 | Attach an existing conversation | `streams session attach STREAM_ID --harness pi --session-id NATIVE_ID --title "Contribution"` |
 | Inspect a contribution | `streams session show SESSION_RECORD_ID --json` |
 | Make an explicit session edit | `streams session update SESSION_RECORD_ID --status done` |
+| Abandon a stream | Set each session closed: `streams session update SESSION_RECORD_ID --status closed` (an empty stream reads `active` until `lifecycle.decay_days`) |
 | Close stale open sessions | `streams tidy` |
 | Open or reuse a workspace | `streams open STREAM_ID` |
 | Resume a recorded conversation | `streams resume STREAM_ID --session SESSION_RECORD_ID` |
@@ -50,7 +51,7 @@ Use `--help` for each command's flags. `list` searches literal title/goal substr
 
 ## Pi work card
 
-- `/streams` or `/streams card` inspects or edits the card without starting inference. Whole-effort and session actions are separate. IDs, ownership and membership are read-only.
+- `/streams` or `/streams card` inspects or edits the card without starting inference. Stream and session actions are separate. IDs, ownership and membership are read-only.
 - The extension reports automatically after completed responses by default. Settings control reporting, initial enrollment, response frequency, context, model and Herdr startup/naming. Do not duplicate those reports with shell writes.
 - `/streams report [instructions]` requests a report, not an approval draft. `/streams reset [--auto]` regenerates automatic fields (and with `--auto`, restores automatic title/goal modes before inference). The model-callable `checkpoint` tool keeps its name and optional `instructions` argument. No Apply/Clear step remains.
 - `/streams name [session|stream] <name>` saves a manual title, even when its text is unchanged. `/streams title-mode [session|stream] automatic|manual|inherit` changes only title policy. Both default to Session and require an existing target.

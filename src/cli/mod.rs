@@ -543,13 +543,35 @@ impl App {
             ));
         }
         let opened = application::open_records(&self.config)?;
+        let cutoff_ms =
+            streams::operations::decay_cutoff_ms(opened.settings().lifecycle.decay_days, now_ms());
         let publication = if refresh {
             Some(self.refresh_records(&opened)?)
         } else {
             None
         };
         let mut value = if target.current {
-            json!({"stream":self.record_target(&opened,target)?})
+            let stream = self.record_target(&opened, target)?;
+            let members: Vec<_> = opened
+                .host_sessions()?
+                .records
+                .into_iter()
+                .filter_map(|read| match read.record {
+                    Record::Session(session)
+                        if session.stream_id == stream.id
+                            && session.host_id == stream.owner_host_id =>
+                    {
+                        Some(session)
+                    }
+                    _ => None,
+                })
+                .collect();
+            let member_refs: Vec<&_> = members.iter().collect();
+            let stream_cutoff =
+                cutoff_ms.filter(|_| stream.owner_host_id == opened.host().as_str());
+            let status =
+                streams::operations::derived_stream_status(&stream, &member_refs, stream_cutoff);
+            json!({"stream":stream,"status":status})
         } else {
             let reference = target
                 .reference
@@ -569,7 +591,10 @@ impl App {
                     _ => None,
                 })
                 .collect();
-            let status = streams::operations::stream_status(&sessions);
+            let stream_cutoff =
+                cutoff_ms.filter(|_| stream.owner_host_id == opened.host().as_str());
+            let status =
+                streams::operations::derived_stream_status(stream, &sessions, stream_cutoff);
             json!({"stream":stream,"status":status,"sessions":sessions})
         };
         if let Some(publication) = publication {
@@ -915,7 +940,7 @@ impl App {
                 .map(String::as_str),
             workspace_stream_id: None,
         };
-        let context = application::with_workspace_stream(
+        let mut context = application::with_workspace_stream(
             self.context_from_records(&opened, request, naming)?,
             request,
             || {
@@ -926,6 +951,33 @@ impl App {
             },
             |request| self.context_from_records(&opened, request, naming),
         )?;
+        if let Some(stream) = &context.stream {
+            let cutoff_ms = streams::operations::decay_cutoff_ms(
+                opened.settings().lifecycle.decay_days,
+                now_ms(),
+            )
+            .filter(|_| stream.owner_host_id == opened.host().as_str());
+            let members: Vec<_> = opened
+                .host_sessions()?
+                .records
+                .into_iter()
+                .filter_map(|read| match read.record {
+                    Record::Session(session)
+                        if session.stream_id == stream.id
+                            && session.host_id == stream.owner_host_id =>
+                    {
+                        Some(session)
+                    }
+                    _ => None,
+                })
+                .collect();
+            let member_refs: Vec<&_> = members.iter().collect();
+            context.stream_status = Some(streams::operations::derived_stream_status(
+                stream,
+                &member_refs,
+                cutoff_ms,
+            ));
+        }
         let documents = if let (Some(stream), Some(session)) = (&context.stream, &context.session) {
             documents::context(&opened.registry()?, &opened.locations()?, stream, session)
         } else {

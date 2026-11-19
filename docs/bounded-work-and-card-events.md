@@ -78,7 +78,7 @@ A card should update only when something it displays may have changed. Events sa
 | What the card shows or depends on | What changes it | Signal |
 | --- | --- | --- |
 | Session title, summary, status and Stream membership | Pi reports, edits, sync, membership moves | Session file |
-| Stream title, summary, status and documents | Stream reports, edits, sync | Stream file |
+| Stream title, summary and documents | Stream reports, edits, sync | Stream file |
 | Checkout and directory for each repository | Checkout registration, directory selection | Registry and directory binding files |
 | Owner's pane, tab and workspace | Pane or tab moved | Herdr `pane.moved`, `tab.moved` |
 | Whether the owner still exists | Pane closed or exited, tab or workspace closed | `pane.closed`, `pane.exited`, `tab.closed`, `workspace.closed`; the card closes itself |

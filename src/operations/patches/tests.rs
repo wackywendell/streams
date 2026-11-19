@@ -10,6 +10,16 @@ fn session() -> Session {
 }
 
 #[test]
+fn report_variants_match_reportable_statuses() {
+    let expected: Vec<&str> = Status::VARIANTS
+        .iter()
+        .copied()
+        .filter(|name| name.parse::<Status>().unwrap().reportable())
+        .collect();
+    assert_eq!(Status::REPORT_VARIANTS, expected.as_slice());
+}
+
+#[test]
 fn each_field_names_who_may_set_it() {
     use Access::*;
     let stream: Vec<_> = StreamField::ALL

@@ -239,8 +239,7 @@ pub fn decay_host_records(
 mod tests {
     use std::{
         collections::BTreeMap,
-        sync::{Arc, Barrier, Mutex},
-        thread,
+        sync::{Arc, Mutex},
         time::{SystemTime, UNIX_EPOCH},
     };
 
@@ -248,19 +247,19 @@ mod tests {
 
     use super::*;
     use crate::{
+        agent::{RecordUpdate, record_update::CapturedEdit},
         application::{
             StreamFilter, create_record, initialize_records, list_streams, move_session_observed,
-            open_records_observed, save_session_edit,
+            open_records_observed, save_record_update, save_session_edit,
         },
         config::{Config, Strategy},
-        file_store::records::RecordIoEvent,
-        model::{Stamps, Stream, TitleDefaults},
+        file_store::records::{RecordIoEvent, relative_record_path},
+        model::{Stream, TitleDefaults},
         operations::{
-            membership::MoveIntent, patches::SessionPatch, project_stream_status, stream_status,
-        },
-        storage::{
-            StorageError,
-            records::{RecordRead, RecordReader},
+            Actor, derived_stream_status as derive_status,
+            edits::SessionEdit,
+            membership::MoveIntent,
+            patches::{Channel, SessionPatch},
         },
     };
 
@@ -328,6 +327,12 @@ mod tests {
     }
 
     fn derived_stream_status(opened: &OpenedRecords, stream_id: &str) -> Status {
+        let host = opened.host().as_str();
+        let stream = opened
+            .records()
+            .with_reader(|r| r.read_stream(host, stream_id))
+            .unwrap()
+            .unwrap();
         let sessions: Vec<Session> = opened
             .host_sessions()
             .unwrap()
@@ -340,144 +345,70 @@ mod tests {
             })
             .collect();
         let refs: Vec<&Session> = sessions.iter().collect();
-        stream_status(&refs)
-    }
-
-    /// In-memory fake RecordStore with synchronized saves for deterministic concurrency tests.
-    struct FakeStore {
-        records: Mutex<BTreeMap<RecordAddress, Record>>,
-        clock: Mutex<u64>,
-    }
-
-    impl FakeStore {
-        fn new() -> Self {
-            Self {
-                records: Mutex::new(BTreeMap::new()),
-                clock: Mutex::new(1_000),
-            }
-        }
-
-        fn stream_status(&self, stream_id: &str) -> Status {
-            let guard = self.records.lock().unwrap();
-            let members: Vec<&Session> = guard
-                .values()
-                .filter_map(|record| match record {
-                    Record::Session(session) if session.stream_id == stream_id => Some(session),
-                    _ => None,
-                })
-                .collect();
-            stream_status(&members)
-        }
-    }
-
-    struct FakeReader<'a>(&'a BTreeMap<RecordAddress, Record>);
-
-    impl RecordReader for FakeReader<'_> {
-        fn read(
-            &self,
-            address: &RecordAddress,
-        ) -> std::result::Result<Option<RecordRead>, StorageError> {
-            Ok(self
-                .0
-                .get(address)
-                .cloned()
-                .map(|record| RecordRead { record }))
-        }
-    }
-
-    impl RecordStore for FakeStore {
-        fn with_reader<T, E: From<StorageError>>(
-            &self,
-            read: impl FnOnce(&dyn RecordReader) -> std::result::Result<T, E>,
-        ) -> std::result::Result<T, E> {
-            let guard = self.records.lock().unwrap();
-            read(&FakeReader(&guard))
-        }
-
-        fn save<T, E: From<StorageError>>(
-            &self,
-            target: &RecordAddress,
-            apply: impl FnOnce(
-                &dyn RecordReader,
-                Option<&RecordRead>,
-            ) -> std::result::Result<RecordChange<T>, E>,
-        ) -> std::result::Result<RecordSave<T>, E> {
-            let mut guard = self.records.lock().unwrap();
-            let previous = guard
-                .get(target)
-                .cloned()
-                .map(|record| RecordRead { record });
-            let RecordChange {
-                mut record,
-                outcome,
-            } = apply(&FakeReader(&guard), previous.as_ref())?;
-            let stamps = previous
-                .as_ref()
-                .and_then(|read| read.record.stamps())
-                .unwrap_or_default();
-            record.set_stamps(stamps);
-            if let Some(current) = previous
-                && current.record == record
-            {
-                return Ok(RecordSave {
-                    current,
-                    outcome,
-                    written: false,
-                });
-            }
-            let mut clock = self.clock.lock().unwrap();
-            *clock += 1;
-            record.set_stamps(Stamps {
-                revision: stamps.revision + 1,
-                updated_at_ms: *clock,
-            });
-            guard.insert(target.clone(), record.clone());
-            Ok(RecordSave {
-                current: RecordRead { record },
-                outcome,
-                written: true,
-            })
-        }
+        derive_status(&stream, &refs, None)
     }
 
     #[test]
-    fn stream_status_follows_precedence_order_and_empty_defaults_to_active() {
+    fn derived_stream_status_follows_precedence_and_matches_tidy_decay() {
         let host = "01234567-89ab-4def-8123-456789abcdef";
-        let active = session_with_status(host, "s", "a", Status::Active);
-        let blocked = session_with_status(host, "s", "b", Status::Blocked);
-        let waiting = session_with_status(host, "s", "w", Status::Waiting);
-        let parked = session_with_status(host, "s", "p", Status::Parked);
-        let done = session_with_status(host, "s", "d", Status::Done);
-        let closed = session_with_status(host, "s", "c", Status::Closed);
+        let mut stream = Stream::new("s", "Stream", None, host).unwrap();
+        stream.updated_at_ms = 100;
+        let with_time = |native_id, status| {
+            let mut s = session_with_status(host, "s", native_id, status);
+            s.updated_at_ms = 100;
+            s
+        };
+        let active = with_time("a", Status::Active);
+        let blocked = with_time("b", Status::Blocked);
+        let waiting = with_time("w", Status::Waiting);
+        let parked = with_time("p", Status::Parked);
+        let done = with_time("d", Status::Done);
+        let closed = with_time("c", Status::Closed);
 
-        assert_eq!(stream_status(&[]), Status::Active);
+        assert_eq!(derive_status(&stream, &[], None), Status::Active);
         assert_eq!(
-            stream_status(&[&closed, &done, &parked, &waiting, &blocked, &active]),
+            derive_status(
+                &stream,
+                &[&closed, &done, &parked, &waiting, &blocked, &active],
+                None
+            ),
             Status::Active
         );
         assert_eq!(
-            stream_status(&[&closed, &done, &parked, &waiting, &blocked]),
+            derive_status(
+                &stream,
+                &[&closed, &done, &parked, &waiting, &blocked],
+                None
+            ),
             Status::Blocked
         );
         assert_eq!(
-            stream_status(&[&closed, &done, &parked, &waiting]),
+            derive_status(&stream, &[&closed, &done, &parked, &waiting], None),
             Status::Waiting
         );
-        assert_eq!(stream_status(&[&closed, &done, &parked]), Status::Parked);
-        assert_eq!(stream_status(&[&closed, &done]), Status::Done);
-        assert_eq!(stream_status(&[&done]), Status::Done);
-        assert_eq!(stream_status(&[&closed]), Status::Closed);
-
-        // Read-time age decay never turns a Done Stream into Closed.
         assert_eq!(
-            project_stream_status(&[&done], 100, Some(1_000)),
+            derive_status(&stream, &[&closed, &done, &parked], None),
+            Status::Parked
+        );
+        assert_eq!(
+            derive_status(&stream, &[&closed, &done], None),
+            Status::Done
+        );
+        assert_eq!(derive_status(&stream, &[&done], None), Status::Done);
+        assert_eq!(derive_status(&stream, &[&closed], None), Status::Closed);
+
+        // Read-time age decay matches what `streams tidy` persists:
+        // stale open Sessions close, so a Stream with a Done Session becomes Done, else Closed.
+        assert_eq!(derive_status(&stream, &[&done], Some(1_000)), Status::Done);
+        assert_eq!(
+            derive_status(&stream, &[&parked, &done], Some(1_000)),
             Status::Done
         );
         assert_eq!(
-            project_stream_status(&[&parked], 100, Some(1_000)),
+            derive_status(&stream, &[&parked], Some(1_000)),
             Status::Closed
         );
-        assert_eq!(project_stream_status(&[], 100, Some(1_000)), Status::Closed);
+        assert_eq!(derive_status(&stream, &[], Some(1_000)), Status::Closed);
     }
 
     #[test]
@@ -680,73 +611,190 @@ mod tests {
     }
 
     #[test]
-    fn concurrent_session_saves_and_moves_preserve_derived_stream_status() {
-        let store = Arc::new(FakeStore::new());
-        let host = "01234567-89ab-4def-8123-456789abcdef";
-        let s1 = Stream::new("s1", "First", None, host).unwrap();
-        let s2 = Stream::new("s2", "Second", None, host).unwrap();
-        create_record(store.as_ref(), &Record::Stream(s1)).unwrap();
-        create_record(store.as_ref(), &Record::Stream(s2)).unwrap();
+    fn list_streams_matches_before_and_after_decay_host_records() {
+        let (_dir, _config, opened) = setup_opened();
+        let host = opened.host().as_str().to_string();
 
-        let Record::Session(a) = create_record(
-            store.as_ref(),
-            &Record::Session(session_with_status(host, "s1", "a", Status::Active)),
-        )
-        .unwrap()
-        .current
-        .record
-        else {
-            panic!()
-        };
-        let Record::Session(b) = create_record(
-            store.as_ref(),
-            &Record::Session(session_with_status(host, "s1", "b", Status::Active)),
-        )
-        .unwrap()
-        .current
-        .record
-        else {
-            panic!()
-        };
-        assert_eq!(store.stream_status("s1"), Status::Active);
-
-        // Two Sessions in the same Stream save Done concurrently across threads.
-        let barrier = Arc::new(Barrier::new(2));
-        let handles: Vec<_> = [a.clone(), b.clone()]
-            .into_iter()
-            .map(|session| {
-                let store = Arc::clone(&store);
-                let barrier = Arc::clone(&barrier);
-                thread::spawn(move || {
-                    barrier.wait();
-                    save_session_edit(
-                        store.as_ref(),
-                        &session,
-                        SessionPatch {
-                            status: Some(Status::Done),
-                            ..Default::default()
-                        },
-                        TitleDefaults::default(),
-                    )
-                    .unwrap()
-                })
-            })
-            .collect();
-        for handle in handles {
-            assert!(handle.join().unwrap().written);
+        for (id, title) in [
+            ("mixed", "Mixed parked and done"),
+            ("only-parked", "Only parked"),
+            ("only-done", "Only done"),
+        ] {
+            let stream = Stream::new(id, title, None, &host).unwrap();
+            create_record(opened.records(), &Record::Stream(stream)).unwrap();
         }
-        assert_eq!(store.stream_status("s1"), Status::Done);
+        create_record(
+            opened.records(),
+            &Record::Session(session_with_status(
+                &host,
+                "mixed",
+                "m-parked",
+                Status::Parked,
+            )),
+        )
+        .unwrap();
+        create_record(
+            opened.records(),
+            &Record::Session(session_with_status(&host, "mixed", "m-done", Status::Done)),
+        )
+        .unwrap();
+        create_record(
+            opened.records(),
+            &Record::Session(session_with_status(
+                &host,
+                "only-parked",
+                "p-1",
+                Status::Parked,
+            )),
+        )
+        .unwrap();
+        create_record(
+            opened.records(),
+            &Record::Session(session_with_status(&host, "only-done", "d-1", Status::Done)),
+        )
+        .unwrap();
 
-        // Adding a new Active Session to a Done Stream immediately makes it Active again.
-        let c = session_with_status(host, "s1", "c", Status::Active);
-        create_record(store.as_ref(), &Record::Session(c)).unwrap();
-        assert_eq!(store.stream_status("s1"), Status::Active);
+        let future = now_ms() + 30 * 86_400_000;
+        let cutoff = decay_cutoff_ms(14, future);
+        let statuses = |cutoff_ms| -> BTreeMap<String, Status> {
+            list_streams(
+                &opened,
+                StreamFilter {
+                    all: true,
+                    ..StreamFilter::default()
+                },
+                cutoff_ms,
+            )
+            .unwrap()
+            .streams
+            .into_iter()
+            .map(|entry| (entry.stream.id, entry.status))
+            .collect()
+        };
 
-        // Moving the only open Session out of s1 into s2 makes s1 Done and s2 Active.
-        let mv = MoveIntent::new(host, "pi", "c", "s2").unwrap();
-        move_session_observed(store.as_ref(), &mv).unwrap();
-        assert_eq!(store.stream_status("s1"), Status::Done);
-        assert_eq!(store.stream_status("s2"), Status::Active);
+        let before = statuses(cutoff);
+        assert_eq!(before["mixed"], Status::Done);
+        assert_eq!(before["only-parked"], Status::Closed);
+        assert_eq!(before["only-done"], Status::Done);
+
+        let summary = decay_host_records(&opened, 14, future).unwrap();
+        assert_eq!(summary.closed_sessions, 2);
+
+        let after_with_cutoff = statuses(cutoff);
+        let after_without_cutoff = statuses(None);
+        assert_eq!(before, after_with_cutoff);
+        assert_eq!(before, after_without_cutoff);
+    }
+
+    #[test]
+    fn session_status_writes_touch_only_their_session_without_scans_or_stream_writes() {
+        let mut edit_counts = Vec::new();
+        let mut report_counts = Vec::new();
+        for unrelated in [0, 64] {
+            let (_dir, config, opened) = setup_opened();
+            let host = opened.host().as_str().to_string();
+            let stream = Stream::new("work", "Work", None, &host).unwrap();
+            let other = Stream::new("other", "Other", None, &host).unwrap();
+            create_record(opened.records(), &Record::Stream(stream)).unwrap();
+            create_record(opened.records(), &Record::Stream(other)).unwrap();
+            let Record::Session(target) = create_record(
+                opened.records(),
+                &Record::Session(session_with_status(&host, "work", "target", Status::Active)),
+            )
+            .unwrap()
+            .current
+            .record
+            else {
+                panic!()
+            };
+            for i in 0..unrelated {
+                create_record(
+                    opened.records(),
+                    &Record::Session(session_with_status(
+                        &host,
+                        "work",
+                        &format!("extra-{i}"),
+                        Status::Done,
+                    )),
+                )
+                .unwrap();
+            }
+
+            let target_path = opened
+                .root()
+                .join(relative_record_path(&RecordAddress::session(&target)).unwrap());
+
+            let events = Arc::new(Mutex::new(Vec::<RecordIoEvent>::new()));
+            let sink = events.clone();
+            let observed =
+                open_records_observed(&config, move |ev| sink.lock().unwrap().push(ev)).unwrap();
+
+            // 1. Explicit user edit via save_session_edit (Active -> Done).
+            events.lock().unwrap().clear();
+            let saved = save_session_edit(
+                observed.records(),
+                &target,
+                SessionPatch {
+                    status: Some(Status::Done),
+                    ..Default::default()
+                },
+                TitleDefaults::default(),
+            )
+            .unwrap();
+            assert!(saved.written);
+            let trace = events.lock().unwrap().clone();
+            assert!(!trace.iter().any(|ev| matches!(ev, RecordIoEvent::List(_))));
+            let written: Vec<_> = trace
+                .iter()
+                .filter_map(|ev| ev.written().map(|(p, _)| p.to_path_buf()))
+                .collect();
+            assert_eq!(written, vec![target_path.clone()]);
+            edit_counts.push(trace.len());
+            assert_eq!(derived_stream_status(&observed, "work"), Status::Done);
+
+            // 2. Automatic report via save_record_update (Done -> Active).
+            let Record::Session(done_target) = saved.current.record else {
+                panic!()
+            };
+            let edit = SessionEdit::new(
+                &done_target,
+                SessionPatch {
+                    status: Some(Status::Active),
+                    ..Default::default()
+                },
+                Actor::Automatic,
+                Channel::Agent,
+                TitleDefaults::default().session,
+            )
+            .unwrap();
+            let update = RecordUpdate {
+                target: RecordAddress::session(&done_target),
+                edit: CapturedEdit::Session(edit),
+                title_defaults: TitleDefaults::default(),
+            };
+            events.lock().unwrap().clear();
+            let reopened = save_record_update(observed.records(), &update).unwrap();
+            assert!(reopened.written);
+            let trace = events.lock().unwrap().clone();
+            assert!(!trace.iter().any(|ev| matches!(ev, RecordIoEvent::List(_))));
+            let written: Vec<_> = trace
+                .iter()
+                .filter_map(|ev| ev.written().map(|(p, _)| p.to_path_buf()))
+                .collect();
+            assert_eq!(written, vec![target_path]);
+            report_counts.push(trace.len());
+            assert_eq!(derived_stream_status(&observed, "work"), Status::Active);
+
+            // 3. Moving the active Session out of `work` into `other` updates both derived views.
+            let mv = MoveIntent::new(&host, "pi", "target", "other").unwrap();
+            move_session_observed(observed.records(), &mv).unwrap();
+            assert_eq!(derived_stream_status(&observed, "other"), Status::Active);
+            if unrelated > 0 {
+                assert_eq!(derived_stream_status(&observed, "work"), Status::Done);
+            }
+        }
+        assert_eq!(edit_counts[0], edit_counts[1]);
+        assert_eq!(report_counts[0], report_counts[1]);
     }
 
     #[test]

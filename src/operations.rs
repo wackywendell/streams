@@ -38,24 +38,24 @@ pub fn stream_activity_ms(stream: &Stream, members: &[&Session]) -> u64 {
 }
 
 /// Derived Stream status: the highest status among its Sessions under
-/// `active > blocked > waiting > parked > done > closed`, or `active` when empty.
-pub fn stream_status(sessions: &[&Session]) -> Status {
-    sessions
+/// `active > blocked > waiting > parked > done > closed` (or `active` when empty),
+/// with read-only age decay (`cutoff_ms`) matching what `streams tidy` persists.
+pub fn derived_stream_status(
+    stream: &Stream,
+    members: &[&Session],
+    cutoff_ms: Option<u64>,
+) -> Status {
+    let status = members
         .iter()
         .map(|session| session.status)
         .max_by_key(|status| status.precedence())
-        .unwrap_or(Status::Active)
-}
-
-/// Derived Stream status with read-only age decay (`cutoff_ms`).
-pub fn project_stream_status(
-    sessions: &[&Session],
-    last_updated_ms: u64,
-    cutoff_ms: Option<u64>,
-) -> Status {
-    let status = stream_status(sessions);
-    if status.is_open() && is_stale_ms(last_updated_ms, cutoff_ms) {
-        Status::Closed
+        .unwrap_or(Status::Active);
+    if status.is_open() && is_stale_ms(stream_activity_ms(stream, members), cutoff_ms) {
+        if members.iter().any(|session| session.status == Status::Done) {
+            Status::Done
+        } else {
+            Status::Closed
+        }
     } else {
         status
     }

@@ -117,7 +117,7 @@ streams update STREAM_ID --add-repository streams https://github.com/wackywendel
 streams tidy
 ```
 
-Session statuses are `active`, `blocked`, `waiting`, `parked`, `done`, and `closed`. Stream status is derived from its Sessions under `active > blocked > waiting > parked > done > closed` (defaulting to `active` for an empty Stream) and is not edited directly. Marking work `done` does not close its runtime.
+Session statuses are `active`, `blocked`, `waiting`, `parked`, `done`, and `closed`. Stream status is derived from its Sessions under `active > blocked > waiting > parked > done > closed` (defaulting to `active` for an empty Stream) and is not edited directly. To abandon a Stream, set each Session closed: `streams session update SESSION_RECORD_ID --status closed`; an empty Stream reads `active` until `lifecycle.decay_days`. Marking work `done` does not close its runtime.
 
 Setting a title or goal makes that field manual. Use `--title-mode automatic` or `--goal-mode automatic` to allow future automatic refinement. Compact summaries clear when their source text changes.
 

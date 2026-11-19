@@ -47,9 +47,9 @@ export type FieldSchema = {type?: 'string' | 'object' | 'null'; enum?: string[];
 export type FieldRow = {field: string; schema: FieldSchema; short: boolean};
 export type PatchSchemas = Partial<Record<'stream' | 'session', Record<'automatic' | 'user', FieldRow[]>>>;
 export type LocalContext = {
-  catalog_source: string; host_id: string; stream: StreamWire | null; session: SessionWire | null;
-  sessions: SessionWire[]; title_defaults: TitleDefaults; patch_schemas: PatchSchemas;
-  checkouts?: unknown[]; document_locations?: unknown[];
+  catalog_source: string; host_id: string; stream: StreamWire | null; stream_status?: Status | null;
+  session: SessionWire | null; sessions: SessionWire[]; title_defaults: TitleDefaults;
+  patch_schemas: PatchSchemas; checkouts?: unknown[]; document_locations?: unknown[];
 };
 
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
@@ -173,6 +173,7 @@ export function parseLocalContext(value: unknown): LocalContext & Record<string,
   if (!object(value) || Object.hasOwn(value, 'error') || Object.hasOwn(value, 'authority')
     || !identity(value.catalog_source) || !identity(value.host_id)
     || !(value.stream === null || isStream(value.stream)) || !(value.session === null || isSession(value.session))
+    || !(value.stream_status === undefined || (value.stream === null ? value.stream_status === null : status(value.stream_status)))
     || !Array.isArray(value.sessions) || !value.sessions.every(isSession)
     || !object(value.title_defaults) || !mode(value.title_defaults.stream) || !mode(value.title_defaults.session)
     || !patchSchemas(value.patch_schemas, value)) {
