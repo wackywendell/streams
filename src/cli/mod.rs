@@ -135,7 +135,10 @@ struct Output {
     plain: Option<String>,
     notices: Vec<String>,
     code: u8,
+    /// Domain accepted the save (drives `SavedWithWarnings` framing and completion steps).
     accepted_save: bool,
+    /// At least one record, artifact or setting was written (drives post-save notices/effects).
+    wrote: bool,
 }
 impl Output {
     fn value(value: Value) -> Self {
@@ -145,6 +148,7 @@ impl Output {
             notices: Vec::new(),
             code: 0,
             accepted_save: false,
+            wrote: false,
         }
     }
     fn plain(value: Value, plain: String) -> Self {
@@ -154,6 +158,7 @@ impl Output {
             notices: Vec::new(),
             code: 0,
             accepted_save: false,
+            wrote: false,
         }
     }
     fn receipt(value: Value, ok: bool) -> Self {
@@ -163,6 +168,7 @@ impl Output {
             notices: Vec::new(),
             code: if ok { 0 } else { 2 },
             accepted_save: false,
+            wrote: false,
         }
     }
 }
@@ -219,7 +225,7 @@ fn execute(command: Command, input: Input, json: bool) -> Result<Output> {
             let mut app = App::new()?;
             app.input = input;
             let output = app.execute(command)?;
-            if output.accepted_save
+            if output.wrote
                 && let Err(error) = app.notify_saved()
             {
                 eprintln!("streams: {error}");
@@ -778,7 +784,9 @@ impl App {
                     }),
                     plain,
                 );
-                output.accepted_save = summary.closed_sessions > 0;
+                let wrote = summary.closed_sessions > 0;
+                output.accepted_save = wrote;
+                output.wrote = wrote;
                 if !summary.errors.is_empty() {
                     output.code = 2;
                     output.notices.extend(summary.errors);
@@ -849,13 +857,17 @@ impl App {
                     format_plain(&toml_val, &json_val)?
                 };
                 let mut output = Output::plain(json_val, plain);
-                output.accepted_save = has_catalog();
+                let has_catalog = has_catalog();
+                output.accepted_save = has_catalog;
+                output.wrote = has_catalog;
                 Ok(output)
             }
             Some(ConfigCommand::Unset { key }) => {
                 self.config.unset(key)?;
                 let mut output = Output::plain(Value::Null, format!("unset {key}"));
-                output.accepted_save = has_catalog();
+                let has_catalog = has_catalog();
+                output.accepted_save = has_catalog;
+                output.wrote = has_catalog;
                 Ok(output)
             }
             Some(ConfigCommand::Path) => {

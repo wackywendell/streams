@@ -344,7 +344,7 @@ impl Server {
                         }
                     }?;
                     if hc_selected
-                        && output.accepted_save
+                        && output.wrote
                         && let Err(error) = controllers.hc.after_save(
                             self,
                             &app,
@@ -367,7 +367,7 @@ impl Server {
                         .apply_request_opened(&opened, serde_json::Value::Object(request));
                     opened_for_locator = Some(opened);
                     let mut output = applied?;
-                    if output.accepted_save {
+                    if output.wrote {
                         if let Some(controller) = controller
                             && let Err(error) = controller.saved(cancelled.clone())
                         {
@@ -395,7 +395,7 @@ impl Server {
                             .unwrap_or(&app);
                         dispatch::execute(current_app, &self.session_id, request)?
                     };
-                    if output.accepted_save {
+                    if output.wrote {
                         if let Some(controller) = controller
                             && let Err(error) = controller.saved(cancelled.clone())
                         {
@@ -547,7 +547,7 @@ fn read_input(server: Arc<Server>) {
                                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                     let flag = worker.cancelled(id)?;
                                     let result = worker.catalog(request, &flag);
-                                    if result.as_ref().is_ok_and(|output| output.accepted_save)
+                                    if result.as_ref().is_ok_and(|output| output.wrote)
                                         && let Ok(app) = worker.app()
                                         && let Err(error) = app.notify_saved()
                                     {

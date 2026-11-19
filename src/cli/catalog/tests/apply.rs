@@ -80,12 +80,16 @@ fn captured_apply_is_target_local_and_a_landed_retry_writes_nothing_without_publ
             ]
         );
         let accepted = std::fs::read(&path).unwrap();
-        let retry = ok(apply(
+        let retry_output = apply(
             &store,
             &captured.to_string(),
             "logical-source",
             TitleDefaults::default(),
-        ));
+        )
+        .unwrap();
+        assert!(retry_output.accepted_save);
+        assert!(!retry_output.wrote);
+        let retry = ok(Ok(retry_output));
         assert_eq!(retry["save"]["domain"]["outcome"], "no-change");
         assert_eq!(retry["save"]["local"], "unchanged");
         assert_eq!(retry["stream"], first["stream"]);
@@ -167,6 +171,7 @@ fn partial_reference_conflict_keeps_the_accepted_rows_and_safe_diagnostics() {
     .unwrap();
     assert_eq!(output.code, 2);
     assert!(output.accepted_save);
+    assert!(output.wrote);
     assert_eq!(output.value["save"]["local"], "persisted");
     assert_eq!(output.value["save"]["domain"]["outcome"], "changes");
     assert_eq!(
@@ -195,6 +200,7 @@ fn partial_reference_conflict_keeps_the_accepted_rows_and_safe_diagnostics() {
     .unwrap();
     assert_eq!(repeated.code, 2);
     assert!(!repeated.accepted_save);
+    assert!(!repeated.wrote);
     assert_eq!(repeated.value["save"]["local"], "unchanged");
     assert_eq!(
         repeated.value["save"]["domain"]["reference_results"][1]["outcome"],

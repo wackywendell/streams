@@ -178,7 +178,8 @@ pub(super) fn finish_record(saved: RecordSave<EditOutcome>) -> Output {
         }),
         ok,
     );
-    output.accepted_save = saved.written;
+    output.accepted_save = ok;
+    output.wrote = saved.written;
     for row in saved.outcome.reference_results.iter().flatten() {
         if matches!(
             row.outcome,
@@ -202,7 +203,11 @@ pub(super) fn sync(opened: &OpenedRecords) -> Result<Output> {
         .map_err(application::ApplicationError::from)?;
     let result = transport.sync();
     let mut output = Output::receipt(result_data(&result)?, !result.needs_attention());
-    output.accepted_save = result.local == streams::sync::outcomes::LocalStatus::Committed;
+    output.accepted_save = true;
+    // `sync` reaches `Committed` only after `advance` succeeds; a `RepairRequired`
+    // failure between `install` and `advance` leaves `wrote = false`, accepted here
+    // because the caller already gets a nonzero exit and repair status.
+    output.wrote = result.local == streams::sync::outcomes::LocalStatus::Committed;
     Ok(output)
 }
 

@@ -179,6 +179,9 @@ pub struct CompletionError {
 }
 impl EnrollmentReceipt {
     pub fn accepted(&self) -> bool {
+        !self.saves.is_empty()
+    }
+    pub fn wrote(&self) -> bool {
         self.wrote
     }
     fn persist(&mut self, saved: RecordSave<DomainOutcome>) -> RecordSave<DomainOutcome> {

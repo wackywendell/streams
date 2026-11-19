@@ -250,7 +250,9 @@ impl App {
                     }
                 };
                 let mut output = Output::value(update.to_json());
-                output.accepted_save = !update.saves.is_empty();
+                let wrote = !update.saves.is_empty();
+                output.accepted_save = wrote;
+                output.wrote = wrote;
                 Ok(output)
             }
         }

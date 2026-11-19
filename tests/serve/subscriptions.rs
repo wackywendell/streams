@@ -1151,7 +1151,8 @@ fn a_pi_workspace_move_into_a_marked_workspace_leaves_membership_unchanged() {
     let context = &response["outcome"]["result"];
     assert_eq!(context["session"], f.session, "{response}");
     assert_eq!(context["stream"], before);
-    // Enrolling again for the saved Stream writes nothing and triggers no post-save native work.
+    // Enrolling again for the saved Stream is a no-op wherever the pane is; the marker
+    // conflict stays a warning.
     child.request(
         2,
         json!({"kind":"enroll","request":{
@@ -1167,10 +1168,15 @@ fn a_pi_workspace_move_into_a_marked_workspace_leaves_membership_unchanged() {
             break frame;
         }
     };
-    assert_eq!(enrolled["outcome"]["status"], "success", "{enrolled}");
     assert_eq!(
-        enrolled["outcome"]["result"]["saves"][0]["save"]["local"],
-        "unchanged"
+        enrolled["outcome"]["status"], "saved_with_warnings",
+        "{enrolled}"
+    );
+    assert!(
+        enrolled["outcome"]["warnings"][0]
+            .as_str()
+            .unwrap()
+            .contains("another Stream")
     );
     assert_eq!(
         enrolled["outcome"]["result"]["session"]["stream_id"],

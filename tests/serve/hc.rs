@@ -120,14 +120,13 @@ fn sdk_locator_is_verified_after_enrollment_and_on_a_later_read() {
     assert_eq!(bindings.transcript_file(stream, session_id).unwrap(), None);
     fs::write(&file, "{\"type\":\"session\",\"id\":\"wrong\"}\n").unwrap();
     child.send(json!({"type":"request","id":2,"request":{"kind":"enroll","request":enrollment},"pi_context":pi}));
-    let warning = child.next();
-    assert_eq!(
-        warning,
-        json!({"type":"warning","message":"Pi session file could not be verified"})
-    );
     let wrong = child.response(2);
-    assert_eq!(wrong["outcome"]["status"], "success", "{wrong}");
+    assert_eq!(wrong["outcome"]["status"], "saved_with_warnings", "{wrong}");
     assert_eq!(wrong["outcome"]["result"]["session"]["id"], session_id);
+    assert_eq!(
+        wrong["outcome"]["warnings"],
+        json!(["Pi session file could not be verified"])
+    );
     assert_eq!(bindings.transcript_file(stream, session_id).unwrap(), None);
     fs::write(&file, "{\"type\":\"session\",\"id\":\"pi-session\"}\n").unwrap();
     child.send(json!({"type":"request","id":3,"request":{"kind":"list_streams"},"pi_context":pi}));
@@ -143,10 +142,9 @@ fn sdk_locator_is_verified_after_enrollment_and_on_a_later_read() {
     pi["session_file"] = json!(replacement);
     child.send(json!({"type":"request","id":5,"request":{"kind":"enroll","request":enrollment},"pi_context":pi}));
     assert_eq!(
-        child.next(),
-        json!({"type":"warning","message":"Pi session file could not be verified"})
+        child.response(5)["outcome"]["status"],
+        "saved_with_warnings"
     );
-    assert_eq!(child.response(5)["outcome"]["status"], "success");
     assert_eq!(
         bindings.transcript_file(stream, session_id).unwrap(),
         Some(file.canonicalize().unwrap())

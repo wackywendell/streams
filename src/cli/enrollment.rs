@@ -66,6 +66,7 @@ impl App {
                     0
                 },
                 accepted_save: receipt.accepted(),
+                wrote: receipt.wrote(),
             },
             session: receipt.session,
             stream: receipt.stream,

@@ -28,7 +28,9 @@ pub(super) fn execute(app: &App, session_id: &str, request: Request) -> Result<O
             let discarded = application::open_records(&app.config)?
                 .discard_unreadable_card(Harness::Pi, session_id)?;
             let mut output = Output::value(json!(discarded));
-            output.accepted_save = discarded.session.is_some() || discarded.stream.is_some();
+            let wrote = discarded.session.is_some() || discarded.stream.is_some();
+            output.accepted_save = wrote;
+            output.wrote = wrote;
             Ok(output)
         }
         Request::CaptureInputs { target } => match target {
@@ -76,7 +78,9 @@ pub(super) fn execute(app: &App, session_id: &str, request: Request) -> Result<O
                 _ => app.config.set(key, &value)?,
             }
             let mut output = Output::value(json!({"config": app.config.extension_snapshot()?}));
-            output.accepted_save = application::open_records(&app.config).is_ok();
+            let has_catalog = application::open_records(&app.config).is_ok();
+            output.accepted_save = has_catalog;
+            output.wrote = has_catalog;
             Ok(output)
         }
         Request::UnsetConfig { key } => {
@@ -85,7 +89,9 @@ pub(super) fn execute(app: &App, session_id: &str, request: Request) -> Result<O
                 .map_err(|_| CliError::message(format!("unknown streams config key: {key}")))?;
             app.config.unset(key)?;
             let mut output = Output::value(json!({"config": app.config.extension_snapshot()?}));
-            output.accepted_save = application::open_records(&app.config).is_ok();
+            let has_catalog = application::open_records(&app.config).is_ok();
+            output.accepted_save = has_catalog;
+            output.wrote = has_catalog;
             Ok(output)
         }
         Request::CardSettings {} => app.card_settings(session_id),
@@ -102,7 +108,9 @@ pub(super) fn execute(app: &App, session_id: &str, request: Request) -> Result<O
                 }
             };
             let mut output = Output::value(update.to_json());
-            output.accepted_save = !update.saves.is_empty();
+            let wrote = !update.saves.is_empty();
+            output.accepted_save = wrote;
+            output.wrote = wrote;
             Ok(output)
         }
         Request::Artifact { request } => app.artifact_request(request, Some(session_id)),
