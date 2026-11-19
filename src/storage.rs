@@ -22,7 +22,7 @@ pub enum StorageErrorKind {
 /// A point read of an undecodable record fails definitely; listings keep the typed value.
 impl From<records::UnreadableRecord> for StorageError {
     fn from(record: records::UnreadableRecord) -> Self {
-        Self::new(record.to_string())
+        Self::new(format!("{record}. {}", record.repair))
     }
 }
 

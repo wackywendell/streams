@@ -493,12 +493,9 @@ fn unreadable_records_are_named_by_kind_path_and_cause() {
         "{error}"
     );
     assert!(error.contains("unknown field `archived`"), "{error}");
-    assert_eq!(
-        decode_record(&key, value.to_string().as_bytes())
-            .unwrap_err()
-            .to_string(),
-        error
-    );
+    let decoded = decode_record(&key, value.to_string().as_bytes()).unwrap_err();
+    assert_eq!(error, format!("{decoded}. {}", decoded.repair));
+    assert!(error.contains("/streams reset"), "{error}");
 }
 
 #[test]

@@ -818,5 +818,9 @@ mod tests {
             reason.contains("invalid JSON"),
             "missing decode cause in error: {reason}"
         );
+        assert!(
+            reason.contains("/streams reset"),
+            "missing repair hint in error: {reason}"
+        );
     }
 }

@@ -146,7 +146,10 @@ fn listings_name_undecodable_records_and_still_fail_on_unexpected_layout() {
     assert_eq!(streams.unreadable, listing.unreadable);
     assert_eq!(
         streams.complete().unwrap_err().to_string(),
-        listing.unreadable[0].to_string()
+        format!(
+            "{}. {}",
+            listing.unreadable[0], listing.unreadable[0].repair
+        )
     );
     assert!(store.host_sessions("host").unwrap().unreadable.is_empty());
 
