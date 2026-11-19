@@ -64,7 +64,7 @@ test-replay: build
 test-native-rust: build
     node --test tests/stream_rust_native_test.mjs
 
-# Run surviving Herdr configuration, process and Pi-name boundary tests
+# Run Herdr document and artifact launcher tests
 test-herdr:
     npm --prefix integrations/herdr-work-cards test
 

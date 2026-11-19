@@ -341,7 +341,6 @@ A lost reply may leave an uncertain push. Retrying an edit, report, enrollment o
 
 ```sh
 npm ci
-npm --prefix integrations/herdr-work-cards ci --ignore-scripts
 just test-fast
 just test
 ```

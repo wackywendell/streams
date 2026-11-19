@@ -8,27 +8,10 @@
     "node": ">=22"
   },
   "files": [
-    "src/config.ts",
-    "dist/config.js",
-    "dist/config.d.ts",
-    "dist/config.js.map",
     "bin",
     "streams-rust-herdr-plugin.toml"
   ],
-  "exports": {
-    "./config": "./dist/config.js"
-  },
   "scripts": {
-    "build": "tsc",
-    "test": "npm run build && node --test tests/*.test.mjs",
-    "check": "tsc --noEmit"
-  },
-  "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*"
-  },
-  "devDependencies": {
-    "@earendil-works/pi-coding-agent": "^1.2.0",
-    "@types/node": "^22.0.0",
-    "typescript": "^5.9.3"
+    "test": "node --test tests/*.test.mjs"
   }
 }

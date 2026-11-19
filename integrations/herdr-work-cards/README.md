@@ -1,6 +1,6 @@
 # Streams work cards
 
-Rust projects saved Streams records into Herdr. This package supplies its manifest, launch helpers and configuration module. The root Pi extension owns reporting and enrollment; this package does not run model inference or write a separate work catalog. See the [Streams README](../../README.md) for installation, commands and reporting settings.
+Rust projects saved Streams records into Herdr. This package supplies its manifest and launch helpers. The root Pi extension owns reporting and enrollment; this package does not run model inference or write a separate work catalog. See the [Streams README](../../README.md) for installation, commands and reporting settings.
 
 The source was imported with its original history through `e7d74ce22f95893fa8eed570ef2e6a14d61f74bd`. The [native projection decision](../../docs/native-herdr-work-cards.md) explains the adaptation. The former standalone runtime and its `/work-card` commands are not supported.
 
@@ -40,28 +40,23 @@ Streams owns repository identities, document references and host-local checkout 
 
 A document uses its saved exact repository URL and relative path to open the viewing Session's resolved working file, including local edits. Recovery hints remain available for explicit recovery. The adapter rechecks the complete saved Reference, selected binding and canonical file before opening. Missing mappings, missing files and paths escaping the checkout fail visibly; they leave the shared reference intact. URL activation also compares the full saved Reference before applying the shared HTTP(S) safety policy.
 
-`document_command` is a trusted command prefix. It falls back to `$EDITOR`, then `less`. Do not copy untrusted document, record or model text into executable configuration.
+Documents open using `$EDITOR`, falling back to `less`. Do not copy untrusted document, record or model text into executable configuration.
 
 ## Presentation configuration
 
-Global configuration lives at `$PI_CODING_AGENT_DIR/work-cards.json`, defaulting to `~/.pi/agent/work-cards.json`. There are no project overrides. Missing configuration uses defaults; partial configuration overlays them. Invalid and unknown fields fail with the file path.
+Presentation settings live in the unified Streams TOML configuration at `$XDG_CONFIG_HOME/streams/config.toml` (default `~/.config/streams/config.toml`), owned by the Rust CLI (`streams config`). Missing keys use defaults; unknown keys and invalid values fail with the file path.
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
-| `workspace_naming` | `true` | Track eligible Herdr workspace names |
-| `tab_naming` | `true` | Track eligible Herdr tab names |
-| `session_naming` | `true` | Track eligible Pi session names |
-| `document_command` | `null` | Trusted command prefix; otherwise `$EDITOR`, then `less` |
-| `herdr_timeout_ms` | `3000` | Native operation and document lock-wait timeout |
-| `pane_height_fraction` | `0.2` | Requested share of a new pair's initial split, within native layout constraints |
+| `herdr.cards.auto_open` | `"automatic"` | Default card-opening mode (`"automatic"` or `"manual"`) |
+| `herdr.naming.workspace` | `true` | Track eligible Herdr workspace names |
+| `herdr.naming.tab` | `true` | Track eligible Herdr tab names |
+| `herdr.timeout_ms` | `3000` | Native operation and document lock-wait timeout (1 to 2,147,483,647) |
+| `herdr.pane_height_fraction` | `0.2` | Requested share of a new pair's initial split, strictly between 0 and 1 |
+| `pi.naming.session` | `true` | Track eligible Pi session names |
+| `pi.naming.import_edits` | `true` | Import Pi session name changes into Streams |
 
-Card-opening preferences belong to Streams, not this file. `/streams settings` edits the global `cards.auto_open` default and the conversation override through the Rust child. Remove the retired `workspace_startup` field before activation. Set the global default explicitly with `streams config set cards.auto_open automatic` or `manual`; no fallback reads the retired field.
-
-Each naming setting accepts only a boolean and defaults to `true`. `null` is invalid for naming. Disabling outgoing naming stops Streams from renaming that surface. Re-enabling it projects the saved Streams title, replacing a different frontend name. Pi name edits are imported independently through `pi_name_edits` in `stream-reporting.json`, defaulting to `true`. Disable both Pi directions to keep its name independent. The Naming submenu also changes global Stream and Session generation defaults through the Rust configuration API; it does not copy them into either Pi configuration file.
-
-`herdr_timeout_ms` must be an integer from 1 to 2,147,483,647. Pane height must be strictly between zero and one. `document_command` accepts `null` or a nonblank command without control characters; malformed nonblank `$EDITOR` values also fail visibly.
-
-Inference settings belong to the root extension's `stream-reporting.json`. Removed fields such as `model`, `thinking_level`, `show_refresh_spinner`, `check_every_n_responses`, `max_output_tokens`, `request_timeout_ms` and `pane_poll_interval_ms` are rejected in `work-cards.json`.
+`/streams settings` edits the global `herdr.cards.auto_open` default, conversation overrides, and naming settings through the Rust child. Each naming setting accepts only a boolean. Disabling outgoing naming stops Streams from renaming that surface; re-enabling it projects the saved Streams title. Disable both `pi.naming.session` and `pi.naming.import_edits` to keep Pi's name independent. See the [configuration and reference viewer decision](../../docs/config-and-reference-viewer.md).
 
 ## Rust lifecycle routing
 
@@ -78,16 +73,14 @@ Run `just test-native-rust` for isolated Pi/Rust CLI acceptance with fake Herdr 
 Use Node.js 22 or later. From the repository root:
 
 ```sh
-npm --prefix integrations/herdr-work-cards ci --ignore-scripts
-npm --prefix integrations/herdr-work-cards run check
 npm --prefix integrations/herdr-work-cards test
 ```
 
-`npm test` builds the surviving TypeScript support code and runs `tests/*.test.mjs`. `just build` builds the Rust native runtime. Restart participating Pi sessions and reopen native pane processes after changing loaded code. Do not mix loaded CLI and extension revisions during an update. Use the root Streams extension, not a standalone Pi entrypoint from this package.
+`npm test` runs `tests/*.test.mjs` for the POSIX document and artifact launchers. `just build` builds the Rust native runtime. Restart participating Pi sessions and reopen native pane processes after changing loaded code. Do not mix loaded CLI and extension revisions during an update. Use the root Streams extension, not a standalone Pi entrypoint from this package.
 
 The `streams-rust-herdr-plugin.toml` manifest requires a compatible Herdr native plugin API. Explicit pane opening can register the exact missing plugin; it refuses conflicting or disabled registrations. It does not update or restart Herdr.
 
-This package tests configuration, executable selection, Pi naming and the document launcher. Rust tests cover rendering, exact context, ownership, native lifecycle and guarded documents, retaining frozen renderer fixtures. Native effects use fake protocols. Run isolated native acceptance before activating changed launch code; automated tests do not establish live platform support.
+This package tests the document and artifact launchers. Rust tests cover rendering, exact context, ownership, native lifecycle, configuration and guarded documents, retaining frozen renderer fixtures. Native effects use fake protocols. Run isolated native acceptance before activating changed launch code; automated tests do not establish live platform support.
 
 ## Design contracts
 

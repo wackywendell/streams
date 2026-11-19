@@ -7,7 +7,6 @@ Install [mise](https://mise.jdx.dev/), then:
 ```sh
 mise install   # Node 26, pinned Rust, just, and direnv from .tool-versions
 npm ci
-npm --prefix integrations/herdr-work-cards ci --ignore-scripts
 just build
 ```
 
@@ -25,7 +24,7 @@ just test-rust         # all Rust targets and doctests
 just test-rust-fast    # Rust library, binary and consolidated contracts
 just test-rust-unit    # focused library/binary loop; not full acceptance
 just test-pi           # Pi reporting, capture and helper-request tests
-just test-herdr        # configuration, naming and launcher boundaries
+just test-herdr        # Herdr document and artifact launcher tests
 just test-herdr-app    # herdr-app mod state, batching and viewer dispatch tests
 just test-replay       # production helper replay with real Rust preview
 just test-native-rust  # Pi-to-Rust lifecycle with fake Herdr endpoints
