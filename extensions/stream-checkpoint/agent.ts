@@ -177,7 +177,7 @@ export function buildInferencePayload(request: Inference, timestamp = 0): Infere
   catalog = {
    stream: stream && {id: stream.id, repositories: stream.repositories, references: stream.references},
    session: {id: session.id, host_id: session.host_id, stream_id: session.stream_id, harness: session.harness, harness_session_id: session.harness_session_id, checkout: session.checkout},
-   sessions: [], checkouts: visibleCatalog.checkouts ?? [], document_locations: visibleCatalog.document_locations ?? [],
+   checkouts: visibleCatalog.checkouts ?? [], document_locations: visibleCatalog.document_locations ?? [],
   };
  } else if (request.type === "stream") {
   catalog = {stream: visibleCatalog.stream, sessions: visibleCatalog.session ? [visibleCatalog.session] : []};

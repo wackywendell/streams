@@ -822,7 +822,7 @@ test('session reset omits existing descriptions; stream reset retains contributi
   const sent=JSON.parse(payload.messages.at(-1).content),visible=sent.catalog;
   assert.match(sent.reset,/all allowed automatic fields fresh from provided evidence/);assert.match(sent.reset,/fresh short-handle title/);assert.match(sent.reset,/empty no-change delta/);
   if(type==='session') {
-   assert.deepEqual(visible.sessions,[]);
+   assert.equal(Object.hasOwn(visible,'sessions'),false);
    for(const field of ['title','state','state_short','remaining','status'])assert.equal(Object.hasOwn(visible.session,field),false);
    for(const field of ['title','goal','goal_short'])assert.equal(Object.hasOwn(visible.stream,field),false);
    assert.equal(visible.session.id,before.session.id);assert.equal(visible.session.harness_session_id,before.session.harness_session_id);

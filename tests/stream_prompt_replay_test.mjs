@@ -109,7 +109,7 @@ for(const auto of [false,true]) test(`reset respects manual fields unless explic
  const {run}=await replayCapture(capture,join(root,'manual'),runtime(async payload=>{
   const input=taskInput(payload);inputs.push(input);
   if(input.task==='session') {
-   assert.equal(Object.hasOwn(input.catalog.session,'state'),false);assert.equal(Object.hasOwn(input.catalog.session,'title'),false);assert.deepEqual(input.catalog.sessions,[]);
+   assert.equal(Object.hasOwn(input.catalog.session,'state'),false);assert.equal(Object.hasOwn(input.catalog.session,'title'),false);assert.equal(Object.hasOwn(input.catalog,'sessions'),false);
    return response({changes:{state:'Reset state',...(auto?{title:'Fresh lane'}:{})}});
   }
   assert.equal(auto,true);assert.equal(input.catalog.stream.goal,null);return response({changes:{goal:'New goal',title:'Fresh effort'}});
