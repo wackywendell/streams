@@ -291,34 +291,19 @@ impl DirectoryBindings {
 
     /// Save the caller's verified locator without changing directory intent or recording liveness.
     pub fn remember_transcript(&self, session_id: &str, transcript_file: &Path) -> Result<()> {
-        if !self.remember_transcript_if_bound(session_id, transcript_file)? {
-            return Err(invalid(
-                "select the Session directory before saving its transcript locator",
-            ));
-        }
-        Ok(())
-    }
-
-    /// Save the caller's verified locator if the Session already has a directory binding.
-    pub fn remember_transcript_if_bound(
-        &self,
-        session_id: &str,
-        transcript_file: &Path,
-    ) -> Result<bool> {
         text(session_id)?;
         absolute(transcript_file, "transcript file")?;
         let key = BindingKey::Session(session_id);
         let path = self.path(key);
         let _lock = lock(&path.with_extension("lock"))?;
-        let Some(mut current) = self.selection(key)? else {
-            return Ok(false);
-        };
+        let mut current = self.selection(key)?.ok_or_else(|| {
+            invalid("select the Session directory before saving its transcript locator")
+        })?;
         if current.transcript_file.as_deref() == Some(transcript_file) {
-            return Ok(true);
+            return Ok(());
         }
         current.transcript_file = Some(transcript_file.to_owned());
-        write_json(&path, &current)?;
-        Ok(true)
+        write_json(&path, &current)
     }
 }
 

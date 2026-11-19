@@ -216,3 +216,79 @@ pub(super) fn resolve_session(
         desired_pi_name,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{collections::BTreeMap, fs};
+    use streams::{
+        application,
+        child_protocol::PiRequestContext,
+        config::{Config, Strategy},
+        model::Stream,
+        runtime::BindingKey,
+    };
+
+    #[test]
+    fn remember_locator_ignores_unenrolled_fails_when_unbound_and_saves_when_bound() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let environment = BTreeMap::from([
+            ("HOME".into(), root.display().to_string()),
+            (
+                "XDG_CONFIG_HOME".into(),
+                root.join("cfg").display().to_string(),
+            ),
+            (
+                "XDG_DATA_HOME".into(),
+                root.join("data").display().to_string(),
+            ),
+            (
+                "XDG_STATE_HOME".into(),
+                root.join("state").display().to_string(),
+            ),
+        ]);
+        let config = Config::new(&environment, &root).unwrap();
+        let opened =
+            application::initialize_records(&config, Strategy::None, None, "main").unwrap();
+        let host = opened.host().as_str();
+        let native_id = "pi-native";
+        let transcript = root.join("session.jsonl");
+        fs::write(&transcript, "{\"type\":\"session\",\"id\":\"pi-native\"}\n").unwrap();
+        let context = PiRequestContext {
+            conversation: ConversationId {
+                harness: "pi".into(),
+                native_id: native_id.into(),
+            },
+            session_file: Some(transcript.clone()),
+        };
+        let locator = verified_locator(&context).unwrap().unwrap();
+
+        // Unenrolled conversation: quiet no-op, writes no binding.
+        remember_locator(&opened, native_id, &locator).unwrap();
+        let session_id = Session::id_for(host, "pi", native_id);
+        let locations = opened.locations().unwrap();
+        assert_eq!(locations.transcript_file(&session_id).unwrap(), None);
+
+        // Enrolled Session with no directory binding: surfaces retention failure.
+        let stream = Stream::new("work", "Work", None, host).unwrap();
+        application::create_record(opened.records(), &Record::Stream(stream)).unwrap();
+        let session = Session::new(&session_id, host, "work", "pi", native_id, "Lane").unwrap();
+        application::create_record(opened.records(), &Record::Session(session)).unwrap();
+        let error = remember_locator(&opened, native_id, &locator)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("could not be retained"), "{error}");
+        assert_eq!(locations.transcript_file(&session_id).unwrap(), None);
+
+        // Enrolled Session with a directory binding: saves the canonical locator.
+        locations
+            .remember(BindingKey::Session(&session_id), &root, false, None, None)
+            .unwrap();
+        remember_locator(&opened, native_id, &locator).unwrap();
+        assert_eq!(
+            locations.transcript_file(&session_id).unwrap(),
+            Some(transcript.canonicalize().unwrap())
+        );
+    }
+}
