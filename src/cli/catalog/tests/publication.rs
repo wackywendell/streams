@@ -72,3 +72,12 @@ fn ordinary_human_edits_save_locally_without_opening_transport_or_publishing() {
         "explicit sync alone admits transport settings"
     );
 }
+
+#[test]
+fn unchanged_sync_does_not_mark_an_accepted_save() {
+    let f = Fixture::new();
+    let output = sync(&f.opened).unwrap();
+    assert_eq!(output.code, 0, "{}", output.value);
+    assert_eq!(output.value["local"], "unchanged");
+    assert!(!output.accepted_save);
+}

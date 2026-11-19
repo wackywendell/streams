@@ -361,10 +361,7 @@ impl Server {
                             .unwrap_or(&app);
                         dispatch::execute(current_app, &self.session_id, request)?
                     };
-                    if (is_apply && (output.code == 0 || output.accepted_save))
-                        || ((is_lifecycle || is_discard) && output.accepted_save)
-                    {
-                        output.accepted_save = true;
+                    if (is_apply || is_lifecycle || is_discard) && output.accepted_save {
                         if let Some(controller) = controller
                             && let Err(error) = controller.saved(cancelled.clone())
                         {

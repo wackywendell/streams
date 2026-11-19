@@ -178,7 +178,7 @@ pub(super) fn finish_record(saved: RecordSave<EditOutcome>) -> Output {
         }),
         ok,
     );
-    output.accepted_save = ok;
+    output.accepted_save = saved.written;
     for row in saved.outcome.reference_results.iter().flatten() {
         if matches!(
             row.outcome,
@@ -202,7 +202,7 @@ pub(super) fn sync(opened: &OpenedRecords) -> Result<Output> {
         .map_err(application::ApplicationError::from)?;
     let result = transport.sync();
     let mut output = Output::receipt(result_data(&result)?, !result.needs_attention());
-    output.accepted_save = true;
+    output.accepted_save = result.local == streams::sync::outcomes::LocalStatus::Committed;
     Ok(output)
 }
 

@@ -194,6 +194,7 @@ fn partial_reference_conflict_keeps_the_accepted_rows_and_safe_diagnostics() {
     )
     .unwrap();
     assert_eq!(repeated.code, 2);
+    assert!(!repeated.accepted_save);
     assert_eq!(repeated.value["save"]["local"], "unchanged");
     assert_eq!(
         repeated.value["save"]["domain"]["reference_results"][1]["outcome"],

@@ -154,27 +154,36 @@ impl ArtifactStore for FileRecordStore {
                 error
             }
         })?;
+        let mut content_written = content_saved;
         let mut warnings = Vec::new();
         // Deleting again after the reference is gone still removes leftover content.
         if matches!(content, ContentChange::Delete) {
             let path = path.expect("a save derives its content path");
             let deleted = match fs::symlink_metadata(&path) {
                 Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
-                    fs::remove_file(&path).map_err(invalid).and_then(|()| {
-                        sync_directory(path.parent().expect("artifact parent"))
-                            .map_err(StorageError::after_write)
-                    })
+                    fs::remove_file(&path)
+                        .map_err(invalid)
+                        .and_then(|()| {
+                            sync_directory(path.parent().expect("artifact parent"))
+                                .map_err(StorageError::after_write)
+                        })
+                        .map(|()| true)
                 }
                 Ok(_) => Err(invalid("artifact content is not a regular file")),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
                 Err(e) => Err(invalid(e)),
             };
-            if let Err(error) = deleted {
-                warnings.push(format!(
+            match deleted {
+                Ok(removed) => content_written |= removed,
+                Err(error) => warnings.push(format!(
                     "Session reference removed; unreferenced artifact content may remain: {error}"
-                ));
+                )),
             }
         }
-        Ok(ArtifactSave { save, warnings })
+        Ok(ArtifactSave {
+            save,
+            content_written,
+            warnings,
+        })
     }
 }

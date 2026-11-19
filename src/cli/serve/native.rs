@@ -583,7 +583,8 @@ impl Controller {
         }
         let saved = self.app.enroll_records(&records, &request, &pass.context)?;
         let mut output = saved.output;
-        if saved.directory_selected
+        if output.accepted_save
+            && saved.directory_selected
             && let (Some(session), Some(stream)) = (saved.session, saved.stream)
         {
             let completion = (|| -> Result<()> {

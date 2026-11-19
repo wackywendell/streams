@@ -163,6 +163,9 @@ pub struct EnrollmentReceipt {
     /// The Session's directory was remembered for its Stream.
     #[serde(skip)]
     pub directory_selected: bool,
+    /// True when at least one record was written during this enrollment.
+    #[serde(skip)]
+    wrote: bool,
 }
 #[derive(Serialize)]
 struct SavedRecord {
@@ -176,9 +179,10 @@ pub struct CompletionError {
 }
 impl EnrollmentReceipt {
     pub fn accepted(&self) -> bool {
-        !self.saves.is_empty()
+        self.wrote
     }
     fn persist(&mut self, saved: RecordSave<DomainOutcome>) -> RecordSave<DomainOutcome> {
+        self.wrote |= saved.written;
         self.saves.push(SavedRecord {
             target: saved.target(),
             save: serde_json::json!({"local": saved.local(), "domain": {"outcome": saved.outcome}}),

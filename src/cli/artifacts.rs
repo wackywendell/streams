@@ -194,7 +194,7 @@ impl App {
             }
         };
         let mut output = Output::value(json!(saved.save.outcome));
-        output.accepted_save = true;
+        output.accepted_save = saved.save.written || saved.content_written;
         output.notices = saved.warnings;
         if !output.notices.is_empty() {
             output.value["warnings"] = json!(output.notices);

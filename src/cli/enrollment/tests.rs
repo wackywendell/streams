@@ -115,6 +115,12 @@ fn record_only_enrollment_uses_the_admitted_root_without_native_or_settings_rere
     assert_eq!(completed.output.code, 0, "{}", completed.output.value);
     assert!(completed.output.accepted_save);
     assert!(completed.directory_selected);
+    let retried = f
+        .app
+        .enroll_records(&f.opened, &request, &f.context())
+        .unwrap();
+    assert_eq!(retried.output.code, 0, "{}", retried.output.value);
+    assert!(!retried.output.accepted_save);
     assert_eq!(
         completed.session.as_ref().unwrap().stream_id,
         completed.stream.as_ref().unwrap().id

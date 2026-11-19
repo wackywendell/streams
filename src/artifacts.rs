@@ -211,6 +211,7 @@ pub enum ContentChange {
 
 pub struct ArtifactSave<T> {
     pub save: RecordSave<T>,
+    pub content_written: bool,
     pub warnings: Vec<String>,
 }
 
