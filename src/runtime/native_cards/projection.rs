@@ -1,67 +1,52 @@
 use super::*;
 use crate::{
-    codec::required_nullable,
-    integration::{ConversationId, NativeRef, SessionView},
+    integration::{
+        CompanionDisposition, LifecycleReport, NativeStatus, ProjectionResult, SessionView,
+    },
     model::{Session, Stream},
 };
-use serde::Deserialize;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NameIntent {
+pub(crate) enum NameIntent {
     LeaveUnchanged,
     Set(String),
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CompanionIntent {
+pub(crate) enum CompanionIntent {
     Keep,
     Show,
-    Hide,
-}
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AssociationIntent {
-    Keep,
-    Bind { space: NativeRef },
 }
 #[derive(Debug, Clone)]
-pub struct StreamDisplay {
-    pub title: String,
-    pub goal_short: Option<String>,
+pub(crate) struct StreamDisplay {
+    pub(crate) title: String,
+    pub(crate) goal_short: Option<String>,
 }
 #[derive(Debug, Clone)]
-pub struct SessionProjection {
-    pub view: SessionView,
-    pub conversation: ConversationId,
-    pub name: NameIntent,
-    pub companion: CompanionIntent,
+pub(crate) struct SessionProjection {
+    pub(crate) view: SessionView,
+    pub(crate) name: NameIntent,
 }
 #[derive(Debug, Clone)]
-pub struct DesiredProjection {
-    pub stream: String,
-    pub space: Option<NativeRef>,
-    pub stream_display: StreamDisplay,
-    pub association: AssociationIntent,
-    pub stream_name: NameIntent,
-    pub sessions: Vec<SessionProjection>,
+pub(crate) struct DesiredProjection {
+    pub(crate) stream: String,
+    pub(crate) stream_display: StreamDisplay,
+    pub(crate) stream_name: NameIntent,
+    pub(crate) sessions: Vec<SessionProjection>,
 }
 impl DesiredProjection {
     /// Saved data and explicit outgoing switches only; no observation or inference.
-    pub fn for_session(
+    pub(crate) fn for_session(
         stream: &Stream,
         session: &Session,
-        space: NativeRef,
-        association: AssociationIntent,
         stream_naming: bool,
         session_naming: bool,
-        companion: CompanionIntent,
     ) -> Self {
         Self {
             stream: stream.id.clone(),
-            space: Some(space),
             stream_display: StreamDisplay {
                 title: stream.title.clone(),
                 goal_short: stream.goal_short.clone(),
             },
-            association,
             stream_name: if stream_naming {
                 NameIntent::Set(stream.title.clone())
             } else {
@@ -69,59 +54,16 @@ impl DesiredProjection {
             },
             sessions: vec![SessionProjection {
                 view: SessionView::from(session),
-                conversation: ConversationId::from(session),
                 name: if session_naming {
                     NameIntent::Set(session.title.clone())
                 } else {
                     NameIntent::LeaveUnchanged
                 },
-                companion,
             }],
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, strum::EnumString, strum::VariantNames)]
-#[serde(rename_all = "snake_case")]
-#[strum(serialize_all = "snake_case")]
-pub enum CompanionDisposition {
-    Opened,
-    Existing,
-    Suppressed,
-    Deferred,
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, strum::EnumString, strum::VariantNames)]
-#[serde(rename_all = "snake_case")]
-#[strum(serialize_all = "snake_case")]
-pub enum InactiveReason {
-    OutsideFrontend,
-    NotEnrolled,
-    Unavailable,
-    Stopped,
-}
-crate::codec::deserialize_string_enum!(CompanionDisposition, InactiveReason);
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ProjectionResult {
-    #[serde(deserialize_with = "required_nullable")]
-    pub companion: Option<CompanionDisposition>,
-    #[serde(deserialize_with = "required_nullable")]
-    pub desired_pi_name: Option<String>,
-    pub warnings: Vec<String>,
-}
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum NativeStatus {
-    Active,
-    Inactive { reason: InactiveReason },
-}
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct LifecycleReport {
-    pub native: NativeStatus,
-    pub projection: ProjectionResult,
-}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LifecycleEvent {
     Started,
@@ -130,7 +72,7 @@ pub enum LifecycleEvent {
 }
 
 impl LifecycleEvent {
-    pub fn companion_intent(self, automatic: bool) -> CompanionIntent {
+    pub(crate) fn companion_intent(self, automatic: bool) -> CompanionIntent {
         if automatic && matches!(self, Self::Started | Self::NewlyBound) {
             CompanionIntent::Show
         } else {
@@ -182,7 +124,7 @@ struct CardProjection {
 impl NativeCardEngine {
     pub fn lifecycle(&mut self, event: LifecycleEvent) -> Result<LifecycleReport> {
         let intent = event.companion_intent(self.config.startup_automatic());
-        let desired = self.desired_projection(intent);
+        let desired = self.desired_projection();
         let plan = self.prepare_projection(&desired)?;
         self.apply_card_projection(plan)?;
         let companion = if intent == CompanionIntent::Show {
@@ -214,26 +156,17 @@ impl NativeCardEngine {
     }
 
     pub fn project(&mut self) -> Result<NameReport> {
-        let desired = self.desired_projection(CompanionIntent::Keep);
+        let desired = self.desired_projection();
         let plan = self.prepare_projection(&desired)?;
         self.apply_card_projection(plan)
     }
 
-    fn desired_projection(&self, companion: CompanionIntent) -> DesiredProjection {
-        use crate::frontend::WorkspaceFrontend;
-        let space = NativeRef {
-            adapter: self.client.frontend_id(),
-            endpoint: self.client.endpoint_id(),
-            key: self.owner_pane.pane.workspace_id.clone(),
-        };
+    fn desired_projection(&self) -> DesiredProjection {
         DesiredProjection::for_session(
             self.card.stream(),
             self.card.session(),
-            space.clone(),
-            AssociationIntent::Bind { space },
             self.config.workspace_naming,
             self.config.tab_naming,
-            companion,
         )
     }
 
@@ -281,13 +214,9 @@ impl NativeCardEngine {
                 "workspace markers name another Stream, catalog or host",
             ));
         }
-        let binding = match &desired.association {
-            AssociationIntent::Keep => BTreeMap::new(),
-            AssociationIntent::Bind { .. } => association,
-        };
         let workspace_values = changed(
             current,
-            binding
+            association
                 .into_iter()
                 .map(|(key, value)| (key, Some(value)))
                 .chain([(

@@ -541,11 +541,51 @@ pub struct OpenEffects {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, strum::EnumString, strum::VariantNames)]
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
+pub enum CompanionDisposition {
+    Opened,
+    Existing,
+    Suppressed,
+    Deferred,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, strum::EnumString, strum::VariantNames)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum InactiveReason {
+    OutsideFrontend,
+    NotEnrolled,
+    Unavailable,
+    Stopped,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, strum::EnumString, strum::VariantNames)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
 pub enum CompanionVisibility {
     Shown,
     Hidden,
 }
-crate::codec::deserialize_string_enum!(CompanionVisibility);
+crate::codec::deserialize_string_enum!(CompanionDisposition, InactiveReason, CompanionVisibility);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectionResult {
+    #[serde(deserialize_with = "required_nullable")]
+    pub companion: Option<CompanionDisposition>,
+    #[serde(deserialize_with = "required_nullable")]
+    pub desired_pi_name: Option<String>,
+    pub warnings: Vec<String>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum NativeStatus {
+    Active,
+    Inactive { reason: InactiveReason },
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LifecycleReport {
+    pub native: NativeStatus,
+    pub projection: ProjectionResult,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
