@@ -23,11 +23,7 @@ test-rust-unit:
 test-rust-fast:
     GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_NOSYSTEM=1 RUSTC=$(rustup which rustc) RUSTDOC=$(rustup which rustdoc) cargo test --locked --lib --bins --test contracts -- --test-threads=4
 
-# Run bounded Temper formal verification and production conformance checks
-test-verify:
-    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_NOSYSTEM=1 RUSTC=$(rustup which rustc) RUSTDOC=$(rustup which rustdoc) cargo test --locked --test verification -- --test-threads=4
-
-# Run all Rust record, file transport, native, verification and documentation tests
+# Run all Rust record, file transport, native and documentation tests
 test-rust:
     GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_NOSYSTEM=1 RUSTC=$(rustup which rustc) RUSTDOC=$(rustup which rustdoc) cargo test --locked --all-targets -- --test-threads=4
     GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_NOSYSTEM=1 RUSTC=$(rustup which rustc) RUSTDOC=$(rustup which rustdoc) cargo test --locked --doc

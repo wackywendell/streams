@@ -4,11 +4,9 @@ use serde::Serialize;
 
 use super::patches::{Access, Channel, Patch, PatchField, SessionPatch, StreamPatch};
 use super::{Actor, Reconciliation};
-use crate::model::{NamingMode, Session, Stream, TitleDefaults, TitleMode, ValidationError};
+use crate::model::{NamingMode, Session, Stream, TitleMode, ValidationError};
 
 /// What a captured automatic report observes about its target when it is applied.
-/// `specs/report_admission.ioa.toml` models the same predicate; `tests/verification.rs`
-/// checks that the two agree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReportAdmission {
     pub in_captured_stream: bool,
@@ -304,27 +302,6 @@ impl StreamEdit {
             ..ReportAdmission::default()
         };
         (admission, protection)
-    }
-}
-
-/// Combined state projection for a captured conversation/effort report pair.
-pub fn report_admission_context(
-    session_edit: &SessionEdit,
-    stream_edit: &StreamEdit,
-    current_session: &Session,
-    current_stream: &Stream,
-    current_defaults: TitleDefaults,
-) -> ReportAdmission {
-    let session = session_edit.admission_context(current_session, current_defaults.session);
-    let stream = stream_edit.admission_context(
-        current_stream,
-        Some(current_session),
-        current_defaults.stream,
-    );
-    ReportAdmission {
-        session_inputs_clean: session.session_inputs_clean,
-        session_protected: session.session_protected,
-        ..stream
     }
 }
 

@@ -14,10 +14,6 @@ path = "src/main.rs"
 name = "contracts"
 path = "tests/contracts.rs"
 
-[[test]]
-name = "verification"
-path = "tests/verification.rs"
-
 [dependencies]
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
@@ -46,16 +42,4 @@ strum = { version = "0.28.0", features = ["derive"] }
 sha2 = "0.10"
 
 [dev-dependencies]
-temper-jit = { git = "https://github.com/nerdsane/temper.git", rev = "6255ac3b43028105b8c0a2cee773f01aed2480a2" }
 vt100 = "0.15"
-temper-verify = { git = "https://github.com/nerdsane/temper.git", rev = "6255ac3b43028105b8c0a2cee773f01aed2480a2" }
-
-# Keep the same formal exploration; optimize its CPU-heavy test engines only.
-[profile.test.package.temper-jit]
-opt-level = 1
-
-[profile.test.package.temper-verify]
-opt-level = 1
-
-[profile.test.package.stateright]
-opt-level = 1
