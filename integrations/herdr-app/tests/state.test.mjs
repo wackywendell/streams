@@ -5,19 +5,31 @@ import {
   LABEL_STREAM,
   LABEL_SAVED,
   LABEL_HERDR_SPACE,
+  SHARED_TERMINAL_MARKS_KEY,
+  SESSION_STATUSES,
   resolveRole,
   observeNoticeToken,
   activeTabSession,
   tabSidebarView,
+  resolveSidebarView,
   resolveTabRenameTarget,
   effectiveSessionStatus,
   buildReferenceItems,
   prepareNativeContent,
   filterHostStreams,
+  groupHostStreams,
   unreadableNotice,
   hostStreamsEmptyMessage,
   formatRelativeAge,
   liveStreamIds,
+  countLiveTerminalsByStream,
+  findLivePaneForStream,
+  findLivePaneForSession,
+  statusToTerminalMark,
+  buildSharedTerminalMarks,
+  groupStreamSessions,
+  extractCliError,
+  streamBulkActionState,
   findSpaceForStream,
   dispatchReferencePresentation,
   StreamsCoordinator,
@@ -174,6 +186,12 @@ function createFakeRunner(handlers = {}) {
         return { code: 1, stdout: "", stderr: "artifact not found" };
       }
       return { code: 0, stdout: body, stderr: "" };
+    }
+    if (args[0] === "session" && args[1] === "edit") {
+      if (handlers.sessionEdit) {
+        return handlers.sessionEdit(args);
+      }
+      return { code: 0, stdout: "", stderr: "" };
     }
     return { code: 1, stdout: "", stderr: `unexpected command: ${bin} ${args.join(" ")}` };
   };
@@ -776,4 +794,656 @@ test("resolveTabRenameTarget, effectiveSessionStatus, filterHostStreams, unreada
   assert.equal(res.ok, true);
   assert.equal(dispatches[0].cmd, "tab.new");
   assert.equal(activeTabSession({ visibleTerminals: ["t1"], focusedTerminal: "t1", frames }).terminal, "t1");
+});
+
+test("host-wide observation publishes generic terminal.marks and prunes exited terminals", async () => {
+  const s1 = makeSessionJson({ id: "s1", stream_id: "st1", title: "Active Tab", status: "active" });
+  const s2 = makeSessionJson({ id: "s2", stream_id: "st2", title: "Other Space", status: "waiting" });
+  const st1 = makeStreamJson({ id: "st1", title: "Herdr UI", status: "active", sessions: [s1] });
+  const st2 = makeStreamJson({ id: "st2", title: "Billing API", status: "waiting", sessions: [s2] });
+
+  const runner = createFakeRunner({
+    sessions: { [s1.key]: s1, [s2.key]: s2 },
+    streams: { [st1.key]: st1, [st2.key]: st2 },
+    streamList: [st1, st2],
+  });
+  const published = [];
+  const coord = new StreamsCoordinator({
+    exec: runner.exec,
+    publishShared: (key, val) => published.push({ key, val }),
+  });
+
+  await coord.observe({
+    activeSpace: { id: "sp1", machine: null },
+    activeTabId: "tab1",
+    visibleTerminals: ["t1"],
+    focusedTerminal: "t1",
+    terminalList: [
+      { address: "t1", state: "live", labels: { [LABEL_SESSION]: s1.key, [LABEL_STREAM]: st1.key } },
+      { address: "t2", state: "live", labels: { [LABEL_SESSION]: s2.key, [LABEL_STREAM]: st2.key } },
+      { address: "t3", state: "live", labels: { [LABEL_SESSION]: "h1/pi/deleted" } },
+    ],
+    panes: [
+      { pane: "p1", tab: "tab1", terminal: "t1", program: { agent: "pi" } },
+      { pane: "p2", tab: "tab2", terminal: "t2", program: { agent: "pi" } },
+      { pane: "p3", tab: "tab3", terminal: "t3", program: { agent: "pi" } },
+    ],
+    agents: [
+      { address: "t1", agent: "pi" },
+      { address: "t2", agent: "pi" },
+      { address: "t3", agent: "pi" },
+    ],
+  });
+
+  assert.equal(published.length, 1);
+  assert.equal(published[0].key, SHARED_TERMINAL_MARKS_KEY);
+  assert.deepEqual(published[0].val, {
+    t1: {
+      symbol: "●",
+      color: "ansi2",
+      attention: true,
+      label: "Active",
+      source: "streams",
+    },
+    t2: {
+      symbol: "●",
+      color: "working",
+      attention: true,
+      label: "Waiting",
+      source: "streams",
+    },
+  });
+  assert.equal(coord.frames.has("t3"), false);
+
+  // When t2 exits externally, next observe prunes it from frames and shared state.
+  await coord.observe({
+    activeSpace: { id: "sp1", machine: null },
+    activeTabId: "tab1",
+    visibleTerminals: ["t1"],
+    focusedTerminal: "t1",
+    terminalList: [
+      { address: "t1", state: "live", labels: { [LABEL_SESSION]: s1.key, [LABEL_STREAM]: st1.key } },
+      { address: "t2", state: "exited", labels: { [LABEL_SESSION]: s2.key, [LABEL_STREAM]: st2.key } },
+    ],
+    panes: [{ pane: "p1", tab: "tab1", terminal: "t1", program: { agent: "pi" } }],
+    agents: [{ address: "t1", agent: "pi" }],
+  });
+
+  assert.equal(coord.frames.has("t2"), false);
+  assert.deepEqual(Object.keys(published.at(-1).val), ["t1"]);
+});
+
+test("findLivePaneForStream prefers target Space active Tab and countLiveTerminalsByStream counts open terminals", () => {
+  const frames = new Map([
+    ["t1", { kind: "enrolled", session: { key: "h1/pi/s1", stream: "h1/st1", status: "done" } }],
+    ["t2", { kind: "enrolled", session: { key: "h1/pi/s2", stream: "h1/st1", status: "active" } }],
+  ]);
+  const spaces = [
+    { id: "sp1", tabs: [{ id: "tab-inactive", active: false }, { id: "tab-active", active: true }] },
+  ];
+  const panes = [
+    { pane: "p1", tab: "tab-inactive", terminal: "t1", program: { agent: "pi" } },
+    { pane: "p2", tab: "tab-active", terminal: "t2", program: { agent: "pi" } },
+  ];
+  const terminalList = [
+    { address: "t1", state: "live", labels: { [LABEL_SESSION]: "h1/pi/s1", [LABEL_STREAM]: "h1/st1" } },
+    { address: "t2", state: "live", labels: { [LABEL_SESSION]: "h1/pi/s2", [LABEL_STREAM]: "h1/st1" } },
+  ];
+  const agents = [
+    { address: "t1", agent: "pi" },
+    { address: "t2", agent: "pi" },
+  ];
+
+  const counts = countLiveTerminalsByStream({ panes, terminalList, agents, frames });
+  assert.equal(counts.get("h1/st1"), 2);
+
+  const preferred = findLivePaneForStream({ streamKey: "h1/st1", spaces, panes, terminalList, agents, frames });
+  assert.deepEqual(preferred, { pane: "p2", terminal: "t2", tab: "tab-active" });
+
+  const sessPane = findLivePaneForSession({ sessionKey: "h1/pi/s1", panes, terminalList, agents });
+  assert.deepEqual(sessPane, { pane: "p1", terminal: "t1", tab: "tab-inactive" });
+
+  const shared = buildSharedTerminalMarks({ frames, running: new Map([["t1", "h1/pi/s1"]]) });
+  assert.deepEqual(shared.t1, statusToTerminalMark("done"));
+});
+
+test("All -> Stream and Stream -> Session navigation separates activeView from preview overrides", async () => {
+  const s1 = makeSessionJson({ id: "s1", stream_id: "st1", title: "Current Sess" });
+  const s2 = makeSessionJson({ id: "s2", stream_id: "st2", title: "Open Other" });
+  const s3 = makeSessionJson({
+    id: "s3",
+    stream_id: "st3",
+    title: "Unopened Sess",
+    status: "parked",
+    recap: "Archived recap",
+  });
+  const st1 = makeStreamJson({ id: "st1", title: "Current Stream", sessions: [s1] });
+  const st2 = makeStreamJson({ id: "st2", title: "Open Stream", sessions: [s2] });
+  const st3 = makeStreamJson({ id: "st3", title: "Unopened Stream", status: "parked", sessions: [s3] });
+
+  const runner = createFakeRunner({
+    sessions: { [s1.key]: s1, [s2.key]: s2, [s3.key]: s3 },
+    streams: { [st1.key]: st1, [st2.key]: st2, [st3.key]: st3 },
+    streamList: [st1, st2, st3],
+  });
+  const coord = new StreamsCoordinator({ exec: runner.exec });
+  const spaces = [
+    { id: "sp1", machine: null, tabs: [{ id: "tab1", active: true }] },
+    { id: "sp2", machine: null, tabs: [{ id: "tab2", active: true }] },
+  ];
+  const panes = [
+    { pane: "p1", tab: "tab1", terminal: "t1", program: { agent: "pi" } },
+    { pane: "p2", tab: "tab2", terminal: "t2", program: { agent: "pi" } },
+  ];
+  const terminalList = [
+    { address: "t1", state: "live", labels: { [LABEL_SESSION]: s1.key, [LABEL_STREAM]: st1.key } },
+    { address: "t2", state: "live", labels: { [LABEL_SESSION]: s2.key, [LABEL_STREAM]: st2.key } },
+  ];
+  const agents = [
+    { address: "t1", agent: "pi" },
+    { address: "t2", agent: "pi" },
+  ];
+
+  await coord.observe({
+    activeSpace: spaces[0],
+    activeTabId: "tab1",
+    visibleTerminals: ["t1"],
+    focusedTerminal: "t1",
+    terminalList,
+    panes,
+    agents,
+  });
+
+  // Clicking an unopened Stream from All previews it in Stream view without launching terminals.
+  const runCmds = [];
+  const resUnopened = await coord.selectStreamFromAll(
+    st3.key,
+    { spaces, panes, terminalList, agents },
+    { run: (cmd, args) => runCmds.push({ cmd, args }) }
+  );
+  assert.equal(resUnopened.focused, false);
+  assert.equal(runCmds.length, 0);
+  const streamPreview = resolveSidebarView({
+    activeView: coord.activeView,
+    tabId: "tab1",
+    tabStreams: coord.tabStreams,
+    streams: coord.streams,
+    previewSessions: coord.previewSessions,
+    frames: coord.frames,
+    visibleTerminals: ["t1"],
+    focusedTerminal: "t1",
+    previewStreamKey: coord.previewStreamKey,
+    previewSessionKey: coord.previewSessionKey,
+  });
+  assert.equal(streamPreview.view, "stream");
+  assert.equal(streamPreview.stream.key, st3.key);
+  assert.equal(streamPreview.isPreview, true);
+  assert.equal(streamPreview.canReturnToCurrent, true);
+
+  // Clicking an unopened Session inside that Stream previews it read-only in Session view.
+  const resSess = await coord.selectSessionFromStream(
+    s3.key,
+    st3.key,
+    { panes, terminalList, agents },
+    { run: (cmd, args) => runCmds.push({ cmd, args }) }
+  );
+  assert.equal(resSess.focused, false);
+  assert.equal(runCmds.length, 0);
+  const sessPreview = resolveSidebarView({
+    activeView: coord.activeView,
+    tabId: "tab1",
+    tabStreams: coord.tabStreams,
+    streams: coord.streams,
+    previewSessions: coord.previewSessions,
+    frames: coord.frames,
+    visibleTerminals: ["t1"],
+    focusedTerminal: "t1",
+    previewStreamKey: coord.previewStreamKey,
+    previewSessionKey: coord.previewSessionKey,
+  });
+  assert.equal(sessPreview.view, "session");
+  assert.equal(sessPreview.session.key, s3.key);
+  assert.equal(sessPreview.isPreview, true);
+  assert.equal(sessPreview.isUnopened, true);
+  assert.equal(sessPreview.canReturnToCurrent, true);
+
+  // Clicking an open Stream from All focuses its live pane via pane.focus and stays on Stream view.
+  const resOpen = await coord.selectStreamFromAll(
+    st2.key,
+    { spaces, panes, terminalList, agents },
+    { run: (cmd, args) => runCmds.push({ cmd, args }) }
+  );
+  assert.equal(resOpen.focused, true);
+  assert.deepEqual(runCmds, [{ cmd: "pane.focus", args: { pane: "p2" } }]);
+  await coord.observe({
+    activeSpace: spaces[1],
+    activeTabId: "tab2",
+    visibleTerminals: ["t2"],
+    focusedTerminal: "t2",
+    terminalList,
+    panes,
+    agents,
+  });
+  assert.equal(coord.activeView, "stream");
+  assert.equal(coord.previewStreamKey, null);
+
+  // An external Space/Tab change clears detached preview and returns to default view.
+  await coord.inspectStream(st3.key);
+  assert.equal(coord.previewStreamKey, st3.key);
+  await coord.observe({
+    activeSpace: spaces[0],
+    activeTabId: "tab1",
+    visibleTerminals: ["t1"],
+    focusedTerminal: "t1",
+    terminalList,
+    panes,
+    agents,
+  });
+  assert.equal(coord.previewStreamKey, null);
+  assert.equal(coord.previewSessionKey, null);
+  assert.equal(coord.activeView, null);
+});
+
+test("dropReference, setSessionStatus, convention-gated bulk actions, and only_active openWork", async () => {
+  const sAct = makeSessionJson({ id: "s-act", stream_id: "st1", status: "active", directory: { path: "/w/1" } });
+  const sWait = makeSessionJson({ id: "s-wait", stream_id: "st1", status: "waiting", directory: { path: "/w/2" } });
+  const sPark = makeSessionJson({ id: "s-park", stream_id: "st1", status: "parked", directory: { path: "/w/3" } });
+  const sDone = makeSessionJson({ id: "s-done", stream_id: "st1", status: "done", directory: { path: "/w/4" } });
+  const st = makeStreamJson({
+    id: "st1",
+    title: "Multi",
+    status: "active",
+    sessions: [sAct, sWait, sPark, sDone],
+  });
+
+  const bulk = streamBulkActionState(st);
+  assert.equal(bulk.canOpenActive, true);
+  assert.equal(bulk.canParkAll, true);
+  assert.equal(bulk.canCloseAll, true);
+  assert.deepEqual(bulk.parkableSessions.map((s) => s.id), ["s-act", "s-wait"]);
+  assert.deepEqual(bulk.closableSessions.map((s) => s.id), ["s-act", "s-wait", "s-park"]);
+
+  const doneOnlyBulk = streamBulkActionState({ sessions: [sDone] });
+  assert.equal(doneOnlyBulk.canOpenActive, false);
+  assert.equal(doneOnlyBulk.canParkAll, false);
+  assert.equal(doneOnlyBulk.canCloseAll, false);
+
+  const editCalls = [];
+  const runner = createFakeRunner({
+    sessions: { [sAct.key]: sAct, [sWait.key]: sWait, [sPark.key]: sPark, [sDone.key]: sDone },
+    streams: { [st.key]: st },
+    sessionEdit: (args) => {
+      editCalls.push(args);
+      if (args.includes(sWait.key) && args.includes("closed")) {
+        return { code: 1, stdout: JSON.stringify({ error: { message: "disk full" } }), stderr: "" };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    },
+  });
+  const coord = new StreamsCoordinator({ exec: runner.exec, newId: () => "id1" });
+  coord.streams.set(st.key, st);
+
+  // Drop reference
+  const dropRes = await coord.dropReference(sAct.key, "docs/old.md");
+  assert.equal(dropRes.ok, true);
+  assert.deepEqual(editCalls.at(-1), ["session", "edit", sAct.key, "--drop-reference", "docs/old.md"]);
+
+  // Set session status
+  assert.deepEqual(SESSION_STATUSES, ["active", "waiting", "blocked", "parked", "done", "closed"]);
+  const statRes = await coord.setSessionStatus(sAct.key, "blocked");
+  assert.equal(statRes.ok, true);
+  assert.deepEqual(editCalls.at(-1), ["session", "edit", sAct.key, "--status", "blocked"]);
+
+  // Park all updates only active/waiting/blocked sessions
+  const parkRes = await coord.parkAllSessions(st.key);
+  assert.equal(parkRes.ok, true);
+  assert.deepEqual(parkRes.updated, [sAct.key, sWait.key]);
+
+  // Close all reports partial failure cleanly naming the failing Session
+  const closeRes = await coord.closeAllSessions(st.key);
+  assert.equal(closeRes.ok, false);
+  assert.deepEqual(closeRes.updated, [sAct.key]);
+  assert.equal(closeRes.failed, sWait.key);
+  assert.match(coord.lastError, /disk full/);
+
+  // Open all active sessions launches only `active` Pi Sessions (never `parked`)
+  const openRes = await coord.openWork(
+    { stream: st.key, sessions: { kind: "only_active" }, terminalList: [], panes: [], agents: [] },
+    {}
+  );
+  assert.equal(openRes.ok, true);
+  assert.deepEqual(openRes.launched.map((l) => l.session), [sAct.key]);
+
+  // Empty Stream enables delete; non-empty disables it
+  assert.equal(streamBulkActionState(coord.streams.get(st.key)).canDelete, false);
+  assert.equal(streamBulkActionState({ key: "h1/empty", sessions: [] }).canDelete, true);
+
+  const emptyCoord = new StreamsCoordinator({
+    exec: async (_cmd, args) => {
+      if (args[0] === "stream" && args[1] === "delete") {
+        return { code: 0, stdout: JSON.stringify({ key: args[2], deleted: true }), stderr: "" };
+      }
+      return { code: 0, stdout: "{}", stderr: "" };
+    },
+  });
+  emptyCoord.streams.set("h1/empty", { key: "h1/empty", id: "empty", title: "Empty", sessions: [] });
+  emptyCoord.hostStreams = [{ key: "h1/empty", id: "empty", title: "Empty", status: "active" }];
+  emptyCoord.previewStreamKey = "h1/empty";
+  emptyCoord.activeView = "stream";
+  const delRes = await emptyCoord.deleteStream("h1/empty");
+  assert.equal(delRes.ok, true);
+  assert.equal(emptyCoord.streams.has("h1/empty"), false);
+  assert.equal(emptyCoord.hostStreams.length, 0);
+  assert.equal(emptyCoord.previewStreamKey, null);
+  assert.equal(emptyCoord.activeView, "all");
+});
+
+test("runningSessionTerminals matches real herdr-app AgentInfo and PaneInfo Program shapes", async () => {
+  const s1 = makeSessionJson({ id: "s-real", stream_id: "st1", title: "Live Herdr Pi" });
+  const st = makeStreamJson({
+    id: "st1",
+    title: "Real Stream",
+    sessions: [{ key: s1.key, harness: "pi", title: s1.title, status: "active", state: s1.state }],
+  });
+  const runner = createFakeRunner({
+    sessions: { [s1.key]: s1 },
+    streams: { [st.key]: st },
+  });
+  const published = [];
+  const coord = new StreamsCoordinator({
+    exec: runner.exec,
+    publishShared: (k, v) => published.push({ k, v }),
+  });
+
+  await coord.observe({
+    activeSpace: { id: "sp1", machine: null },
+    activeTabId: "tab1",
+    visibleTerminals: ["t-pi", "t-claude", "t-zsh"],
+    focusedTerminal: "t-pi",
+    terminalList: [
+      { address: "t-pi", state: "live", labels: { [LABEL_SESSION]: s1.key, [LABEL_STREAM]: st.key } },
+      { address: "t-claude", state: "live", labels: { [LABEL_SESSION]: "h1/pi/old-pi" } },
+      { address: "t-zsh", state: "live", labels: { [LABEL_SESSION]: "h1/pi/old-shell" } },
+    ],
+    panes: [
+      { pane: "p1", tab: "tab1", terminal: "t-pi", app: "pi", program: { key: "pi", name: "Pi", agent: true, shell: false } },
+      { pane: "p2", tab: "tab1", terminal: "t-claude", app: "claude-code", program: { key: "claude", name: "Claude Code", agent: true, shell: false } },
+      { pane: "p3", tab: "tab1", terminal: "t-zsh", app: null, program: { key: "zsh", name: "zsh", agent: false, shell: true } },
+    ],
+    agents: [
+      { address: "t-pi", pane: "p1", app: "pi", program: { key: "pi", name: "Pi", agent: true, shell: false } },
+      { address: "t-claude", pane: "p2", app: "claude-code", program: { key: "claude", name: "Claude Code", agent: true, shell: false } },
+    ],
+  });
+
+  assert.equal(coord.frames.get("t-pi")?.kind, "enrolled");
+  assert.equal(coord.frames.has("t-claude"), false);
+  assert.equal(coord.frames.has("t-zsh"), false);
+  assert.equal(coord.streams.get(st.key)?.sessions[0]?.stream, st.key);
+  assert.deepEqual(published.at(-1)?.v?.["t-pi"], statusToTerminalMark("active"));
+});
+
+test("actionError parses hc stderr JSON, formats friendly missing-folder message, and survives refreshes", async () => {
+  const parsedStderr = extractCliError(
+    {
+      code: 1,
+      stdout: "",
+      stderr: JSON.stringify({
+        error: {
+          kind: "spawn_failed",
+          message: 'cannot start "streams": No such file or directory (os error 2)',
+          hint: "check the program name and cwd",
+        },
+      }),
+    },
+    "fallback"
+  );
+  assert.equal(parsedStderr.kind, "spawn_failed");
+  assert.equal(parsedStderr.hint, "check the program name and cwd");
+
+  const sLive = makeSessionJson({ id: "s-live", stream_id: "st1", title: "Live Session" });
+  const sGone = makeSessionJson({
+    id: "s-gone",
+    stream_id: "st1",
+    title: "Session Refs",
+    status: "waiting",
+    directory: {
+      path: "/Users/alice/.herdr/worktrees/streams/session-references",
+      repository: { url: "git@github.com:org/streams.git", branch: "session-references" },
+    },
+  });
+  const st = makeStreamJson({ id: "st1", title: "Streams", sessions: [sLive, sGone] });
+
+  const baseRunner = createFakeRunner({
+    sessions: { [sLive.key]: sLive, [sGone.key]: sGone },
+    streams: { [st.key]: st },
+    streamList: [st],
+  });
+  const toasts = [];
+  const runCmds = [];
+  const coord = new StreamsCoordinator({
+    homeDir: "/Users/alice",
+    exec: async (cmd, args) => {
+      if (cmd === "hc" && args[0] === "run") {
+        return {
+          code: 1,
+          stdout: "",
+          stderr: JSON.stringify({
+            error: {
+              kind: "spawn_failed",
+              message: 'cannot start "streams": No such file or directory (os error 2)',
+              hint: "check the program name and cwd",
+            },
+          }),
+        };
+      }
+      if (cmd === "test" && args[0] === "-d") {
+        return { code: 1, stdout: "", stderr: "" };
+      }
+      return baseRunner.exec(cmd, args);
+    },
+    notifyToast: (n) => toasts.push(n),
+  });
+
+  const terminalList = [
+    {
+      address: "t1",
+      state: "live",
+      labels: { [LABEL_SESSION]: sLive.key, [LABEL_STREAM]: st.key, [LABEL_HERDR_SPACE]: "sp1" },
+    },
+  ];
+  const panes = [{ pane: "p1", tab: "tab1", terminal: "t1", program: { key: "pi", agent: true } }];
+  const agents = [{ address: "t1", program: { key: "pi", agent: true } }];
+
+  const openRes = await coord.openWork(
+    {
+      stream: st.key,
+      sessions: { kind: "selected", session_ids: [sGone.key] },
+      terminalList,
+      panes,
+      agents,
+    },
+    { run: (c, a) => runCmds.push({ c, a }) }
+  );
+
+  assert.equal(openRes.ok, false);
+  assert.equal(runCmds.length, 0); // did not switch Space on failed launch
+  assert.equal(coord.actionError?.title, 'Folder missing for "Session Refs"');
+  assert.match(coord.actionError?.message ?? "", /~\/\.herdr\/worktrees\/streams\/session-references no longer exists/);
+  assert.match(coord.actionError?.message ?? "", /git@github\.com:org\/streams\.git/);
+  assert.doesNotMatch(coord.actionError?.message ?? "", /"spawn_failed"/);
+  assert.equal(coord.actionError?.copyLabel, "Copy command");
+  assert.equal(coord.actionError?.copyText, `streams session edit ${sGone.key} --directory <path>`);
+  assert.equal(toasts.length, 1);
+  assert.equal(toasts[0].level, "error");
+  assert.equal(toasts[0].title, 'Folder missing for "Session Refs"');
+
+  // A subsequent successful background observe MUST NOT wipe actionError!
+  await coord.observe({
+    activeSpace: { id: "sp1", machine: null },
+    activeTabId: "tab1",
+    visibleTerminals: ["t1"],
+    focusedTerminal: "t1",
+    terminalList,
+    panes,
+    agents,
+    force: true,
+  });
+  assert.equal(coord.readError, null);
+  assert.equal(coord.actionError?.title, 'Folder missing for "Session Refs"');
+
+  // Explicit dismissal clears actionError.
+  coord.clearActionError();
+  assert.equal(coord.actionError, null);
+  assert.equal(coord.lastError, null);
+});
+
+test("groupStreamSessions partitions by openness first and supports recent and alphabetical sorting", () => {
+  const sessions = [
+    { key: "k-done-open", status: "done", title: "Zeta Done Open" },
+    { key: "k-act-open", status: "active", title: "Alpha Active Open" },
+    { key: "k-park", status: "parked", title: "Zebra Parked" },
+    { key: "k-blk", status: "blocked", title: "Beta Blocked" },
+    { key: "k-done-1", status: "done", title: "Gamma Done" },
+    { key: "k-closed", status: "closed", title: "Delta Closed" },
+  ];
+
+  // Default: recent (preserves CLI recency order within each group)
+  const recentGroups = groupStreamSessions(sessions, {
+    liveSessionKeys: new Set(["k-act-open", "k-done-open"]),
+  });
+  assert.deepEqual(
+    recentGroups.map((g) => ({ id: g.id, defaultOpen: g.defaultOpen, keys: g.sessions.map((s) => s.key) })),
+    [
+      { id: "open", defaultOpen: true, keys: ["k-done-open", "k-act-open"] },
+      { id: "not_open", defaultOpen: true, keys: ["k-park", "k-blk"] },
+      { id: "done_closed", defaultOpen: false, keys: ["k-done-1", "k-closed"] },
+    ]
+  );
+
+  // Alphabetical sorting within each group
+  const alphaGroups = groupStreamSessions(sessions, {
+    liveSessionKeys: new Set(["k-act-open", "k-done-open"]),
+    sort: "alpha",
+  });
+  assert.deepEqual(
+    alphaGroups.map((g) => ({ id: g.id, keys: g.sessions.map((s) => s.key) })),
+    [
+      { id: "open", keys: ["k-act-open", "k-done-open"] },
+      { id: "not_open", keys: ["k-blk", "k-park"] },
+      { id: "done_closed", keys: ["k-closed", "k-done-1"] },
+    ]
+  );
+});
+
+test("groupHostStreams partitions Open / Not open / Done & closed with recent and A–Z sorting", () => {
+  const streams = [
+    { key: "h1/s1", id: "s1", title: "Zebra Done Open", status: "done", last_activity_ms: 500 },
+    { key: "h1/s2", id: "s2", title: "Alpha Active Open", status: "active", last_activity_ms: 900 },
+    { key: "h1/s3", id: "s3", title: "Omega Parked", status: "parked", last_activity_ms: 800 },
+    { key: "h1/s4", id: "s4", title: "Beta Waiting", status: "waiting", last_activity_ms: 300 },
+    { key: "h1/s5", id: "s5", title: "Gamma Done", status: "done", last_activity_ms: 700 },
+    { key: "h1/s6", id: "s6", title: "Delta Closed", status: "closed", last_activity_ms: 950 },
+  ];
+  const openCounts = new Map([
+    ["h1/s1", 1],
+    ["h1/s2", 2],
+  ]);
+
+  const recent = groupHostStreams(streams, { openCounts, sort: "recent" });
+  assert.deepEqual(
+    recent.map((g) => ({ id: g.id, defaultOpen: g.defaultOpen, ids: g.streams.map((s) => s.id) })),
+    [
+      { id: "open", defaultOpen: true, ids: ["s2", "s1"] },
+      { id: "not_open", defaultOpen: true, ids: ["s3", "s4"] },
+      { id: "done_closed", defaultOpen: false, ids: ["s6", "s5"] },
+    ]
+  );
+
+  const alpha = groupHostStreams(streams, { openCounts, sort: "alpha" });
+  assert.deepEqual(
+    alpha.map((g) => ({ id: g.id, ids: g.streams.map((s) => s.id) })),
+    [
+      { id: "open", ids: ["s2", "s1"] },
+      { id: "not_open", ids: ["s4", "s3"] },
+      { id: "done_closed", ids: ["s6", "s5"] },
+    ]
+  );
+
+  const searched = groupHostStreams(streams, { openCounts, query: "gamma" });
+  assert.deepEqual(
+    searched.filter((g) => g.streams.length > 0).map((g) => ({ id: g.id, ids: g.streams.map((s) => s.id) })),
+    [{ id: "done_closed", ids: ["s5"] }]
+  );
+});
+
+test("setSessionStatus performs targeted authoritative refresh across frames, streams, hostStreams, and terminal.marks", async () => {
+  const s1 = makeSessionJson({ id: "s1", stream_id: "st1", title: "Herdr UI", status: "active" });
+  const st1 = makeStreamJson({ id: "st1", title: "Streams", status: "active", sessions: [s1] });
+
+  const calls = [];
+  const published = [];
+  let notifyCount = 0;
+  const coord = new StreamsCoordinator({
+    exec: async (cmd, args) => {
+      calls.push([cmd, ...args]);
+      if (cmd === "streams" && args[0] === "config") {
+        return { code: 0, stdout: JSON.stringify({ herdr: {} }), stderr: "" };
+      }
+      if (cmd === "streams" && args[0] === "session" && args[1] === "edit") {
+        const nextStatus = args[args.indexOf("--status") + 1];
+        s1.status = nextStatus;
+        st1.status = nextStatus;
+        st1.active_sessions = nextStatus === "active" ? 1 : 0;
+        st1.sessions[0].status = nextStatus;
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      if (cmd === "streams" && args[0] === "session" && args[1] === "show") {
+        return { code: 0, stdout: JSON.stringify(s1), stderr: "" };
+      }
+      if (cmd === "streams" && args[0] === "stream" && args[1] === "show") {
+        return { code: 0, stdout: JSON.stringify(st1), stderr: "" };
+      }
+      if (cmd === "streams" && args[0] === "stream" && args[1] === "list") {
+        return { code: 0, stdout: JSON.stringify({ items: [st1], unreadable: [] }), stderr: "" };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    },
+    publishShared: (k, v) => published.push({ k, v }),
+    notify: () => {
+      notifyCount += 1;
+    },
+  });
+
+  await coord.observe({
+    activeSpace: { id: "sp1", machine: null },
+    activeTabId: "tab1",
+    visibleTerminals: ["t1"],
+    focusedTerminal: "t1",
+    terminalList: [
+      { address: "t1", state: "live", labels: { [LABEL_SESSION]: s1.key, [LABEL_STREAM]: st1.key } },
+    ],
+    panes: [{ pane: "p1", tab: "tab1", terminal: "t1", program: { key: "pi", agent: true } }],
+    agents: [{ address: "t1", program: { key: "pi", agent: true } }],
+  });
+  await coord.ensureHostStreams(true);
+  calls.length = 0;
+  notifyCount = 0;
+
+  // Mutate status directly (without calling observe() afterwards!)
+  const res = await coord.setSessionStatus(s1.key, "waiting", st1.key);
+  assert.equal(res.ok, true);
+
+  // Only 3 targeted CLI calls: session edit, session show, stream show (no stream list / session list scan!)
+  assert.deepEqual(
+    calls.map((c) => `${c[1]} ${c[2]}`),
+    ["session edit", "session show", "stream show"]
+  );
+  // All caches and shared terminal.marks updated immediately in one tick:
+  assert.equal(coord.frames.get("t1")?.session?.status, "waiting");
+  assert.equal(coord.streams.get(st1.key)?.status, "waiting");
+  assert.equal(coord.streams.get(st1.key)?.sessions[0]?.status, "waiting");
+  assert.equal(coord.hostStreams[0]?.status, "waiting");
+  assert.deepEqual(published.at(-1)?.v?.t1, statusToTerminalMark("waiting"));
+  assert.ok(notifyCount > 0);
 });

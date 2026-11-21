@@ -21,39 +21,68 @@ import {
   window as herdrWindow,
   checking,
   exec,
+  setShared,
+  notify as herdrNotify,
 } from "herdr";
 import {
   LABEL_SAVED,
   STALE_FALLBACK_MS,
-  HOST_STREAM_FILTERS,
-  HOST_STREAM_SORTS,
+  SESSION_STATUSES,
   resolveRole,
   observeNoticeToken,
-  tabSidebarView,
+  resolveSidebarView,
   effectiveSessionStatus,
   resolveTabRenameTarget,
   buildReferenceItems,
-  filterHostStreams,
+  groupHostStreams,
   unreadableNotice,
   hostStreamsEmptyMessage,
   formatRelativeAge,
-  liveStreamIds,
+  countLiveTerminalsByStream,
+  findLivePaneForSession,
+  runningSessionTerminals,
+  streamBulkActionState,
+  groupStreamSessions,
   StreamsCoordinator,
 } from "./state.js";
 
-const subscribers = new Set();
-let fallbackTimerOwner = null;
+const pendingSidebarActions = [];
+let sidebarActionSeq = 0;
+let viewRev = 0;
 let lastWindowActive = false;
+
+function bumpViewRev() {
+  if (checking()) return;
+  try {
+    setShared("streams.viewRev", ++viewRev);
+  } catch {
+    // Non-fatal in check/test mode
+  }
+}
+
+function dispatchSidebarAction(fn) {
+  pendingSidebarActions.push(fn);
+  if (checking()) return;
+  try {
+    setShared("streams.actionSeq", ++sidebarActionSeq);
+  } catch {
+    // Non-fatal in check/test mode
+  }
+}
+
 const coordinator = new StreamsCoordinator({
   exec: (cmd, args) => exec(cmd, args, { timeout: 30000 }),
-  notify: () => {
-    for (const notifyFn of subscribers) {
-      try {
-        notifyFn();
-      } catch {
-        // Detached view
-      }
+  publishShared: (key, value) => setShared(key, value),
+  notifyToast: (n) => herdrNotify(n),
+  homeDir: (() => {
+    try {
+      return home();
+    } catch {
+      return null;
     }
+  })(),
+  notify: () => {
+    bumpViewRev();
   },
 });
 
@@ -173,6 +202,7 @@ function collectSnapshot() {
       : focus?.agent ?? null;
   const allAgents = agents();
   return {
+    allSpaces,
     activeSpace,
     activeTab,
     activeTabId: activeTab?.id ?? null,
@@ -204,6 +234,9 @@ function syncActiveTabName(snap) {
 }
 
 function snapshotSignature(snap) {
+  const running = [...runningSessionTerminals(snap).entries()]
+    .map(([t, s]) => `${t}=${s}`)
+    .sort();
   return JSON.stringify({
     space: snap.activeSpace?.id ?? null,
     machine: snap.activeSpace?.machine ?? null,
@@ -211,6 +244,7 @@ function snapshotSignature(snap) {
     tabName: snap.activeTab?.name ?? null,
     terminals: snap.visibleTerminals,
     liveTerminals: snap.liveTerminals,
+    running,
     focused: snap.focusedTerminal,
     notice: observeNoticeToken(snap.terminalList, LABEL_SAVED),
   });
@@ -242,8 +276,20 @@ function viewerLanguage(filename) {
 export default class StreamsMod extends View {
   init(initialProps, cx) {
     this.hovered = false;
-    this.otherSessionsOpen = true;
-    this.streamFilter = "in_progress";
+    this.referencesOpen = true;
+    this.sessionsOpen = true;
+    this.sessionGroupsOpen = {
+      open: true,
+      not_open: true,
+      done_closed: null,
+    };
+    this.allGroupsOpen = {
+      open: true,
+      not_open: true,
+      done_closed: null,
+    };
+    this.hoveredSessionKey = null;
+    this.sessionSort = "recent";
     this.streamSort = "recent";
     this.streamQuery = "";
     this.scroll = ScrollHandle.new();
@@ -254,7 +300,8 @@ export default class StreamsMod extends View {
     this._editorState = null;
     this._viewerKey = null;
     this.searchInput = null;
-    const role = resolveRole(initialProps);
+    const rawProps = props() ?? initialProps ?? {};
+    const role = resolveRole(rawProps);
     this._role = role;
     if (role === "sidebar") {
       this.searchInput = InputState.new({ placeholder: "Filter streams…" });
@@ -264,7 +311,7 @@ export default class StreamsMod extends View {
       });
     }
     if (role === "viewer") {
-      this.syncViewerState(initialProps);
+      this.syncViewerState(rawProps);
       return;
     }
     if (role !== "sidebar" && role !== "frame") {
@@ -273,25 +320,16 @@ export default class StreamsMod extends View {
     if (checking()) {
       return;
     }
-    this.ensureSubscribed(cx);
+    this.syncConfiguredBin();
     this.scheduleObserve(cx, collectSnapshot());
-    if (!fallbackTimerOwner && cx?.timer?.every) {
-      fallbackTimerOwner = this;
+    if (role === "sidebar" && cx?.timer?.every) {
       this._timerTask = cx.timer.every(STALE_FALLBACK_MS, (timerCx) => {
-        if (fallbackTimerOwner !== this || subscribers.size === 0) return;
         this.scheduleObserve(timerCx, collectSnapshot(), true);
       });
     }
   }
 
   async close() {
-    if (this._sub) {
-      subscribers.delete(this._sub);
-      this._sub = null;
-    }
-    if (fallbackTimerOwner === this) {
-      fallbackTimerOwner = null;
-    }
     this._timerTask = null;
     this.searchInput?.release?.();
     this.searchInput = null;
@@ -330,17 +368,7 @@ export default class StreamsMod extends View {
     }
   }
 
-  ensureSubscribed(cx) {
-    if (!this._sub && cx) {
-      this._sub = () => {
-        try {
-          cx.notify();
-        } catch {
-          // Detached
-        }
-      };
-      subscribers.add(this._sub);
-    }
+  syncConfiguredBin() {
     const configuredBin = props()?.streams_bin;
     if (configuredBin && coordinator.streamsBin !== configuredBin) {
       coordinator.streamsBin = configuredBin;
@@ -349,17 +377,7 @@ export default class StreamsMod extends View {
 
   scheduleObserve(cx, snap, force = false) {
     if (checking()) return;
-    const configuredBin = props()?.streams_bin;
-    if (configuredBin && coordinator.streamsBin !== configuredBin) {
-      coordinator.streamsBin = configuredBin;
-    }
-    if (!fallbackTimerOwner && cx?.timer?.every) {
-      fallbackTimerOwner = this;
-      this._timerTask = cx.timer.every(STALE_FALLBACK_MS, (timerCx) => {
-        if (fallbackTimerOwner !== this || subscribers.size === 0) return;
-        this.scheduleObserve(timerCx, collectSnapshot(), true);
-      });
-    }
+    this.syncConfiguredBin();
     const isWinActive = Boolean(herdrWindow()?.active);
     const windowActivated = isWinActive && !lastWindowActive;
     lastWindowActive = isWinActive;
@@ -558,6 +576,7 @@ export default class StreamsMod extends View {
       "shell";
     const pic = icon(p.program, 14, t.dim);
     const st = p.status;
+    const tabPaneCount = snap.panes.filter((paneItem) => paneItem.tab === p.tab).length;
 
     return h_flex()
       .id(`pane-head-${pane}`)
@@ -586,7 +605,7 @@ export default class StreamsMod extends View {
           .child(nativeName)
       )
       .child(div().min_w(0).truncate().text_color(t.dim).child(folder(p.cwd)))
-      .when(Boolean(enrolled), (el) =>
+      .when(Boolean(enrolled) && tabPaneCount > 1, (el) =>
         el
           .child(div().flex_none().text_color(t.dim).child("·"))
           .child(
@@ -705,41 +724,282 @@ export default class StreamsMod extends View {
   renderPopup() {
     const t = theme();
     const rawProps = props() ?? {};
+    const closeSelf = () => {
+      if (rawProps.overlay) closeOverlay(rawProps.overlay);
+    };
+    const menuRow = ({ id, label, disabled = false, danger = false, checked = false, onClick }) =>
+      h_flex()
+        .id(id)
+        .h(28)
+        .px(10)
+        .gap(8)
+        .items_center()
+        .justify_between()
+        .rounded(5)
+        .text_size(12)
+        .when(disabled, (el) => el.text_color(t.dim))
+        .when(!disabled, (el) =>
+          el
+            .text_color(danger ? t.blocked : t.foreground)
+            .hover((s) => s.bg(t.hover))
+            .on_click((e, clickCx) => {
+              clickCx.stop_propagation();
+              try {
+                onClick?.(e, clickCx);
+              } finally {
+                closeSelf();
+              }
+            })
+        )
+        .child(div().flex_1().min_w(0).truncate().child(label))
+        .when(checked, (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child("✓")));
+
+    const menuDivider = () => div().my(3).h(1).w_full().bg(t.border);
+    const menuLabel = (text) =>
+      div().px(10).py(3).text_size(10.5).font_medium().text_color(t.dim).child(text);
+
     if (rawProps.kind === "stream-menu") {
-      const streamId = rawProps.stream_id;
+      const streamKey = rawProps.stream_id;
+      const stream = streamKey ? coordinator.streams.get(streamKey) ?? null : null;
+      const bulk = streamBulkActionState(stream);
       return v_flex()
         .w_full()
         .p(5)
         .bg(t.popover)
-        .text_size(12.5)
         .text_color(t.foreground)
         .child(
-          div()
-            .id("stream-menu-open-all")
-            .h(30)
-            .px(10)
-            .flex()
-            .items_center()
-            .rounded(6)
-            .hover((s) => s.bg(t.hover))
-            .on_click((_e, clickCx) => {
-              if (rawProps.overlay) closeOverlay(rawProps.overlay);
-              if (streamId) {
-                clickCx.spawn(async () => {
+          menuRow({
+            id: "stream-menu-open-active",
+            label: "Open all active sessions",
+            disabled: !bulk.canOpenActive,
+            onClick: () => {
+              if (!streamKey) return;
+              const snap = collectSnapshot();
+              dispatchSidebarAction(async () => {
+                await coordinator.openWork(
+                  {
+                    stream: streamKey,
+                    sessions: { kind: "only_active" },
+                    terminalList: snap.terminalList,
+                    panes: snap.panes,
+                    agents: snap.agents,
+                  },
+                  { run }
+                );
+              });
+            },
+          })
+        )
+        .child(menuDivider())
+        .child(
+          menuRow({
+            id: "stream-menu-park-all",
+            label: "Park all",
+            disabled: !bulk.canParkAll,
+            onClick: () => {
+              if (!streamKey) return;
+              dispatchSidebarAction(async () => {
+                await coordinator.parkAllSessions(streamKey);
+              });
+            },
+          })
+        )
+        .child(
+          menuRow({
+            id: "stream-menu-close-all",
+            label: "Close all",
+            disabled: !bulk.canCloseAll,
+            danger: bulk.canCloseAll,
+            onClick: () => {
+              if (!streamKey) return;
+              dispatchSidebarAction(async () => {
+                await coordinator.closeAllSessions(streamKey);
+              });
+            },
+          })
+        )
+        .child(menuDivider())
+        .child(
+          menuRow({
+            id: "stream-menu-delete",
+            label: "Delete empty stream",
+            disabled: !bulk.canDelete,
+            danger: bulk.canDelete,
+            onClick: () => {
+              if (!streamKey) return;
+              dispatchSidebarAction(async () => {
+                await coordinator.deleteStream(streamKey);
+              });
+            },
+          })
+        );
+    }
+
+    if (rawProps.kind === "session-menu") {
+      const sessionKey = rawProps.session_key;
+      const streamKey = rawProps.stream_key ?? null;
+      const currentStatus = rawProps.status ?? null;
+      const livePane = rawProps.live_pane ?? null;
+      const isOpen = Boolean(livePane);
+      const fromHeader = Boolean(rawProps.from_header);
+      const statusLabel = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+      return v_flex()
+        .w_full()
+        .p(5)
+        .bg(t.popover)
+        .text_color(t.foreground)
+        .when(isOpen && !fromHeader, (el) =>
+          el
+            .child(
+              menuRow({
+                id: "session-menu-switch",
+                label: "Switch to",
+                onClick: () => {
                   const snap = collectSnapshot();
-                  await coordinator.openWork(
-                    {
-                      stream: streamId,
-                      terminalList: snap.terminalList,
-                      panes: snap.panes,
-                      agents: snap.agents,
-                    },
-                    { run }
-                  );
+                  dispatchSidebarAction(async () => {
+                    await coordinator.selectSessionFromStream(sessionKey, streamKey, snap, { run });
+                  });
+                },
+              })
+            )
+            .child(
+              menuRow({
+                id: "session-menu-close-term",
+                label: "Close terminal",
+                onClick: () => {
+                  run("pane.close", { pane: livePane });
+                },
+              })
+            )
+            .child(menuDivider())
+        )
+        .when(!isOpen, (el) =>
+          el
+            .child(
+              menuRow({
+                id: "session-menu-resume",
+                label: "Resume",
+                onClick: () => {
+                  if (!streamKey || !sessionKey) return;
+                  const snap = collectSnapshot();
+                  dispatchSidebarAction(async () => {
+                    await coordinator.openWork(
+                      {
+                        stream: streamKey,
+                        sessions: { kind: "selected", session_ids: [sessionKey] },
+                        terminalList: snap.terminalList,
+                        panes: snap.panes,
+                        agents: snap.agents,
+                      },
+                      { run }
+                    );
+                  });
+                },
+              })
+            )
+            .when(!fromHeader, (m) =>
+              m.child(
+                menuRow({
+                  id: "session-menu-inspect",
+                  label: "Inspect",
+                  onClick: () => {
+                    dispatchSidebarAction(async () => {
+                      await coordinator.previewSession(sessionKey, streamKey);
+                    });
+                  },
+                })
+              )
+            )
+            .child(menuDivider())
+        )
+        .child(menuLabel("Set status"))
+        .children(
+          SESSION_STATUSES.map((st) =>
+            menuRow({
+              id: `session-menu-status-${st}`,
+              label: statusLabel(st),
+              disabled: currentStatus === st,
+              checked: currentStatus === st,
+              onClick: () => {
+                if (!sessionKey) return;
+                dispatchSidebarAction(async () => {
+                  await coordinator.setSessionStatus(sessionKey, st, streamKey);
                 });
-              }
+              },
             })
-            .child("Open all Stream sessions")
+          )
+        );
+    }
+
+    if (rawProps.kind === "reference-menu") {
+      const item = rawProps.item;
+      if (!item) return div().p(10).text_color(t.dim).child("No reference.");
+      const isDoc = item.kind === "document";
+      const isArtifact = item.kind === "artifact";
+      const copyLabel = isDoc ? "Copy path" : isArtifact ? "Copy artifact key" : "Copy URL";
+      return v_flex()
+        .w_full()
+        .p(5)
+        .bg(t.popover)
+        .text_color(t.foreground)
+        .when(isDoc, (el) =>
+          el.child(
+            menuRow({
+              id: "ref-menu-open-editor",
+              label: "Open in editor",
+              disabled: Boolean(item.disabled),
+              onClick: () => {
+                const snap = collectSnapshot();
+                const focusNow = focused();
+                const targetPaneId =
+                  focusNow?.pane ??
+                  snap.panes.find((p) => p.tab === snap.activeTabId && p.focused)?.pane ??
+                  snap.panes.find((p) => p.tab === snap.activeTabId)?.pane ??
+                  null;
+                dispatchSidebarAction(async (asyncCx) => {
+                  await coordinator.openReference(item.reference, {
+                    activeSpaceId: snap.activeSpace?.id ?? null,
+                    activeTabId: snap.activeTabId,
+                    targetPaneId,
+                    mode: "editor",
+                    run,
+                    openOverlay,
+                    openUrl: (u) => asyncCx?.open_url?.(u),
+                  });
+                });
+              },
+            })
+          )
+        )
+        .child(
+          menuRow({
+            id: "ref-menu-copy",
+            label: copyLabel,
+            disabled: !item.copyText,
+            onClick: (_e, clickCx) => {
+              if (item.copyText) {
+                clickCx.write_to_clipboard(item.copyText);
+              }
+            },
+          })
+        )
+        .when(!isArtifact, (el) =>
+          el
+            .child(menuDivider())
+            .child(
+              menuRow({
+                id: "ref-menu-drop",
+                label: "Drop",
+                danger: true,
+                disabled: !item.sessionKey || !item.refKey,
+                onClick: () => {
+                  if (!item.sessionKey || !item.refKey) return;
+                  dispatchSidebarAction(async () => {
+                    await coordinator.dropReference(item.sessionKey, item.refKey, item.streamKey ?? null);
+                  });
+                },
+              })
+            )
         );
     }
 
@@ -799,22 +1059,89 @@ export default class StreamsMod extends View {
   }
 
   renderSidebar(cx) {
+    if (pendingSidebarActions.length > 0 && cx?.spawn) {
+      const batch = pendingSidebarActions.splice(0);
+      cx.spawn(async (asyncCx) => {
+        for (const fn of batch) {
+          try {
+            await fn(asyncCx);
+          } finally {
+            asyncCx.notify();
+          }
+        }
+      });
+    }
     const t = theme();
     const snap = collectSnapshot();
     this.scheduleObserve(cx, snap);
 
     const activeSpace = snap.activeSpace;
+    const monoFont = settings()?.font_family ?? "JetBrains Mono";
+    const view = resolveSidebarView({
+      activeView: coordinator.activeView,
+      tabId: snap.activeTabId,
+      tabStreams: coordinator.tabStreams,
+      streams: coordinator.streams,
+      previewSessions: coordinator.previewSessions,
+      frames: coordinator.frames,
+      visibleTerminals: snap.visibleTerminals,
+      focusedTerminal: snap.focusedTerminal,
+      previewStreamKey: coordinator.previewStreamKey,
+      previewSessionKey: coordinator.previewSessionKey,
+      inFlight: coordinator.inFlightKey !== null,
+    });
+
+    const activeSegment =
+      view.view === "session" || view.view === "stream" || view.view === "all"
+        ? view.view
+        : view.isEnrolled
+          ? "session"
+          : "all";
+    const sessionMuted = !view.isEnrolled && !coordinator.previewSessionKey;
+
+    const navButton = (id, label, targetView, muted = false) => {
+      const selected = activeSegment === targetView;
+      return div()
+        .id(id)
+        .px(7)
+        .py(3)
+        .rounded(4)
+        .text_size(11.5)
+        .when(selected, (el) => el.bg(t.raised).font_medium().text_color(t.foreground))
+        .when(!selected, (el) =>
+          el
+            .text_color(muted ? t.dim : t.muted)
+            .hover((s) => s.bg(t.hover).text_color(t.foreground))
+        )
+        .on_click((_e, clickCx) => {
+          clickCx.stop_propagation();
+          clickCx.spawn(async () => {
+            await coordinator.setView(targetView);
+          });
+        })
+        .child(label);
+    };
+
     const header = h_flex()
       .h(34)
-      .px(12)
+      .px(10)
+      .gap(6)
       .justify_between()
       .items_center()
       .border_b(1)
       .border_color(t.border)
-      .child(div().font_semibold().text_size(12.5).text_color(t.foreground).child("Streams"))
+      .child(
+        h_flex()
+          .gap(2)
+          .items_center()
+          .child(navButton("streams-nav-session", "Session", "session", sessionMuted))
+          .child(navButton("streams-nav-stream", "Stream", "stream", false))
+          .child(navButton("streams-nav-all", "All", "all", false))
+      )
       .child(
         div()
           .id("streams-refresh")
+          .flex_none()
           .px(6)
           .py(2)
           .rounded(4)
@@ -827,7 +1154,7 @@ export default class StreamsMod extends View {
           .child("Refresh")
       );
 
-    if (coordinator.lastError && coordinator.frames.size === 0 && coordinator.hostStreams.length === 0) {
+    if (coordinator.readError && !coordinator.actionError && coordinator.frames.size === 0 && coordinator.hostStreams.length === 0) {
       return v_flex()
         .size_full()
         .bg(t.chrome)
@@ -837,7 +1164,7 @@ export default class StreamsMod extends View {
             .p(12)
             .text_size(12)
             .text_color(t.dim)
-            .child(`Unavailable: ${coordinator.lastError}`)
+            .child(`Unavailable: ${coordinator.readError}`)
         );
     }
 
@@ -846,13 +1173,7 @@ export default class StreamsMod extends View {
         .size_full()
         .bg(t.chrome)
         .child(header)
-        .child(
-          div()
-            .p(12)
-            .text_size(12)
-            .text_color(t.dim)
-            .child("No active tab.")
-        );
+        .child(div().p(12).text_size(12).text_color(t.dim).child("No active tab."));
     }
 
     if (activeSpace.machine !== null) {
@@ -875,7 +1196,7 @@ export default class StreamsMod extends View {
         );
     }
 
-    if (coordinator.lastCompletedKey === null && coordinator.inFlightKey !== null) {
+    if (view.view === "loading" || (coordinator.lastCompletedKey === null && coordinator.inFlightKey !== null)) {
       return v_flex()
         .size_full()
         .bg(t.chrome)
@@ -883,39 +1204,98 @@ export default class StreamsMod extends View {
         .child(div().p(12).text_size(12).text_color(t.dim).child("Loading Streams…"));
     }
 
-    const renderErrorBanner = (parent) =>
-      parent.when(Boolean(coordinator.lastError), (el) =>
-        el.child(
-          h_flex()
+    const activeBanner = coordinator.actionError
+      ? {
+          kind: "action",
+          title: coordinator.actionError.title,
+          message: coordinator.actionError.message,
+          copyText: coordinator.actionError.copyText ?? null,
+          copyLabel: coordinator.actionError.copyLabel ?? "Copy",
+          color: coordinator.actionError.level === "warning" ? t.working : t.blocked,
+        }
+      : coordinator.readError
+        ? {
+            kind: "read",
+            title: "Refresh failed",
+            message: coordinator.readError,
+            copyText: null,
+            copyLabel: "Copy",
+            color: t.blocked,
+          }
+        : null;
+
+    const renderPinnedErrorBanner = (parent) =>
+      parent.when(Boolean(activeBanner), (el) => {
+        const copyPayload =
+          activeBanner.copyText ??
+          (activeBanner.title
+            ? `${activeBanner.title}: ${activeBanner.message}`
+            : activeBanner.message);
+        return el.child(
+          v_flex()
+            .flex_none()
+            .mx(10)
+            .mt(8)
             .p(8)
-            .gap(8)
-            .items_start()
+            .gap(4)
             .rounded(5)
             .bg(t.raised)
             .border(1)
-            .border_color(t.border)
+            .border_color(activeBanner.color)
             .text_size(11.5)
-            .text_color(t.blocked)
-            .child(div().flex_1().min_w(0).child(coordinator.lastError))
             .child(
-              div()
-                .id("streams-error-dismiss")
-                .flex_none()
-                .px(4)
-                .py(1)
-                .rounded(4)
-                .text_color(t.muted)
-                .hover((s) => s.bg(t.hover).text_color(t.foreground))
-                .on_click((_e, clickCx) => {
-                  clickCx.stop_propagation();
-                  coordinator.lastError = null;
-                  coordinator.notifyViews();
-                })
-                .child("×")
+              h_flex()
+                .gap(6)
+                .items_center()
+                .justify_between()
+                .child(
+                  div()
+                    .flex_1()
+                    .min_w(0)
+                    .font_semibold()
+                    .text_color(activeBanner.color)
+                    .child(activeBanner.title)
+                )
+                .child(
+                  div()
+                    .id("streams-error-copy")
+                    .flex_none()
+                    .px(5)
+                    .py(1)
+                    .rounded(4)
+                    .text_size(10.5)
+                    .text_color(t.muted)
+                    .hover((s) => s.bg(t.hover).text_color(t.foreground))
+                    .on_click((_e, clickCx) => {
+                      clickCx.stop_propagation();
+                      clickCx.write_to_clipboard(copyPayload);
+                    })
+                    .child(activeBanner.copyLabel)
+                )
+                .child(
+                  div()
+                    .id("streams-error-dismiss")
+                    .flex_none()
+                    .px(4)
+                    .py(1)
+                    .rounded(4)
+                    .text_color(t.muted)
+                    .hover((s) => s.bg(t.hover).text_color(t.foreground))
+                    .on_click((_e, clickCx) => {
+                      clickCx.stop_propagation();
+                      if (activeBanner.kind === "action") {
+                        coordinator.clearActionError();
+                      } else {
+                        coordinator.clearReadError();
+                      }
+                    })
+                    .child("×")
+                )
             )
-        )
-      );
-    // One notice for every view that skips unreadable records: the host list and Stream views.
+            .child(div().text_size(11).text_color(t.foreground).child(activeBanner.message))
+        );
+      });
+
     const renderUnreadableNotice = (notice) =>
       v_flex()
         .id("streams-unreadable-notice")
@@ -935,109 +1315,85 @@ export default class StreamsMod extends View {
               .child(div().text_size(11).text_color(t.dim).child(record.repair))
           )
         );
-    const renderReferencesSection = (references, monoFont) =>
-      v_flex()
-        .pt(4)
-        .gap(6)
-        .border_t(1)
-        .border_color(t.border)
-        .child(
-          div()
-            .font_medium()
-            .text_size(11.5)
-            .text_color(t.muted)
-            .child("References")
-        )
-        .child(
-          v_flex()
-            .rounded(6)
-            .bg(t.raised)
-            .border(1)
-            .border_color(t.border)
-            .children(
-              references.map((item, idx) =>
-                v_flex()
-                  .id(item.id)
-                  .px(9)
-                  .py(7)
-                  .gap(3)
-                  .when(idx > 0, (row) => row.border_t(1).border_color(t.border))
-                  .when(!item.disabled, (row) =>
-                    row
-                      .hover((s) => s.bg(t.hover))
-                      .on_click((_e, clickCx) => {
-                        const clickedSpaceId = activeSpace?.id ?? null;
-                        const clickedTabId = snap.activeTabId;
-                        const focusNow = focused();
-                        const allPanesNow = panes();
-                        const targetPaneId =
-                          focusNow?.pane ??
-                          allPanesNow.find((p) => p.tab === clickedTabId && p.focused)
-                            ?.pane ??
-                          allPanesNow.find((p) => p.tab === clickedTabId)?.pane ??
-                          null;
-                        clickCx.spawn(async (asyncCx) => {
-                          await coordinator.openReference(item.reference, {
-                            activeSpaceId: clickedSpaceId,
-                            activeTabId: clickedTabId,
-                            targetPaneId,
-                            run,
-                            openOverlay,
-                            openUrl: (u) => asyncCx.open_url(u),
-                          });
-                        });
-                      })
-                  )
-                  .child(
-                    h_flex()
-                      .gap(7)
-                      .items_center()
-                      .child(referenceIcon(item.kind, t))
-                      .child(
-                        div()
-                          .flex_1()
-                          .min_w(0)
-                          .font_medium()
-                          .text_size(12)
-                          .truncate()
-                          .text_color(t.foreground)
-                          .when(item.monoTitle, (el) =>
-                            el.font_family(monoFont).text_size(11.5)
-                          )
-                          .child(item.title)
-                      )
-                      .when(item.external, (el) =>
-                        el.child(
-                          div()
-                            .flex_none()
-                            .text_size(11)
-                            .text_color(t.dim)
-                            .child("↗")
-                        )
-                      )
-                  )
-                  .when(Boolean(item.location), (row) =>
-                    row.child(
-                      div()
-                        .font_family(monoFont)
-                        .text_size(11)
-                        .text_color(t.dim)
-                        .truncate()
-                        .child(item.location)
-                    )
-                  )
-                  .when(Boolean(item.description), (row) =>
-                    row.child(
-                      div()
-                        .text_size(11)
-                        .text_color(t.muted)
-                        .child(item.description)
-                    )
-                  )
-              )
-            )
+
+    const openReferenceMenu = (item) => {
+      const height = item.kind === "document" ? 104 : item.kind === "artifact" ? 40 : 76;
+      openOverlay({
+        mod: "streams",
+        kind: "popup",
+        at: "pointer",
+        width: 185,
+        height,
+        props: {
+          kind: "reference-menu",
+          item,
+        },
+      });
+    };
+
+    const openSessionMenu = ({ sessionKey, streamKey, status, livePane = null, fromHeader = false }) => {
+      const topRows = livePane ? (fromHeader ? 0 : 2) : fromHeader ? 1 : 2;
+      const height = 10 + (topRows > 0 ? topRows * 28 + 7 : 0) + 22 + SESSION_STATUSES.length * 28;
+      openOverlay({
+        mod: "streams",
+        kind: "popup",
+        at: "pointer",
+        width: 190,
+        height,
+        props: {
+          kind: "session-menu",
+          session_key: sessionKey,
+          stream_key: streamKey,
+          status,
+          live_pane: livePane,
+          from_header: fromHeader,
+        },
+      });
+    };
+
+    const openStreamMenu = (streamKey) => {
+      openOverlay({
+        mod: "streams",
+        kind: "popup",
+        at: "pointer",
+        width: 215,
+        height: 138,
+        props: {
+          kind: "stream-menu",
+          stream_id: streamKey,
+        },
+      });
+    };
+
+    const resumeSingleSession = (clickCx, streamKey, sessionKey) => {
+      if (!streamKey || !sessionKey) return;
+      const snapNow = collectSnapshot();
+      const work = async () => {
+        await coordinator.openWork(
+          {
+            stream: streamKey,
+            sessions: { kind: "selected", session_ids: [sessionKey] },
+            terminalList: snapNow.terminalList,
+            panes: snapNow.panes,
+            agents: snapNow.agents,
+          },
+          { run }
         );
-    const renderSessionListSection = (streamId, sessionList, titleText, collapsible) =>
+      };
+      if (clickCx?.spawn) {
+        clickCx.spawn(async (asyncCx) => {
+          try {
+            await work();
+          } finally {
+            asyncCx.notify();
+          }
+        });
+      } else {
+        dispatchSidebarAction(work);
+      }
+    };
+
+    const renderReferencesSection = (references) =>
       v_flex()
         .pt(4)
         .gap(6)
@@ -1045,35 +1401,30 @@ export default class StreamsMod extends View {
         .border_color(t.border)
         .child(
           h_flex()
-            .id("streams-other-sessions-toggle")
+            .id("streams-references-toggle")
             .justify_between()
             .items_center()
-            .when(collapsible, (el) =>
-              el
-                .hover((s) => s.text_color(t.foreground))
-                .on_click((_e, clickCx) => {
-                  clickCx.stop_propagation();
-                  this.otherSessionsOpen = !this.otherSessionsOpen;
-                  clickCx.notify();
-                })
-            )
+            .hover((s) => s.text_color(t.foreground))
+            .on_click((_e, clickCx) => {
+              clickCx.stop_propagation();
+              this.referencesOpen = !this.referencesOpen;
+              clickCx.notify();
+            })
             .child(
               div()
                 .font_medium()
                 .text_size(11.5)
                 .text_color(t.muted)
-                .child(titleText)
+                .child(`References · ${references.length}`)
             )
-            .when(collapsible, (el) =>
-              el.child(
-                div()
-                  .text_size(11)
-                  .text_color(t.dim)
-                  .child(this.otherSessionsOpen ? "▾" : "▸")
-              )
+            .child(
+              div()
+                .text_size(11)
+                .text_color(t.dim)
+                .child(this.referencesOpen ? "▾" : "▸")
             )
         )
-        .when(!collapsible || this.otherSessionsOpen, (el) =>
+        .when(this.referencesOpen, (el) =>
           el.child(
             v_flex()
               .rounded(6)
@@ -1081,50 +1432,100 @@ export default class StreamsMod extends View {
               .border(1)
               .border_color(t.border)
               .children(
-                sessionList.map((sess, idx) =>
+                references.map((item, idx) =>
                   v_flex()
-                    .id(`stream-session-${sess.id}`)
+                    .id(item.id)
                     .px(9)
                     .py(7)
                     .gap(3)
                     .when(idx > 0, (row) => row.border_t(1).border_color(t.border))
-                    .hover((s) => s.bg(t.hover))
-                    .on_click((_e, clickCx) => {
-                      clickCx.spawn(async () => {
-                        await coordinator.openWork(
-                          {
-                            stream: streamId,
-                            sessions: { kind: "selected", session_ids: [sess.key || sess.id] },
-                            terminalList: snap.terminalList,
-                            panes: snap.panes,
-                            agents: snap.agents,
-                          },
-                          { run }
-                        );
-                      });
+                    .on_mouse_down("right", (_e, downCx) => {
+                      downCx.stop_propagation();
+                      openReferenceMenu(item);
                     })
+                    .when(!item.disabled, (row) =>
+                      row
+                        .hover((s) => s.bg(t.hover))
+                        .on_click((_e, clickCx) => {
+                          const clickedSpaceId = activeSpace?.id ?? null;
+                          const clickedTabId = snap.activeTabId;
+                          const focusNow = focused();
+                          const allPanesNow = panes();
+                          const targetPaneId =
+                            focusNow?.pane ??
+                            allPanesNow.find((p) => p.tab === clickedTabId && p.focused)?.pane ??
+                            allPanesNow.find((p) => p.tab === clickedTabId)?.pane ??
+                            null;
+                          clickCx.spawn(async (asyncCx) => {
+                            await coordinator.openReference(item.reference, {
+                              activeSpaceId: clickedSpaceId,
+                              activeTabId: clickedTabId,
+                              targetPaneId,
+                              run,
+                              openOverlay,
+                              openUrl: (u) => asyncCx.open_url(u),
+                            });
+                          });
+                        })
+                    )
                     .child(
                       h_flex()
                         .gap(6)
                         .items_center()
+                        .child(referenceIcon(item.kind, t))
                         .child(
                           div()
                             .flex_1()
                             .min_w(0)
-                            .truncate()
                             .font_medium()
                             .text_size(12)
-                            .child(sess.title)
+                            .truncate()
+                            .text_color(item.disabled ? t.dim : t.foreground)
+                            .when(item.monoTitle, (titleEl) =>
+                              titleEl.font_family(monoFont).text_size(11.5)
+                            )
+                            .child(item.title)
                         )
-                        .child(statusBadge(sess.status, t))
+                        .when(item.external, (extEl) =>
+                          extEl.child(
+                            div().flex_none().text_size(11).text_color(t.dim).child("↗")
+                          )
+                        )
+                        .child(
+                          div()
+                            .id(`ref-menu-btn-${idx}`)
+                            .flex_none()
+                            .px(4)
+                            .py(1)
+                            .rounded(4)
+                            .text_color(t.dim)
+                            .hover((s) => s.bg(t.hover).text_color(t.foreground))
+                            .on_mouse_down("left", (_e, downCx) => downCx.stop_propagation())
+                            .on_click((_e, clickCx) => {
+                              clickCx.stop_propagation();
+                              openReferenceMenu(item);
+                            })
+                            .child("⋮")
+                        )
                     )
-                    .when(Boolean(sess.state_short), (row) =>
+                    .when(Boolean(item.location), (row) =>
                       row.child(
                         div()
+                          .font_family(monoFont)
                           .text_size(11)
-                          .text_color(t.muted)
+                          .text_color(t.dim)
                           .truncate()
-                          .child(sess.state_short)
+                          .child(item.location)
+                      )
+                    )
+                    .when(Boolean(item.unavailableReason), (row) =>
+                      row.child(
+                        div().text_size(11).text_color(t.dim).child(item.unavailableReason)
+                      )
+                    )
+                    .when(Boolean(item.description), (row) =>
+                      row.child(
+                        div().text_size(11).text_color(t.muted).child(item.description)
                       )
                     )
                 )
@@ -1132,132 +1533,32 @@ export default class StreamsMod extends View {
           )
         );
 
-    const view = tabSidebarView({
-      tabId: snap.activeTabId,
-      tabStreams: coordinator.tabStreams,
-      streams: coordinator.streams,
-      frames: coordinator.frames,
-      visibleTerminals: snap.visibleTerminals,
-      focusedTerminal: snap.focusedTerminal,
-      inspectedStreamId: coordinator.inspectedStreamId,
-      inFlight: coordinator.inFlightKey !== null,
-    });
-    if (view.kind === "loading") {
-      return v_flex()
-        .size_full()
-        .bg(t.chrome)
-        .child(header)
-        .child(div().p(12).text_size(12).text_color(t.dim).child("Loading Streams…"));
-    }
-
-    if (view.kind !== "session") {
-      const inspectedStream = view.stream ?? null;
-      if (inspectedStream) {
-        const monoFont = settings()?.font_family ?? "JetBrains Mono";
-        const inspectedSessions = inspectedStream.sessions ?? [];
-        const inspectedUnreadable = unreadableNotice(inspectedStream.unreadable);
-        return v_flex()
-          .size_full()
-          .bg(t.chrome)
-          .text_size(12)
-          .text_color(t.foreground)
-          .child(header)
-          .child(
-            renderErrorBanner(
-              v_flex()
-                .id("streams-sidebar-body")
-                .flex_1()
-                .p(12)
-                .gap(12)
-                .overflow_y_scrollbar()
-                .track_scroll(this.scroll)
-                .when(view.kind === "inspected", (el) =>
-                  el.child(
-                    h_flex()
-                      .id("streams-back-list")
-                      .self_start()
-                      .px(6)
-                      .py(3)
-                      .rounded(4)
-                      .text_size(11.5)
-                      .text_color(t.muted)
-                      .hover((s) => s.bg(t.hover).text_color(t.foreground))
-                      .on_click((_e, clickCx) => {
-                        clickCx.stop_propagation();
-                        coordinator.inspectStream(null);
-                      })
-                      .child("← All Streams")
-                  )
-                )
-                .when(Boolean(inspectedUnreadable), (el) =>
-                  el.child(renderUnreadableNotice(inspectedUnreadable))
-                )
-                .child(
-                  v_flex()
-                    .gap(5)
-                    .child(
-                      h_flex()
-                        .gap(6)
-                        .items_center()
-                        .child(div().flex_none().text_size(13).text_color(t.accent).child("≋"))
-                        .child(
-                          div()
-                            .flex_1()
-                            .min_w(0)
-                            .truncate()
-                            .font_semibold()
-                            .text_size(13.5)
-                            .child(inspectedStream.title)
-                        )
-                        .child(statusBadge(inspectedStream.status, t))
-                    )
-                    .when(Boolean(inspectedStream.id), (el) =>
-                      el.child(
-                        div()
-                          .font_family(monoFont)
-                          .text_size(10.5)
-                          .text_color(t.dim)
-                          .truncate()
-                          .child(inspectedStream.id)
-                      )
-                    )
-                    .when(Boolean(inspectedStream.goal), (el) =>
-                      el.child(
-                        div().text_size(11.5).text_color(t.muted).child(inspectedStream.goal)
-                      )
-                    )
-                )
-                .when(inspectedSessions.length > 0, (el) =>
-                  el.child(
-                    renderSessionListSection(
-                      inspectedStream.key,
-                      inspectedSessions,
-                      `Sessions · ${inspectedSessions.length}`,
-                      false
-                    )
-                  )
-                )
-            )
-          );
-      }
-
+    // -------------------------------------------------------------------------
+    // ALL VIEW
+    // -------------------------------------------------------------------------
+    if (view.view === "all") {
       const streamList = coordinator.hostStreams ?? [];
       const unreadable = unreadableNotice(coordinator.hostUnreadable);
-      const liveSet = liveStreamIds({
+      const openCounts = countLiveTerminalsByStream({
         panes: snap.panes,
         terminalList: snap.terminalList,
         agents: snap.agents,
         frames: coordinator.frames,
       });
-      const filteredStreams = filterHostStreams(streamList, {
-        filter: this.streamFilter,
+      const streamGroups = groupHostStreams(streamList, {
+        openCounts,
         sort: this.streamSort,
         query: this.streamQuery,
       });
+      const nonEmptyStreamGroups = streamGroups.filter((g) => g.streams.length > 0);
+      const shownStreams = nonEmptyStreamGroups.flatMap((g) => g.streams);
+      const hasQuery = Boolean(this.streamQuery.trim());
+      const onlyFinishedStreams =
+        nonEmptyStreamGroups.length === 1 && nonEmptyStreamGroups[0].id === "done_closed";
       const emptyMessage = hostStreamsEmptyMessage({
         error: coordinator.hostStreamsError,
         streams: streamList,
-        shown: filteredStreams,
+        shown: shownStreams,
         unreadable: coordinator.hostUnreadable,
       });
       const toolbar = v_flex()
@@ -1308,194 +1609,172 @@ export default class StreamsMod extends View {
         )
         .child(
           h_flex()
-            .gap(4)
-            .items_center()
-            .flex_wrap()
-            .children(
-              HOST_STREAM_FILTERS.map((opt) => {
-                const selected = this.streamFilter === opt.id;
-                return div()
-                  .id(`streams-filter-${opt.id}`)
-                  .px(6)
-                  .py(2)
-                  .rounded(4)
-                  .text_size(11)
-                  .when(selected, (el) =>
-                    el.bg(t.raised).font_medium().text_color(t.foreground)
-                  )
-                  .when(!selected, (el) =>
-                    el.text_color(t.muted).hover((s) => s.bg(t.hover).text_color(t.foreground))
-                  )
-                  .on_click((_e, clickCx) => {
-                    clickCx.stop_propagation();
-                    this.streamFilter = opt.id;
-                    clickCx.notify();
-                  })
-                  .child(opt.label);
-              })
-            )
-        )
-        .child(
-          h_flex()
             .justify_between()
             .items_center()
             .text_size(11)
             .child(
               div()
                 .text_color(t.dim)
-                .child(
-                  `${filteredStreams.length} stream${filteredStreams.length === 1 ? "" : "s"}`
-                )
+                .child(`${shownStreams.length} stream${shownStreams.length === 1 ? "" : "s"}`)
             )
             .child(
-              h_flex()
-                .gap(4)
-                .items_center()
-                .children(
-                  HOST_STREAM_SORTS.map((opt) => {
-                    const selected = this.streamSort === opt.id;
-                    return div()
-                      .id(`streams-sort-${opt.id}`)
-                      .px(5)
-                      .py(1)
-                      .rounded(4)
-                      .when(selected, (el) =>
-                        el.bg(t.raised).font_medium().text_color(t.foreground)
-                      )
-                      .when(!selected, (el) =>
-                        el.text_color(t.dim).hover((s) => s.bg(t.hover).text_color(t.foreground))
-                      )
-                      .on_click((_e, clickCx) => {
-                        clickCx.stop_propagation();
-                        this.streamSort = opt.id;
-                        clickCx.notify();
-                      })
-                      .child(opt.label);
-                  })
+              div()
+                .id("streams-sort-toggle")
+                .px(6)
+                .py(2)
+                .rounded(4)
+                .text_color(t.muted)
+                .hover((s) => s.bg(t.hover).text_color(t.foreground))
+                .tooltip(
+                  this.streamSort === "recent"
+                    ? "Sorted by most recent — click for A–Z"
+                    : "Sorted A–Z — click for most recent"
                 )
+                .on_click((_e, clickCx) => {
+                  clickCx.stop_propagation();
+                  this.streamSort = this.streamSort === "recent" ? "alpha" : "recent";
+                  clickCx.notify();
+                })
+                .child(this.streamSort === "recent" ? "↕ Recent" : "↕ A–Z")
             )
         );
-      return v_flex()
-        .size_full()
-        .bg(t.chrome)
-        .text_size(12)
-        .text_color(t.foreground)
-        .child(header)
-        .child(toolbar)
-        .child(
-          renderErrorBanner(
-            v_flex()
-              .id("streams-sidebar-body")
-              .flex_1()
-              .p(12)
-              .gap(10)
-              .overflow_y_scrollbar()
-              .track_scroll(this.scroll)
+
+      const renderStreamRow = (summary, idx) => {
+        const openCount = openCounts.get(summary.key) ?? 0;
+        const age = formatRelativeAge(summary.last_activity_ms);
+        const openText = openCount > 0 ? `${openCount} open` : "none open";
+        const metaLine = `${summary.active_sessions} active · ${openText}`;
+        return v_flex()
+          .id(`host-stream-${summary.id}`)
+          .px(9)
+          .py(8)
+          .gap(3)
+          .when(idx > 0, (row) => row.border_t(1).border_color(t.border))
+          .hover((s) => s.bg(t.hover))
+          .on_click((_e, clickCx) => {
+            clickCx.spawn(async () => {
+              await coordinator.selectStreamFromAll(
+                summary.key,
+                {
+                  spaces: snap.allSpaces,
+                  panes: snap.panes,
+                  terminalList: snap.terminalList,
+                  agents: snap.agents,
+                },
+                { run }
+              );
+            });
+          })
+          .child(
+            h_flex()
+              .gap(6)
+              .items_center()
+              .child(div().flex_none().text_size(12).text_color(t.accent).child("≋"))
+              .child(
+                div()
+                  .flex_1()
+                  .min_w(0)
+                  .truncate()
+                  .font_medium()
+                  .text_size(12)
+                  .text_color(openCount > 0 ? t.foreground : t.muted)
+                  .child(summary.title)
+              )
+              .child(statusBadge(summary.status, t))
+              .when(Boolean(age), (row) =>
+                row.child(
+                  div()
+                    .flex_none()
+                    .text_size(10.5)
+                    .text_color(t.dim)
+                    .child(age)
+                )
+              )
           )
+          .child(
+            h_flex()
+              .gap(6)
+              .items_center()
+              .text_size(11)
+              .text_color(t.dim)
+              .child(metaLine)
+              .when(Boolean(summary.goal_short), (row) =>
+                row
+                  .child("·")
+                  .child(div().flex_1().min_w(0).truncate().child(summary.goal_short))
+              )
+          );
+      };
+
+      return renderPinnedErrorBanner(
+        v_flex()
+          .size_full()
+          .bg(t.chrome)
+          .text_size(12)
+          .text_color(t.foreground)
+          .child(header)
+          .child(toolbar)
+      )
+        .child(
+          v_flex()
+            .id("streams-sidebar-body")
+            .flex_1()
+            .p(12)
+            .gap(10)
+            .overflow_y_scrollbar()
+            .track_scroll(this.scroll)
             .when(Boolean(unreadable), (el) => el.child(renderUnreadableNotice(unreadable)))
             .when(Boolean(emptyMessage), (el) =>
               el.child(div().text_size(12).text_color(t.dim).child(emptyMessage))
             )
-            .when(filteredStreams.length > 0, (el) =>
+            .when(nonEmptyStreamGroups.length > 0, (el) =>
               el.child(
                 v_flex()
-                  .rounded(6)
-                  .bg(t.raised)
-                  .border(1)
-                  .border_color(t.border)
+                  .gap(8)
                   .children(
-                    filteredStreams.map((summary, idx) => {
-                      const isLive = liveSet.has(summary.key) || liveSet.has(summary.id);
-                      const age = formatRelativeAge(summary.last_activity_ms);
-                      const sessionCountText =
-                        summary.active_sessions > 0
-                          ? `${summary.active_sessions} active`
-                          : summary.total_sessions > 0
-                            ? `${summary.total_sessions} session${summary.total_sessions === 1 ? "" : "s"}`
-                            : summary.id;
+                    nonEmptyStreamGroups.map((group) => {
+                      const savedState = this.allGroupsOpen?.[group.id];
+                      const isExpanded =
+                        typeof savedState === "boolean"
+                          ? savedState
+                          : group.defaultOpen || onlyFinishedStreams || hasQuery;
                       return v_flex()
-                        .id(`host-stream-${summary.id}`)
-                        .px(9)
-                        .py(8)
-                        .gap(3)
-                        .when(idx > 0, (row) => row.border_t(1).border_color(t.border))
-                        .hover((s) => s.bg(t.hover))
-                        .on_click((_e, clickCx) => {
-                          clickCx.spawn(async () => {
-                            if (isLive || summary.status === "active" || summary.status === "parked") {
-                              await coordinator.openWork(
-                                {
-                                  stream: summary.key,
-                                  sessions: { kind: "all_eligible" },
-                                  terminalList: snap.terminalList,
-                                  panes: snap.panes,
-                                  agents: snap.agents,
-                                },
-                                { run }
-                              );
-                            } else {
-                              await coordinator.inspectStream(summary.key);
-                            }
-                          });
-                        })
+                        .gap(4)
                         .child(
                           h_flex()
-                            .gap(6)
+                            .id(`streams-all-group-${group.id}`)
+                            .px(2)
+                            .py(1)
+                            .gap(5)
                             .items_center()
-                            .child(
-                              div()
-                                .flex_none()
-                                .text_size(12)
-                                .text_color(t.accent)
-                                .child("≋")
-                            )
-                            .child(
-                              div()
-                                .flex_1()
-                                .min_w(0)
-                                .truncate()
-                                .font_medium()
-                                .text_size(12)
-                                .child(summary.title)
-                            )
-                            .when(isLive, (row) =>
-                              row.child(
-                                h_flex()
-                                  .flex_none()
-                                  .gap(3)
-                                  .items_center()
-                                  .text_size(10.5)
-                                  .font_medium()
-                                  .text_color(t.ansi2)
-                                  .child(div().text_size(8).child("●"))
-                                  .child("live")
-                              )
-                            )
-                            .when(summary.status !== "active", (row) =>
-                              row.child(statusBadge(summary.status, t))
-                            )
-                            .when(Boolean(age), (row) =>
-                              row.child(
-                                div()
-                                  .flex_none()
-                                  .text_size(10.5)
-                                  .text_color(t.dim)
-                                  .child(age)
-                              )
-                            )
-                        )
-                        .child(
-                          h_flex()
-                            .gap(6)
-                            .items_center()
+                            .justify_between()
+                            .rounded(4)
                             .text_size(11)
                             .text_color(t.dim)
-                            .child(sessionCountText)
-                            .when(Boolean(summary.goal_short), (row) =>
-                              row
-                                .child("·")
-                                .child(div().flex_1().min_w(0).truncate().child(summary.goal_short))
+                            .hover((s) => s.bg(t.hover).text_color(t.foreground))
+                            .on_click((_e, clickCx) => {
+                              clickCx.stop_propagation();
+                              this.allGroupsOpen[group.id] = !isExpanded;
+                              clickCx.notify();
+                            })
+                            .child(
+                              h_flex()
+                                .gap(5)
+                                .items_center()
+                                .child(div().text_size(10).child(isExpanded ? "▾" : "▸"))
+                                .child(div().font_medium().child(group.label))
                             )
+                            .child(div().text_size(10.5).child(`${group.streams.length}`))
+                        )
+                        .when(isExpanded, (sec) =>
+                          sec.child(
+                            v_flex()
+                              .rounded(6)
+                              .bg(t.raised)
+                              .border(1)
+                              .border_color(t.border)
+                              .children(group.streams.map(renderStreamRow))
+                          )
                         );
                     })
                   )
@@ -1504,36 +1783,43 @@ export default class StreamsMod extends View {
         );
     }
 
-    const viewing = view;
-    const enrolled = viewing.session;
-    const stream = view.stream;
-    const tabPane = panes().find((p) => p.terminal === viewing.terminal) ?? null;
-    const termInfo =
-      snap.terminalList.find((item) => (item.address ?? item.id) === viewing.terminal) ?? null;
-    const liveAgent = agents().find((a) => a.address === viewing.terminal) ?? null;
-    const effectiveStatus = effectiveSessionStatus(enrolled, {
-      pane: tabPane,
-      terminal: termInfo,
-      agent: liveAgent,
-    });
-    const tabIcon = icon(tabPane?.program, 13, t.muted);
-    const monoFont = settings()?.font_family ?? "JetBrains Mono";
-    const sessionPrimary =
-      effectiveStatus === "done"
-        ? enrolled.recap || enrolled.state
-        : enrolled.state || enrolled.recap;
-    const references = buildReferenceItems(enrolled);
-    const otherSessions = (stream.sessions ?? []).filter((s) => s.key !== enrolled.key);
-    const streamUnreadable = unreadableNotice(stream.unreadable);
+    // -------------------------------------------------------------------------
+    // STREAM VIEW
+    // -------------------------------------------------------------------------
+    if (view.view === "stream") {
+      const stream = view.stream ?? null;
+      if (!stream) {
+        return v_flex()
+          .size_full()
+          .bg(t.chrome)
+          .text_size(12)
+          .text_color(t.foreground)
+          .child(header)
+          .child(
+            div()
+              .p(12)
+              .text_color(t.dim)
+              .child(
+                coordinator.previewStreamKey
+                  ? "Loading Stream…"
+                  : "This tab has no enrolled Stream. Switch to All to browse Streams."
+              )
+          );
+      }
 
-    return v_flex()
-      .size_full()
-      .bg(t.chrome)
-      .text_size(12)
-      .text_color(t.foreground)
-      .child(header)
-      .child(
-        renderErrorBanner(
+      const streamSessions = stream.sessions ?? [];
+      const streamUnreadable = unreadableNotice(stream.unreadable);
+      const currentSessKey = view.currentSession?.key ?? null;
+
+      return renderPinnedErrorBanner(
+        v_flex()
+          .size_full()
+          .bg(t.chrome)
+          .text_size(12)
+          .text_color(t.foreground)
+          .child(header)
+      )
+        .child(
           v_flex()
             .id("streams-sidebar-body")
             .flex_1()
@@ -1541,130 +1827,644 @@ export default class StreamsMod extends View {
             .gap(12)
             .overflow_y_scrollbar()
             .track_scroll(this.scroll)
-        )
-          .when(Boolean(streamUnreadable), (el) => el.child(renderUnreadableNotice(streamUnreadable)))
-          .child(
-            v_flex()
-              .gap(8)
-              .child(
-                v_flex()
-                  .gap(5)
+            .when(view.isPreview, (el) =>
+              el.child(
+                h_flex()
+                  .px(8)
+                  .py(6)
+                  .gap(8)
+                  .items_center()
+                  .justify_between()
+                  .rounded(5)
+                  .bg(t.raised)
+                  .border(1)
+                  .border_color(t.border)
+                  .text_size(11.5)
                   .child(
-                    h_flex()
-                      .gap(6)
-                      .items_center()
-                      .child(div().flex_none().text_size(13).text_color(t.accent).child("≋"))
-                      .child(
-                        div()
-                          .flex_1()
-                          .min_w(0)
-                          .truncate()
-                          .font_semibold()
-                          .text_size(13.5)
-                          .child(stream.title)
-                      )
-                      .child(statusBadge(stream.status, t))
-                      .child(
-                        div()
-                          .id("streams-menu-btn")
-                          .px(5)
-                          .py(2)
-                          .rounded(4)
-                          .text_color(t.muted)
-                          .hover((s) => s.bg(t.hover).text_color(t.foreground))
-                          .on_click((_e, clickCx) => {
-                            clickCx.stop_propagation();
-                            openOverlay({
-                              mod: "streams",
-                              kind: "popup",
-                              at: "pointer",
-                              width: 210,
-                              height: 44,
-                              props: {
-                                kind: "stream-menu",
-                                stream_id: stream.key,
-                              },
-                            });
-                          })
-                          .child("⋮")
-                      )
+                    div()
+                      .id("streams-preview-back-all")
+                      .px(5)
+                      .py(2)
+                      .rounded(4)
+                      .text_color(t.muted)
+                      .hover((s) => s.bg(t.hover).text_color(t.foreground))
+                      .on_click((_e, clickCx) => {
+                        clickCx.stop_propagation();
+                        clickCx.spawn(async () => {
+                          await coordinator.setView("all");
+                        });
+                      })
+                      .child("← All")
                   )
-                  .when(Boolean(stream.id), (el) =>
-                    el.child(
+                  .when(view.canReturnToCurrent, (bar) =>
+                    bar.child(
                       div()
-                        .font_family(monoFont)
-                        .text_size(10.5)
-                        .text_color(t.dim)
-                        .truncate()
-                        .child(stream.id)
+                        .id("streams-preview-back-current")
+                        .px(6)
+                        .py(2)
+                        .rounded(4)
+                        .text_color(t.accent)
+                        .hover((s) => s.bg(t.hover))
+                        .on_click((_e, clickCx) => {
+                          clickCx.stop_propagation();
+                          coordinator.returnToCurrent();
+                        })
+                        .child("Back to current")
                     )
                   )
-                  .when(Boolean(stream.goal), (el) =>
-                    el.child(div().text_size(11.5).text_color(t.muted).child(stream.goal))
-                  )
               )
-              .child(
-                h_flex()
-                  .pl(6)
-                  .gap(8)
-                  .items_stretch()
-                  .child(div().w(2).flex_none().rounded(1).bg(t.border))
-                  .child(
-                    v_flex()
-                      .flex_1()
-                      .min_w(0)
-                      .py(2)
+            )
+            .when(Boolean(streamUnreadable), (el) =>
+              el.child(renderUnreadableNotice(streamUnreadable))
+            )
+            .child(
+              v_flex()
+                .gap(5)
+                .child(
+                  h_flex()
+                    .gap(6)
+                    .items_center()
+                    .child(div().flex_none().text_size(13).text_color(t.accent).child("≋"))
+                    .child(
+                      div()
+                        .flex_1()
+                        .min_w(0)
+                        .truncate()
+                        .font_semibold()
+                        .text_size(13.5)
+                        .child(stream.title)
+                    )
+                    .child(statusBadge(stream.status, t))
+                    .child(
+                      div()
+                        .id("streams-menu-btn")
+                        .flex_none()
+                        .px(5)
+                        .py(2)
+                        .rounded(4)
+                        .text_color(t.muted)
+                        .hover((s) => s.bg(t.hover).text_color(t.foreground))
+                        .on_click((_e, clickCx) => {
+                          clickCx.stop_propagation();
+                          openStreamMenu(stream.key);
+                        })
+                        .child("⋮")
+                    )
+                )
+                .when(Boolean(stream.id), (el) =>
+                  el.child(
+                    div()
+                      .font_family(monoFont)
+                      .text_size(10.5)
+                      .text_color(t.dim)
+                      .truncate()
+                      .child(stream.id)
+                  )
+                )
+                .when(Boolean(stream.goal), (el) =>
+                  el.child(div().text_size(11.5).text_color(t.muted).child(stream.goal))
+                )
+            )
+            .child(
+              v_flex()
+                .pt(4)
+                .gap(6)
+                .border_t(1)
+                .border_color(t.border)
+                .child(
+                  h_flex()
+                    .justify_between()
+                    .items_center()
+                    .gap(6)
+                    .child(
+                      h_flex()
+                        .id("streams-sessions-toggle")
+                        .flex_1()
+                        .gap(5)
+                        .items_center()
+                        .hover((s) => s.text_color(t.foreground))
+                        .on_click((_e, clickCx) => {
+                          clickCx.stop_propagation();
+                          this.sessionsOpen = !this.sessionsOpen;
+                          clickCx.notify();
+                        })
+                        .child(
+                          div()
+                            .text_size(11)
+                            .text_color(t.dim)
+                            .child(this.sessionsOpen ? "▾" : "▸")
+                        )
+                        .child(
+                          div()
+                            .font_medium()
+                            .text_size(11.5)
+                            .text_color(t.muted)
+                            .child(`Sessions · ${streamSessions.length}`)
+                        )
+                    )
+                    .when(streamSessions.length > 1, (row) =>
+                      row.child(
+                        div()
+                          .id("streams-sessions-sort-toggle")
+                          .flex_none()
+                          .px(5)
+                          .py(1)
+                          .rounded(4)
+                          .text_size(11)
+                          .text_color(t.dim)
+                          .hover((s) => s.bg(t.hover).text_color(t.foreground))
+                          .tooltip(
+                            this.sessionSort === "recent"
+                              ? "Sorted by most recent — click for A–Z"
+                              : "Sorted A–Z — click for most recent"
+                          )
+                          .on_click((_e, clickCx) => {
+                            clickCx.stop_propagation();
+                            this.sessionSort = this.sessionSort === "recent" ? "alpha" : "recent";
+                            clickCx.notify();
+                          })
+                          .child(this.sessionSort === "recent" ? "↕ Recent" : "↕ A–Z")
+                      )
+                    )
+                )
+                .when(this.sessionsOpen && streamSessions.length === 0, (el) =>
+                  el.child(div().text_size(11.5).text_color(t.dim).child("No Sessions yet."))
+                )
+                .when(this.sessionsOpen && streamSessions.length > 0, (el) => {
+                  const liveSessionKeys = new Set(
+                    runningSessionTerminals({
+                      terminalList: snap.terminalList,
+                      panes: snap.panes,
+                      agents: snap.agents,
+                    }).values()
+                  );
+                  const sessionGroups = groupStreamSessions(streamSessions, {
+                    liveSessionKeys,
+                    currentSessionKey: currentSessKey,
+                    sort: this.sessionSort,
+                  });
+                  const nonEmptyGroups = sessionGroups.filter((g) => g.sessions.length > 0);
+                  const onlyFinished =
+                    nonEmptyGroups.length === 1 && nonEmptyGroups[0].id === "done_closed";
+                  const renderSessionRow = (sess, idx) => {
+                    const liveMatch = findLivePaneForSession({
+                      sessionKey: sess.key,
+                      panes: snap.panes,
+                      terminalList: snap.terminalList,
+                      agents: snap.agents,
+                    });
+                    const isOpen = Boolean(liveMatch);
+                    const livePaneObj = liveMatch
+                      ? snap.panes.find((p) => p.pane === liveMatch.pane) ?? null
+                      : null;
+                    const isCurrent = Boolean(currentSessKey && sess.key === currentSessKey);
+                    const isRowHovered = this.hoveredSessionKey === sess.key;
+                    const openIcon = isOpen
+                      ? icon(livePaneObj?.program, 13, t.foreground) ??
+                        div().flex_none().text_size(10).text_color(t.foreground).child("●")
+                      : div().flex_none().text_size(10).text_color(t.dim).child("○");
+                    return v_flex()
+                      .id(`stream-session-${sess.id}`)
+                      .px(9)
+                      .py(7)
                       .gap(3)
+                      .when(idx > 0, (row) => row.border_t(1).border_color(t.border))
+                      .when(isCurrent, (row) => row.bg(t.selected))
+                      .hover((s) => s.bg(t.hover))
+                      .on_hover((hovered, hoverCx) => {
+                        const next = hovered
+                          ? sess.key
+                          : this.hoveredSessionKey === sess.key
+                            ? null
+                            : this.hoveredSessionKey;
+                        if (next !== this.hoveredSessionKey) {
+                          this.hoveredSessionKey = next;
+                          hoverCx.notify();
+                        }
+                      })
+                      .on_mouse_down("right", (_e, downCx) => {
+                        downCx.stop_propagation();
+                        openSessionMenu({
+                          sessionKey: sess.key,
+                          streamKey: stream.key,
+                          status: sess.status,
+                          livePane: liveMatch?.pane ?? null,
+                          fromHeader: false,
+                        });
+                      })
+                      .on_click((_e, clickCx) => {
+                        clickCx.spawn(async () => {
+                          await coordinator.selectSessionFromStream(
+                            sess.key,
+                            stream.key,
+                            {
+                              panes: snap.panes,
+                              terminalList: snap.terminalList,
+                              agents: snap.agents,
+                            },
+                            { run }
+                          );
+                        });
+                      })
                       .child(
                         h_flex()
                           .gap(6)
                           .items_center()
-                          .when(Boolean(tabIcon), (el) => el.child(tabIcon))
+                          .child(openIcon)
                           .child(
                             div()
                               .flex_1()
                               .min_w(0)
                               .truncate()
                               .font_medium()
-                              .child(enrolled.title)
+                              .text_size(12)
+                              .text_color(isOpen ? t.foreground : t.muted)
+                              .child(sess.title)
                           )
-                          .child(statusBadge(effectiveStatus, t))
+                          .child(statusBadge(sess.status, t))
+                          .when(isOpen && isRowHovered && Boolean(liveMatch?.pane), (row) =>
+                            row.child(
+                              div()
+                                .id(`stream-session-close-${sess.id}`)
+                                .flex_none()
+                                .px(5)
+                                .py(1)
+                                .rounded(4)
+                                .text_size(11)
+                                .text_color(t.dim)
+                                .hover((s) => s.bg(t.raised).text_color(t.blocked))
+                                .tooltip("Close terminal")
+                                .on_mouse_down("left", (_e, downCx) => downCx.stop_propagation())
+                                .on_click((_e, clickCx) => {
+                                  clickCx.stop_propagation();
+                                  run("pane.close", { pane: liveMatch.pane });
+                                })
+                                .child("×")
+                            )
+                          )
+                          .when(!isOpen && isRowHovered, (row) =>
+                            row.child(
+                              div()
+                                .id(`stream-session-resume-${sess.id}`)
+                                .flex_none()
+                                .px(5)
+                                .py(1)
+                                .rounded(4)
+                                .text_size(10.5)
+                                .text_color(t.accent)
+                                .hover((s) => s.bg(t.raised))
+                                .tooltip("Resume session")
+                                .on_mouse_down("left", (_e, downCx) => downCx.stop_propagation())
+                                .on_click((_e, clickCx) => {
+                                  clickCx.stop_propagation();
+                                  resumeSingleSession(clickCx, stream.key, sess.key);
+                                })
+                                .child("▶")
+                            )
+                          )
+                          .child(
+                            div()
+                              .id(`stream-session-menu-${sess.id}`)
+                              .flex_none()
+                              .px(4)
+                              .py(1)
+                              .rounded(4)
+                              .text_color(t.dim)
+                              .hover((s) => s.bg(t.hover).text_color(t.foreground))
+                              .on_mouse_down("left", (_e, downCx) => downCx.stop_propagation())
+                              .on_click((_e, clickCx) => {
+                                clickCx.stop_propagation();
+                                openSessionMenu({
+                                  sessionKey: sess.key,
+                                  streamKey: stream.key,
+                                  status: sess.status,
+                                  livePane: liveMatch?.pane ?? null,
+                                  fromHeader: false,
+                                });
+                              })
+                              .child("⋮")
+                          )
                       )
-                      .when(Boolean(sessionPrimary), (el) =>
-                        el.child(
+                      .when(Boolean(sess.state_short), (row) =>
+                        row.child(
                           div()
-                            .text_size(11.5)
-                            .text_color(t.muted)
-                            .child(sessionPrimary)
-                        )
-                      )
-                      .when(Boolean(enrolled.remaining), (el) =>
-                        el.child(
-                          div()
+                            .pl(18)
                             .text_size(11)
                             .text_color(t.dim)
-                            .child(`→ ${enrolled.remaining}`)
+                            .truncate()
+                            .child(sess.state_short)
                         )
+                      );
+                  };
+
+                  return el.child(
+                    v_flex()
+                      .gap(8)
+                      .children(
+                        nonEmptyGroups.map((group) => {
+                          const savedState = this.sessionGroupsOpen?.[group.id];
+                          const hasCurrent =
+                            Boolean(currentSessKey) &&
+                            group.sessions.some((s) => s.key === currentSessKey);
+                          const isExpanded =
+                            typeof savedState === "boolean"
+                              ? savedState
+                              : group.defaultOpen || onlyFinished || hasCurrent;
+                          return v_flex()
+                            .gap(4)
+                            .child(
+                              h_flex()
+                                .id(`streams-session-group-${group.id}`)
+                                .px(2)
+                                .py(1)
+                                .gap(5)
+                                .items_center()
+                                .justify_between()
+                                .rounded(4)
+                                .text_size(11)
+                                .text_color(t.dim)
+                                .hover((s) => s.bg(t.hover).text_color(t.foreground))
+                                .on_click((_e, clickCx) => {
+                                  clickCx.stop_propagation();
+                                  this.sessionGroupsOpen[group.id] = !isExpanded;
+                                  clickCx.notify();
+                                })
+                                .child(
+                                  h_flex()
+                                    .gap(5)
+                                    .items_center()
+                                    .child(div().text_size(10).child(isExpanded ? "▾" : "▸"))
+                                    .child(div().font_medium().child(group.label))
+                                )
+                                .child(div().text_size(10.5).child(`${group.sessions.length}`))
+                            )
+                            .when(isExpanded, (sec) =>
+                              sec.child(
+                                v_flex()
+                                  .rounded(6)
+                                  .bg(t.raised)
+                                  .border(1)
+                                  .border_color(t.border)
+                                  .children(group.sessions.map(renderSessionRow))
+                              )
+                            );
+                        })
                       )
-                  )
-              )
-          )
-          .when(references.length > 0, (el) =>
-            el.child(renderReferencesSection(references, monoFont))
-          )
-          .when(otherSessions.length > 0, (el) =>
+                  );
+                })
+            )
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // SESSION VIEW
+    // -------------------------------------------------------------------------
+    const session = view.session ?? null;
+    const parentStream = view.stream ?? null;
+
+    if (!session) {
+      return v_flex()
+        .size_full()
+        .bg(t.chrome)
+        .text_size(12)
+        .text_color(t.foreground)
+        .child(header)
+        .child(
+          div()
+            .p(12)
+            .text_color(t.dim)
+            .child(
+              coordinator.previewSessionKey
+                ? "Loading Session…"
+                : "This tab is not enrolled in a Session. Switch to All to browse Streams."
+            )
+        );
+    }
+
+    const tabPane = view.terminal
+      ? snap.panes.find((p) => p.terminal === view.terminal) ?? null
+      : null;
+    const termInfo = view.terminal
+      ? snap.terminalList.find((item) => (item.address ?? item.id) === view.terminal) ?? null
+      : null;
+    const liveAgent = view.terminal
+      ? snap.agents.find((a) => a.address === view.terminal) ?? null
+      : null;
+    const effectiveStatus = view.isUnopened
+      ? session.status
+      : effectiveSessionStatus(session, {
+          pane: tabPane,
+          terminal: termInfo,
+          agent: liveAgent,
+        });
+    const sessionIcon = view.isUnopened
+      ? div().flex_none().text_size(11).text_color(t.dim).child("○")
+      : icon(tabPane?.program, 13, t.muted);
+    const references = buildReferenceItems(session);
+    const streamKey = parentStream?.key ?? session.stream;
+    const streamLabel = parentStream?.title || coordinator.streamTitle(streamKey);
+
+    return renderPinnedErrorBanner(
+      v_flex()
+        .size_full()
+        .bg(t.chrome)
+        .text_size(12)
+        .text_color(t.foreground)
+        .child(header)
+    )
+      .child(
+        v_flex()
+          .id("streams-sidebar-body")
+          .flex_1()
+          .p(12)
+          .gap(12)
+          .overflow_y_scrollbar()
+          .track_scroll(this.scroll)
+          .when(view.isPreview && view.isUnopened, (el) =>
             el.child(
-              renderSessionListSection(
-                stream.key,
-                otherSessions,
-                `Other sessions · ${otherSessions.length}`,
-                true
-              )
+              v_flex()
+                .px(8)
+                .py(7)
+                .gap(6)
+                .rounded(5)
+                .bg(t.raised)
+                .border(1)
+                .border_color(t.border)
+                .text_size(11.5)
+                .child(
+                  h_flex()
+                    .gap(6)
+                    .items_center()
+                    .justify_between()
+                    .child(
+                      div()
+                        .id("session-preview-back-stream")
+                        .px(5)
+                        .py(2)
+                        .rounded(4)
+                        .text_color(t.muted)
+                        .hover((s) => s.bg(t.hover).text_color(t.foreground))
+                        .on_click((_e, clickCx) => {
+                          clickCx.stop_propagation();
+                          coordinator.backToStream();
+                        })
+                        .child("← Stream")
+                    )
+                    .child(
+                      div().text_size(10.5).text_color(t.dim).child("Unopened · read-only")
+                    )
+                )
+                .child(
+                  h_flex()
+                    .gap(6)
+                    .items_center()
+                    .justify_between()
+                    .child(
+                      div()
+                        .id("session-preview-resume")
+                        .px(8)
+                        .py(3)
+                        .rounded(4)
+                        .bg(t.accent)
+                        .font_medium()
+                        .text_size(11.5)
+                        .text_color(t.background)
+                        .on_click((_e, clickCx) => {
+                          clickCx.stop_propagation();
+                          resumeSingleSession(clickCx, streamKey, session.key);
+                        })
+                        .child("▶ Resume")
+                    )
+                    .when(view.canReturnToCurrent, (bar) =>
+                      bar.child(
+                        div()
+                          .id("session-preview-back-current")
+                          .px(6)
+                          .py(2)
+                          .rounded(4)
+                          .text_color(t.accent)
+                          .hover((s) => s.bg(t.hover))
+                          .on_click((_e, clickCx) => {
+                            clickCx.stop_propagation();
+                            coordinator.returnToCurrent();
+                          })
+                          .child("Back to current")
+                      )
+                    )
+                )
             )
           )
+          .when(Boolean(streamLabel), (el) =>
+            el.child(
+              h_flex()
+                .id("session-stream-breadcrumb")
+                .self_start()
+                .px(5)
+                .py(2)
+                .gap(5)
+                .items_center()
+                .rounded(4)
+                .text_size(11.5)
+                .text_color(t.muted)
+                .hover((s) => s.bg(t.hover).text_color(t.foreground))
+                .on_click((_e, clickCx) => {
+                  clickCx.stop_propagation();
+                  if (view.isPreview) {
+                    coordinator.backToStream();
+                  } else {
+                    coordinator.setView("stream");
+                  }
+                })
+                .child(div().flex_none().text_color(t.accent).child("≋"))
+                .child(div().truncate().child(streamLabel))
+            )
+          )
+          .child(
+            v_flex()
+              .gap(8)
+              .child(
+                h_flex()
+                  .gap(6)
+                  .items_center()
+                  .when(Boolean(sessionIcon), (el) => el.child(sessionIcon))
+                  .child(
+                    div()
+                      .flex_1()
+                      .min_w(0)
+                      .truncate()
+                      .font_semibold()
+                      .text_size(13.5)
+                      .child(session.title)
+                  )
+                  .child(
+                    div()
+                      .id("session-header-status-btn")
+                      .flex_none()
+                      .rounded(10)
+                      .hover((s) => s.bg(t.hover))
+                      .tooltip("Change Session status")
+                      .on_click((_e, clickCx) => {
+                        clickCx.stop_propagation();
+                        openSessionMenu({
+                          sessionKey: session.key,
+                          streamKey: sessionStreamKey,
+                          status: effectiveStatus,
+                          livePane: sessionLivePane,
+                          fromHeader: true,
+                        });
+                      })
+                      .child(statusBadge(effectiveStatus, t))
+                  )
+                  .child(
+                    div()
+                      .id("session-header-menu-btn")
+                      .flex_none()
+                      .px(5)
+                      .py(2)
+                      .rounded(4)
+                      .text_color(t.muted)
+                      .hover((s) => s.bg(t.hover).text_color(t.foreground))
+                      .on_click((_e, clickCx) => {
+                        clickCx.stop_propagation();
+                        openSessionMenu({
+                          sessionKey: session.key,
+                          streamKey,
+                          status: session.status,
+                          livePane: tabPane?.pane ?? null,
+                          fromHeader: true,
+                        });
+                      })
+                      .child("⋮")
+                  )
+              )
+              .when(Boolean(session.state), (el) =>
+                el.child(
+                  v_flex()
+                    .gap(2)
+                    .child(div().text_size(10.5).font_medium().text_color(t.dim).child("State"))
+                    .child(div().text_size(12).text_color(t.foreground).child(session.state))
+                )
+              )
+              .when(Boolean(session.recap), (el) =>
+                el.child(
+                  v_flex()
+                    .gap(2)
+                    .child(div().text_size(10.5).font_medium().text_color(t.dim).child("Recap"))
+                    .child(div().text_size(11.5).text_color(t.muted).child(session.recap))
+                )
+              )
+              .when(Boolean(session.remaining), (el) =>
+                el.child(
+                  v_flex()
+                    .gap(2)
+                    .child(div().text_size(10.5).font_medium().text_color(t.dim).child("Remaining"))
+                    .child(div().text_size(11.5).text_color(t.muted).child(session.remaining))
+                )
+              )
+          )
+          .when(references.length > 0, (el) => el.child(renderReferencesSection(references)))
       );
   }
-
   renderViewer() {
     const t = theme();
     const rawProps = props() ?? {};
@@ -1805,7 +2605,7 @@ export default class StreamsMod extends View {
     const role = resolveRole(props());
     if (role === "viewer") return this.renderViewer();
     if (role === "popup") return this.renderPopup(cx);
-    this.ensureSubscribed(cx);
+    this.syncConfiguredBin();
     if (role === "frame") return this.renderFrame(cx);
     return this.renderSidebar(cx);
   }
