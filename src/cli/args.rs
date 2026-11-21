@@ -66,12 +66,14 @@ pub(super) enum Command {
     },
 
     /// Classic Herdr work-card commands
+    #[command(hide = true)]
     Card {
         #[command(subcommand)]
         command: CardCommand,
     },
 
     /// Developer debugging tools
+    #[command(hide = true)]
     Debug {
         #[command(subcommand)]
         command: DebugCommand,

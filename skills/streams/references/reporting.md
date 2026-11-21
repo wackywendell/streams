@@ -1,54 +1,85 @@
 # Guarded agent reporting
 
-Use this protocol for generated progress or description changes outside Pi's built-in reporting helper. Do not generate new record text, then read a fresh base just to make it apply.
+Use this protocol for generated progress or description updates outside Pi's built-in reporting helper. Do not generate new text and then re-read a fresh record just to force an overwrite.
 
-## Capture before inference
+## 1. Read before inference
+
+Read the current Session, its Stream, and host naming settings using the public CLI:
 
 ```sh
-streams agent context --harness pi --session-id NATIVE_ID --json
+streams session show HARNESS/ID --json
+streams stream show HOST/STREAM_ID --json
+streams config get naming --json
 ```
 
-Use `codex` or `claude` for those harnesses. Context returns persisted local `stream`, `session`, `title_defaults`, `host_id`, `catalog_source` and `patch_schemas`. For each returned record and actor (`automatic` or `user`), `patch_schemas` lists the fields that actor may change with the JSON schema of each value; the automatic lists already omit manually protected names and goals. It does not fetch or attach. An optional `--stream-id` supplies an exact initial effort identity; it cannot switch an attached conversation.
+Keep these snapshots immutable while generating updates:
 
-Keep this capture immutable while generating one target's changes. A session report can update title, lifecycle status, recap, state, remaining and their matching `_short` forms. Recap records this conversation’s cumulative scope and achievements; state records what it is doing right now. Keep short forms to 1–2 words when possible, preferably under 20 characters and always under 25. A stream description report can update title, goal and goal_short, not stream status or archive state. Omit manually protected names/goals. Produce compact derivatives alongside their source, or let them clear when that source changes.
+- A **Session report** sees the conversation, the Session's own `references` (including `dropped` entries), and `session.directory`. It can propose updates to `title` (when `!session.title.manual` and `naming.session == "automatic"`), `status` (`active`, `waiting`, `blocked`, `parked`, `done` — never `closed`), `recap`, `state`, `remaining`, `directory.repository.branch` (when `directory.repository` is set), and `references`.
+- A **Stream report** updates only `title` (when `!stream.title.manual` and `naming.stream == "automatic"`) and `goal` (when `!stream.goal?.manual`). It never edits Stream status (which is derived from Sessions).
+- For short forms (`short` inside `goal`, `recap`, `state`, `remaining`), prefer 1–2 words, under 20 characters, always under 25. Use `null` when omitted or empty.
 
-Before submitting, verify that the same native conversation and attachment are active and its captured evidence remains on the active branch. Appended turns may follow a valid captured prefix; a rewind or branch replacement invalidates it. If catalog selection changed, stop rather than applying to the replacement.
+## 2. Submit checked edits via `--input -`
 
-## Submit one target
+Pipe a JSON object `{"changes": {...}, "before": {...}}` to `session edit` or `stream edit`:
 
-Send a JSON object on stdin to `streams agent apply --json`, with these fields:
+```sh
+streams session edit HOST/HARNESS/ID --input - --json <<'EOF'
+{
+  "changes": {
+    "state": { "text": "PR open for review", "short": "In review" },
+    "references": {
+      "https://github.com/o/r/pull/43": { "status": "fulfilled" },
+      "docs/design.md": {
+        "kind": "document",
+        "name": "Design",
+        "purpose": "Guides implementation",
+        "role": "brief",
+        "status": "active",
+        "manual": false
+      }
+    }
+  },
+  "before": {
+    "state": { "text": "Drafting tests", "short": "Testing" },
+    "references": {
+      "https://github.com/o/r/pull/43": {
+        "kind": "pr",
+        "name": "Add entity CLI",
+        "purpose": "Implements redesign",
+        "role": "deliverable",
+        "status": "active",
+        "manual": false
+      },
+      "docs/design.md": null
+    }
+  }
+}
+EOF
+```
 
-- `version`: `2`; old authority-bearing request formats are rejected.
-- `catalog_source`: the original captured source value, not a newly read one.
-- `kind`: `stream` or `session`.
-- `actor`: `automatic` for generated reports; `user` only for expressly requested edits.
-- `before`: the complete original captured target record, including its read-only identity fields and `revision`.
-- `changes`: only the allowed fields being changed, not a replacement record.
-- `title_default`: the captured resolved `title_defaults.session` or `title_defaults.stream`, matching the target kind. Do not substitute the current setting after inference.
-- `inputs`: `[]` for Session edits; for an automatic Stream edit, exactly `[{"kind":"session","record":CAPTURED_SESSION}]`. A direct user Stream edit may omit that dependency with `[]`. Sibling records and ownership tokens are not accepted.
+### Edit rules
 
-Use separate captures and inferences for session progress and stream metadata. Capture the second target before its inference, after the first save; do not retrofit either base after inference. User-directed discussion synthesized by a helper still needs its captured inputs.
+- When `before` is supplied, its keys must match `changes` exactly at the top level and inside `references`.
+- Each value in `changes` is merged onto its `before` value (modified RFC 7386: explicit `null` sets the member to `null`; absent members keep their `before` value). Use `null` in `before` for a new reference or an unset optional field.
+- Reference rules for automatic reports:
+  - Never restore or touch a `dropped` reference.
+  - Never overwrite `name`, `purpose`, or `role` on a `manual: true` reference (only `status` may advance, keeping `manual: true`).
+  - Document keys must be relative to `session.directory.path` (no `..` or paths outside the directory). Save external outputs with `streams artifact write` instead.
+- Check the exit code and response JSON `{"key": "...", "not_written": {...}}`:
+  - Exit `0`: every requested unit now matches the requested value.
+  - Exit `3`: the command succeeded partially; units whose saved value differed from `before` were left untouched and appear in `not_written` with their current saved values. Log them and do not retry blindly — wait for the next turn and a fresh read.
+  - Exit `1` or `2`: the request failed and wrote nothing.
 
-There is no operation ID. Resubmitting the same request is safe: one that already landed returns `no-change`, and one overtaken by a later edit returns `superseded` (automatic) or `conflict` (user). A user edit applies only to the captured `revision`.
+## 3. Initial enrollment
 
-Inspect domain, local-save and sharing outcomes separately. `changes` or `no-change` with a successful local outcome is not proof of remote publication. `superseded` means discard automatic output and capture again before a new inference; never substitute a new base into the old request. Explicit conflicts need inspection rather than silent overwriting.
+When no Session record exists yet and policy permits enrollment:
 
-Exit code 2 can include accepted local records when publication or a later step failed. Inspect the outcome first. A null domain result or repair-required local result is not a successful edit. Resubmitting the same captured request is safe; `superseded` or `conflict` means capture again. Do not recreate records or delete repair evidence.
-
-## Reference proposals
-
-A Session inference can produce progress and reference proposals from one capture. Save valid Session progress first. Construct the separate Stream reference request from the original captured Stream and Session after that save, including when progress has no changes. Validate proposals at this later stage so a malformed reference cannot erase accepted progress.
-
-The reference request uses `kind: "stream"` and `changes: {reference_changes: [...]}`, with no ordinary field edits. Each set row has an exact `key` and complete `desired` value. Automatic requests include the captured Session as their sole input; user reference edits have no Session input.
-
-Automatic values contain name, purpose, role, state and target. Document targets carry kind, repository_url, path and optional nonempty ref. Runtime supplies provenance; automatic payloads forbid commit and source_session_id even when null. Existing recovery hints survive omitted automatic values. Explicit user values are complete, so copy recovery metadata before changing selected fields.
-
-Automatic rows compare the complete captured value; user reference edits apply only to the captured Stream `revision`. Additions require the key to be absent at capture and apply. Automatic restoration of Dropped rows is refused per row; user restoration and deletion require explicit direction. User deletion uses desired=null.
-
-Inspect every `reference_results` row. Each row's `desired` is the value it saves, or would save if refused, with recovery hints filled in; it is null for a deletion. A partial Changes result can save independent references while refusing others. Surface the unapplied rows. Resubmitting the same captured request is safe but applies nothing new; a later attempt needs new evidence and a fresh capture. The [reference implementation contract](../../../docs/stream-reference-implementation.md) defines exact packet and result schemas.
-
-## Initial enrollment
-
-When policy permits enrollment, send a JSON object on stdin to `streams agent enroll --json` with `version: 2`, captured `catalog_source`, `harness`, `harness_session_id`, `session: {title: ...}`, `actor` and an existing absolute `cwd`. Supply either an exact `stream_id` or initial `stream: {title: ..., goal: ...}`; omit goal if unknown. Existing caller-workspace associations take precedence over inventing another effort. A conflicting explicit creation fails rather than switching membership.
-
-Enrollment saves records and remembers local directories before best-effort native marker projection, without opening, launching or focusing resources. It may save a Stream and Session separately, and a partial failure reports the Stream it saved. Inspect the outcome and current context. Resubmitting the same request is safe and reuses what already landed; do not turn partial enrollment into a new effort.
+1. Create a Stream if none is chosen:
+   ```sh
+   streams stream create --title "Effort" --title-mode automatic [--goal "..."] [--goal-mode automatic] --json
+   ```
+2. Create the Session with its exact `HARNESS/ID` and working directory:
+   ```sh
+   streams session create HARNESS/ID --stream HOST/STREAM_ID --title "Lane" --title-mode automatic --directory "$PWD" --json
+   ```
+3. Re-read the created records before running the first Session/Stream report.

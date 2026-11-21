@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Breaking (catalog format 5):**
+  - Replaced flat commands with entity-organized commands (`stream`, `session`, `artifact`, `config`, `catalog`) plus root aliases `list` and `resume`; hid `card` and `debug` from top-level `--help`.
+  - Moved references, working `directory`, and flat `artifacts` (`HOST/HARNESS/ID/NAME`) onto Session records under `hosts/HOST/sessions/HARNESS/ID/session.json`, using the harness's real session ID as the Session ID.
+  - Replaced `title_mode`/`goal_mode` (and `inherit`) with `{ text, manual }` and `{ text, short, manual } | null`, and text pairs `{ text, short } | null`; Stream status is derived solely from its Sessions.
+  - Added unified `stream edit` / `session edit` compare-and-save via `--input -` (`{"changes", "before"}` returning `{"key", "not_written"}` with exit code `3` on partial writes), plus `session edit --stream` to move Sessions on the same host and `session document read|view`.
+  - Removed the `serve` child protocol, `integration` RPC layer, `agent` subcommands, `reference`/`checkout` subcommands, workspace opening, and Temper formal-verification harness; both the Pi extension and the `herdr-app` mod now invoke the public `streams` CLI and `hc` directly.
 - Moving a Pi pane into another Herdr workspace no longer moves its Session or creates an "Untitled effort" Stream. Layout never changes membership in any frontend, and no command moves a Session to another Stream yet. An hc space associated with another Stream now produces a warning, as a Herdr workspace does
 - The Pi child uses the frontend selection to decide whether it runs Herdr cards, so a Herdr pane with `frontend.mode` set to `none` or `cmux` stays inactive
 - The Pi child reports an error instead of following a symlink or reading a non-regular file at a watched record path, as Herdr cards already did

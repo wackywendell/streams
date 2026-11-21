@@ -569,3 +569,27 @@ fn list_text_rejects_collection_fields_and_limit_reports_more() {
     assert_eq!(String::from_utf8(stdout).unwrap().trim(), "none");
     assert!(f.root().join(".catalog-local/records.json").is_file());
 }
+
+#[test]
+fn top_level_help_hides_card_and_debug_while_subcommands_remain_callable() {
+    let f = Fixture::new();
+    let (code, stdout, _) = f.run_raw(&["--help"], None);
+    assert_eq!(code, 0);
+    let help = String::from_utf8(stdout).unwrap();
+    for visible in [
+        "list", "resume", "stream", "session", "artifact", "config", "catalog",
+    ] {
+        assert!(help.contains(visible), "expected {visible} in:\n{help}");
+    }
+    assert!(!help.contains("  card "), "card should be hidden:\n{help}");
+    assert!(
+        !help.contains("  debug "),
+        "debug should be hidden:\n{help}"
+    );
+
+    for hidden in ["card", "debug"] {
+        let (code, stdout, _) = f.run_raw(&[hidden, "--help"], None);
+        assert_eq!(code, 0, "{hidden} --help should work");
+        assert!(String::from_utf8(stdout).unwrap().contains("Usage:"));
+    }
+}
