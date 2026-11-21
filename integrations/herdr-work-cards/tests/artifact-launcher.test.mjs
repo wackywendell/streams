@@ -15,7 +15,7 @@ async function fixture(t, body) {
  await chmod(binary, 0o700);
  return {root, env:{HOME:root, PATH:'/usr/bin:/bin', STREAMS_BIN_PATH:binary,
   STREAMS_ARTIFACT_CWD:root, STREAMS_ARTIFACT_CATALOG_SOURCE:'catalog',
-  STREAMS_ARTIFACT_REFERENCE:'host/stream/session/assessment.md'}};
+  STREAMS_ARTIFACT_REFERENCE:'host/pi/session/assessment.md'}};
 }
 
 test('artifact launcher keeps the reference literal and runs in the reader cwd', async t => {

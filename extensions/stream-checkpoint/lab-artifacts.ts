@@ -25,7 +25,7 @@ export function createArtifact(root: string, kind: ArtifactKind): {id: string; d
 }
 export function readArtifact(root: string, kind: ArtifactKind, id: string): any {
  const value = JSON.parse(privateRead(artifactPath(root, kind, id), files[kind], root));
- if (!object(value) || value.version !== 1 || value.id !== id) throw Error("Invalid artifact manifest");
+ if (!object(value) || ![1, 2].includes(value.version) || value.id !== id) throw Error("Invalid artifact manifest");
  return value;
 }
 export function listArtifacts(root: string, kind: ArtifactKind): string[] {
@@ -54,7 +54,7 @@ export function validatePrepared(value: any): asserts value is PreparedRequest {
  const input = value.input, catalog = parseLocalContext(input.catalog);
  if (input.type === "enroll" ? input.reset || catalog.session : !catalog[input.type as "session" | "stream"]) throw Error("Prepared task does not match its captured cards");
  const source = value.source;
- if (!object(source) || !uuid.test(source.capture_id) || !Number.isInteger(source.sample) || source.sample < 0 || !identity(source.host_id) || !identity(source.native_session_id) || !identity(source.cwd) || !isAbsolute(source.cwd) || !(source.leafId === null || identity(source.leafId)) || catalog.session && (catalog.session.host_id !== source.host_id || catalog.session.harness_session_id !== source.native_session_id)) throw Error("Invalid prepared source identity");
+ if (!object(source) || !uuid.test(source.capture_id) || !Number.isInteger(source.sample) || source.sample < 0 || !identity(source.host_id) || !identity(source.native_session_id) || !identity(source.cwd) || !isAbsolute(source.cwd) || !(source.leafId === null || identity(source.leafId)) || catalog.session && (catalog.session.host_id !== source.host_id || catalog.session.id !== source.native_session_id)) throw Error("Invalid prepared source identity");
  const payload = value.model_request;
  if (!object(payload) || typeof payload.systemPrompt !== "string" || !payload.systemPrompt.trim() || !Array.isArray(payload.messages) || !Array.isArray(payload.tools) || JSON.stringify(payload.tools) !== JSON.stringify(buildInferencePayload({type: input.type, catalog, messages: input.messages, reset: input.reset}).tools)) throw Error("Prepared request output schema does not match production validation");
  if (value.input_hash !== digest(JSON.stringify({input, model_request: payload}))) throw Error("Prepared request inputs changed; prepare a new request instead");

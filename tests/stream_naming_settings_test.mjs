@@ -105,8 +105,8 @@ test('Naming descriptions explain effective policy and Pi name directions withou
   for (let i=0; i<6; i++) component.handleInput(down); component.handleInput(enter);
   const renderedAll = [];
   for (const description of [
-   'Default for Stream titles in inherit mode.',
-   'Default for Session titles in inherit mode.',
+   'Whether automatic reports may propose Stream titles.',
+   'Whether automatic reports may propose Session titles.',
    'Save changed Pi /name edits as manual Session titles.',
    'Mirror the saved Session title in Pi.',
   ]) {

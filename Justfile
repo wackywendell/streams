@@ -32,21 +32,17 @@ test-rust:
 test-pi: build
     node --test tests/stream_child_test.mjs tests/stream_checkpoint_test.mjs tests/stream_sync_test.mjs tests/stream_outcomes_test.mjs tests/stream_native_test.mjs tests/stream_hc_lifecycle_test.mjs tests/stream_naming*_test.mjs tests/stream_session_naming_test.mjs tests/stream_wire_test.mjs tests/stream_bin_test.mjs tests/stream_prompt_*_test.mjs tests/stream_debug_settings_test.mjs tests/stream_capture_*_test.mjs tests/stream_lab_tools_test.mjs tests/stream_artifacts_test.mjs
 
-# Exercise the Pi child protocol without starting Rust or Herdr
+# Exercise the Pi card watcher without starting Rust or Herdr
 test-pi-child:
     node --test tests/stream_child_test.mjs
 
-# Run Pi native lifecycle and child counting tests without Rust
+# Run Pi native lifecycle and watcher tests without Rust
 test-pi-native:
     node --test tests/stream_native_test.mjs tests/stream_child_test.mjs
 
-# Exercise Pi Session state and helper retirement without native I/O
+# Exercise Pi Session scope and hc label helpers without native I/O
 test-pi-hc-context:
     node --test tests/stream_hc_lifecycle_test.mjs
-
-# Opt-in selected Pi SDK runtime check; requires STREAMS_PI_SDK_ENTRY
-test-pi-hc-runtime:
-    node --test tests/stream_hc_sdk_runtime_test.mjs
 
 # Run isolated Pi catalog sync acceptance
 test-pi-sync: build

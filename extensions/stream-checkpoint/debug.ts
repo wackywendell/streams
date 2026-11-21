@@ -1,87 +1,150 @@
 import { join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { captureIds, captureSessions, loadCapture, parseCaptureInventory } from "./capture.ts";
-import { replayCapture } from "./replay.ts";
-import { confirmCapture } from "./capture-dialog.ts";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { ModelSelection } from "./agent.ts";
+import {
+  buildCaptureInventory,
+  captureIds,
+  captureSessions,
+  loadCapture,
+  privateDirectory,
+} from "./capture.ts";
+import { confirmCapture } from "./capture-dialog.ts";
+import { replayCapture } from "./replay.ts";
 import type { ReportAction, ResetTarget } from "./report-workflow.ts";
 import type { StreamCli } from "./streams.ts";
-import type { ReportingSettings } from "./settings.ts";
+import { parseModel } from "./settings.ts";
 
-type DebugCommand = {kind: "capture"; target?: {kind: "stream" | "workspace"; id: string}} | {kind: "replay"; id?: string; model?: ModelSelection; action: ReportAction};
-const usage = "Usage: /streams debug capture [stream ID|workspace ID]; /streams debug replay [CAPTURE_ID] [--model PROVIDER/ID] [--reset [session|stream|all]] [--auto]";
-export function parseDebugCommand(input: string): DebugCommand {
- const words = input.trim().split(/\s+/), kind = words.shift();
- if (kind === "capture" && (words.length === 0 || words.length === 2 && ["stream", "workspace"].includes(words[0]))) return {kind, target: words.length ? {kind: words[0] as "stream" | "workspace", id: words[1]} : undefined};
- if (kind !== "replay") throw Error(usage);
- const id = words[0] && !words[0].startsWith("--") ? words.shift() : undefined;
- let model: ModelSelection | undefined, reset: ResetTarget | undefined, auto = false;
- while (words.length) {
-  const flag = words.shift();
-  if (flag === "--model" && !model) {
-   const value = words.shift(), slash = value?.indexOf("/") ?? -1;
-   if (!value || slash < 1 || slash === value.length - 1 || value.startsWith("--")) throw Error(usage);
-   model = {provider: value.slice(0, slash), id: value.slice(slash + 1)};
-  } else if (flag === "--reset" && !reset) reset = ["session", "stream", "all"].includes(words[0]) ? words.shift() as ResetTarget : "all";
-  else if (flag === "--auto" && !auto) auto = true;
-  else throw Error(usage);
- }
- if (auto && !reset) throw Error("--auto requires --reset. " + usage);
- return {kind, id, model, action: reset ? {kind: "reset", target: reset, auto} : {kind: "report", force: true}};
-}
-/** Pi UI is an adapter; neither capture nor replay receives real catalog write methods. */
-export async function debugCommand(input: string, ctx: ExtensionContext, client: Pick<StreamCli, "captureInputs" | "preview">, agentDir: string, settings: ReportingSettings, signal: AbortSignal): Promise<void> {
- if (!settings.debug_commands) throw Error("Debug commands are disabled. Enable them in /streams settings → Debug → Debug commands.");
- const command = parseDebugCommand(input), root = join(agentDir, "stream-debug");
- if (!ctx.hasUI) throw Error("Streams debug commands require Pi's interactive dialogs");
- const current = () => {signal.throwIfAborted();};
- if (command.kind === "capture") {
-  let target = command.target;
-  if (!target) {
-   const inventory = parseCaptureInventory(await client.captureInputs(undefined, signal));current();
-   const targets = [...inventory.streams.map(stream => ({kind: "stream" as const, id: stream.id, title: stream.title})), ...inventory.workspaces.map(workspace => ({kind: "workspace" as const, id: workspace.id, title: workspace.label}))];
-   if (!targets.length) throw Error(`No capture targets found${inventory.topology_error ? `; ${inventory.topology_error}` : ""}`);
-   const labels = targets.map(target => `${target.kind} · ${target.title} · ${target.id}`);
-   const chosen = await ctx.ui.select("Capture a stream or workspace", labels, {signal});current();
-   if (chosen === undefined) return;
-   target = targets[labels.indexOf(chosen)];if (!target) return;
+export type DebugDeps = {
+  cli(ctx: ExtensionContext): StreamCli;
+  exclusive<T>(run: (signal: AbortSignal) => Promise<T>): Promise<T>;
+  enabled(): boolean;
+  defaultModel(): ModelSelection | undefined;
+  helperRoot?: () => string | undefined;
+  root?: () => string;
+};
+
+const debugRoot = (deps: DebugDeps) =>
+  deps.root?.() ?? join(getAgentDir(), "stream-debug");
+
+function ensureEnabled(deps: DebugDeps): void {
+  if (!deps.enabled()) {
+    throw new Error(
+      "Streams debug commands are disabled; enable them with: streams config set pi.reporting.debug_commands true"
+    );
   }
-  const inventory = parseCaptureInventory(await client.captureInputs(target, signal));current();
-  const proceed = await confirmCapture(ctx, inventory, root, signal);current();
-  if (!proceed) return;
-  const {capture, directory} = captureSessions(inventory, root, ctx.sessionManager, signal, join(agentDir, "stream-reporting-sessions"));
-  const captured = capture.samples.filter(sample => sample.evidence).length;
-  const partial = !!capture.topology_error || !!capture.unresolved?.length;
-  ctx.ui.notify(`${partial ? "Partial capture" : "Captured"}: ${captured}/${capture.samples.length} identified conversations; ${capture.unresolved?.length ?? 0} unresolved panes: ${directory}/capture.json`, !partial && captured === capture.samples.length ? "info" : "warning");
-  return;
- }
- let id = command.id;
- if (!id) {
-  const ids = captureIds(root);
-  if (!ids.length) throw Error("No frozen captures. Run /streams debug capture first.");
-  const captures = ids.map(id => {const capture = loadCapture(root, id);return {id, label: `${capture.captured_at} · ${capture.target.title} · ${capture.samples.length} sessions · ${id}`};});
-  const chosen = await ctx.ui.select("Replay a frozen capture", captures.map(item => item.label), {signal});current();
-  if (!chosen) return;
-  id = captures.find(item => item.label === chosen)?.id;if (!id) return;
- }
- const capture = loadCapture(root, id);current();
- let model = command.model;
- if (!model) {
-  const available = ctx.modelRegistry.getAvailable(), defaultModel = settings.model ?? ctx.model;
-  const models = [...available].sort((a, b) => Number(b.provider === defaultModel?.provider && b.id === defaultModel?.id) - Number(a.provider === defaultModel?.provider && a.id === defaultModel?.id));
-  const labels = models.map(model => `${model.provider}/${model.id}`);
-  const chosen = await ctx.ui.select("Replay model", labels, {signal});current();
-  if (!chosen) return;
-  const selected = models[labels.indexOf(chosen)];if (!selected) return;
-  model = {provider: selected.provider, id: selected.id};
- }
- if (!ctx.modelRegistry.find(model.provider, model.id)) throw Error("Replay model is unavailable; no fallback was used");
- const count = capture.samples.filter(sample => sample.evidence && !sample.unavailable).length;
- if (!await ctx.ui.confirm("Run model inference on frozen samples?", `${count} available conversations using ${model.provider}/${model.id}. Each may run enrollment, Session and Stream helpers. Normal provider requests/costs apply. Results stay local; real cards, sessions, names and layout are not changed.`, {signal})) return;
- current();
- ctx.ui.setStatus("stream-debug", "Streams debug · Replaying…");
- try {
-  const {run, directory} = await replayCapture(capture, root, ctx, model, command.action, (input, signal) => client.preview(input, signal), signal);
-  if (!signal.aborted) ctx.ui.notify(`Replay ${run.id}: ${run.samples.filter(sample => sample.status === "completed").length} completed, ${run.samples.filter(sample => sample.status === "failed").length} failed, ${run.samples.filter(sample => sample.status === "skipped").length} skipped, ${run.samples.filter(sample => sample.status === "unavailable").length} unavailable, ${run.samples.filter(sample => sample.status === "not-run" || sample.status === "cancelled").length} unrun/cancelled. Comparison: ${directory}/comparison.md`, run.samples.some(sample => sample.status !== "completed") ? "warning" : "info");
- } finally {ctx.ui.setStatus("stream-debug", undefined);}
+}
+
+export async function runCapture(ctx: ExtensionContext, deps: DebugDeps): Promise<void> {
+  ensureEnabled(deps);
+  if (!ctx.hasUI) throw new Error("Capture requires an interactive UI");
+  await deps.exclusive(async (signal) => {
+    const cli = deps.cli(ctx);
+    const list = await buildCaptureInventory(cli, undefined, getAgentDir(), signal);
+    if (!list.streams.length) {
+      ctx.ui.notify("No streams available to capture.", "info");
+      return;
+    }
+    const labels = list.streams.map((s) => `${s.id} · ${s.title}`);
+    const chosen = await ctx.ui.select("Select Stream to capture", [...labels, "Cancel"], { signal });
+    if (!chosen || chosen === "Cancel") return;
+    const stream = list.streams[labels.indexOf(chosen)];
+    if (!stream) return;
+    const inventory = await buildCaptureInventory(cli, stream.key, getAgentDir(), signal);
+    const root = debugRoot(deps);
+    if (!(await confirmCapture(ctx, inventory, root, signal))) return;
+    privateDirectory(root, root);
+    const { capture, directory } = captureSessions(
+      inventory,
+      root,
+      ctx.sessionManager,
+      signal,
+      deps.helperRoot?.()
+    );
+    ctx.ui.notify(
+      `Captured ${capture.samples.length} sample(s) to ${directory} (${capture.id})`,
+      "info"
+    );
+  });
+}
+
+function parseReplayArgs(args: string): {
+  captureId?: string;
+  model?: ModelSelection;
+  action: ReportAction;
+} {
+  const tokens = args.trim().split(/\s+/).filter(Boolean);
+  let captureId: string | undefined;
+  let model: ModelSelection | undefined;
+  let reset: ResetTarget | undefined;
+  let auto = false;
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (token === "--model") {
+      const value = tokens[++i];
+      if (!value) throw new Error("--model requires PROVIDER/ID");
+      model = parseModel(value);
+      if (!model) throw new Error("--model requires PROVIDER/ID");
+    } else if (token === "--reset") {
+      const next = tokens[i + 1];
+      if (next && ["session", "stream", "all"].includes(next)) {
+        reset = tokens[++i] as ResetTarget;
+      } else {
+        reset = "all";
+      }
+    } else if (token === "--auto") {
+      auto = true;
+    } else if (!captureId && !token.startsWith("-")) {
+      captureId = token;
+    } else {
+      throw new Error(`Unknown replay argument: ${token}`);
+    }
+  }
+  if (auto && !reset) throw new Error("--auto requires --reset");
+  const action: ReportAction = reset
+    ? { kind: "reset", target: reset, auto }
+    : { kind: "report", force: true };
+  return { captureId, model, action };
+}
+
+export async function runReplay(
+  ctx: ExtensionContext,
+  args: string,
+  deps: DebugDeps
+): Promise<void> {
+  ensureEnabled(deps);
+  const parsed = parseReplayArgs(args);
+  await deps.exclusive(async (signal) => {
+    const root = debugRoot(deps);
+    let id = parsed.captureId;
+    if (!id) {
+      const ids = captureIds(root);
+      if (!ids.length) {
+        ctx.ui.notify("No captures found. Run /streams capture first.", "info");
+        return;
+      }
+      if (!ctx.hasUI) throw new Error("Pass a capture ID to replay non-interactively");
+      const chosen = await ctx.ui.select("Select capture to replay", [...ids, "Cancel"], { signal });
+      if (!chosen || chosen === "Cancel") return;
+      id = chosen;
+    }
+    const model =
+      parsed.model ??
+      deps.defaultModel() ??
+      (ctx.model ? { provider: ctx.model.provider, id: ctx.model.id } : undefined);
+    if (!model) throw new Error("Choose a model with --model PROVIDER/ID");
+    const capture = loadCapture(root, id);
+    const { run, directory } = await replayCapture(
+      capture,
+      root,
+      ctx,
+      model,
+      parsed.action,
+      signal
+    );
+    ctx.ui.notify(
+      `Replay ${run.id} completed (${directory}): ${run.samples.filter((s) => s.status === "completed").length}/${run.samples.length} succeeded`,
+      "info"
+    );
+  });
 }

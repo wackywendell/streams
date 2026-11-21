@@ -1,42 +1,79 @@
+import { CardWatchChild, cardPluginRoot } from "./child.ts";
 import { projectSessionName } from "./session-naming.ts";
-import { StreamsChild } from "./child.ts";
-import { StreamsCliError } from "./streams.ts";
-import { hcLifecycle, type ChildRequest, type DomainObject } from "./child-protocol.ts";
+import { sessionKeyOf } from "./streams.ts";
 import type { NativeFactory } from "./native.ts";
 
-/** UI facts never select native work or become authority in a later request. */
-export const loadRustNative: NativeFactory = async ({pi, ctx, sessionId, cwd, env, child: shared, assertCurrent, warning}) => {
- const child = shared ?? new StreamsChild({sessionId, cwd, env, warning});
- const unsubscribe = child.subscribe(view => {
-  if (view.desired_pi_name === null) return;
-  try {projectSessionName(pi, ctx.sessionManager, sessionId, view.desired_pi_name, assertCurrent);}
-  catch (error) {try {assertCurrent();warning(String(error));} catch { /* Retired UI lifetime. */ }}
- });
- const call = async (request: ChildRequest, signal: AbortSignal): Promise<DomainObject> => {
-  assertCurrent();
-  const outcome = await child.run(request, {timeout:120_000, signal});assertCurrent();
-  if (outcome.status === "error") throw new StreamsCliError(outcome.error.message, outcome.error.kind);
-  if (outcome.status === "saved_with_warnings") for (const message of outcome.warnings) warning(message);
-  return outcome.result;
- };
- return {
-  start: async signal => {
-   const result = await call({kind:"session_started"}, signal);
-   const hc = hcLifecycle(result);
-   if (hc) {for (const message of hc.warnings) warning(message);return;}
-   if (!(result.native === "active" && ["opened", "existing", "suppressed"].includes(result.display as string)
-    || result.native === "inactive" && ["outside_herdr", "not_enrolled"].includes(result.reason as string))) throw Error("Invalid Rust lifecycle acknowledgement");
-  },
-  open: async signal => {
-   const result = await call({kind:"open_card"}, signal);
-   if (!["opened", "existing"].includes(result.display as string)) throw Error("Invalid Rust display acknowledgement");
-   return result;
-  },
-  close: async signal => {
-   const result = await call({kind:"close_card"}, signal);
-   if (result.closed !== true) throw Error("Invalid Rust close acknowledgement");
-   return result;
-  },
-  dispose: async () => {unsubscribe();if (!shared) await child.stop();},
- };
+/**
+ * Native frontend bridge:
+ * - In `hc` (herdr-app): writes `streams.session` label on `HC_TERMINAL_ID` on start
+ *   (full Session key when enrolled, empty string otherwise).
+ * - In classic Herdr (`HERDR_ENV=1`): runs `streams card watch pi/<ID>` and forwards
+ *   open/close to `streams card open` / `streams card close`.
+ * - Projects Pi's session name from the Session title when `pi.naming.session` is enabled.
+ */
+export const loadRustNative: NativeFactory = async ({
+  pi,
+  ctx,
+  sessionId,
+  cwd,
+  env,
+  cli,
+  piNamingSession,
+  assertCurrent,
+  warning,
+}) => {
+  let watcher: CardWatchChild | undefined;
+
+  return {
+    start: async (signal) => {
+      assertCurrent();
+      const session = await cli.showSession(sessionId, signal);
+      assertCurrent();
+      if (env.HC_TERMINAL_ID) {
+        try {
+          await cli.writeSessionLabel(session ? sessionKeyOf(session) : null, signal);
+        } catch (error) {
+          warning(error instanceof Error ? error.message : String(error));
+        }
+      }
+      if (session && piNamingSession()) {
+        try {
+          projectSessionName(pi, ctx.sessionManager, sessionId, session.title.text, assertCurrent);
+        } catch (error) {
+          try {
+            assertCurrent();
+            warning(error instanceof Error ? error.message : String(error));
+          } catch {
+            // Retired UI lifetime
+          }
+        }
+      }
+      if (env.HERDR_ENV === "1" && env.HERDR_PANE_ID) {
+        watcher = new CardWatchChild({
+          sessionId,
+          cwd,
+          env,
+          pluginRoot: cardPluginRoot,
+          warning,
+        });
+        watcher.start();
+      }
+    },
+    open: async (signal) => {
+      assertCurrent();
+      const result = await cli.cardOpen(sessionId, cardPluginRoot, signal);
+      assertCurrent();
+      return result;
+    },
+    close: async (signal) => {
+      assertCurrent();
+      const result = await cli.cardClose(sessionId, signal);
+      assertCurrent();
+      return result;
+    },
+    dispose: async () => {
+      await watcher?.stop();
+      watcher = undefined;
+    },
+  };
 };

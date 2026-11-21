@@ -1,133 +1,264 @@
-import { allowsNull, automaticReferenceRequest, editRequest, patchFields } from "./core.ts";
-import { receiptCanContinue, receiptHasUnappliedReferences, referenceText } from "./streams.ts";
-import type { DiscardedCard, LocalContext, Receipt, ApplyRequest } from "./streams.ts";
-import type { EnrollmentInference, InferenceResult, ReportInference } from "./agent.ts";
+import {
+  automaticStreamFieldNames,
+  buildSessionReportEdit,
+  buildStreamReportEdit,
+  summarizeWrittenReferences,
+} from "./core.ts";
+import {
+  formatNotWritten,
+  sessionKeyOf,
+  streamKeyOf,
+  type EditBody,
+  type EditResult,
+  type LocalContext,
+} from "./streams.ts";
+import type {
+  EnrollmentInference,
+  InferenceResult,
+  ReportInference,
+  SessionReportResult,
+  StreamReportResult,
+} from "./agent.ts";
 
 export type ResetTarget = "all" | "session" | "stream";
+
 export type ReportAction =
- | {kind: "report"; force: boolean; instructions?: string}
- | {kind: "reset"; target: ResetTarget; auto: boolean; instructions?: string};
+  | { kind: "report"; force: boolean; instructions?: string }
+  | { kind: "reset"; target: ResetTarget; auto: boolean; instructions?: string };
+
 export type ReportSnapshot = {
- native: string; cwd: string; evidence: {messages: any[]; leafId: string | null}; catalog: LocalContext;
- valid(): boolean; attached(): Promise<boolean>;
-};
-export type ReportGenerator = <T extends EnrollmentInference | ReportInference>(request: T) => Promise<InferenceResult<T>>;
-export type ReportEnvironment = {
- signal: AbortSignal; automaticEnrollment: boolean;
- capture(): Promise<ReportSnapshot>; generate: ReportGenerator;
- /** Before a reset captures anything, so a card that cannot be decoded is rebuilt instead. */
- discardUnreadable(): Promise<DiscardedCard>;
- apply(request: ApplyRequest): Promise<Receipt>; enroll(request: unknown): Promise<Receipt>;
- receipt(receipt: Receipt): void; notice(text: string, level?: "info" | "warning"): void;
+  native: string;
+  cwd: string;
+  evidence: { messages: any[]; leafId: string | null };
+  catalog: LocalContext;
+  valid(): boolean;
+  attached(): Promise<boolean>;
 };
 
-/** Shared ordering and card rules; the environment owns persistence and liveness. */
-export async function runReport(action: ReportAction, environment: ReportEnvironment): Promise<boolean> {
- const reset = action.kind === "reset", auto = action.kind === "reset" && action.auto;
- const target = action.kind === "reset" ? action.target : "all";
- const force = action.kind === "reset" || action.force, instructions = action.instructions;
- const {signal, generate} = environment, captureNow = () => environment.capture();
- let savedAny = false, reenroll = false;
- if (reset) {
-  const discarded = await environment.discardUnreadable();
-  for (const reason of [discarded.session, discarded.stream]) if (reason !== null) {
-   savedAny = true;environment.notice(`${reason}. Reset discarded it.`, "warning");
-  }
-  // An unreadable Session named no Stream we can keep; the conversation enrolls again.
-  reenroll = discarded.session !== null;
-  if (signal.aborted) return savedAny;
- }
- let capture = await captureNow();
- if (!capture.valid() || signal.aborted) return savedAny;
- const inferAndApply = async (kind: "session" | "stream"): Promise<boolean> => {
-  const inferred = await generate({type: kind, catalog: capture.catalog, messages: capture.evidence.messages, instructions, reset});
-  if (signal.aborted || !await capture.attached()) return false;
-  // A reset clears the short forms the model left out; an omitted long field is kept.
-  if (reset) for (const {field, schema, short} of patchFields(capture.catalog, kind, "automatic")) {
-   if (short && allowsNull(schema) && (capture.catalog[kind] as Record<string, unknown>)[field] != null && !Object.hasOwn(inferred.changes, field)) inferred.changes[field] = null;
-  }
-  const recordReceipt = (receipt: Receipt, request?: ApplyRequest): boolean => {
-   environment.receipt(receipt);
-   const accepted = receiptCanContinue(receipt);
-   if (accepted) savedAny = true;
-   if (request && request.actor === "automatic" && request.changes.reference_changes) {
-    const saves = receipt.saves?.map(item => item.save) ?? (receipt.save ? [receipt.save] : []);
-    for (const save of saves) if (receipt.simulated || ["persisted", "committed"].includes(save.local)) {
-     for (const row of save.domain?.reference_results ?? []) {
-      if (row.outcome !== "changes" || row.action !== "add" && row.action !== "drop" || !row.desired) continue;
-      environment.notice(`Reference ${row.action === "add" ? "added" : "dropped"}: ${referenceText(row.desired.name)}`, "info");
-     }
-    }
-   }
-   return accepted && !receiptHasUnappliedReferences(receipt);
-  };
-  if (Object.keys(inferred.changes).length) {
-   if (signal.aborted || !await capture.attached()) return false;
-   const receipt = await environment.apply(editRequest(capture.catalog, kind, inferred.changes, "automatic"));
-   if (!recordReceipt(receipt)) return false;
-  }
-  if (kind === "session") {
-   let request: ApplyRequest | undefined, receipt: Receipt | undefined;
-   try {
-    if (inferred.reference_proposals !== undefined && (!Array.isArray(inferred.reference_proposals) || inferred.reference_proposals.length)) request = automaticReferenceRequest(capture.catalog, inferred.reference_proposals);
-    if (request) {
-     if (signal.aborted || !await capture.attached()) return false;
-     receipt = await environment.apply(request);
-    }
-   } catch (error) {
-    environment.notice(`Reference update failed: ${referenceText(error instanceof Error ? error.message : String(error))}`, "warning");
-    return false;
-   }
-   if (receipt && !recordReceipt(receipt, request)) return false;
-  }
-  return true;
- };
- if (!capture.catalog.session) {
-  if (reset && !reenroll) {environment.notice("Reset requires an attached work card. Use /streams attach first.");return false;}
-  if (!force && !environment.automaticEnrollment) return false;
-  const result = await generate({type: "enroll", catalog: capture.catalog, messages: capture.evidence.messages, instructions});
-  if (signal.aborted || !await capture.attached() || (!result.meaningful && !force)) return false;
-  if (!result.session?.title?.trim() || (!capture.catalog.stream && !result.stream?.title?.trim())) throw Error("Enrollment requires meaningful effort and session titles");
-  const receipt = await environment.enroll({version: 2, catalog_source: capture.catalog.catalog_source, harness: "pi", harness_session_id: capture.native, ...(capture.catalog.stream ? {stream_id: capture.catalog.stream.id} : {stream: result.stream}), session: result.session, actor: "automatic", cwd: capture.cwd});
-  environment.receipt(receipt);
-  if (receiptCanContinue(receipt)) savedAny = true;
-  if (!capture.valid() || !receiptCanContinue(receipt)) return savedAny;
-  const enrollmentSource = capture.catalog.catalog_source;
-  capture = await captureNow();
-  if (capture.catalog.catalog_source !== enrollmentSource) throw Error("Catalog source changed after enrollment; no further report was attempted");
-  if (!capture.catalog.session || !capture.valid() || signal.aborted) return savedAny;
- }
- const resetTargets: readonly ("session" | "stream")[] = !reset || target === "all" ? ["session", "stream"] : [target];
- if (reset && auto) {
-  const source = capture.catalog.catalog_source, sessionId = capture.catalog.session.id, streamId = capture.catalog.stream?.id;
-  for (const kind of resetTargets) {
-   const record = capture.catalog[kind];
-   if (!record) continue;
-   const changes: Record<string, unknown> = {};
-   if (record.title_mode === "manual" || record.title_mode === "inherit" && capture.catalog.title_defaults[kind] === "manual") changes.title_mode = "automatic";
-   if (kind === "stream" && capture.catalog.stream!.goal_mode === "manual") changes.goal_mode = "automatic";
-   if (!Object.keys(changes).length) continue;
-   if (signal.aborted || !await capture.attached()) return savedAny;
-   const receipt = await environment.apply(editRequest(capture.catalog, kind, changes, "user"));
-   environment.receipt(receipt);
-   if (receiptCanContinue(receipt)) savedAny = true;
-   if (!capture.valid() || !receiptCanContinue(receipt)) return savedAny;
-   capture = await captureNow();
-   if (!capture.valid() || capture.catalog.catalog_source !== source || capture.catalog.session?.id !== sessionId || capture.catalog.stream?.id !== streamId) throw Error("Attachment changed during naming reset");
-  }
- }
- if (resetTargets.includes("session")) {
-  // A Session write is its own inference and guarded target; it never timestamps the effort.
-  if (!await inferAndApply("session")) return savedAny;
-  if (!resetTargets.includes("stream")) return savedAny;
-  // Capture AGAIN before metadata inference, never after it or to make an old result fit.
-  if (!capture.valid()) return savedAny;
-  const sessionBase = capture.catalog;
-  capture = await captureNow();
-  if (capture.catalog.catalog_source !== sessionBase.catalog_source || capture.catalog.stream?.id !== sessionBase.stream?.id || capture.catalog.session?.id !== sessionBase.session?.id) throw Error("Catalog source or attachment changed; metadata report cancelled");
+export type ReportGenerator = <T extends EnrollmentInference | ReportInference>(
+  request: T
+) => Promise<InferenceResult<T>>;
+
+export type ReportEnvironment = {
+  signal: AbortSignal;
+  automaticEnrollment: boolean;
+  capture(): Promise<ReportSnapshot>;
+  generate: ReportGenerator;
+  createStream(input: {
+    title: string;
+    titleMode: "automatic";
+    goal?: string;
+    goalShort?: string;
+    goalMode?: "automatic";
+  }): Promise<{ key: string }>;
+  createSession(
+    sessionId: string,
+    input: { stream: string; title: string; titleMode: "automatic"; directory: string }
+  ): Promise<{ key: string }>;
+  editSession(target: string, body: EditBody): Promise<EditResult>;
+  editStream(target: string, body: EditBody): Promise<EditResult>;
+  onEnrolled?(info: { streamKey: string; sessionKey: string; sessionTitle: string }): Promise<void> | void;
+  onEditResult?(kind: "session" | "stream", body: EditBody, result: EditResult): void;
+  notice(text: string, level?: "info" | "warning"): void;
+};
+
+/** Shared report ordering and format-5 admission rules; the environment owns I/O and liveness. */
+export async function runReport(
+  action: ReportAction,
+  environment: ReportEnvironment
+): Promise<boolean> {
+  const reset = action.kind === "reset";
+  const auto = action.kind === "reset" && action.auto;
+  const target = action.kind === "reset" ? action.target : "all";
+  const force = action.kind === "reset" || action.force;
+  const instructions = action.instructions;
+  const { signal, generate } = environment;
+
+  let savedAny = false;
+  let capture = await environment.capture();
   if (!capture.valid() || signal.aborted) return savedAny;
- }
- if (!capture.catalog.stream || !patchFields(capture.catalog, "stream", "automatic").length) return savedAny;
- if (!await inferAndApply("stream")) return savedAny;
- return savedAny;
+
+  // 1. Enrollment when no Session exists yet.
+  if (!capture.catalog.session) {
+    if (reset) {
+      environment.notice("Reset requires an enrolled Session. Use /streams attach first.");
+      return false;
+    }
+    if (!force && !environment.automaticEnrollment) return false;
+
+    const enrolled = await generate({
+      type: "enroll",
+      catalog: capture.catalog,
+      messages: capture.evidence.messages,
+      instructions,
+    });
+    if (signal.aborted || !(await capture.attached()) || (!enrolled.meaningful && !force)) {
+      return false;
+    }
+    const sessionTitle = enrolled.session?.title?.trim();
+    const streamTitle = enrolled.stream?.title?.trim();
+    if (!sessionTitle || (!capture.catalog.stream && !streamTitle)) {
+      throw new Error("Enrollment requires meaningful Stream and Session titles");
+    }
+
+    let streamKey: string;
+    if (capture.catalog.stream) {
+      streamKey = streamKeyOf(capture.catalog.stream);
+    } else {
+      const created = await environment.createStream({
+        title: streamTitle!,
+        titleMode: "automatic",
+        ...(enrolled.stream?.goal?.trim()
+          ? {
+              goal: enrolled.stream.goal.trim(),
+              goalShort: enrolled.stream.goal_short?.trim() || undefined,
+              goalMode: "automatic" as const,
+            }
+          : {}),
+      });
+      streamKey = created.key;
+    }
+
+    const createdSession = await environment.createSession(capture.native, {
+      stream: streamKey,
+      title: sessionTitle,
+      titleMode: "automatic",
+      directory: capture.cwd,
+    });
+    savedAny = true;
+    await environment.onEnrolled?.({
+      streamKey,
+      sessionKey: createdSession.key,
+      sessionTitle,
+    });
+
+    if (!capture.valid() || signal.aborted) return savedAny;
+    capture = await environment.capture();
+    if (!capture.catalog.session || !capture.valid() || signal.aborted) return savedAny;
+  }
+
+  const targets: readonly ("session" | "stream")[] =
+    !reset || target === "all" ? ["session", "stream"] : [target];
+
+  // 2. Optional `--auto` reset: clear manual marks before regenerating.
+  if (reset && auto) {
+    const sessKey = sessionKeyOf(capture.catalog.session);
+    const stKey = capture.catalog.stream ? streamKeyOf(capture.catalog.stream) : null;
+    if (targets.includes("session") && capture.catalog.session.title.manual) {
+      if (signal.aborted || !(await capture.attached())) return savedAny;
+      const body: EditBody = {
+        changes: { title: { text: capture.catalog.session.title.text, manual: false } },
+        before: { title: structuredClone(capture.catalog.session.title) },
+      };
+      const res = await environment.editSession(sessKey, body);
+      environment.onEditResult?.("session", body, res);
+      savedAny = true;
+    }
+    if (targets.includes("stream") && capture.catalog.stream && stKey) {
+      const st = capture.catalog.stream;
+      const changes: Record<string, unknown> = {};
+      const before: Record<string, unknown> = {};
+      if (st.title.manual) {
+        changes.title = { text: st.title.text, manual: false };
+        before.title = structuredClone(st.title);
+      }
+      if (st.goal?.manual) {
+        changes.goal = { text: st.goal.text, short: st.goal.short, manual: false };
+        before.goal = structuredClone(st.goal);
+      }
+      if (Object.keys(changes).length > 0) {
+        if (signal.aborted || !(await capture.attached())) return savedAny;
+        const body: EditBody = { changes, before };
+        const res = await environment.editStream(stKey, body);
+        environment.onEditResult?.("stream", body, res);
+        savedAny = true;
+      }
+    }
+    capture = await environment.capture();
+    if (!capture.valid() || !capture.catalog.session || signal.aborted) return savedAny;
+  }
+
+  // 3. Session report (progress + references + branch in ONE `session edit`).
+  if (targets.includes("session")) {
+    const inferred = (await generate({
+      type: "session",
+      catalog: capture.catalog,
+      messages: capture.evidence.messages,
+      instructions,
+      reset,
+    })) as SessionReportResult;
+    if (signal.aborted || !(await capture.attached())) return savedAny;
+
+    const filterNotices: string[] = [];
+    const body = buildSessionReportEdit(
+      capture.catalog.session,
+      capture.catalog.naming,
+      inferred.changes ?? {},
+      inferred.reference_proposals,
+      filterNotices
+    );
+    for (const msg of filterNotices) environment.notice(msg, "info");
+
+    if (body) {
+      const key = sessionKeyOf(capture.catalog.session);
+      const res = await environment.editSession(key, body);
+      savedAny = true;
+      environment.onEditResult?.("session", body, res);
+      for (const msg of summarizeWrittenReferences(body, res)) {
+        environment.notice(msg, "info");
+      }
+      for (const skipped of formatNotWritten(res.not_written)) {
+        environment.notice(`Session edit skipped: ${skipped}`, "warning");
+      }
+    }
+
+    if (!targets.includes("stream")) return savedAny;
+    if (!capture.valid() || signal.aborted) return savedAny;
+
+    const prevSessionKey = sessionKeyOf(capture.catalog.session);
+    const prevStreamKey = capture.catalog.stream ? streamKeyOf(capture.catalog.stream) : null;
+    capture = await environment.capture();
+    if (
+      !capture.valid() ||
+      !capture.catalog.session ||
+      !capture.catalog.stream ||
+      sessionKeyOf(capture.catalog.session) !== prevSessionKey ||
+      streamKeyOf(capture.catalog.stream) !== prevStreamKey
+    ) {
+      return savedAny;
+    }
+  }
+
+  // 4. Stream report (title + goal in ONE `stream edit`, when automatic fields are allowed).
+  if (
+    targets.includes("stream") &&
+    capture.catalog.stream &&
+    automaticStreamFieldNames(capture.catalog).length > 0
+  ) {
+    const inferred = (await generate({
+      type: "stream",
+      catalog: capture.catalog,
+      messages: capture.evidence.messages,
+      instructions,
+      reset,
+    })) as StreamReportResult;
+    if (signal.aborted || !(await capture.attached())) return savedAny;
+
+    const body = buildStreamReportEdit(
+      capture.catalog.stream,
+      capture.catalog.naming,
+      inferred.changes ?? {}
+    );
+    if (body) {
+      const key = streamKeyOf(capture.catalog.stream);
+      const res = await environment.editStream(key, body);
+      savedAny = true;
+      environment.onEditResult?.("stream", body, res);
+      for (const skipped of formatNotWritten(res.not_written)) {
+        environment.notice(`Stream edit skipped: ${skipped}`, "warning");
+      }
+    }
+  }
+
+  return savedAny;
 }

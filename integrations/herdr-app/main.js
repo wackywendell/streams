@@ -23,6 +23,7 @@ import {
   exec,
 } from "herdr";
 import {
+  LABEL_SAVED,
   STALE_FALLBACK_MS,
   HOST_STREAM_FILTERS,
   HOST_STREAM_SORTS,
@@ -170,6 +171,7 @@ function collectSnapshot() {
     focusedPane?.program?.agent && focusedPane?.terminal
       ? focusedPane.terminal
       : focus?.agent ?? null;
+  const allAgents = agents();
   return {
     activeSpace,
     activeTab,
@@ -177,6 +179,8 @@ function collectSnapshot() {
     tabIds: allSpaces.flatMap((space) => (space.tabs ?? []).map((tab) => tab.id)),
     visibleTerminals,
     liveTerminals,
+    panes: allPanes,
+    agents: allAgents,
     terminalList: terminals(),
     focusedTerminal,
   };
@@ -208,10 +212,7 @@ function snapshotSignature(snap) {
     terminals: snap.visibleTerminals,
     liveTerminals: snap.liveTerminals,
     focused: snap.focusedTerminal,
-    notice: observeNoticeToken(
-      snap.terminalList,
-      coordinator.binding?.notification_key ?? null
-    ),
+    notice: observeNoticeToken(snap.terminalList, LABEL_SAVED),
   });
 }
 
@@ -373,12 +374,10 @@ export default class StreamsMod extends View {
       !(windowActivated && stale) &&
       sig === this._lastSig &&
       (coordinator.frames.size > 0 ||
-        coordinator.describeError ||
         coordinator.lastError ||
         coordinator.lastCompletedKey !== null ||
         coordinator.lastFailedKey !== null ||
-        coordinator.inFlightKey !== null ||
-        coordinator.describePromise !== null)
+        coordinator.inFlightKey !== null)
     ) {
       return;
     }
@@ -726,13 +725,16 @@ export default class StreamsMod extends View {
             .on_click((_e, clickCx) => {
               if (rawProps.overlay) closeOverlay(rawProps.overlay);
               if (streamId) {
-                clickCx.spawn(async (asyncCx) => {
+                clickCx.spawn(async () => {
+                  const snap = collectSnapshot();
                   await coordinator.openWork(
-                    { stream: streamId },
                     {
-                      run,
-                      openUrl: (u) => asyncCx.open_url(u),
-                    }
+                      stream: streamId,
+                      terminalList: snap.terminalList,
+                      panes: snap.panes,
+                      agents: snap.agents,
+                    },
+                    { run }
                   );
                 });
               }
@@ -825,15 +827,7 @@ export default class StreamsMod extends View {
           .child("Refresh")
       );
 
-    if (coordinator.describeError) {
-      return v_flex()
-        .size_full()
-        .bg(t.chrome)
-        .child(header)
-        .child(div().p(12).text_size(12).text_color(t.dim).child(coordinator.describeError));
-    }
-
-    if (coordinator.lastError && coordinator.frames.size === 0) {
+    if (coordinator.lastError && coordinator.frames.size === 0 && coordinator.hostStreams.length === 0) {
       return v_flex()
         .size_full()
         .bg(t.chrome)
@@ -1096,17 +1090,16 @@ export default class StreamsMod extends View {
                     .when(idx > 0, (row) => row.border_t(1).border_color(t.border))
                     .hover((s) => s.bg(t.hover))
                     .on_click((_e, clickCx) => {
-                      clickCx.spawn(async (asyncCx) => {
+                      clickCx.spawn(async () => {
                         await coordinator.openWork(
                           {
                             stream: streamId,
-                            sessions: { kind: "only", value: [sess.id] },
-                            cwd: null,
+                            sessions: { kind: "selected", session_ids: [sess.key || sess.id] },
+                            terminalList: snap.terminalList,
+                            panes: snap.panes,
+                            agents: snap.agents,
                           },
-                          {
-                            run,
-                            openUrl: (u) => asyncCx.open_url(u),
-                          }
+                          { run }
                         );
                       });
                     })
@@ -1161,9 +1154,6 @@ export default class StreamsMod extends View {
       const inspectedStream = view.stream ?? null;
       if (inspectedStream) {
         const monoFont = settings()?.font_family ?? "JetBrains Mono";
-        const inspectedRefs = buildReferenceItems(inspectedStream, {
-          viewingSessionId: inspectedStream.sessions?.[0]?.id ?? null,
-        });
         const inspectedSessions = inspectedStream.sessions ?? [];
         const inspectedUnreadable = unreadableNotice(inspectedStream.unreadable);
         return v_flex()
@@ -1221,6 +1211,16 @@ export default class StreamsMod extends View {
                         )
                         .child(statusBadge(inspectedStream.status, t))
                     )
+                    .when(Boolean(inspectedStream.id), (el) =>
+                      el.child(
+                        div()
+                          .font_family(monoFont)
+                          .text_size(10.5)
+                          .text_color(t.dim)
+                          .truncate()
+                          .child(inspectedStream.id)
+                      )
+                    )
                     .when(Boolean(inspectedStream.goal), (el) =>
                       el.child(
                         div().text_size(11.5).text_color(t.muted).child(inspectedStream.goal)
@@ -1230,15 +1230,12 @@ export default class StreamsMod extends View {
                 .when(inspectedSessions.length > 0, (el) =>
                   el.child(
                     renderSessionListSection(
-                      inspectedStream.id,
+                      inspectedStream.key,
                       inspectedSessions,
                       `Sessions · ${inspectedSessions.length}`,
                       false
                     )
                   )
-                )
-                .when(inspectedRefs.length > 0, (el) =>
-                  el.child(renderReferencesSection(inspectedRefs, monoFont))
                 )
             )
           );
@@ -1247,8 +1244,9 @@ export default class StreamsMod extends View {
       const streamList = coordinator.hostStreams ?? [];
       const unreadable = unreadableNotice(coordinator.hostUnreadable);
       const liveSet = liveStreamIds({
-        panes: panes(),
+        panes: snap.panes,
         terminalList: snap.terminalList,
+        agents: snap.agents,
         frames: coordinator.frames,
       });
       const filteredStreams = filterHostStreams(streamList, {
@@ -1407,12 +1405,14 @@ export default class StreamsMod extends View {
                   .border_color(t.border)
                   .children(
                     filteredStreams.map((summary, idx) => {
-                      const isLive = liveSet.has(summary.id);
-                      const age = formatRelativeAge(summary.last_updated_ms);
+                      const isLive = liveSet.has(summary.key) || liveSet.has(summary.id);
+                      const age = formatRelativeAge(summary.last_activity_ms);
                       const sessionCountText =
                         summary.active_sessions > 0
                           ? `${summary.active_sessions} active`
-                          : `${summary.total_sessions} session${summary.total_sessions === 1 ? "" : "s"}`;
+                          : summary.total_sessions > 0
+                            ? `${summary.total_sessions} session${summary.total_sessions === 1 ? "" : "s"}`
+                            : summary.id;
                       return v_flex()
                         .id(`host-stream-${summary.id}`)
                         .px(9)
@@ -1421,21 +1421,20 @@ export default class StreamsMod extends View {
                         .when(idx > 0, (row) => row.border_t(1).border_color(t.border))
                         .hover((s) => s.bg(t.hover))
                         .on_click((_e, clickCx) => {
-                          clickCx.spawn(async (asyncCx) => {
-                            if (isLive || summary.active_sessions > 0) {
+                          clickCx.spawn(async () => {
+                            if (isLive || summary.status === "active" || summary.status === "parked") {
                               await coordinator.openWork(
                                 {
-                                  stream: summary.id,
+                                  stream: summary.key,
                                   sessions: { kind: "all_eligible" },
-                                  cwd: null,
+                                  terminalList: snap.terminalList,
+                                  panes: snap.panes,
+                                  agents: snap.agents,
                                 },
-                                {
-                                  run,
-                                  openUrl: (u) => asyncCx.open_url(u),
-                                }
+                                { run }
                               );
                             } else {
-                              await coordinator.inspectStream(summary.id);
+                              await coordinator.inspectStream(summary.key);
                             }
                           });
                         })
@@ -1523,10 +1522,8 @@ export default class StreamsMod extends View {
       effectiveStatus === "done"
         ? enrolled.recap || enrolled.state
         : enrolled.state || enrolled.recap;
-    const references = buildReferenceItems(stream, {
-      viewingSessionId: enrolled.id,
-    });
-    const otherSessions = (stream.sessions ?? []).filter((s) => s.id !== enrolled.id);
+    const references = buildReferenceItems(enrolled);
+    const otherSessions = (stream.sessions ?? []).filter((s) => s.key !== enrolled.key);
     const streamUnreadable = unreadableNotice(stream.unreadable);
 
     return v_flex()
@@ -1585,12 +1582,22 @@ export default class StreamsMod extends View {
                               height: 44,
                               props: {
                                 kind: "stream-menu",
-                                stream_id: stream.id,
+                                stream_id: stream.key,
                               },
                             });
                           })
                           .child("⋮")
                       )
+                  )
+                  .when(Boolean(stream.id), (el) =>
+                    el.child(
+                      div()
+                        .font_family(monoFont)
+                        .text_size(10.5)
+                        .text_color(t.dim)
+                        .truncate()
+                        .child(stream.id)
+                    )
                   )
                   .when(Boolean(stream.goal), (el) =>
                     el.child(div().text_size(11.5).text_color(t.muted).child(stream.goal))
@@ -1648,7 +1655,7 @@ export default class StreamsMod extends View {
           .when(otherSessions.length > 0, (el) =>
             el.child(
               renderSessionListSection(
-                stream.id,
+                stream.key,
                 otherSessions,
                 `Other sessions · ${otherSessions.length}`,
                 true

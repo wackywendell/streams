@@ -74,6 +74,16 @@ export function validateSettings(value: ReportingSettings): void {
  if (value.model !== undefined && (!plainObject(value.model) || typeof value.model.provider !== "string" || !value.model.provider.trim() || typeof value.model.id !== "string" || !value.model.id.trim())) throw Error("Reporting model must be an object with nonempty string provider and model ID");
 }
 
+export function parseModel(value: string): { provider: string; id: string } | undefined {
+ const slash = value.indexOf("/");
+ if (slash < 1 || slash === value.length - 1 || /\s/.test(value)) return undefined;
+ return {provider: value.slice(0, slash), id: value.slice(slash + 1)};
+}
+
+export function formatModel(model: { provider: string; id: string }): string {
+ return `${model.provider}/${model.id}`;
+}
+
 export type ConfigActions = {
  setConfig: (key: string, value: string) => Promise<ConfigSnapshot>;
  unsetConfig: (key: string) => Promise<ConfigSnapshot>;
@@ -108,8 +118,8 @@ export async function settingsDialog(
   {id: "pi.reporting.session_logging", label: "pi.reporting.session_logging", currentValue: valueFor("pi.reporting.session_logging", current), description: "Save complete helper inputs, responses, retries and errors as Pi JSONL sessions in stream-reporting-sessions under the Pi agent directory.", values: ["true", "false"]},
  ];
  const namingItems: SettingItem[] = [
-  {id: "naming.stream", label: "naming.stream", currentValue: valueFor("naming.stream", current), description: "Default for Stream titles in inherit mode. Automatic allows future reports to refine titles; manual protects them.", values: ["automatic", "manual"]},
-  {id: "naming.session", label: "naming.session", currentValue: valueFor("naming.session", current), description: "Default for Session titles in inherit mode. Automatic allows future reports to refine titles; manual protects them.", values: ["automatic", "manual"]},
+  {id: "naming.stream", label: "naming.stream", currentValue: valueFor("naming.stream", current), description: "Whether automatic reports may propose Stream titles. Automatic allows reports to refine titles; manual stops automatic title proposals.", values: ["automatic", "manual"]},
+  {id: "naming.session", label: "naming.session", currentValue: valueFor("naming.session", current), description: "Whether automatic reports may propose Session titles. Automatic allows reports to refine titles; manual stops automatic title proposals.", values: ["automatic", "manual"]},
   {id: "pi.naming.import_edits", label: "pi.naming.import_edits", currentValue: valueFor("pi.naming.import_edits", current), description: "Save changed Pi /name edits as manual Session titles. Independent of outgoing Pi synchronization.", values: ["true", "false"]},
   {id: "pi.naming.session", label: "pi.naming.session", currentValue: valueFor("pi.naming.session", current), description: "Mirror the saved Session title in Pi. Turning this off stops Streams from changing Pi's displayed name.", values: ["true", "false"]},
  ];

@@ -1,175 +1,107 @@
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { checkoutRoot, checkoutSource, resolveStreamsBin } from "./streams-bin.ts";
-import { decodeServerFrame, hcLifecycle, type ChildOutcome, type ChildView, type PiRequestContext, type Runner, type ServerFrame } from "./child-protocol.ts";
+import { resolveStreamsBin } from "./streams-bin.ts";
 
-type Pending = {resolve: (value: ChildOutcome) => void; reject: (error: Error) => void};
-const pluginRoot = fileURLToPath(new URL("../../integrations/herdr-work-cards", import.meta.url));
-const short = (digest: string) => digest.slice(0, 12);
-/** A binary built from other sources would fail on every request in its own way; refuse it once, plainly. */
-function foreignBinary(binary: string, expected: string | null, reported?: string): Error {
- const found = reported === undefined ? "it reports no source digest" : `its sources are ${short(reported)}`;
- return Error(`Streams binary ${binary} was not built from this extension's checkout ${checkoutRoot} (${found}; the checkout's are ${expected ? short(expected) : "unknown"}). Run "just build" in ${checkoutRoot}, or point STREAMS_BIN_PATH at a build of these sources, then reload Pi.`);
+const defaultPluginRoot = fileURLToPath(
+  new URL("../../integrations/herdr-work-cards", import.meta.url)
+);
+
+/**
+ * Long-lived classic Herdr `streams card watch pi/<ID>` process.
+ * Keeps stdin open while Pi runs; closing stdin signals clean shutdown.
+ */
+export class CardWatchChild {
+  private process?: ReturnType<typeof spawn>;
+  private stopped = false;
+  private closing?: Promise<void>;
+  private closed?: Promise<void>;
+
+  constructor(
+    private readonly options: {
+      sessionId: string;
+      cwd: string;
+      env?: NodeJS.ProcessEnv;
+      pluginRoot?: string;
+      warning?: (message: string) => void;
+      spawn?: typeof spawn;
+      stopTimeoutMs?: number;
+    }
+  ) {}
+
+  start(): void {
+    if (this.stopped || this.process) return;
+    const env = this.options.env ?? process.env;
+    const binary = resolveStreamsBin(env);
+    const pluginRoot = this.options.pluginRoot ?? defaultPluginRoot;
+    const selector = `pi/${this.options.sessionId}`;
+    const child = (this.options.spawn ?? spawn)(
+      binary,
+      ["card", "watch", selector, "--plugin-root", pluginRoot],
+      {
+        cwd: this.options.cwd,
+        env: { ...env, STREAMS_BIN_PATH: binary },
+        stdio: ["pipe", "ignore", "pipe"],
+      }
+    );
+    this.process = child;
+    let resolveClose!: () => void;
+    this.closed = new Promise((resolve) => {
+      resolveClose = resolve;
+    });
+    let stderr = "";
+    child.stderr?.setEncoding("utf8").on("data", (chunk: string) => {
+      stderr += chunk;
+    });
+    child.stdin?.on("error", () => {});
+    child.on("error", (error) => {
+      if (!this.stopped) {
+        this.options.warning?.(`card watch failed: ${error.message}`);
+      }
+    });
+    child.on("close", (code, signal) => {
+      resolveClose();
+      if (this.process === child) {
+        this.process = undefined;
+        this.closed = undefined;
+      }
+      if (!this.stopped && (signal || (code !== null && code !== 0))) {
+        const detail = stderr.trim();
+        this.options.warning?.(
+          `card watch exited (${signal ?? code})${detail ? `: ${detail}` : ""}`
+        );
+      }
+    });
+  }
+
+  get running(): boolean {
+    return this.process !== undefined;
+  }
+
+  stop(): Promise<void> {
+    if (this.closing) return this.closing;
+    this.stopped = true;
+    const child = this.process;
+    if (!child) return Promise.resolve();
+    const closed = this.closed ?? Promise.resolve();
+    const timeoutMs = this.options.stopTimeoutMs ?? 2000;
+    const timer = setTimeout(() => {
+      if (this.process === child && !child.killed) {
+        try {
+          child.kill("SIGTERM");
+        } catch {
+          // Already exited
+        }
+      }
+    }, timeoutMs);
+    timer.unref?.();
+    this.closing = closed.finally(() => clearTimeout(timer));
+    try {
+      child.stdin?.end();
+    } catch {
+      // Already closed
+    }
+    return this.closing;
+  }
 }
 
-/** One transport per Pi session. Restart reattaches enabled native work, never requests. */
-export class StreamsChild {
- private process?: ReturnType<typeof spawn>;
- private ready?: Promise<void>;
- private stopped = false;
- private restarted = false;
- private nativeEnabled = false;
- private nextId = 0;
- private pending = new Map<number, Pending>();
- private listeners = new Set<(view: ChildView) => void>();
- private closing?: Promise<void>;
- private closed?: Promise<void>;
- private refused?: Error;
- constructor(private readonly options: {sessionId: string; cwd: string; env?: NodeJS.ProcessEnv; piContext?: () => PiRequestContext; warning: (message: string) => void; spawn?: typeof spawn}) {}
- subscribe(listener: (view: ChildView) => void): () => void {this.listeners.add(listener);return () => {this.listeners.delete(listener);};}
- private restart(error: Error): void {
-  this.ready = undefined;
-  if (this.stopped || this.refused) return;
-  if (!this.restarted) {
-   this.restarted = true;this.options.warning(`Streams child failed: ${error.message}. Restarting once.`);
-   void this.start().catch(() => {});
-  } else {
-   this.stopped = true;this.options.warning(`Streams child failed again: ${error.message}. Streams stopped for this Pi session; reload required.`);
-  }
- }
- start(): Promise<void> {
-  if (this.refused) return Promise.reject(this.refused);
-  if (this.stopped) return Promise.reject(Error("Streams stopped for this Pi session; reload required"));
-  if (this.ready) return this.ready;
-  let resolve!: () => void, reject!: (error: Error) => void;
-  this.ready = new Promise<void>((yes, no) => {resolve = yes;reject = no;});
-  void this.ready.catch(() => {});
-  const result = this.ready, attaching = this.restarted && this.nativeEnabled;
-  let child: ReturnType<typeof spawn>, binary: string, source: string | null;
-  try {
-   const env = this.options.env ?? process.env;
-   binary = resolveStreamsBin(env);source = checkoutSource();
-   child = (this.options.spawn ?? spawn)(binary, ["serve", "--session-id", this.options.sessionId, "--plugin-root", pluginRoot],
-    {cwd:this.options.cwd, env:{...env, STREAMS_BIN_PATH:binary}, stdio:["pipe", "pipe", "pipe"]});
-  } catch (error) {
-   reject(error as Error);this.restart(error as Error);return result;
-  }
-  this.process = child;
-  let resolveClose!: () => void;
-  this.closed = new Promise(resolve => {resolveClose = resolve;});
-  let first = true, buffer = "", failed = false, failure: Error | undefined;
-  const fail = (error: Error) => {
-   if (failed || this.process !== child) return;
-   failed = true;failure = error;clearTimeout(timer);reject(error);
-   for (const request of this.pending.values()) request.reject(error);
-   this.pending.clear();
-   child.kill("SIGKILL");
-  };
-  const timer = setTimeout(() => fail(Error("Streams child ready handshake timed out")), 10_000);
-  const message = (line: string) => {
-   if (first) {
-    let ready: ServerFrame | undefined;
-    try {ready = decodeServerFrame(line);} catch {}
-    if (ready?.type !== "ready" || source !== null && ready.source !== source) {
-     this.refused = foreignBinary(binary, source, ready?.type === "ready" ? ready.source : undefined);
-     fail(this.refused);return;
-    }
-    first = false;clearTimeout(timer);
-    if (attaching) {
-     // Dispatch attachment first; its native outcome must not gate catalog work.
-     const id = ++this.nextId;
-     const warn = (message: string) => {if (!this.stopped) this.options.warning(message);};
-     const deadline = setTimeout(() => {
-      this.pending.delete(id);this.send({type:"cancel", id});
-      warn("Streams native attach timed out; catalog requests remain available.");
-     }, 120_000);
-     this.pending.set(id, {reject:() => {clearTimeout(deadline);}, resolve:outcome => {
-      clearTimeout(deadline);
-      if (outcome.status === "error") {warn(`Streams native attach: ${outcome.error.message}`);return;}
-      const native = outcome.result, hc = hcLifecycle(native);
-      if (hc) for (const message of hc.warnings) warn(message);
-      else if (!(native.native === "active" && !Object.hasOwn(native, "display") || native.native === "inactive" && ["outside_herdr", "not_enrolled"].includes(native.reason as string))) warn("Invalid Streams child attach acknowledgement");
-      if (outcome.status === "saved_with_warnings") for (const warning of outcome.warnings) warn(warning);
-     }});
-     const pi_context = this.options.piContext?.();
-     this.send({type:"request", id, request:{kind:"attach"}, ...(pi_context ? {pi_context} : {})});
-    }
-    resolve();return;
-   }
-   const value = decodeServerFrame(line);
-   if (value.type === "response") {
-    const request = this.pending.get(value.id);this.pending.delete(value.id);request?.resolve(value.outcome);return;
-   }
-   if (value.type === "view") {
-    for (const listener of this.listeners) listener(value.view);return;
-   }
-   if (value.type === "warning") {if (!this.stopped) this.options.warning(value.message);return;}
-   throw Error("Unexpected Streams child ready frame");
-  };
-  child.stdout!.setEncoding("utf8").on("data", (chunk: string) => {
-   if (failed || this.process !== child) return;
-   buffer += chunk;
-   try {
-    let end: number;
-    while ((end = buffer.indexOf("\n")) >= 0) {
-     const line = buffer.slice(0, end);buffer = buffer.slice(end + 1);message(line);
-     if (failed) break;
-    }
-   } catch (error) {fail(error as Error);}
-  });
-  child.stderr!.resume();
-  child.stdin!.on("error", fail);child.on("error", fail);
-  child.on("close", (code, signal) => {
-   resolveClose();
-   if (this.process !== child) return;
-   clearTimeout(timer);this.process = undefined;this.closed = undefined;
-   const error = failure ?? Error(this.stopped ? "Streams child shut down" : `Streams child exited (${signal ?? code})`);
-   if (this.stopped && (signal || code !== 0)) this.options.warning("Streams child shutdown failed; native source cleanup may be incomplete.");
-   reject(error);
-   for (const request of this.pending.values()) request.reject(error);
-   this.pending.clear();
-   this.restart(error);
-  });
-  return result;
- }
- private send(value: unknown): void {
-  const input = this.process?.stdin;
-  if (input && !input.writableEnded) input.write(JSON.stringify(value) + "\n");
- }
- readonly run: Runner = async (request, options) => {
-  const signal = options?.signal;signal?.throwIfAborted();
-  const intent = structuredClone(request), pi_context = this.options.piContext?.();
-  if (intent.kind === "session_started" || intent.kind === "attach") this.nativeEnabled = true;
-  let id: number | undefined, timer: ReturnType<typeof setTimeout> | undefined;
-  let abort!: () => void;
-  const cancellation = new Promise<never>((_resolve, reject) => {
-   const cancel = (error: Error) => {
-    if (id !== undefined && this.pending.delete(id)) this.send({type:"cancel", id});
-    reject(error);
-   };
-   abort = () => cancel(signal?.reason instanceof Error ? signal.reason : Error("Streams request cancelled"));
-   signal?.addEventListener("abort", abort, {once:true});
-   timer = setTimeout(() => cancel(Error(request.kind === "sync"
-    ? "Catalog sync timed out; publication may be uncertain. Run streams sync to inspect publication or repair state; do not discard saved changes."
-    : "Streams request timed out; an effect may already have happened. Inspect saved state before retrying.")), options?.timeout ?? 120_000);
-  });
-  try {
-   const ready = this.start(), child = this.process;
-   await Promise.race([ready, cancellation]);signal?.throwIfAborted();
-   if (this.stopped || child !== this.process || ready !== this.ready) throw Error("Streams child lifetime ended before request dispatch");
-   const response = new Promise<ChildOutcome>((resolve, reject) => {
-    id = ++this.nextId;this.pending.set(id, {resolve, reject});
-    this.send({type:"request", id, request:intent, ...(pi_context ? {pi_context} : {})});
-   });
-   return await Promise.race([response, cancellation]);
-  } finally {clearTimeout(timer);signal?.removeEventListener("abort", abort);}
- };
- stop(): Promise<void> {
-  if (this.closing) return this.closing;
-  this.stopped = true;this.listeners.clear();
-  const child = this.process;
-  if (!child) return Promise.resolve();
-  this.closing = this.closed!;
-  child.stdin!.end();return this.closing;
- }
-}
+export { defaultPluginRoot as cardPluginRoot };

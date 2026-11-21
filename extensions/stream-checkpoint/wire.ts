@@ -1,186 +1,395 @@
-export type Status = 'active' | 'waiting' | 'blocked' | 'parked' | 'done' | 'closed';
-export type Mode = 'automatic' | 'manual';
-export type TitleMode = Mode | 'inherit';
-export type TitleDefaults = { stream: Mode; session: Mode };
-export type ReferenceRole = 'deliverable' | 'dependency' | 'brief' | 'background';
-export type ReferenceState = 'active' | 'fulfilled' | 'dropped';
-export type RepositoryDocument = {
-  repository_url: string; path: string; ref?: string | null;
-  commit?: string | null; source_session_id?: string | null;
+import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { realpathSync } from "node:fs";
+
+export type Status = "active" | "waiting" | "blocked" | "parked" | "done" | "closed";
+export type Mode = "automatic" | "manual";
+export type NamingSettings = { stream: Mode; session: Mode };
+
+export type Title = { text: string; manual: boolean };
+export type Goal = { text: string; short: string | null; manual: boolean };
+export type TextPair = { text: string; short: string | null };
+
+export type RepositoryInfo = {
+  url: string | null;
+  within: string;
+  branch: string | null;
 };
-export type ReferenceTarget =
-  | ({kind: 'document'} & RepositoryDocument)
-  | {kind: 'pr'; url: string}
-  | {kind: 'issue'; url: string}
-  | {kind: 'link'; url: string};
-export type ResourceKey =
-  | {kind: 'document'; repository_url: string; path: string}
-  | {kind: 'url'; url: string};
-export type ReferenceValue = {
-  name: string; purpose: string; role: ReferenceRole; state: ReferenceState; target: ReferenceTarget;
+
+export type SessionDirectory = {
+  path: string;
+  repository: RepositoryInfo | null;
 };
-/** A saved reference row; the Stream revision covers its concurrency. */
-export type Reference = ReferenceValue;
+
+export type ReferenceKind = "document" | "pr" | "issue" | "link";
+export type ReferenceRole = "deliverable" | "dependency" | "brief" | "background";
+export type ReferenceStatus = "active" | "fulfilled" | "dropped";
+
+export type ReferenceEntry = {
+  kind: ReferenceKind;
+  name: string;
+  purpose: string;
+  role: ReferenceRole;
+  status: ReferenceStatus;
+  manual: boolean;
+};
+
+export type ArtifactEntry = {
+  description: string;
+};
+
+export type DocumentFileState =
+  | { status: "available"; path: string }
+  | { status: "unavailable"; reason: string };
+
+export type UnreadableRecord = {
+  kind: "host" | "stream" | "session";
+  host: string;
+  path: string;
+  cause: string;
+  repair: string;
+};
 
 export type StreamWire = {
-  id: string; title: string; title_mode: TitleMode; goal: string | null; goal_short: string | null;
-  goal_mode: Mode; owner: { host_id: string };
-  repositories: Record<string, { url: string }>; references: Reference[];
-  /** The store's compare-and-swap token and last change time; user edits send them back unchanged. */
-  revision: number; updated_at_ms: number;
-};
-export type ListedStreamWire = StreamWire & { status: Status };
-export type SessionWire = {
-  id: string; host_id: string; stream_id: string; harness: string; harness_session_id: string;
-  membership_epoch: number;
-  artifacts?: Record<string, { name: string; description: string }[]>;
-  title: string; title_mode: TitleMode; status: Status;
-  recap?: string; recap_short?: string | null;
-  state: string; state_short: string | null; remaining: string; remaining_short?: string | null;
-  checkout: { repository_url: string; ref: string; directory_within_checkout: string } | null;
-  revision: number; updated_at_ms: number;
-};
-/** The JSON schema of one field's value: a string, a choice, or either of two. */
-export type FieldSchema = {type?: 'string' | 'object' | 'null'; enum?: string[]; minLength?: number; maxLength?: number; anyOf?: FieldSchema[]};
-/** What each actor may change in a captured record, in display order, as Rust reports it. */
-/** One field an actor may change; `short` marks a short form. */
-export type FieldRow = {field: string; schema: FieldSchema; short: boolean};
-export type PatchSchemas = Partial<Record<'stream' | 'session', Record<'automatic' | 'user', FieldRow[]>>>;
-export type LocalContext = {
-  catalog_source: string; host_id: string; stream: StreamWire | null; stream_status?: Status | null;
-  session: SessionWire | null; title_defaults: TitleDefaults;
-  patch_schemas: PatchSchemas; checkouts?: unknown[]; document_locations?: unknown[];
+  key?: string;
+  host_id: string;
+  id: string;
+  title: Title;
+  goal: Goal | null;
+  status?: Status;
+  sessions?: SessionWire[];
+  unreadable?: UnreadableRecord[];
+  last_activity_ms?: number;
+  revision: number;
+  updated_at_ms: number;
 };
 
-const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
-const text = (value: unknown): value is string => typeof value === 'string' && !value.includes('\0');
-const identity = (value: unknown): value is string => text(value) && value.trim().length > 0;
-const nullableText = (value: unknown) => value === null || text(value);
-const mode = (value: unknown): value is Mode => value === 'automatic' || value === 'manual';
-const titleMode = (value: unknown): value is TitleMode => mode(value) || value === 'inherit';
-const count = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
-const stamped = (value: Record<string, unknown>) => count(value.revision) && count(value.updated_at_ms);
-const status = (value: unknown): value is Status => typeof value === 'string' && ['active', 'waiting', 'blocked', 'parked', 'done', 'closed'].includes(value);
+export type SessionWire = {
+  key?: string;
+  host_id: string;
+  harness: string;
+  id: string;
+  stream_id: string;
+  title: Title;
+  status: Status;
+  recap: TextPair | null;
+  state: TextPair | null;
+  remaining: TextPair | null;
+  directory: SessionDirectory | null;
+  references: Record<string, ReferenceEntry>;
+  artifacts: Record<string, ArtifactEntry>;
+  document_files?: Record<string, DocumentFileState>;
+  revision: number;
+  updated_at_ms: number;
+};
+
+export type LocalContext = {
+  session: SessionWire | null;
+  stream: StreamWire | null;
+  naming: NamingSettings;
+};
+
+export type EditBody = {
+  changes: Record<string, unknown>;
+  before?: Record<string, unknown>;
+};
+
+export type EditResult = {
+  key: string;
+  not_written: Record<string, unknown>;
+  partial?: boolean;
+};
+
+const object = (value: unknown): value is Record<string, unknown> =>
+  !!value && typeof value === "object" && !Array.isArray(value);
+const text = (value: unknown): value is string =>
+  typeof value === "string" && !value.includes("\0");
+const identity = (value: unknown): value is string =>
+  text(value) && value.trim().length > 0;
+const nullableText = (value: unknown): value is string | null =>
+  value === null || text(value);
+const mode = (value: unknown): value is Mode =>
+  value === "automatic" || value === "manual";
+const count = (value: unknown): value is number =>
+  Number.isSafeInteger(value) && (value as number) >= 0;
+const stamped = (value: Record<string, unknown>) =>
+  count(value.revision) && count(value.updated_at_ms);
+const status = (value: unknown): value is Status =>
+  typeof value === "string" &&
+  ["active", "waiting", "blocked", "parked", "done", "closed"].includes(value);
 
 export function isReferenceText(value: unknown): value is string {
-  return typeof value === 'string'
-    && !value.includes('\0')
-    && !/[\ud800-\udfff]/u.test(value)
-    && /[^\u0009-\u000d\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]/u.test(value);
+  return (
+    typeof value === "string" &&
+    !value.includes("\0") &&
+    !/[\ud800-\udfff]/u.test(value) &&
+    /[^\u0009-\u000d\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]/u.test(
+      value
+    )
+  );
 }
 
 const onlyFields = (value: Record<string, unknown>, fields: readonly string[]) =>
-  Object.keys(value).every(key => fields.includes(key));
-const referencePath = (value: unknown): value is string => isReferenceText(value)
-  && !value.startsWith('/') && !/^[a-z]:/i.test(value) && !value.includes('\\') && !value.split('/').includes('..');
-const recoveryText = (value: unknown) => value === undefined || value === null || isReferenceText(value);
+  Object.keys(value).every((key) => fields.includes(key));
+
+export function isPathKey(value: unknown): value is string {
+  if (!isReferenceText(value)) return false;
+  if (/[\x00-\x1f\x7f]/.test(value)) return false;
+  if (value.startsWith("/") || value.includes("\\")) return false;
+  const segments = value.split("/");
+  if (segments[0]?.includes(":")) return false;
+  return segments.every((seg) => seg.length > 0 && seg !== "." && seg !== "..");
+}
 
 export function referenceUrl(value: string): URL | undefined {
-  if (!isReferenceText(value) || /[\\\p{White_Space}\p{Cc}\p{Cf}]/u.test(value)) return undefined;
+  if (!isReferenceText(value) || /[\\\p{White_Space}\p{Cc}\p{Cf}]/u.test(value)) {
+    return undefined;
+  }
   try {
     if (/[\p{Cc}\p{Cf}]/u.test(decodeURIComponent(value))) return undefined;
     const url = new URL(value);
-    return ['http:', 'https:'].includes(url.protocol) && url.host && !url.username && !url.password ? url : undefined;
+    return ["http:", "https:"].includes(url.protocol) &&
+      url.host &&
+      !url.username &&
+      !url.password
+      ? url
+      : undefined;
   } catch {
     return undefined;
   }
 }
 
-export function isRepositoryDocument(value: unknown): value is RepositoryDocument {
-  return object(value) && onlyFields(value, ['repository_url', 'path', 'ref', 'commit', 'source_session_id'])
-    && isReferenceText(value.repository_url) && referencePath(value.path)
-    && recoveryText(value.ref) && recoveryText(value.commit) && recoveryText(value.source_session_id);
+export function isTitle(value: unknown): value is Title {
+  return (
+    object(value) &&
+    onlyFields(value, ["text", "manual"]) &&
+    isReferenceText(value.text) &&
+    typeof value.manual === "boolean"
+  );
 }
 
-export function isReferenceTarget(value: unknown): value is ReferenceTarget {
-  if (!object(value)) return false;
-  if (value.kind === 'document') {
-    const {kind, ...document} = value;
-    return isRepositoryDocument(document);
-  }
-  return ['pr', 'issue', 'link'].includes(value.kind as string) && onlyFields(value, ['kind', 'url'])
-    && isReferenceText(value.url) && !!referenceUrl(value.url);
+export function isGoal(value: unknown): value is Goal {
+  return (
+    object(value) &&
+    onlyFields(value, ["text", "short", "manual"]) &&
+    isReferenceText(value.text) &&
+    (value.short === null || isReferenceText(value.short)) &&
+    typeof value.manual === "boolean"
+  );
 }
 
-export function resourceKey(target: ReferenceTarget): ResourceKey {
-  return target.kind === 'document'
-    ? {kind: 'document', repository_url: target.repository_url, path: target.path}
-    : {kind: 'url', url: target.url};
+export function isTextPair(value: unknown): value is TextPair {
+  return (
+    object(value) &&
+    onlyFields(value, ["text", "short"]) &&
+    isReferenceText(value.text) &&
+    (value.short === null || isReferenceText(value.short))
+  );
 }
 
-export function isResourceKey(value: unknown): value is ResourceKey {
-  if (!object(value)) return false;
-  return value.kind === 'document'
-    ? onlyFields(value, ['kind', 'repository_url', 'path']) && isReferenceText(value.repository_url) && referencePath(value.path)
-    : value.kind === 'url' && onlyFields(value, ['kind', 'url']) && isReferenceText(value.url) && !!referenceUrl(value.url);
+export function isRepositoryInfo(value: unknown): value is RepositoryInfo {
+  return (
+    object(value) &&
+    onlyFields(value, ["url", "within", "branch"]) &&
+    (value.url === null || isReferenceText(value.url)) &&
+    text(value.within) &&
+    (value.branch === null || isReferenceText(value.branch))
+  );
 }
 
-const referenceFields = ['name', 'purpose', 'role', 'state', 'target'];
-const referenceValueFields = (value: Record<string, unknown>) => isReferenceText(value.name) && isReferenceText(value.purpose)
-  && ['deliverable', 'dependency', 'brief', 'background'].includes(value.role as string)
-  && ['active', 'fulfilled', 'dropped'].includes(value.state as string) && isReferenceTarget(value.target);
-
-export function isReferenceValue(value: unknown): value is ReferenceValue {
-  return object(value) && onlyFields(value, referenceFields) && referenceValueFields(value);
+export function isSessionDirectory(value: unknown): value is SessionDirectory {
+  return (
+    object(value) &&
+    onlyFields(value, ["path", "repository"]) &&
+    isReferenceText(value.path) &&
+    (value.repository === null || isRepositoryInfo(value.repository))
+  );
 }
 
-function isStreamBase(value: unknown): value is StreamWire {
-  if (!object(value) || !identity(value.id) || !text(value.title) || !titleMode(value.title_mode)
-    || !nullableText(value.goal) || !nullableText(value.goal_short) || !mode(value.goal_mode)
-    || !stamped(value) || !object(value.owner) || !identity(value.owner.host_id)
-    || !object(value.repositories) || !Object.entries(value.repositories).every(([alias, repo]) => identity(alias) && object(repo) && identity(repo.url))
-    || ['documents', 'issues', 'prs'].some(key => Object.hasOwn(value, key))
-    || !Array.isArray(value.references) || !value.references.every(isReferenceValue)) return false;
-  return new Set(value.references.map(ref => {
-    const key = resourceKey(ref.target);
-    return JSON.stringify(key.kind === 'url' ? ['url', key.url] : ['document', key.repository_url, key.path]);
-  })).size === value.references.length;
+export function isReferenceEntry(value: unknown): value is ReferenceEntry {
+  return (
+    object(value) &&
+    onlyFields(value, ["kind", "name", "purpose", "role", "status", "manual"]) &&
+    ["document", "pr", "issue", "link"].includes(value.kind as string) &&
+    isReferenceText(value.name) &&
+    isReferenceText(value.purpose) &&
+    ["deliverable", "dependency", "brief", "background"].includes(value.role as string) &&
+    ["active", "fulfilled", "dropped"].includes(value.status as string) &&
+    typeof value.manual === "boolean"
+  );
+}
+
+export function isValidReferencePair(key: string, entry: ReferenceEntry): boolean {
+  if (entry.kind === "document") return isPathKey(key);
+  return referenceUrl(key) !== undefined;
+}
+
+export function isArtifactEntry(value: unknown): value is ArtifactEntry {
+  return (
+    object(value) &&
+    onlyFields(value, ["description"]) &&
+    isReferenceText(value.description)
+  );
+}
+
+export function isUnreadableRecord(value: unknown): value is UnreadableRecord {
+  return (
+    object(value) &&
+    ["host", "stream", "session"].includes(value.kind as string) &&
+    text(value.host) &&
+    text(value.path) &&
+    text(value.cause) &&
+    text(value.repair)
+  );
 }
 
 export function isStream(value: unknown): value is StreamWire {
-  return isStreamBase(value) && !Object.hasOwn(value, 'status');
-}
-
-export function isListedStream(value: unknown): value is ListedStreamWire {
-  return isStreamBase(value) && status((value as Record<string, unknown>).status);
+  if (
+    !object(value) ||
+    !identity(value.host_id) ||
+    !identity(value.id) ||
+    !isTitle(value.title) ||
+    !(value.goal === null || isGoal(value.goal)) ||
+    !stamped(value)
+  ) {
+    return false;
+  }
+  if (value.status !== undefined && !status(value.status)) return false;
+  if (value.key !== undefined && !identity(value.key)) return false;
+  if (
+    value.sessions !== undefined &&
+    (!Array.isArray(value.sessions) ||
+      !value.sessions.every(
+        (item) =>
+          object(item) &&
+          identity(item.harness) &&
+          isTitle(item.title) &&
+          status(item.status)
+      ))
+  ) {
+    return false;
+  }
+  if (
+    value.unreadable !== undefined &&
+    (!Array.isArray(value.unreadable) || !value.unreadable.every(isUnreadableRecord))
+  ) {
+    return false;
+  }
+  if (value.last_activity_ms !== undefined && !count(value.last_activity_ms)) {
+    return false;
+  }
+  return true;
 }
 
 export function isSession(value: unknown): value is SessionWire {
-  return object(value) && [value.id, value.host_id, value.stream_id, value.harness, value.harness_session_id].every(identity)
-    && [value.title, value.state, value.remaining].every(text) && titleMode(value.title_mode) && status(value.status)
-    && stamped(value)
-    && nullableText(value.state_short)
-    && (value.recap === undefined || text(value.recap))
-    && (value.recap_short === undefined || nullableText(value.recap_short))
-    && (value.remaining_short === undefined || nullableText(value.remaining_short))
-    && count(value.membership_epoch)
-    && (value.artifacts === undefined || object(value.artifacts) && Object.entries(value.artifacts).every(([stream, entries]) =>
-      identity(stream) && Array.isArray(entries) && entries.every(entry => object(entry) && identity(entry.name) && identity(entry.description))
-      && new Set(entries.map(entry => entry.name)).size === entries.length))
-    && (value.checkout === null || object(value.checkout)
-      && onlyFields(value.checkout, ['repository_url', 'ref', 'directory_within_checkout'])
-      && identity(value.checkout.repository_url) && identity(value.checkout.ref) && text(value.checkout.directory_within_checkout));
+  if (
+    !object(value) ||
+    !identity(value.host_id) ||
+    !identity(value.harness) ||
+    !identity(value.id) ||
+    !identity(value.stream_id) ||
+    !isTitle(value.title) ||
+    !status(value.status) ||
+    !(value.recap === null || isTextPair(value.recap)) ||
+    !(value.state === null || isTextPair(value.state)) ||
+    !(value.remaining === null || isTextPair(value.remaining)) ||
+    !(value.directory === null || isSessionDirectory(value.directory)) ||
+    !object(value.references) ||
+    !object(value.artifacts) ||
+    !stamped(value)
+  ) {
+    return false;
+  }
+  if (value.key !== undefined && !identity(value.key)) return false;
+  for (const [refKey, entry] of Object.entries(value.references)) {
+    if (!isReferenceEntry(entry) || !isValidReferencePair(refKey, entry)) return false;
+  }
+  for (const [name, entry] of Object.entries(value.artifacts)) {
+    if (!identity(name) || !isArtifactEntry(entry)) return false;
+  }
+  return true;
 }
 
-const fieldRows = (value: unknown) => Array.isArray(value) && value.every(row => object(row) && typeof row.field === 'string' && object(row.schema) && typeof row.short === 'boolean');
-const actorSchemas = (value: unknown) => object(value) && fieldRows(value.automatic) && fieldRows(value.user);
-/** Schemas for exactly the records the context holds. */
-const patchSchemas = (value: unknown, context: Record<string, unknown>) => object(value)
-  && (['stream', 'session'] as const).every(kind => context[kind] === null ? !Object.hasOwn(value, kind) : actorSchemas(value[kind]))
-  && Object.keys(value).every(kind => kind === 'stream' || kind === 'session');
-
-export function parseLocalContext(value: unknown): LocalContext & Record<string, unknown> {
-  if (!object(value) || Object.hasOwn(value, 'error') || Object.hasOwn(value, 'authority')
-    || !identity(value.catalog_source) || !identity(value.host_id)
-    || !(value.stream === null || isStream(value.stream)) || !(value.session === null || isSession(value.session))
-    || !(value.stream_status === undefined || (value.stream === null ? value.stream_status === null : status(value.stream_status)))
-    || !object(value.title_defaults) || !mode(value.title_defaults.stream) || !mode(value.title_defaults.session)
-    || !patchSchemas(value.patch_schemas, value)) {
-    throw new Error('Invalid local catalog context');
-  }
-  const session = value.session;
-  if (session && (!value.stream || session.host_id !== value.stream.owner.host_id || session.stream_id !== value.stream.id)) {
-    throw new Error('Inconsistent addressed catalog context');
-  }
-  return value as LocalContext & Record<string, unknown>;
+export function streamKeyOf(stream: Pick<StreamWire, "host_id" | "id" | "key">): string {
+  return stream.key ?? `${stream.host_id}/${stream.id}`;
 }
+
+export function sessionKeyOf(
+  session: Pick<SessionWire, "host_id" | "harness" | "id" | "key">
+): string {
+  return session.key ?? `${session.host_id}/${session.harness}/${session.id}`;
+}
+
+export function parseLocalContext(value: unknown): LocalContext {
+  if (
+    !object(value) ||
+    !(value.session === null || isSession(value.session)) ||
+    !(value.stream === null || isStream(value.stream)) ||
+    !object(value.naming) ||
+    !mode(value.naming.stream) ||
+    !mode(value.naming.session)
+  ) {
+    throw new Error("Invalid local catalog context");
+  }
+  const session = value.session as SessionWire | null;
+  const stream = value.stream as StreamWire | null;
+  if (session && (!stream || session.host_id !== stream.host_id || session.stream_id !== stream.id)) {
+    throw new Error("Inconsistent addressed catalog context");
+  }
+  return value as LocalContext;
+}
+
+/**
+ * Turn a raw document path (relative or absolute) into a relative path key under `directoryPath`.
+ * Refuses `..`, paths outside `directoryPath`, and invalid path keys.
+ * Resolves the longest existing ancestor of the parent directory via `realpathSync` when direct
+ * prefix stripping fails (so macOS `/var` vs `/private/var` works), keeping the final name unchanged.
+ */
+export function normalizeDocumentKey(
+  directoryPath: string | null | undefined,
+  rawPath: string
+): string | null {
+  if (!isReferenceText(rawPath)) return null;
+  if (!directoryPath || !isAbsolute(directoryPath)) return null;
+  if (rawPath.includes("\\")) return null;
+  if (!isAbsolute(rawPath)) {
+    const trimmed = rawPath.replace(/^(?:\.\/)+/, "");
+    return isPathKey(trimmed) ? trimmed : null;
+  }
+  const rawSegments = rawPath.split("/");
+  if (rawSegments.includes("..")) return null;
+
+  const tryStrip = (base: string, candidate: string): string | null => {
+    const rel = relative(base, candidate);
+    if (!rel || rel === "." || rel.startsWith("..") || isAbsolute(rel)) return null;
+    const normalized = sep === "/" ? rel : rel.split(sep).join("/");
+    return isPathKey(normalized) ? normalized : null;
+  };
+
+  const direct = tryStrip(directoryPath, rawPath);
+  if (direct) return direct;
+
+  // Canonicalize base and the longest existing ancestor of parent, keeping final filename intact.
+  let canonicalBase = directoryPath;
+  try {
+    canonicalBase = realpathSync(directoryPath);
+  } catch {
+    // Keep original directoryPath if it does not exist on disk.
+  }
+
+  const fileName = basename(rawPath);
+  let cursor = dirname(rawPath);
+  const tail: string[] = [fileName];
+  while (cursor && cursor !== dirname(cursor)) {
+    try {
+      const resolvedAncestor = realpathSync(cursor);
+      const rebuilt = resolve(resolvedAncestor, ...tail.reverse());
+      return tryStrip(canonicalBase, rebuilt);
+    } catch {
+      tail.push(basename(cursor));
+      cursor = dirname(cursor);
+    }
+  }
+  return null;
+}
+
+export { nullableText };
