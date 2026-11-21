@@ -4,7 +4,6 @@ mod actions;
 mod artifacts;
 mod card_lock;
 mod config;
-pub mod control;
 mod display;
 mod documents;
 mod launch_context;
@@ -13,12 +12,16 @@ mod projection;
 #[cfg(test)]
 mod tests;
 
+pub use super::card_settings::ConversationId;
 pub use card_lock::CardLock;
 pub use config::NativeCardsConfig;
 pub use display::{CardPlacement, DisplayLifetime};
 pub use launch_context::LaunchedCardContext;
 pub use owner::PiOwner;
-pub use projection::{LifecycleEvent, NameOutcome, NameReport, publish_card_marker};
+pub use projection::{
+    CompanionDisposition, InactiveReason, LifecycleEvent, LifecycleReport, NameOutcome, NameReport,
+    NativeStatus, ProjectionResult, SessionView, publish_card_marker,
+};
 
 use super::{Result, digest, invalid, native_markers::stream_tokens};
 use crate::{

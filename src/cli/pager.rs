@@ -7,12 +7,15 @@ use std::{
     path::Path,
     process::{Command, Stdio},
 };
+#[allow(dead_code)]
 const DOCUMENT_BYTES: u64 = 4 * 1024 * 1024;
+#[allow(dead_code)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) struct FileIdentity {
     device: u64,
     inode: u64,
 }
+#[allow(dead_code)]
 pub(super) fn observe_file(path: &Path) -> Result<FileIdentity> {
     let metadata = std::fs::symlink_metadata(path)?;
     if !metadata.is_file() {
@@ -23,6 +26,7 @@ pub(super) fn observe_file(path: &Path) -> Result<FileIdentity> {
         inode: metadata.ino(),
     })
 }
+#[allow(dead_code)]
 pub(super) fn read_document(path: &Path, expected: FileIdentity) -> Result<Vec<u8>> {
     let file = OpenOptions::new()
         .read(true)
@@ -43,6 +47,7 @@ pub(super) fn read_document(path: &Path, expected: FileIdentity) -> Result<Vec<u
     }
     read_bounded(file)
 }
+#[allow(dead_code)]
 fn read_bounded(file: File) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     file.take(DOCUMENT_BYTES + 1).read_to_end(&mut bytes)?;

@@ -66,10 +66,6 @@ impl NativeCardEngine {
                     .ok_or_else(|| invalid("card lock directory is missing"))?,
             ),
             plugin_root: root.clone(),
-            control_socket: self
-                .environment
-                .get("STREAMS_CARD_CONTROL_SOCKET")
-                .map(PathBuf::from),
         };
         let mut env = bounded;
         env.insert(

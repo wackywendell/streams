@@ -2,37 +2,30 @@
 //! Git publication traces remain a separate gate.
 
 mod support {
+    pub mod hc;
     pub mod herdr;
     pub mod pty;
     pub mod record_io;
 }
 
-mod agent_capture;
-mod agent_preview;
 mod application_records;
+mod card_watch;
 mod cli;
 mod cli_debug;
-mod cli_revisions;
 mod codec;
 mod config;
 mod enum_values;
 mod frontend;
-mod frontend_launch;
 mod git_process;
-mod integration_cli;
-mod integration_contract;
-mod integration_hc;
 mod process;
 mod record_local;
 mod record_updates;
 mod runtime_conversations;
 mod runtime_inference;
-mod runtime_launch;
 mod runtime_native;
 mod runtime_registry;
 mod runtime_revisions;
 mod runtime_state;
-mod serve;
 mod tui_pty;
 
 #[test]

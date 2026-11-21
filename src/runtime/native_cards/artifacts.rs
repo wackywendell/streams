@@ -1,5 +1,23 @@
 use super::*;
-use crate::artifacts::ArtifactSummary;
+use crate::{
+    artifacts::{ArtifactKey, ArtifactSummary},
+    model::Session,
+};
+
+/// Validate a producing key against one freshly supplied Session, even after a move.
+pub(crate) fn resolve_artifact_summary(
+    key: &ArtifactKey,
+    session: &Session,
+) -> Result<ArtifactSummary> {
+    key.validate().map_err(|error| invalid(error.to_string()))?;
+    if session.id != key.session || session.host_id != key.host {
+        return Err(invalid("saved artifact reference is unavailable"));
+    }
+    crate::artifacts::summaries(session, &key.stream)
+        .into_iter()
+        .find(|summary| &summary.key == key)
+        .ok_or_else(|| invalid("saved artifact reference is unavailable"))
+}
 
 impl NativeCardEngine {
     pub fn open_artifact(&mut self, target: &ArtifactSummary) -> Result<()> {
@@ -9,8 +27,7 @@ impl NativeCardEngine {
                 "artifact viewing scope changed; redraw before opening",
             ));
         }
-        if crate::integration::resolve_artifact_summary(&target.key, current.session())? != *target
-        {
+        if resolve_artifact_summary(&target.key, current.session())? != *target {
             return Err(invalid("artifact reference changed; redraw before opening"));
         }
         self.open_resolved_artifact(&target.key)

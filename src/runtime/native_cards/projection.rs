@@ -1,10 +1,85 @@
 use super::*;
 use crate::{
-    integration::{
-        CompanionDisposition, LifecycleReport, NativeStatus, ProjectionResult, SessionView,
-    },
-    model::{Session, Stream},
+    codec::required_nullable,
+    model::{Session, Status, Stream},
 };
+use serde::Deserialize;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionView {
+    pub id: String,
+    pub stream: String,
+    pub title: String,
+    pub status: Status,
+    pub recap: String,
+    #[serde(deserialize_with = "required_nullable")]
+    pub recap_short: Option<String>,
+    pub state: String,
+    #[serde(deserialize_with = "required_nullable")]
+    pub state_short: Option<String>,
+    pub remaining: String,
+    #[serde(deserialize_with = "required_nullable")]
+    pub remaining_short: Option<String>,
+}
+impl From<&Session> for SessionView {
+    fn from(value: &Session) -> Self {
+        Self {
+            id: value.id.clone(),
+            stream: value.stream_id.clone(),
+            title: value.title.clone(),
+            status: value.status,
+            recap: value.recap.clone(),
+            recap_short: value.recap_short.clone(),
+            state: value.state.clone(),
+            state_short: value.state_short.clone(),
+            remaining: value.remaining.clone(),
+            remaining_short: value.remaining_short.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, strum::EnumString, strum::VariantNames)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum CompanionDisposition {
+    Opened,
+    Existing,
+    Suppressed,
+    Deferred,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, strum::EnumString, strum::VariantNames)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum InactiveReason {
+    OutsideFrontend,
+    NotEnrolled,
+    Unavailable,
+    Stopped,
+}
+crate::codec::deserialize_string_enum!(CompanionDisposition, InactiveReason);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectionResult {
+    #[serde(deserialize_with = "required_nullable")]
+    pub companion: Option<CompanionDisposition>,
+    #[serde(deserialize_with = "required_nullable")]
+    pub desired_pi_name: Option<String>,
+    pub warnings: Vec<String>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum NativeStatus {
+    Active,
+    Inactive { reason: InactiveReason },
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LifecycleReport {
+    pub native: NativeStatus,
+    pub projection: ProjectionResult,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum NameIntent {

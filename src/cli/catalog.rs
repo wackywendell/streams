@@ -182,10 +182,20 @@ pub(super) fn finish_record(saved: RecordSave<EditOutcome>) -> Output {
             row.outcome,
             DomainOutcome::Conflict | DomainOutcome::Superseded
         ) {
+            let key = serde_json::to_string(&row.key).unwrap_or_default();
+            let mut safe_key = String::with_capacity(key.len());
+            for ch in key.chars() {
+                if ch.is_ascii() && !ch.is_ascii_control() {
+                    safe_key.push(ch);
+                } else {
+                    for unit in ch.encode_utf16(&mut [0; 2]) {
+                        safe_key.push_str(&format!("\\u{unit:04x}"));
+                    }
+                }
+            }
             output.notices.push(format!(
-                "Reference not applied: {}; {}",
-                super::references::safe_reference_json(&row.key),
-                super::references::reference_text(&row.reason),
+                "Reference not applied: {safe_key}; {}",
+                super::printable(&row.reason),
             ));
         }
     }

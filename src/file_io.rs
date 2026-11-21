@@ -114,10 +114,6 @@ pub(crate) fn lock(path: &Path) -> Result<FileLock, StorageError> {
     open_lock(path, false, true, false)
 }
 
-pub(crate) fn try_lock(path: &Path) -> Result<FileLock, StorageError> {
-    open_lock(path, false, true, true)
-}
-
 pub(crate) fn inspection_lock(path: &Path) -> Result<FileLock, StorageError> {
     open_lock(path, true, false, false)
 }

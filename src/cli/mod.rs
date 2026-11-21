@@ -5,25 +5,17 @@ mod args;
 mod artifacts;
 mod cards;
 mod catalog;
-mod checkouts;
 mod debug;
 mod documents;
 mod enrollment;
 mod fields;
 mod file_watch;
-mod integration;
-#[cfg(test)]
-mod native_tests;
 mod pager;
-mod references;
-mod serve;
 mod sessions;
 mod settings;
 mod workspaces;
 
-use args::{
-    AgentCommand, CheckoutCommand, Command, ConfigCommand, FrontendCommand, NativeCommand, Target,
-};
+use args::{AgentCommand, CardCommand, Command, ConfigCommand, Target};
 use clap::Parser;
 use icu_casemap::CaseMapper;
 use serde_json::{Value, json};
@@ -39,7 +31,7 @@ use streams::{
     application,
     config::{Config, ConfigKey, ConfigPath, encode_toml, toml_table_to_json, toml_value_to_json},
     frontend::{self, FrontendMode, FrontendRequest, FrontendSelection},
-    model::{Record, Session, Stream, TitleMode, ValidationError},
+    model::{Record, Stream, TitleMode, ValidationError},
     operations::Actor,
     runtime::{
         self,
@@ -186,41 +178,19 @@ impl Input {
     }
 }
 
-fn preview(input: &Input) -> Result<Output> {
-    Ok(Output::value(agent::preview(&input.read()?)?))
-}
-
 fn execute(command: Command, input: Input, json: bool) -> Result<Output> {
     match command {
         Command::Debug { arguments } => debug::forward(arguments, json),
-        Command::Native {
-            command: NativeCommand::Pane,
-            ..
+        Command::Card {
+            command: CardCommand::Pane,
         } if json => Err(CliError::message(
-            "native pane is interactive and does not support --json",
-        )),
-        Command::Integration {
-            command: args::IntegrationCommand::ViewDocument { .. },
-        } if json => Err(CliError::message(
-            "integration view-document is interactive and does not support --json",
+            "card pane is interactive and does not support --json",
         )),
         Command::Artifact {
             command: args::ArtifactCommand::View { .. },
         } if json => Err(CliError::message(
             "artifact view is interactive and does not support --json",
         )),
-        Command::Agent {
-            command: AgentCommand::Preview,
-        } => preview(&input),
-        command @ Command::Integration {
-            command:
-                args::IntegrationCommand::Request { .. } | args::IntegrationCommand::Describe { .. },
-        } => {
-            let mut app = App::new()
-                .map_err(|_| CliError::message("integration configuration is unavailable"))?;
-            app.input = input;
-            app.execute(command)
-        }
         command => {
             let mut app = App::new()?;
             app.input = input;
@@ -241,7 +211,7 @@ pub(super) fn run() -> ExitCode {
         .iter()
         .take_while(|arg| *arg != "--")
         .any(|arg| arg == "--json");
-    let mut parsed = match args::Cli::try_parse_from(argv) {
+    let parsed = match args::Cli::try_parse_from(argv) {
         Ok(parsed) => parsed,
         Err(error) => {
             let code = error.exit_code() as u8;
@@ -257,24 +227,17 @@ pub(super) fn run() -> ExitCode {
             return ExitCode::from(code);
         }
     };
-    if matches!(
-        &parsed.command,
-        Command::Integration {
-            command: args::IntegrationCommand::Request { .. }
-                | args::IntegrationCommand::Describe { .. }
-        }
-    ) {
-        parsed.json = false; // This protocol owns stdout, including its failure framing.
-    }
-    if let Command::Serve {
-        session_id,
-        plugin_root,
+    if let Command::Card {
+        command: CardCommand::Watch {
+            session,
+            plugin_root,
+        },
     } = parsed.command
     {
-        return match serve::run(session_id, plugin_root) {
+        return match App::new().and_then(|app| app.card_watch(&session, plugin_root)) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
-                eprintln!("streams serve: {error}");
+                eprintln!("streams card watch: {error}");
                 ExitCode::from(2)
             }
         };
@@ -432,42 +395,34 @@ impl App {
         timeout: f64,
     ) -> Result<Box<dyn Frontend>> {
         if id == frontend::FrontendId::Herdr {
-            return Ok(Box::new(self.herdr_frontend(opened, timeout)?));
+            return Ok(Box::new(self.herdr_frontend(opened, timeout)));
         }
         Ok(frontends::connect(id, self.records_caller(opened, timeout)))
     }
-    /// Herdr, through the Pi child's connection and last observation when it holds them.
+    /// Herdr, through the card watcher's connection and last observation when it holds them.
     fn herdr_frontend(
         &self,
         opened: &application::OpenedRecords,
         timeout: f64,
-    ) -> Result<frontends::HerdrFrontend> {
+    ) -> frontends::HerdrFrontend {
         let caller = self.records_caller(opened, timeout);
-        Ok(match &self.herdr {
+        match &self.herdr {
             Some(read) => frontends::HerdrFrontend::observed(
                 caller,
-                &read.client,
+                read.client.clone(),
                 read.workspace_stream.clone(),
-            )?,
+            ),
             None => frontends::HerdrFrontend::new(caller),
-        })
+        }
     }
     fn records_caller(
         &self,
         opened: &application::OpenedRecords,
         timeout: f64,
     ) -> frontends::Caller {
-        self.caller(
-            streams::integration::WorkScope {
-                catalog: opened.source_id().into(),
-                host: opened.host().as_str().into(),
-            },
-            timeout,
-        )
-    }
-    fn caller(&self, scope: streams::integration::WorkScope, timeout: f64) -> frontends::Caller {
         frontends::Caller {
-            scope,
+            catalog_source: opened.source_id().into(),
+            host: opened.host().as_str().into(),
             environment: self.environment.clone(),
             cwd: self.cwd.clone(),
             timeout,
@@ -491,14 +446,13 @@ impl App {
             )
         })
     }
-    /// Tell the caller's views that this command saved records.
-    /// A caller with no usable frontend context has no views to tell.
+    /// Write the fixed `streams.saved` label on the caller's hc terminal (`HC_TERMINAL_ID`).
     pub(super) fn notify_saved(&self) -> Result<()> {
-        let opened = application::open_records(&self.config)?;
-        let Ok(Some(mut frontend)) = self.frontend(&opened, None, 5.0) else {
-            return Ok(());
-        };
-        Ok(frontend.notify_saved()?)
+        Ok(streams::runtime::hc::notify_saved(
+            &self.environment,
+            &self.cwd,
+            5.0,
+        )?)
     }
     fn record_target(
         &self,
@@ -630,32 +584,8 @@ impl App {
     }
     fn execute(&self, command: Command) -> Result<Output> {
         match command {
-            Command::Integration {
-                command:
-                    args::IntegrationCommand::BindSpace {
-                        space_ref,
-                        stream,
-                        scope_json,
-                    },
-            } => self.integration_bind_space(&space_ref, &stream, &scope_json),
-            Command::Integration {
-                command:
-                    args::IntegrationCommand::ViewDocument {
-                        scope_json,
-                        reference_json,
-                        mode,
-                    },
-            } => self.integration_view_document(&scope_json, &reference_json, mode),
-            Command::Integration {
-                command: args::IntegrationCommand::Describe { frontend },
-            } => self.integration_describe(frontend),
-            Command::Integration {
-                command: args::IntegrationCommand::Request { request_json },
-            } => self.integration_request(&request_json),
-            Command::Serve { .. } => Err(CliError::UnsupportedCommand(
-                "nested serve is not supported".into(),
-            )),
             Command::Debug { arguments } => debug::forward(arguments, false),
+            Command::Card { command } => self.card(command),
             Command::Init {
                 sync,
                 remote,
@@ -672,29 +602,6 @@ impl App {
                 ))
             }
             Command::Config { overrides, action } => self.configure(overrides, action),
-            Command::Native {
-                session_id,
-                plugin_root,
-                state_dir,
-                command,
-            } => self.native_cards(
-                cards::Options {
-                    session_id,
-                    plugin_root,
-                    state_dir,
-                },
-                command,
-            ),
-            Command::Frontend {
-                command: FrontendCommand::Get { frontend },
-            } => {
-                let selection = self.selection(self.config.load()?.frontend, frontend)?;
-                Ok(Output::value(
-                    json!({"configured":mode(&selection.configured),
-                    "requested":selection.requested.map(|request| match request { FrontendRequest::Auto=>"auto".into(), FrontendRequest::Explicit(id)=>id.to_string() }),
-                    "resolved":selection.resolved.map(|id|id.to_string())}),
-                ))
-            }
             Command::List {
                 query,
                 status,
@@ -723,30 +630,7 @@ impl App {
                 )
             }
             Command::Show { target, refresh } => self.show_records(&target, refresh),
-            Command::Create { title, fields, cwd } => {
-                self.create_stream(title, fields, cwd, workspaces::Creation::Record)
-            }
-            Command::Start {
-                title,
-                fields,
-                cwd,
-                frontend,
-            } => self.create_stream(
-                title,
-                fields,
-                cwd,
-                workspaces::Creation::Workspace(frontend),
-            ),
-            Command::Open {
-                target,
-                session,
-                cwd,
-            } => self.open_workspace(target, session, cwd),
-            Command::Resume {
-                target,
-                session,
-                cwd,
-            } => self.resume_session(target, session, cwd),
+            Command::Create { title, fields, cwd } => self.create_stream(title, fields, cwd),
             Command::Update {
                 target,
                 title,
@@ -794,10 +678,8 @@ impl App {
                 Ok(output)
             }
             Command::Sync => self.sync_records(),
-            Command::Reference { command } => self.reference_cli(command),
             Command::Artifact { command } => self.artifact_cli(command),
             Command::Session { command } => self.session(command),
-            Command::Checkout { command } => self.checkout(command),
             Command::Agent { command } => self.agent(command),
         }
     }
@@ -835,20 +717,7 @@ impl App {
                 Ok(Output::plain(json_val, plain))
             }
             Some(ConfigCommand::Set { key, value }) => {
-                match key {
-                    ConfigKey::StreamNaming | ConfigKey::SessionNaming => {
-                        let target = if key == ConfigKey::StreamNaming {
-                            streams::child_protocol::TitleTarget::Stream
-                        } else {
-                            streams::child_protocol::TitleTarget::Session
-                        };
-                        let mode = value.parse().map_err(|_| {
-                            CliError::message(format!("{key} must be automatic or manual"))
-                        })?;
-                        self.set_title_default(target, mode)?;
-                    }
-                    _ => self.config.set(key, &value)?,
-                }
+                self.config.set(key, &value)?;
                 let toml_val = self.config.get_path_toml(ConfigPath::Key(key))?;
                 let json_val = toml_value_to_json(&toml_val)?;
                 let plain = if key == ConfigKey::PiReportingModel {
@@ -876,46 +745,6 @@ impl App {
             }
         }
     }
-    fn capture_inputs(&self, stream: Option<&str>, workspace: Option<&str>) -> Result<Output> {
-        use agent::CaptureTarget;
-        use streams::runtime::conversations::ConversationRoots;
-        let opened = application::open_records(&self.config)?;
-        // Capture reads open state from Herdr's topology only.
-        let native = (|| -> Result<_> {
-            if self
-                .selection(opened.settings().frontend.clone(), None)?
-                .resolved
-                != Some(frontend::FrontendId::Herdr)
-            {
-                return Err(CliError::message(
-                    "Herdr topology unavailable; open state unknown",
-                ));
-            }
-            Ok(self
-                .herdr_frontend(&opened, streams::sync::COMMAND_TIMEOUT_SECONDS)?
-                .into_snapshot()?)
-        })()
-        .map_err(|error| error.to_string());
-        let native = native.as_ref().map_err(Clone::clone);
-        let target = match (stream, workspace) {
-            (Some(id), None) => CaptureTarget::Stream(id),
-            (None, Some(id)) => CaptureTarget::Workspace(id),
-            (None, None) => CaptureTarget::Inventory,
-            _ => return Err(CliError::message("select a stream or workspace, not both")),
-        };
-        let registry = opened.registry()?;
-        let locations = opened.locations()?;
-        Ok(Output::value(agent::capture_inputs(
-            &opened,
-            native,
-            target,
-            opened.settings().naming,
-            &locations,
-            &ConversationRoots::from_environment()?,
-            |stream, session| documents::context(&registry, &locations, stream, session),
-        )?))
-    }
-
     fn context_from_records(
         &self,
         opened: &application::OpenedRecords,
@@ -1001,11 +830,6 @@ impl App {
     fn agent(&self, command: AgentCommand) -> Result<Output> {
         match command {
             AgentCommand::Enroll => self.enroll(),
-            AgentCommand::Preview => preview(&self.input),
-            AgentCommand::CaptureInputs {
-                stream_id,
-                workspace_id,
-            } => self.capture_inputs(stream_id.as_deref(), workspace_id.as_deref()),
             AgentCommand::Apply => {
                 self.apply_request(streams::codec::load_json(&self.input.read()?)?)
             }
@@ -1060,13 +884,6 @@ impl AgentObservation {
     }
 }
 
-fn mode(mode: &FrontendMode) -> &str {
-    match mode {
-        FrontendMode::Auto => "auto",
-        FrontendMode::None => "none",
-        FrontendMode::Explicit(id) => id.as_ref(),
-    }
-}
 fn fold(value: &str) -> String {
     CaseMapper::new().fold_string(value).into_owned()
 }

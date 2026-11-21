@@ -2,10 +2,43 @@
 use super::*;
 use crate::{
     config::{CardMode, Config},
-    integration::ConversationId,
     model::Session,
 };
 use std::path::PathBuf;
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConversationId {
+    pub harness: String,
+    pub native_id: String,
+}
+
+impl ConversationId {
+    /// Parse an exact `HARNESS/ID` target with no missing or extra segments.
+    pub fn parse_pair(value: &str) -> Result<Self> {
+        let Some((harness, native_id)) = value.split_once('/') else {
+            return Err(invalid(format!("expected HARNESS/ID, got {value:?}")));
+        };
+        if native_id.contains('/') {
+            return Err(invalid(format!("expected HARNESS/ID, got {value:?}")));
+        }
+        text(harness)?;
+        text(native_id)?;
+        Ok(Self {
+            harness: harness.into(),
+            native_id: native_id.into(),
+        })
+    }
+}
+
+impl From<&Session> for ConversationId {
+    fn from(value: &Session) -> Self {
+        Self {
+            harness: value.harness.clone(),
+            native_id: value.harness_session_id.clone(),
+        }
+    }
+}
 
 #[derive(Default, Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -78,12 +111,12 @@ mod tests {
             .unwrap()
         };
         let first = store("catalog", "one");
-        assert_eq!(first.mode().unwrap(), CardMode::Inherit);
+        assert_eq!(first.mode().unwrap(), CardMode::Automatic);
         assert!(!first.path().exists());
         first.set(CardMode::Manual).unwrap();
         assert_eq!(store("catalog", "one").mode().unwrap(), CardMode::Manual);
-        assert_eq!(store("catalog", "two").mode().unwrap(), CardMode::Inherit);
-        assert_eq!(store("other", "one").mode().unwrap(), CardMode::Inherit);
+        assert_eq!(store("catalog", "two").mode().unwrap(), CardMode::Automatic);
+        assert_eq!(store("other", "one").mode().unwrap(), CardMode::Automatic);
         let codex = CardSettings::new(
             &config,
             &home.path().join("catalog"),
@@ -95,10 +128,9 @@ mod tests {
         )
         .unwrap();
         assert_ne!(first.path(), codex.path());
-        assert_eq!(codex.mode().unwrap(), CardMode::Inherit);
+        assert_eq!(codex.mode().unwrap(), CardMode::Automatic);
         first.set(CardMode::Automatic).unwrap();
         assert_eq!(first.mode().unwrap(), CardMode::Automatic);
-        first.set(CardMode::Inherit).unwrap();
         assert_eq!(
             first.mode().unwrap().resolve(CardMode::Manual),
             CardMode::Manual
@@ -107,13 +139,29 @@ mod tests {
             first.mode().unwrap().resolve(CardMode::Automatic),
             CardMode::Automatic
         );
+        first.set(CardMode::Manual).unwrap();
+        assert_eq!(
+            first.mode().unwrap().resolve(CardMode::Automatic),
+            CardMode::Manual
+        );
         for bytes in [
             r#"{"auto_open":"other"}"#,
+            r#"{"auto_open":"inherit"}"#,
             r#"{}"#,
             r#"{"auto_open":"manual","pane":"old"}"#,
         ] {
             std::fs::write(first.path(), bytes).unwrap();
             assert!(first.mode().is_err());
+        }
+    }
+
+    #[test]
+    fn conversation_id_parse_pair_requires_exactly_two_segments() {
+        let parsed = ConversationId::parse_pair("pi/abc-123").unwrap();
+        assert_eq!(parsed.harness, "pi");
+        assert_eq!(parsed.native_id, "abc-123");
+        for bad in ["abc", "host/pi/abc", "/abc", "pi/", ""] {
+            assert!(ConversationId::parse_pair(bad).is_err(), "{bad:?}");
         }
     }
 }

@@ -1,9 +1,7 @@
 //! File events select rereads of admitted named records, never compute membership.
 
-use super::{
-    super::{CliError, Result, application},
-    Wake,
-};
+use super::Wake;
+use crate::cli::{CliError, Result, application};
 use notify::Event;
 use std::{collections::BTreeMap, path::PathBuf, sync::mpsc::Sender};
 use streams::{

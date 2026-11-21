@@ -159,13 +159,19 @@ fn preferred_repository_url<'a>(
         })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentKey {
+    pub repository: String,
+    pub path: String,
+}
+
 /// Resolve one freshly selected saved document, using the same checkout policy as card hints.
 pub fn resolve(
     registry: &CheckoutRegistry,
     locations: &DirectoryBindings,
     stream: &Stream,
     session: &Session,
-    key: &crate::integration::DocumentKey,
+    key: &DocumentKey,
 ) -> crate::runtime::Result<WorkingDocument> {
     use crate::runtime::RuntimeError;
     let repository_url = if stream.references.iter().any(|reference| {
@@ -334,7 +340,7 @@ mod tests {
             &locations,
             &stream,
             &session,
-            &crate::integration::DocumentKey {
+            &DocumentKey {
                 repository: "https://example.test/repo".into(),
                 path: "guide.md".into(),
             },
@@ -399,7 +405,7 @@ mod tests {
             &locations,
             &stream,
             &session,
-            &crate::integration::DocumentKey {
+            &DocumentKey {
                 repository: "https://example.test/repo".into(),
                 path: "guide.md".into(),
             },

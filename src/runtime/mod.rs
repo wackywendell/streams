@@ -14,7 +14,6 @@ pub mod native_cards;
 pub mod native_markers;
 pub mod revisions;
 pub mod state;
-pub mod workspace;
 
 pub use checkouts::{CheckoutLocation, CheckoutRegistry, RepositoryInspection};
 pub use locations::{BindingKey, BoundCheckout, DirectoryBinding, DirectoryBindings};

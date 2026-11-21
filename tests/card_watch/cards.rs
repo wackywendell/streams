@@ -73,7 +73,6 @@ impl CardFixture {
                 cwd: home.into(),
             },
             lock_directory: home.join("card-locks"),
-            control_socket: None,
             plugin_root: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("integrations/herdr-work-cards"),
         };
@@ -83,7 +82,7 @@ impl CardFixture {
     }
     fn command(&self) -> Command {
         let mut command = self.native.fixture.command();
-        command.args(["native", "pane"]);
+        command.args(["card", "pane"]);
         for (key, value) in &self.launch.reader.environment {
             command.env(key, value);
         }
@@ -116,7 +115,7 @@ impl CardFixture {
             .current_dir(self.native.fixture.directory.path())
             .args([
                 "--exact",
-                "serve::subscriptions::cards::real_card_process",
+                "card_watch::subscriptions::cards::real_card_process",
                 "--nocapture",
             ])
             .env("STREAMS_TEST_CARD_PROCESS", &paths)
@@ -258,7 +257,7 @@ fn real_card_process() {
     };
     let paths = PathBuf::from(paths);
     let status = Command::new(std::env::var_os("STREAMS_TEST_CARD_BINARY").unwrap())
-        .args(["native", "pane"])
+        .args(["card", "pane"])
         .status()
         .unwrap();
     // Keep the controlling session alive while the parent checks restored termios.
@@ -287,52 +286,33 @@ fn painted(pty: &mut Pty, title: &str) {
 }
 
 #[test]
-fn real_card_quit_saves_manual_through_the_child_or_exits_with_a_warning() {
+fn real_card_quit_saves_manual_via_card_mode_or_exits_with_a_warning() {
     for available in [true, false] {
-        let mut f = CardFixture::new();
-        let mut child = if available {
-            let (mut child, _) = f.native.start();
-            child.request(1, json!({"kind":"open_card"}));
-            assert_eq!(child.response(1)["outcome"]["status"], "success");
-            let requests = f.native.server.requests();
-            let launch: LaunchedCardContext = serde_json::from_str(
-                requests
-                    .iter()
-                    .find(|(method, _)| method == "plugin.pane.open")
-                    .unwrap()
-                    .1["env"]["STREAMS_CARDS_CONTEXT"]
-                    .as_str()
-                    .unwrap(),
-            )
-            .unwrap();
-            f.launch.control_socket = launch.control_socket;
-            // Remove the fake launch; the real terminal process below is the card.
-            child.request(2, json!({"kind":"close_card"}));
-            assert_eq!(child.response(2)["outcome"]["status"], "success");
-            child.request(
-                3,
-                json!({"kind":"set_card_mode","target":"session","mode":"automatic"}),
-            );
-            assert_eq!(
-                child.response(3)["outcome"]["result"]["effective"],
-                "automatic"
-            );
-            Some(child)
-        } else {
-            f.launch.control_socket = Some(f.native.fixture.directory.path().join("absent.sock"));
-            None
-        };
+        let f = CardFixture::new();
+        let target = format!("pi/{}", f.native.id);
+        if available {
+            let mode = f
+                .native
+                .fixture
+                .ok(&["card", "mode", &target, "automatic"], None);
+            assert_eq!(mode["session"], "automatic");
+        }
         let mut card = f.spawn();
         painted(&mut card, "Before");
+        if !available {
+            let state_streams = f.native.fixture.directory.path().join("state/streams");
+            let _ = fs::remove_dir_all(&state_streams);
+            fs::create_dir_all(state_streams.parent().unwrap()).unwrap();
+            fs::write(&state_streams, b"not-a-directory").unwrap();
+        }
         card.send(b"q");
         if !available {
             card.until(|pty| pty.screen().contains("manual mode may not have been saved"));
         }
         card.finish(true);
-        if let Some(child) = &mut child {
-            child.request(4, json!({"kind":"card_settings"}));
-            assert_eq!(child.response(4)["outcome"]["result"]["session"], "manual");
-            assert_eq!(child.finish(), (0, String::new()));
+        if available {
+            let mode = f.native.fixture.ok(&["card", "mode", &target], None);
+            assert_eq!(mode["session"], "manual");
         }
     }
 }

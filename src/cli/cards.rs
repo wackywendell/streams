@@ -3,19 +3,26 @@ mod events;
 mod files;
 mod host;
 mod source;
+mod watch;
 
 use super::{
-    App, BTreeMap, CliError, Config, Output, PathBuf, Result, application, args::NativeCommand,
-    json,
+    App, BTreeMap, CliError, Config, Output, PathBuf, Result, application, args::CardCommand, json,
 };
 use std::sync::{Arc, atomic::AtomicBool};
 use streams::{
     agent::RecordContext,
-    frontend::herdr::{HerdrClient, HerdrNativeSnapshot},
+    config::CardMode,
+    frontend::{
+        FrontendId,
+        herdr::{HerdrClient, HerdrNativeSnapshot},
+    },
     process::{NativeProcessRunner, ProcessRequest, ProcessRunner},
-    runtime::native_cards::{
-        CardLock, DisplayCondition, DisplayOutcome, LaunchedCardContext, NativeCardEngine,
-        NativeCardsConfig, PiOwner, SOURCE_ENV_KEYS,
+    runtime::{
+        card_settings::ConversationId,
+        native_cards::{
+            CardLock, DisplayOutcome, LaunchedCardContext, NativeCardEngine, NativeCardsConfig,
+            OpenMode, PiOwner, SOURCE_ENV_KEYS,
+        },
     },
     tui::{CardSnapshot, Target as ViewTarget},
 };
@@ -23,114 +30,177 @@ use streams::{
 #[derive(Clone)]
 pub(super) struct Options {
     pub session_id: Option<String>,
-    pub plugin_root: Option<PathBuf>,
     pub state_dir: Option<PathBuf>,
 }
+
+fn require_pi_conversation(session: &str) -> Result<ConversationId> {
+    let conversation = ConversationId::parse_pair(session)?;
+    if conversation.harness != "pi" {
+        return Err(CliError::message(
+            "classic Herdr cards support only pi/ID Sessions",
+        ));
+    }
+    Ok(conversation)
+}
+
+fn save_manual_mode_via_cli(context: &LaunchedCardContext) -> std::result::Result<(), String> {
+    let exe = std::env::current_exe().map_err(|error| error.to_string())?;
+    let target = format!(
+        "{}/{}",
+        context.scope.harness, context.scope.native_session_id
+    );
+    let mut command = std::process::Command::new(exe);
+    command
+        .env_clear()
+        .envs(&context.reader.environment)
+        .current_dir(&context.reader.cwd)
+        .args(["card", "mode", &target, "manual"]);
+    let output = command.output().map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        return Err(if stderr.is_empty() {
+            format!("card mode exited with {}", output.status)
+        } else {
+            stderr
+        });
+    }
+    Ok(())
+}
+
 impl App {
-    pub(super) fn native_cards(&self, options: Options, command: NativeCommand) -> Result<Output> {
-        let launched = LaunchedCardContext::from_environment(&self.environment)?;
-        let plugin_root = options
-            .plugin_root
-            .clone()
-            .or_else(|| launched.as_ref().map(|context| context.plugin_root.clone()))
-            .unwrap_or_else(|| {
-                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("integrations/herdr-work-cards")
-            });
-        let config = NativeCardsConfig::load(&self.environment, &self.cwd, &plugin_root)?;
-        if matches!(command, NativeCommand::Pane) {
-            let context = launched
-                .ok_or_else(|| CliError::message("native pane requires card launch inputs"))?;
-            let Some(_active) = CardLock::acquire(&context.lock_directory, &context.scope)? else {
-                return Ok(Output::plain(json!(null), String::new()));
-            };
-            let app = self.clone();
-            let control = context.control_socket.clone();
-            let exit = streams::tui::application::run(move |cancel, events| {
-                host::Host::new(app, options, config, context, cancel, events)
-            })
-            .map_err(CliError::message)?;
-            if exit == streams::tui::application::ExitReason::Quit {
-                let saved = control
-                    .as_deref()
-                    .ok_or_else(|| "card has no child control endpoint".to_owned())
-                    .and_then(|path| {
-                        streams::runtime::native_cards::control::closed(path)
-                            .map_err(|error| error.to_string())
-                    });
-                if let Err(error) = saved {
+    pub(super) fn card_watch(&self, session: &str, plugin_root: PathBuf) -> Result<()> {
+        let conversation = require_pi_conversation(session)?;
+        watch::run(self.clone(), conversation.native_id, plugin_root)
+    }
+
+    pub(super) fn card(&self, command: CardCommand) -> Result<Output> {
+        match command {
+            CardCommand::Watch { .. } => Err(CliError::UnsupportedCommand(
+                "nested card watch is not supported".into(),
+            )),
+            CardCommand::Mode { session, mode } => {
+                let conversation = ConversationId::parse_pair(&session)?;
+                match mode {
+                    Some(mode) => self.set_card_mode(&conversation, mode),
+                    None => self.card_settings(&conversation),
+                }
+            }
+            CardCommand::Pane => {
+                let launched = LaunchedCardContext::from_environment(&self.environment)?;
+                let context = launched
+                    .ok_or_else(|| CliError::message("card pane requires card launch inputs"))?;
+                let config =
+                    NativeCardsConfig::load(&self.environment, &self.cwd, &context.plugin_root)?;
+                let Some(_active) = CardLock::acquire(&context.lock_directory, &context.scope)?
+                else {
+                    return Ok(Output::plain(json!(null), String::new()));
+                };
+                let app = self.clone();
+                let options = Options {
+                    session_id: None,
+                    state_dir: None,
+                };
+                let exit_context = context.clone();
+                let exit = streams::tui::application::run(move |cancel, events| {
+                    host::Host::new(app, options, config, context, cancel, events)
+                })
+                .map_err(CliError::message)?;
+                if exit == streams::tui::application::ExitReason::Quit
+                    && let Err(error) = save_manual_mode_via_cli(&exit_context)
+                {
                     eprintln!(
                         "Streams — Card closed; manual mode may not have been saved: {error}"
                     );
                 }
+                Ok(Output::plain(json!(null), String::new()))
             }
-            return Ok(Output::plain(json!(null), String::new()));
-        }
-        let native_id = options
-            .session_id
-            .as_deref()
-            .or_else(|| {
-                launched
-                    .as_ref()
-                    .map(|context| context.scope.native_session_id.as_str())
-            })
-            .ok_or_else(|| CliError::message("native command requires the exact Pi session ID"))?;
-        let preferences = self.card_settings(native_id)?.value;
-        let mode = serde_json::from_value(preferences["effective"].clone())
-            .expect("typed card preference");
-        let config = config.with_auto_open(mode);
-        let automatic = config.startup_automatic();
-        let session_naming = config.session_naming();
-        let mut engine = build(
-            self.clone(),
-            options,
-            config,
-            Arc::new(AtomicBool::new(false)),
-            None,
-            None,
-        )?;
-        match command {
-            NativeCommand::Observe => {
-                let observed = engine.observe_owner()?;
-                let scope = observed.card.scope();
-                let owner = observed.card.owner();
-                Ok(Output::value(
-                    json!({"version":1,"scope":scope,"owner":observed.owner,
-                    "native":{"pane_id":owner.pane_id,"tab_id":owner.tab_id,"workspace_id":owner.workspace_id},
-                    "session":{"title":observed.card.session().title,"title_mode":observed.card.session().title_mode},
-                    "config":{"automatic":automatic,"sessionNaming":session_naming}}),
-                ))
+            CardCommand::Open {
+                session,
+                plugin_root,
+            } => {
+                let conversation = require_pi_conversation(&session)?;
+                let records = Arc::new(application::open_records(&self.config)?);
+                if self
+                    .selection(records.settings().frontend.clone(), None)?
+                    .resolved
+                    != Some(FrontendId::Herdr)
+                {
+                    return Err(CliError::message("native card effects require Herdr"));
+                }
+                self.set_card_mode(&conversation, CardMode::Automatic)?;
+                let plugin_root = plugin_root.unwrap_or_else(|| {
+                    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("integrations/herdr-work-cards")
+                });
+                let result = (|| -> Result<Output> {
+                    let config =
+                        NativeCardsConfig::load(&self.environment, &self.cwd, &plugin_root)?
+                            .with_auto_open(CardMode::Automatic);
+                    let mut engine = build(
+                        self.clone(),
+                        Options {
+                            session_id: Some(conversation.native_id.clone()),
+                            state_dir: None,
+                        },
+                        config,
+                        Arc::new(AtomicBool::new(false)),
+                        Some(records),
+                        None,
+                    )?;
+                    engine.project()?;
+                    let display = engine.open_display(OpenMode::Explicit)?;
+                    let mut output = Output::value(
+                        json!({"display": display_name(display), "native": engine.status()?}),
+                    );
+                    output.accepted_save = true;
+                    output.wrote = true;
+                    Ok(output)
+                })();
+                result.map_err(|error| {
+                    CliError::message(format!(
+                        "Card preference saved as \"automatic\"; native action failed: {error}"
+                    ))
+                })
             }
-            NativeCommand::Open { automatic } => {
-                engine.project()?;
-                let display = engine.open_display(if automatic {
-                    streams::runtime::native_cards::OpenMode::Automatic
-                } else {
-                    streams::runtime::native_cards::OpenMode::Explicit
-                })?;
-                Ok(Output::value(
-                    json!({"display":display_name(display),"native":engine.status()?}),
-                ))
+            CardCommand::Close { session } => {
+                let conversation = require_pi_conversation(&session)?;
+                let records = Arc::new(application::open_records(&self.config)?);
+                if self
+                    .selection(records.settings().frontend.clone(), None)?
+                    .resolved
+                    != Some(FrontendId::Herdr)
+                {
+                    return Err(CliError::message("native card effects require Herdr"));
+                }
+                self.set_card_mode(&conversation, CardMode::Manual)?;
+                let plugin_root =
+                    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("integrations/herdr-work-cards");
+                let result = (|| -> Result<Output> {
+                    let config =
+                        NativeCardsConfig::load(&self.environment, &self.cwd, &plugin_root)?
+                            .with_auto_open(CardMode::Manual);
+                    let mut engine = build(
+                        self.clone(),
+                        Options {
+                            session_id: Some(conversation.native_id.clone()),
+                            state_dir: None,
+                        },
+                        config,
+                        Arc::new(AtomicBool::new(false)),
+                        Some(records),
+                        None,
+                    )?;
+                    engine.close_display()?;
+                    let mut output = Output::value(json!({"closed": true}));
+                    output.accepted_save = true;
+                    output.wrote = true;
+                    Ok(output)
+                })();
+                result.map_err(|error| {
+                    CliError::message(format!(
+                        "Card preference saved as \"manual\"; native action failed: {error}"
+                    ))
+                })
             }
-            NativeCommand::Project => {
-                let names = engine.project()?;
-                Ok(Output::value(
-                    json!({"names":names,"native":engine.status()?}),
-                ))
-            }
-            NativeCommand::Check => {
-                let status = engine.status()?;
-                let healthy = status.condition != DisplayCondition::Separated;
-                Ok(Output::receipt(json!({"native":status}), healthy))
-            }
-            NativeCommand::Focus => {
-                engine.focus_display()?;
-                Ok(Output::value(json!({"focused":true})))
-            }
-            NativeCommand::Close => {
-                engine.close_display()?;
-                Ok(Output::value(json!({"closed":true})))
-            }
-            NativeCommand::Pane => unreachable!("pane handled above"),
         }
     }
 }

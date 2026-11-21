@@ -1,5 +1,4 @@
 //! One owner-local hc connection per operation, pinned by a generation-1 hello.
-pub mod processes;
 use super::{CommandEvidence, CommandOutcome, EndpointId, FrontendError, NativeRequest, socket_io};
 use crate::cancellation::Cancellation;
 use serde::Deserialize;

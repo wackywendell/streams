@@ -232,25 +232,6 @@ impl App {
                     json!({"session_id":session.id,"host_id":session.host_id,"directory":directory}),
                 ))
             }
-            SessionCommand::Lifecycle {
-                action,
-                harness,
-                session_id,
-            } => {
-                let update = match action {
-                    streams::child_protocol::LifecycleAction::Resume => {
-                        application::lifecycle::resume_session(&opened, harness, &session_id)?
-                    }
-                    streams::child_protocol::LifecycleAction::Park => {
-                        application::lifecycle::park_session(&opened, harness, &session_id)?
-                    }
-                };
-                let mut output = Output::value(update.to_json());
-                let wrote = !update.saves.is_empty();
-                output.accepted_save = wrote;
-                output.wrote = wrote;
-                Ok(output)
-            }
         }
     }
 }

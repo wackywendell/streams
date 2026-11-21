@@ -48,14 +48,29 @@ impl ApplicationSource {
                 (stream, session, context.catalog_source)
             }
             None => {
-                let application = application::integration::Streams::new(&self.records);
-                let (stream, session) = application
-                    .conversation_records(&streams::integration::ConversationId {
-                        harness: Harness::Pi.to_string(),
-                        native_id: self.native_session_id.clone(),
-                    })?
-                    .ok_or_else(missing)?;
-                (stream, session, application.scope().catalog.clone())
+                use streams::model::{Record, RecordKind, Session, ValidationError};
+                use streams::storage::records::{RecordAddress, RecordStore};
+                let host = self.records.host().as_str();
+                let id = Session::id_for(host, Harness::Pi.as_ref(), &self.native_session_id);
+                let found =
+                    self.records
+                        .records()
+                        .with_reader(|reader| -> application::Result<_> {
+                            let session_key = RecordAddress::new(host, RecordKind::Session, &id)?;
+                            let Some(Record::Session(session)) = reader.read(&session_key)? else {
+                                return Ok(None);
+                            };
+                            let stream_key =
+                                RecordAddress::new(host, RecordKind::Stream, &session.stream_id)?;
+                            let Some(Record::Stream(stream)) = reader.read(&stream_key)? else {
+                                return Err(
+                                    ValidationError::new("current Stream is missing").into()
+                                );
+                            };
+                            Ok(Some((stream, session)))
+                        })?;
+                let (stream, session) = found.ok_or_else(missing)?;
+                (stream, session, self.records.source_id().to_owned())
             }
         };
         let owner = NativeOwnerObservation {
@@ -152,34 +167,51 @@ impl ApplicationSource {
         let document = target
             .document()
             .ok_or_else(|| CliError::message("document reference required"))?;
-        let facade = application::integration::Streams::admit(
-            &self.records,
-            &streams::integration::WorkScope {
-                catalog: target.scope.catalog_source.clone(),
-                host: target.scope.host_id.clone(),
-            },
-        )?;
-        let resolved = facade.resolve_saved_reference(
-            &streams::integration::Reference::Document {
-                stream: target.scope.stream_id.clone(),
-                document: streams::integration::DocumentKey {
-                    repository: document.repository_url.clone(),
-                    path: document.path.clone(),
-                },
-                viewing_session: target.scope.session_id.clone(),
-            },
+        if self.records.source_id() != target.scope.catalog_source
+            || self.records.host().as_str() != target.scope.host_id
+        {
+            return Err(CliError::message(
+                "captured viewing scope changed; recreate the card",
+            ));
+        }
+        use streams::model::{Record, RecordKind, ValidationError};
+        use streams::storage::records::{RecordAddress, RecordStore};
+        let host = self.records.host().as_str();
+        let (stream, session) =
+            self.records
+                .records()
+                .with_reader(|reader| -> application::Result<_> {
+                    let stream_key =
+                        RecordAddress::new(host, RecordKind::Stream, &target.scope.stream_id)?;
+                    let Some(Record::Stream(stream)) = reader.read(&stream_key)? else {
+                        return Err(ValidationError::new("addressed Stream is missing").into());
+                    };
+                    let session_key =
+                        RecordAddress::new(host, RecordKind::Session, &target.scope.session_id)?;
+                    let Some(Record::Session(session)) = reader.read(&session_key)? else {
+                        return Err(ValidationError::new("viewing Session is unavailable").into());
+                    };
+                    if session.stream_id != stream.id {
+                        return Err(ValidationError::new(
+                            "viewing Session is not a current member of this Stream",
+                        )
+                        .into());
+                    }
+                    Ok((stream, session))
+                })?;
+        let resolved = application::documents::resolve(
             &self.records.registry()?,
             &self.records.locations()?,
+            &stream,
+            &session,
+            &application::documents::DocumentKey {
+                repository: document.repository_url.clone(),
+                path: document.path.clone(),
+            },
         )?;
-        let streams::integration::ResolvedTarget::Document {
-            path: file,
-            checkout_id,
-            checkout_root,
-            ..
-        } = resolved
-        else {
-            unreachable!("document resolution");
-        };
+        let file = resolved.file;
+        let checkout_id = resolved.checkout.id;
+        let checkout_root = resolved.checkout.directory;
         if checkout_id != selection.checkout_id
             || checkout_root != selection.root
             || &file != expected
@@ -191,8 +223,8 @@ impl ApplicationSource {
         Ok(ResolvedEditor {
             root: checkout_root,
             identity: streams::tui::EditorIdentity {
-                catalog_source: facade.scope().catalog.clone(),
-                host_id: facade.scope().host.clone(),
+                catalog_source: self.records.source_id().to_owned(),
+                host_id: host.to_owned(),
                 checkout_id,
                 file,
             },

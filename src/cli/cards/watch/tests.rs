@@ -1,6 +1,6 @@
 use super::*;
 use crate::cli::Input;
-use std::{collections::BTreeMap, sync::Mutex};
+use std::collections::BTreeMap;
 use streams::config::{Config, Strategy};
 
 #[test]
@@ -23,7 +23,6 @@ fn a_pathless_file_rescan_reinstalls_the_watch_before_filtering_paths() {
         uuid::Uuid::new_v4().to_string(),
         home.path().join("plugin"),
         sender.clone(),
-        Arc::new(Mutex::new(Some(std::io::stdout()))),
         Cancellation::new().unwrap(),
     );
     controller.files = Some(Files::new(&records, &controller.session_id, sender).unwrap());

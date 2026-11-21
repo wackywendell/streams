@@ -300,12 +300,13 @@ pub struct Settings {
     pub pi: PiSettings,
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, EnumString, VariantNames)]
+#[derive(
+    Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, EnumString, VariantNames, strum::Display,
+)]
 #[serde(rename_all = "lowercase")]
 #[strum(serialize_all = "lowercase")]
 pub enum CardMode {
     #[default]
-    Inherit,
     Automatic,
     Manual,
 }
@@ -313,7 +314,11 @@ crate::codec::deserialize_string_enum!(CardMode);
 
 impl CardMode {
     pub fn resolve(self, global: Self) -> Self {
-        if self == Self::Inherit { global } else { self }
+        if self == Self::Automatic && global == Self::Automatic {
+            Self::Automatic
+        } else {
+            Self::Manual
+        }
     }
 }
 
@@ -750,7 +755,7 @@ impl Config {
         cards.insert(
             "auto_open".into(),
             toml::Value::String(match settings.herdr.cards_auto_open {
-                CardMode::Automatic | CardMode::Inherit => "automatic".into(),
+                CardMode::Automatic => "automatic".into(),
                 CardMode::Manual => "manual".into(),
             }),
         );
@@ -841,7 +846,7 @@ impl Config {
                 },
                 "cards": {
                     "auto_open": match settings.herdr.cards_auto_open {
-                        CardMode::Automatic | CardMode::Inherit => "automatic",
+                        CardMode::Automatic => "automatic",
                         CardMode::Manual => "manual",
                     },
                 },

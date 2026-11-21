@@ -10,6 +10,7 @@ use streams::{
 #[cfg(test)]
 mod tests;
 
+#[allow(dead_code)]
 pub(super) struct LocalEnrollment {
     pub(super) output: Output,
     pub(super) session: Option<Session>,

@@ -3,7 +3,6 @@
 pub mod artifacts;
 mod create;
 pub mod documents;
-pub mod integration;
 pub mod lifecycle;
 mod listing;
 pub use create::create_record;

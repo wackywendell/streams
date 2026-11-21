@@ -530,7 +530,6 @@ fn a_closed_card_stays_closed_during_projection_and_pi_replacement_ends_its_life
         },
         lock_directory: f.directory.path().join("locks"),
         plugin_root: f.directory.path().into(),
-        control_socket: None,
     };
     let mut lifetime = DisplayLifetime::new(context);
     f.world.lock().unwrap().row("pane", "owner")["agent_session"]["value"] =
@@ -607,7 +606,6 @@ fn a_lost_open_reply_leaves_the_actual_card_and_ends_once_without_a_journal_or_r
             },
             lock_directory: f.directory.path().join("locks"),
             plugin_root: f.directory.path().into(),
-            control_socket: None,
         };
         assert!(!serde_json::to_string(&context).unwrap().contains(key));
     }

@@ -1,9 +1,9 @@
 use std::path::PathBuf;
 
 use clap::{ArgAction, ArgGroup, Args, Parser, Subcommand};
-use streams::config::{ConfigKey, ConfigPath, Strategy, ViewerMode};
+use streams::config::{CardMode, ConfigKey, ConfigPath, Strategy};
 use streams::frontend::FrontendRequest;
-use streams::model::{NamingMode, ReferenceRole, ReferenceState, Status, TitleMode};
+use streams::model::{NamingMode, Status, TitleMode};
 use streams::runtime::conversations::Harness;
 
 #[derive(Debug, Parser)]
@@ -16,81 +16,48 @@ pub(super) struct Cli {
 }
 
 #[derive(Debug, Subcommand)]
-pub(super) enum NativeCommand {
-    /// Read the attested owner and lifecycle configuration without native effects.
-    Observe,
-    /// Open an explicitly requested display, or a single automatic display.
-    Open {
-        #[arg(long)]
-        automatic: bool,
-    },
-    /// Publish bounded native hints and synchronize enabled names.
-    Project,
-    /// Inspect exact native evidence without creating locks or state.
-    Check,
-    Focus,
-    Close,
-    #[command(hide = true)]
+pub(super) enum CardCommand {
+    /// Run the classic Herdr work card pane.
     Pane,
-}
-#[derive(Debug, Args)]
-#[group(multiple = false)]
-pub(super) struct SessionSelection {
-    /// Discover a member Session by ID, title or substring.
-    #[arg(id = "session", long = "session")]
-    pub reference: Option<String>,
-    /// Read exactly one member Session, without catalog discovery.
-    #[arg(id = "session_key", long = "session-key", value_name = "HOST/ID")]
-    pub key: Option<String>,
-}
-
-#[derive(Debug, Subcommand)]
-pub(super) enum IntegrationCommand {
-    BindSpace {
+    /// Watch a Pi conversation and manage its classic Herdr card until stdin ends.
+    Watch {
+        #[arg(value_name = "HARNESS/ID")]
+        session: String,
         #[arg(long)]
-        space_ref: String,
-        #[arg(long)]
-        stream: String,
-        #[arg(long)]
-        scope_json: String,
+        plugin_root: PathBuf,
     },
-    ViewDocument {
+    /// Open the classic Herdr card beside the caller's Pi pane and save automatic mode.
+    Open {
+        #[arg(value_name = "HARNESS/ID")]
+        session: String,
         #[arg(long)]
-        scope_json: String,
-        #[arg(long)]
-        reference_json: String,
-        #[arg(long, default_value = "less")]
-        mode: ViewerMode,
+        plugin_root: Option<PathBuf>,
     },
-    Describe {
-        #[arg(long)]
-        frontend: FrontendRequest,
+    /// Close the classic Herdr card beside the caller's Pi pane and save manual mode.
+    Close {
+        #[arg(value_name = "HARNESS/ID")]
+        session: String,
     },
-    Request {
-        #[arg(long)]
-        request_json: String,
+    /// Show or set a conversation's card auto-open mode (automatic or manual).
+    Mode {
+        #[arg(value_name = "HARNESS/ID")]
+        session: String,
+        mode: Option<CardMode>,
     },
 }
 
 #[derive(Debug, Subcommand)]
 pub(super) enum Command {
-    /// Read saved work through the bounded version-1 integration protocol.
-    Integration {
-        #[command(subcommand)]
-        command: IntegrationCommand,
-    },
-    /// Serve typed protocol-2 requests for one Pi session over stdio.
-    Serve {
-        #[arg(long)]
-        session_id: String,
-        #[arg(long)]
-        plugin_root: PathBuf,
-    },
     /// Inspect and replay private, frozen helper requests without live catalog writes.
     #[command(disable_help_flag = true)]
     Debug {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         arguments: Vec<String>,
+    },
+    /// Manage classic Herdr work cards.
+    Card {
+        #[command(subcommand)]
+        command: CardCommand,
     },
     Init {
         #[arg(long)]
@@ -105,21 +72,6 @@ pub(super) enum Command {
         overrides: bool,
         #[command(subcommand)]
         action: Option<ConfigCommand>,
-    },
-    Frontend {
-        #[command(subcommand)]
-        command: FrontendCommand,
-    },
-    /// Explicit opt-in Herdr card trial; never changes installed defaults.
-    Native {
-        #[arg(long, global = true)]
-        session_id: Option<String>,
-        #[arg(long, global = true)]
-        plugin_root: Option<PathBuf>,
-        #[arg(long, global = true)]
-        state_dir: Option<PathBuf>,
-        #[command(subcommand)]
-        command: NativeCommand,
     },
     List {
         query: Option<String>,
@@ -145,31 +97,6 @@ pub(super) enum Command {
         #[arg(long)]
         cwd: Option<PathBuf>,
     },
-    Start {
-        title: String,
-        #[command(flatten)]
-        fields: StreamFields,
-        #[arg(long)]
-        cwd: Option<PathBuf>,
-        #[arg(short = 'f', long)]
-        frontend: Option<FrontendRequest>,
-    },
-    Open {
-        #[command(flatten)]
-        target: Target,
-        #[command(flatten)]
-        session: SessionSelection,
-        #[arg(long)]
-        cwd: Option<PathBuf>,
-    },
-    Resume {
-        #[command(flatten)]
-        target: Target,
-        #[command(flatten)]
-        session: SessionSelection,
-        #[arg(long)]
-        cwd: Option<PathBuf>,
-    },
     Update {
         #[command(flatten)]
         target: Target,
@@ -187,11 +114,6 @@ pub(super) enum Command {
         days: Option<u32>,
     },
     Sync,
-    /// Inspect and manage the effort's reference relationships.
-    Reference {
-        #[command(subcommand)]
-        command: ReferenceCommand,
-    },
     /// Store or read named Session outputs in the catalog.
     Artifact {
         #[command(subcommand)]
@@ -201,120 +123,10 @@ pub(super) enum Command {
         #[command(subcommand)]
         command: SessionCommand,
     },
-    Checkout {
-        #[command(subcommand)]
-        command: CheckoutCommand,
-    },
     Agent {
         #[command(subcommand)]
         command: AgentCommand,
     },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
-pub(super) enum ReferenceKind {
-    Document,
-    Pr,
-    Issue,
-    Link,
-}
-
-#[derive(Debug, Subcommand)]
-pub(super) enum ReferenceCommand {
-    List {
-        stream: String,
-    },
-    Add {
-        stream: String,
-        #[command(flatten)]
-        target: ReferenceSelector,
-        #[command(flatten)]
-        fields: ReferenceFields,
-    },
-    Edit {
-        stream: String,
-        #[command(flatten)]
-        selector: ReferenceSelector,
-        #[command(flatten)]
-        fields: ReferenceFields,
-    },
-    Drop {
-        stream: String,
-        #[command(flatten)]
-        selector: ReferenceSelector,
-    },
-    Restore {
-        stream: String,
-        #[command(flatten)]
-        selector: ReferenceSelector,
-        #[arg(long)]
-        state: ReferenceState,
-    },
-    Delete {
-        stream: String,
-        #[command(flatten)]
-        selector: ReferenceSelector,
-        #[arg(long)]
-        confirm: bool,
-    },
-}
-
-#[derive(Debug, Default, Args)]
-#[group(required = true, multiple = true)]
-pub(super) struct ReferenceSelector {
-    #[arg(long, allow_hyphen_values = true, conflicts_with_all = ["repository_url", "path"])]
-    pub(super) url: Option<String>,
-    #[arg(
-        long,
-        allow_hyphen_values = true,
-        requires = "path",
-        conflicts_with = "url"
-    )]
-    pub(super) repository_url: Option<String>,
-    #[arg(
-        long,
-        allow_hyphen_values = true,
-        requires = "repository_url",
-        conflicts_with = "url"
-    )]
-    pub(super) path: Option<String>,
-}
-
-#[derive(Debug, Default, Args)]
-#[group(skip)]
-pub(super) struct ReferenceFields {
-    #[arg(long, allow_hyphen_values = true)]
-    pub(super) name: Option<String>,
-    #[arg(long, allow_hyphen_values = true)]
-    pub(super) purpose: Option<String>,
-    #[arg(long)]
-    pub(super) kind: Option<ReferenceKind>,
-    #[arg(long)]
-    pub(super) role: Option<ReferenceRole>,
-    #[arg(long)]
-    pub(super) state: Option<ReferenceState>,
-    #[arg(long = "ref", allow_hyphen_values = true, conflicts_with = "clear_ref")]
-    pub(super) r#ref: Option<String>,
-    #[arg(long, allow_hyphen_values = true, conflicts_with = "clear_commit")]
-    pub(super) commit: Option<String>,
-    #[arg(
-        long,
-        allow_hyphen_values = true,
-        conflicts_with = "clear_source_session"
-    )]
-    pub(super) source_session: Option<String>,
-    #[arg(long)]
-    pub(super) clear_ref: bool,
-    #[arg(long)]
-    pub(super) clear_commit: bool,
-    #[arg(long)]
-    pub(super) clear_source_session: bool,
-    #[arg(long, allow_hyphen_values = true)]
-    pub(super) target_url: Option<String>,
-    #[arg(long, allow_hyphen_values = true, requires = "target_path")]
-    pub(super) target_repository_url: Option<String>,
-    #[arg(long, allow_hyphen_values = true, requires = "target_repository_url")]
-    pub(super) target_path: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -386,44 +198,6 @@ pub(super) enum ConfigCommand {
 }
 
 #[derive(Debug, Subcommand)]
-pub(super) enum FrontendCommand {
-    Get {
-        #[arg(short = 'f', long)]
-        frontend: Option<FrontendRequest>,
-    },
-}
-
-#[derive(Debug, Subcommand)]
-pub(super) enum CheckoutCommand {
-    List,
-    Register {
-        directory: PathBuf,
-        #[arg(long)]
-        repository: Option<String>,
-    },
-    Show {
-        checkout_id: String,
-    },
-    Document {
-        checkout_id: String,
-        path: String,
-        #[arg(long)]
-        revision: String,
-    },
-    Move {
-        checkout_id: String,
-        directory: PathBuf,
-    },
-    Default {
-        checkout_id: String,
-        repository: String,
-    },
-    Resolve {
-        repository: String,
-    },
-}
-
-#[derive(Debug, Subcommand)]
 pub(super) enum SessionCommand {
     List {
         #[arg(long)]
@@ -471,13 +245,6 @@ pub(super) enum SessionCommand {
         #[arg(long)]
         repository: Option<String>,
     },
-    Lifecycle {
-        action: streams::child_protocol::LifecycleAction,
-        #[arg(long)]
-        harness: Harness,
-        #[arg(long)]
-        session_id: String,
-    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -493,15 +260,6 @@ pub(super) enum AgentCommand {
     Apply,
     /// Enroll the exact conversation without launching native resources.
     Enroll,
-    /// Simulate captured intent without opening catalog or native runtime state.
-    Preview,
-    /// Inspect saved replay inputs without enrolling or repairing native resources.
-    CaptureInputs {
-        #[arg(long, conflicts_with = "workspace_id")]
-        stream_id: Option<String>,
-        #[arg(long)]
-        workspace_id: Option<String>,
-    },
 }
 
 #[derive(Debug, Default, Args)]
@@ -666,18 +424,30 @@ mod tests {
 
     #[test]
     fn all_frontend_overrides_are_validated_before_dispatch() {
-        for command in ["show", "update", "open", "resume"] {
+        for command in ["show", "update"] {
             for invalid in ["", "  ", "adapter\n"] {
                 assert!(parse(&[command, "effort", "--frontend", invalid]).is_err());
             }
         }
-        // Stream status is derived from Sessions; direct Stream status commands are absent.
-        for retired in ["close", "archive", "restore"] {
-            assert!(parse(&[retired, "effort"]).is_err());
+        // Retired commands fail with parser errors.
+        for retired in [
+            "close",
+            "archive",
+            "restore",
+            "open",
+            "start",
+            "resume",
+            "serve",
+            "integration",
+            "native",
+            "frontend",
+            "reference",
+            "checkout",
+        ] {
+            assert!(parse(&[retired]).is_err(), "{retired}");
         }
         assert!(parse(&["create", "Effort", "--status", "active"]).is_err());
         assert!(parse(&["update", "effort", "--status", "done"]).is_err());
-        assert!(parse(&["frontend", "get", "--frontend", ""]).is_err());
         assert!(
             parse(&[
                 "session",
@@ -779,262 +549,15 @@ mod tests {
     }
 
     #[test]
-    fn reference_selectors_and_recovery_flags_have_exact_grammar() {
-        for arguments in [
-            vec![
-                "reference",
-                "edit",
-                "work",
-                "--url",
-                "https://example.test/item",
-                "--name",
-                "one",
-                "--name",
-                "two",
-            ],
-            vec!["reference", "drop", "work"],
-            vec!["reference", "drop", "work", "--repository-url", "repo"],
-            vec!["reference", "drop", "work", "--path", "doc"],
-            vec![
-                "reference",
-                "drop",
-                "work",
-                "--url",
-                "https://example.test/item",
-                "--repository-url",
-                "repo",
-                "--path",
-                "doc",
-            ],
-            vec![
-                "reference",
-                "edit",
-                "work",
-                "--url",
-                "https://example.test/item",
-                "--target-path",
-                "doc",
-            ],
-            vec![
-                "reference",
-                "edit",
-                "work",
-                "--url",
-                "https://example.test/item",
-                "--target-repository-url",
-                "repo",
-            ],
-            vec![
-                "reference",
-                "edit",
-                "work",
-                "--url",
-                "https://example.test/item",
-                "--ref",
-                "one",
-                "--clear-ref",
-            ],
-            vec![
-                "reference",
-                "edit",
-                "work",
-                "--url",
-                "https://example.test/item",
-                "--commit",
-                "one",
-                "--clear-commit",
-            ],
-            vec![
-                "reference",
-                "edit",
-                "work",
-                "--url",
-                "https://example.test/item",
-                "--source-session",
-                "one",
-                "--clear-source-session",
-            ],
-            vec![
-                "reference",
-                "restore",
-                "work",
-                "--url",
-                "https://example.test/item",
-            ],
-            vec![
-                "reference",
-                "edit",
-                "work",
-                "--url",
-                "https://example.test/item",
-                "--kind",
-                "PR",
-            ],
-            vec![
-                "reference",
-                "edit",
-                "work",
-                "--url",
-                "https://example.test/item",
-                "--role",
-                "Brief",
-            ],
-            vec![
-                "reference",
-                "edit",
-                "work",
-                "--url",
-                "https://example.test/item",
-                "--state",
-                "Active",
-            ],
-        ] {
-            assert!(parse(&arguments).is_err(), "{arguments:?}");
-        }
-        for flag in [
-            "--url",
-            "--name",
-            "--purpose",
-            "--kind",
-            "--role",
-            "--state",
-            "--ref",
-            "--commit",
-            "--source-session",
-            "--target-url",
-        ] {
-            let value = match flag {
-                "--kind" => "pr",
-                "--role" => "brief",
-                "--state" => "active",
-                _ => "https://example.test/item",
-            };
-            let mut arguments = vec!["reference", "edit", "work"];
-            if flag != "--url" {
-                arguments.extend(["--url", "https://example.test/item"]);
-            }
-            arguments.extend([flag, value, flag, value]);
-            assert!(parse(&arguments).is_err(), "{flag}");
-        }
-        let parsed = parse(&[
-            "reference",
-            "edit",
-            "work",
-            "--repository-url=--",
-            "--path",
-            "--",
-            "--name",
-            "-name",
-            "--purpose",
-            "--",
-            "--ref",
-            "-ref",
-            "--commit",
-            "-commit",
-            "--source-session",
-            "-source",
-            "--target-repository-url",
-            "-repo",
-            "--target-path",
-            "-path",
-        ])
-        .unwrap();
-        let Command::Reference {
-            command: ReferenceCommand::Edit {
-                selector, fields, ..
-            },
-        } = parsed.command
-        else {
-            panic!("edit")
-        };
-        assert_eq!(selector.path.as_deref(), Some("--"));
-        assert_eq!(fields.name.as_deref(), Some("-name"));
-        assert_eq!(fields.purpose.as_deref(), Some("--"));
-        assert_eq!(fields.r#ref.as_deref(), Some("-ref"));
-        assert_eq!(fields.target_path.as_deref(), Some("-path"));
-    }
-
-    #[test]
-    fn every_reference_flag_is_single_use() {
-        for (flag, value) in [
-            ("--repository-url", "repo"),
-            ("--path", "doc"),
-            ("--name", "Name"),
-            ("--purpose", "Purpose"),
-            ("--kind", "document"),
-            ("--role", "brief"),
-            ("--state", "active"),
-            ("--ref", "topic"),
-            ("--commit", "commit"),
-            ("--source-session", "source"),
-            ("--target-url", "https://example.test/item"),
-            ("--target-repository-url", "other"),
-            ("--target-path", "other.md"),
-        ] {
-            let mut arguments = vec![
-                "reference",
-                "edit",
-                "work",
-                "--repository-url",
-                "repo",
-                "--path",
-                "doc",
-            ];
-            if flag == "--target-repository-url" {
-                arguments.extend(["--target-path", "other.md"]);
-            }
-            if flag == "--target-path" {
-                arguments.extend(["--target-repository-url", "other"]);
-            }
-            arguments.extend([flag, value, flag, value]);
-            assert_eq!(
-                parse(&arguments).unwrap_err().kind(),
-                clap::error::ErrorKind::ArgumentConflict,
-                "{flag}"
-            );
-        }
-        for flag in ["--clear-ref", "--clear-commit", "--clear-source-session"] {
-            assert_eq!(
-                parse(&[
-                    "reference",
-                    "edit",
-                    "work",
-                    "--url",
-                    "https://example.test/item",
-                    flag,
-                    flag
-                ])
-                .unwrap_err()
-                .kind(),
-                clap::error::ErrorKind::ArgumentConflict,
-                "{flag}"
-            );
-        }
-        for arguments in [
-            vec![
-                "reference",
-                "drop",
-                "work",
-                "--url",
-                "https://example.test/item",
-                "--url",
-                "https://example.test/item",
-            ],
-            vec![
-                "reference",
-                "delete",
-                "work",
-                "--url",
-                "https://example.test/item",
-                "--confirm",
-                "--confirm",
-            ],
-        ] {
-            assert_eq!(
-                parse(&arguments).unwrap_err().kind(),
-                clap::error::ErrorKind::ArgumentConflict
-            );
-        }
+    fn card_commands_parse_harness_id_and_mode() {
+        assert!(parse(&["card", "pane"]).is_ok());
+        assert!(parse(&["card", "watch", "pi/abc", "--plugin-root", "/tmp/plugin"]).is_ok());
+        assert!(parse(&["card", "open", "pi/abc"]).is_ok());
+        assert!(parse(&["card", "close", "pi/abc"]).is_ok());
+        assert!(parse(&["card", "mode", "pi/abc"]).is_ok());
+        assert!(parse(&["card", "mode", "pi/abc", "manual"]).is_ok());
+        assert!(parse(&["card", "mode", "pi/abc", "automatic"]).is_ok());
+        assert!(parse(&["card", "mode", "pi/abc", "inherit"]).is_err());
     }
 
     #[test]
@@ -1175,27 +698,6 @@ mod tests {
     }
 
     #[test]
-    fn open_and_resume_keep_human_references_separate_from_exact_session_keys() {
-        for command in ["open", "resume"] {
-            for selection in ["--session", "--session-key"] {
-                assert!(parse(&[command, "--current", selection, "host/id"]).is_ok());
-                assert!(parse(&[command, "Work", selection, "host/id"]).is_ok());
-            }
-            assert!(
-                parse(&[
-                    command,
-                    "--current",
-                    "--session",
-                    "Lane",
-                    "--session-key",
-                    "host/id"
-                ])
-                .is_err()
-            );
-        }
-    }
-
-    #[test]
     fn session_list_and_attach_preserve_existing_defaults() {
         let parsed = parse(&["session", "list", "--stream", "effort"]).unwrap();
         assert!(
@@ -1220,10 +722,6 @@ mod tests {
 
     #[test]
     fn nested_commands_preserve_python_option_and_positional_names() {
-        let parsed = parse(&["checkout", "default", "checkout-id", "repository-url"]).unwrap();
-        assert!(
-            matches!(parsed.command, Command::Checkout { command: CheckoutCommand::Default { checkout_id, repository } } if checkout_id == "checkout-id" && repository == "repository-url")
-        );
         let parsed = parse(&[
             "session",
             "attach",
