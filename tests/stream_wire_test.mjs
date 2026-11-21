@@ -131,6 +131,26 @@ test('normalizeDocumentKey converts paths inside session directory and rejects e
 test('isStream and isSession validate format-5 records', () => {
   assert.equal(isStream(stream()), true);
   assert.equal(isSession(session()), true);
+  assert.equal(
+    isSession({
+      ...session(),
+      directory: {
+        path: '/repo',
+        repository: { url: 'git@example.test:o/r.git', within: null, branch: 'main' },
+      },
+    }),
+    true
+  );
+  assert.equal(
+    isSession({
+      ...session(),
+      directory: {
+        path: '/repo/sub',
+        repository: { url: 'git@example.test:o/r.git', within: 'sub', branch: null },
+      },
+    }),
+    true
+  );
   assert.equal(isStream({ ...stream(), title: 'old' }), false);
   assert.equal(isSession({ ...session(), title: 'old' }), false);
 });

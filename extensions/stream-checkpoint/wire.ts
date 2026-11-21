@@ -11,7 +11,7 @@ export type TextPair = { text: string; short: string | null };
 
 export type RepositoryInfo = {
   url: string | null;
-  within: string;
+  within: string | null;
   branch: string | null;
 };
 
@@ -191,7 +191,7 @@ export function isRepositoryInfo(value: unknown): value is RepositoryInfo {
     object(value) &&
     onlyFields(value, ["url", "within", "branch"]) &&
     (value.url === null || isReferenceText(value.url)) &&
-    text(value.within) &&
+    (value.within === null || isReferenceText(value.within)) &&
     (value.branch === null || isReferenceText(value.branch))
   );
 }
