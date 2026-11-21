@@ -54,7 +54,7 @@ Both `stream edit` and `session edit` also accept `--input -` with a JSON object
 
 - `/streams` or `/streams card` opens the work card without starting inference. Stream and Session tabs are separate; `"References…"` lives in the Session tab.
 - The extension reports automatically after completed responses by default using the public `streams` CLI. Do not duplicate those reports with shell writes.
-- `/streams report [instructions]` requests a report now. `/streams reset [session|stream|all] [--auto]` regenerates automatic fields (with `--auto`, clearing manual marks first). The model-callable `checkpoint` tool requests an immediate report.
+- `/streams report [instructions]` requests a report now. `/streams reset [session|stream|all] [--auto]` regenerates automatic fields (with `--auto`, clearing manual marks first). The model-callable `checkpoint` tool requests an immediate report. Streams' tools (`checkpoint`, `stream_read`, `artifact`, `select_stream`, `create_stream`) are reached from codemode scripts, for example `await tools.checkpoint({})`.
 - `/streams name [session|stream] <name>` saves a manual title. `/streams title-mode [session|stream] automatic|manual` switches the record's manual mark without changing its text.
 - Pi `/name` imports a changed bound Session name as manual when `pi.naming.import_edits` is enabled.
 - `/streams attach`, `select_stream`, and `create_stream` are for initial enrollment only. Use `streams session edit SESSION --stream NEW_STREAM` to move an already enrolled Session.

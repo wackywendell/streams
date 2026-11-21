@@ -2,12 +2,14 @@ import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { truncateHead } from "@earendil-works/pi-coding-agent";
 import type { ArtifactRequest, StreamCli } from "./streams.ts";
+import { codemodeExposure } from "./tool-exposure.ts";
 
 export function registerArtifactTool(
   pi: ExtensionAPI,
   client: (ctx: ExtensionContext) => StreamCli
 ): void {
   pi.registerTool({
+    ...codemodeExposure,
     name: "artifact",
     label: "Session artifact",
     description:

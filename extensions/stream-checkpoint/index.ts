@@ -4,6 +4,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { infer as modelInfer, type DiscussionResult } from "./agent.ts";
 import { registerArtifactTool } from "./artifacts.ts";
+import { codemodeExposure } from "./tool-exposure.ts";
 import { chooseInitial } from "./chooser.ts";
 import { buildBeforeForChanges } from "./core.ts";
 import { registerLabTools } from "./lab-tools.ts";
@@ -325,6 +326,7 @@ export function createStreamExtension(options: ExtensionOptions = {}) {
     // --- Tools ---
 
     pi.registerTool({
+      ...codemodeExposure,
       name: "stream_read",
       label: "Read Stream state",
       description:
@@ -340,6 +342,7 @@ export function createStreamExtension(options: ExtensionOptions = {}) {
     });
 
     pi.registerTool({
+      ...codemodeExposure,
       name: "checkpoint",
       label: "Request progress report",
       description:
@@ -366,6 +369,7 @@ export function createStreamExtension(options: ExtensionOptions = {}) {
     });
 
     pi.registerTool({
+      ...codemodeExposure,
       name: "select_stream",
       label: "Attach to Stream",
       description:
@@ -392,6 +396,7 @@ export function createStreamExtension(options: ExtensionOptions = {}) {
     });
 
     pi.registerTool({
+      ...codemodeExposure,
       name: "create_stream",
       label: "Create Stream",
       description:
