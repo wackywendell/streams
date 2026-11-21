@@ -151,7 +151,7 @@ These rules apply to every field of the Stream and Session records.
 - One name means one thing. `status` is always an enum, and `state` is always the Session's progress text. `X_id` is the ID of record X. `host_id` names the owning host on every record.
 - Each top-level field is one unit. In the `references` map, each entry is one unit.
 - A field is editable, read-only or computed, as the CLI redesign lists them. An edit that names a read-only or computed field fails as a whole.
-- A Stream's or Session's `status` is `active`, `waiting`, `blocked`, `parked`, `done` or `closed`, as today.
+- A Session's `status` is `active`, `waiting`, `blocked`, `parked`, `done` or `closed`, as today. A Stream has no stored `status`; its status is derived from its Sessions.
 
 ### The Session record
 
@@ -216,7 +216,6 @@ The Session's identity is its host, its harness and its Session ID, so its key i
   "id": "7f3c2a90-…",
   "title": {"text": "Streams references", "manual": true},
   "goal": {"text": "References live on Sessions", "short": "session refs", "manual": false},
-  "status": "active",
   "revision": 4,
   "updated_at_ms": 1783600000000
 }
@@ -411,11 +410,11 @@ These go, with their tests:
 - `catalog.checkouts` and `document_locations` in the report context, and `documents::context`.
 - The card's re-read and compare before acting, in `src/runtime/native_cards/documents.rs` and `src/cli/cards.rs`.
 - In the Pi extension, `ReferenceDiscussionEdit` and `CardState.referenceEdits`.
-- In the shared TypeScript wire parser, `integrations/herdr-work-cards/src/streams-context.ts`, the Stream's `references` and `repositories`, the reference array, the string progress fields and `Session.checkout`. That file stays the one source of the record schema in TypeScript, and `streams.ts` and `core.ts` keep importing it.
+- In the shared TypeScript wire parser, `extensions/stream-checkpoint/wire.ts`, the Stream's `references` and `repositories`, the reference array, the string progress fields and `Session.checkout`. That file stays the one source of the record schema in TypeScript, and the extension modules keep importing it.
 
 ### Format change and conversion
 
-The catalog format goes from 3 to 4. Streams reads only format 4, and points older catalogs at the reset steps in the README.
+The catalog format goes from 4 to 5. Streams reads only format 5, and points older catalogs at the reset steps in the README.
 
 A script in `.tmp/session-references/`, kept out of the repository, converts one host's catalog once. It runs with Streams stopped, after a backup of the catalog and of the host state it reads.
 
@@ -442,9 +441,9 @@ For each Session, the script does the following:
   - A Session with no binding gets `directory: null`.
   - Otherwise `path` is the bound directory, or the checkout's saved directory joined with the path within it.
   - When that directory exists, `repository` comes from inspecting the clone, as the CLI does.
-  - When it is gone, `repository` comes from the old `checkout.repository_url`, the binding's path within the checkout and `branch: null`, and is `null` when the old record has no URL. Format 3 saves the checkout's root as `"."`, which becomes `within: null`.
+  - When it is gone, `repository` comes from the old `checkout.repository_url`, the binding's path within the checkout and `branch: null`, and is `null` when the old record has no URL. Format 4 saves the checkout's root as `"."`, which becomes `within: null`.
 
-Last, the script deletes this catalog's directory bindings and sets format 4. It leaves the checkout registry in place, because other catalogs on the host may still use it and format 4 never reads it. The README's reset steps say to delete it once every catalog on the host is converted or reset.
+Last, the script deletes this catalog's directory bindings and sets format 5. It leaves the checkout registry in place, because other catalogs on the host may still use it and format 5 never reads it. The README's reset steps say to delete it once every catalog on the host is converted or reset.
 
 Existing references are lost. Streams, Sessions and artifacts are kept. A catalog shared through Git transport follows the README's reset steps, because sync refuses one host rewriting another host's records. None is in use today.
 
@@ -588,7 +587,7 @@ Showing a report its siblings' references would need a read of the Stream's Sess
 
 ### Migration code
 
-Streams could read format 3 and convert it on load. The repository's rule is to reset old data without migrating it, and runtime code never reads old formats. A one-time script outside the repository keeps the Sessions and artifacts the person cares about.
+Streams could read format 4 and convert it on load. The repository's rule is to reset old data without migrating it, and runtime code never reads old formats. A one-time script outside the repository keeps the Sessions and artifacts the person cares about.
 
 ## Changes for the CLI redesign
 

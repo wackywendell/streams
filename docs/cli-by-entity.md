@@ -20,7 +20,7 @@ This design reorganises the command line around the things it manages. Each enti
 
 Every entity has one set of field names, used for reading, choosing output and editing. Field changes go through one `edit` command per entity, with one rule for concurrent writers. The herdr-app mod becomes the herdr-app frontend. It reads records through the public commands and opens the spaces, tabs and terminals, so `streams open` and the Rust code that opened work in hc, Herdr and cmux are removed. The classic Herdr work cards stay as they are, changed only where an interface they use changes. Machine and developer commands are hidden from the everyday help.
 
-The work lands after the `record-format` branch, which gives every record its own revision and update time. It lands together with the design in `docs/session-references.md` on the `session-references` branch, which moves references from Streams to Sessions. The References and Documents sections and the Session's `directory` follow that design.
+The work lands after `record-format` and the `herdr-app` cleanups on `main`, which moved the catalog to format 4 and made a Stream's status derived from its Sessions. It lands together with `docs/session-references.md` on this branch, which moves references from Streams to Sessions and moves the catalog to format 5. The References and Documents sections and the Session's `directory` follow that design.
 
 ## Terms
 
@@ -33,8 +33,8 @@ The work lands after the `record-format` branch, which gives every record its ow
 - Field: a named value of a record. A stored field is saved in the record, and a computed field is worked out when it is read.
 - Revision: a counter in each record that rises with every save that changes it.
 - Edit result: the requested fields whose saved value differs from the requested one after an edit, each with its current value. An empty result means every requested field holds the requested value.
-- Status: one of `active`, `waiting`, `blocked`, `parked`, `done` and `closed`, saved on every Stream and Session. `done` and `closed` mean the work is finished.
-- Effective status: a Stream's status as lists show it. A Stream saved as `done`, `closed`, `blocked` or `waiting` shows that status. A Stream saved as `active` or `parked` shows `active` if any member Session is active, then `blocked`, then `waiting`, and otherwise `parked`. An unfinished Stream on this host with no activity for `lifecycle.decay_days` shows `closed`.
+- Status: one of `active`, `waiting`, `blocked`, `parked`, `done` and `closed`. It is saved on every Session, and derived for every Stream. `done` and `closed` mean the work is finished.
+- Derived status: a Stream's `status`, computed from its member Sessions as the highest status under `active > blocked > waiting > parked > done > closed`, or `active` when it has no Sessions. An unfinished Stream on this host with no activity for `lifecycle.decay_days` shows `done` if any member Session is `done`, and otherwise `closed`, matching `catalog tidy`.
 - Manual mark: the `manual` member of a title or goal. `true` means a person chose the text, and automatic reports leave it alone. A record created with only `--title` or `--goal` starts with `true`, and one created with `--title-mode automatic` or `--goal-mode automatic` starts with `false`. The settings `naming.stream` and `naming.session` say whether reports propose titles at all.
 - Recap, state and remaining: a Session's account of what it did, where it stands and what is left. Each holds a text and an optional short form for narrow displays.
 - Enrolled: a conversation is enrolled when a Session record exists for it.
@@ -53,7 +53,6 @@ The work lands after the `record-format` branch, which gives every record its ow
 A person reading `streams --help` meets machine interfaces first. The list opens with `integration`, `serve` and `debug`, and most everyday commands carry no description. There are 24 top-level commands, and several of them do the same job:
 
 - `start` and `create --open` create a Stream.
-- `close`, `archive`, `restore` and `update --status` change a Stream's status.
 - `config` and `config list` print the same settings, and `--overrides` is accepted in two places.
 - `--session` and `--session-key` select the same Session with different lookup rules.
 
@@ -81,7 +80,7 @@ The herdr-app mod reaches Streams through `integration describe`, `integration r
 
 ## Non-goals
 
-- Changing the record format beyond `record-format` and `session-references`.
+- Changing the record format beyond `session-references` (format 5).
 - Compatibility aliases for old command names. Streams is alpha, so the change is one cutover, and the changelog lists the renames.
 - Opening work in cmux, classic Herdr or any frontend other than the herdr-app mod. Such a frontend can be written later against the public commands.
 - Changing the classic Herdr work cards. `card pane` and `card watch`, which is today's classic Herdr path in `serve`, keep what they do today, including opening a card beside each Pi, naming workspaces and moving a Session when its pane moves to another workspace. They change only where a record, field or function they use changes. They could later become a separate program.
@@ -120,12 +119,12 @@ None.
 
 - Given a person has several active Streams on this host.
 - When they run `streams list`, then `streams session list --stream 7c1e`, then `streams resume 01a1` in a free terminal, using unique prefixes of the IDs the lists printed.
-- Then the list shows each Stream's full key, effective status, title and last activity, most recent first. `resume` runs the Session's harness in that terminal, in the Session's directory. Nothing is synced or published.
+- Then the list shows each Stream's full key, status, title and last activity, most recent first. `resume` runs the Session's harness in that terminal, in the Session's directory. Nothing is synced or published.
 
 ### CUJ 2: Correct the current Stream
 
 - Given a person is in a shell in a herdr-app space, and the sidebar shows the Stream's ID, which starts `7c1e`.
-- When they run `streams stream edit 7c1e --goal "Ship the CLI redesign" --status waiting`.
+- When they run `streams stream edit 7c1e --title "CLI by entity" --goal "Ship the CLI redesign"`.
 - Then both fields are saved in one save, and the output names the Stream by full key and says the edit was saved. If the prefix matches more than one Stream, the command fails, and the error lists their full keys.
 
 ### CUJ 3: An agent reports progress
@@ -183,7 +182,7 @@ Every caller reaches the same application layer. `card pane` and `card watch` ca
 
 ### Current command tree
 
-This is the tree on the `herdr-app` branch, with each command's arguments shortened.
+This is the tree on `main`, with each command's arguments shortened.
 
 ```text
 streams
@@ -198,8 +197,6 @@ streams
   open       [STREAM | --current] [--session REF | --session-key HOST/ID] [--cwd DIR]
   resume     [STREAM | --current] [--session REF | --session-key HOST/ID] [--cwd DIR]
   update     [STREAM | --current] [--title TEXT] [STREAM FIELDS]
-  close      [STREAM | --current]          alias: archive
-  restore    [STREAM | --current]
   check      [STREAM]
   tidy       [--days N]
   session    list [--stream STREAM]
@@ -289,16 +286,16 @@ The tree has five namespaces and two root aliases. Each alias means exactly the 
 The flag bundles are these:
 
 - LIST FLAGS are `--fields NAMES`, `--limit N` and `--json`. SHOW FLAGS are `--fields NAMES` and `--json`. The section on output explains them.
-- STREAM FIELDS are `--title`, `--title-mode`, `--goal` or `--goal-file` or `--clear-goal`, `--goal-mode` and `--status`. `stream create` and `session create` take the same field flags as `edit`, and require `--title`.
+- STREAM FIELDS are `--title`, `--title-mode`, `--goal` or `--goal-file` or `--clear-goal`, and `--goal-mode`. `stream create` and `session create` take the same field flags as `edit`, and require `--title`.
 - SESSION FIELDS are `--title`, `--title-mode`, `--status`, `--stream` and `--directory`, and `--recap`, `--state` and `--remaining`. Each of the last three has a file form and a clear form, such as `--recap-file` and `--clear-recap`.
 - `--goal`, `--recap`, `--state` and `--remaining` each take an optional short form, such as `--state-short SHORT`, which is valid only beside its field's flag. The short forms appear under an advanced heading in help.
-- `--status S` keeps records with that status, and `--all` includes closed records, which `list` leaves out otherwise. `--status closed` includes them without `--all`. For Streams, `--status` matches `effective_status`.
+- `--status S` keeps records with that status, and `--all` includes closed records, which `list` leaves out otherwise. `--status closed` includes them without `--all`. For Streams, `--status` matches the Stream's derived `status`.
 - `--local` keeps Streams owned by this host. It cannot be combined with `--host`.
 - REFERENCE FLAGS add or drop references. One of `--add-pr URL`, `--add-issue URL`, `--add-link URL` or `--add-document PATH` adds one reference, and needs `--name`, `--purpose` and `--role`. Repeatable `--drop-reference KEY` drops references.
 
 These commands leave or are absorbed:
 
-- `start`, `open`, `close`, `archive`, `restore`, `update`, `show`, `check`, `tidy` and `sync` at the root, and the flags `--refresh`, `--closed`, `--archived`, `--current`, `--session-key` and `--frontend`.
+- `start`, `open`, `update`, `show`, `check`, `tidy` and `sync` at the root, and the flags `--refresh`, `--closed`, `--archived`, `--current`, `--session-key` and `--frontend`.
 - Root `open`, today's root `resume` with its Stream and `--current` forms, and `create --open`. The herdr-app mod opens work, and `session resume` resumes one Session in the caller's terminal. The section on the herdr-app mod explains this.
 - `reference list`, `add`, `edit`, `drop`, `restore` and `delete`. References move to Sessions, `session show` lists them, and REFERENCE FLAGS on `session edit` add and drop them.
 - `checkout` in full, with the checkout registry and the directory bindings. A Session saves its own directory, as `docs/session-references.md` describes.
@@ -321,11 +318,11 @@ Each entity has one set of named fields. The same name is:
 Each field is in one of three classes.
 
 - Editable fields are stored fields that an edit may write.
-  - Stream: `title`, `goal` and `status`.
+  - Stream: `title` and `goal`.
   - Session: `title`, `stream_id`, `status`, `recap`, `state`, `remaining`, `directory` and `references`.
-- Read-only fields are stored fields that only Streams writes, such as `id`, `host_id`, `harness`, `revision`, `updated_at_ms` and a Session's `artifacts`, which maps each artifact's name to `{description}` and which `artifact write` and `artifact delete` keep. Their names are the record's names, as `record-format` and `session-references` define them.
+- Read-only fields are stored fields that only Streams writes, such as `id`, `host_id`, `harness`, `revision`, `updated_at_ms` and a Session's `artifacts`, which maps each artifact's name to `{description}` and which `artifact write` and `artifact delete` keep. Their names are the record's names, as `session-references` defines them.
 - Computed fields are worked out when a record is read.
-  - Stream: `key`, `effective_status`, `active_sessions`, `total_sessions`, `last_activity_ms`, `sessions` and `artifacts`.
+  - Stream: `key`, `status`, `active_sessions`, `total_sessions`, `last_activity_ms`, `sessions` and `artifacts`.
   - Session: `key` and `document_files`.
   - Artifact: `key`.
 
@@ -335,14 +332,14 @@ An edit that names a read-only or computed field fails as a whole.
 
 The computed fields hold these values:
 
-- `effective_status` is the effective status from the terms.
+- `status` on a Stream is the derived status from the terms.
 - `last_activity_ms` is the latest update of the Stream or any member Session.
 - A Stream's `sessions` lists each member Session's `key`, `title`, `status`, `harness` and `state`.
 - A Stream's `artifacts` lists each artifact its member Sessions hold, with the artifact list's default fields. An artifact belongs to its Session alone, so a moved Session takes its artifacts with it and their keys do not change.
 - `document_files` maps each document reference's path to `{"path": FULL_PATH}`, or to `{"reason": TEXT}` when it has no file here.
 - An artifact's `key` is its Session's key followed by `/NAME`, which is `HOST/HARNESS/ID/NAME`.
 
-A read works out the computed fields it prints and those its filters and sort need. `stream list` reads member Sessions anyway, to filter by effective status and sort by activity. `document_files` resolves files on disk, so only a read that prints it does that work, and `session list` does so only when `--fields` names it.
+A read works out the computed fields it prints and those its filters and sort need. `stream list` reads member Sessions anyway, to filter by derived status and sort by activity. `document_files` resolves files on disk, so only a read that prints it does that work, and `session list` does so only when `--fields` names it.
 
 ### Selecting a record
 
@@ -367,7 +364,7 @@ Every finite command prints text by default and its documented result with `--js
 
 `list` prints a default set of fields, the same in text and JSON:
 
-- Stream: `key`, `effective_status`, `title` and `last_activity_ms`;
+- Stream: `key`, `status`, `title` and `last_activity_ms`;
 - Session: `key`, `status`, `title` and `updated_at_ms`;
 - Artifact: `key`, `name` and `description`.
 
@@ -375,7 +372,7 @@ Every finite command prints text by default and its documented result with `--js
 
 ```json
 {
-  "items": [{ "key": "HOST/ID", "effective_status": "active", "title": { "text": "…", "manual": false }, "last_activity_ms": 1763500000000 }],
+  "items": [{ "key": "HOST/ID", "status": "active", "title": { "text": "…", "manual": false }, "last_activity_ms": 1763500000000 }],
   "unreadable": [{ "kind": "session", "host": "HOST", "path": "…", "cause": "…", "repair": "…" }],
   "more": false
 }
@@ -423,8 +420,8 @@ The body is two objects of fields:
 
 ```json
 {
-  "changes": { "goal": { "text": "Ship the CLI redesign", "short": "CLI" }, "status": "waiting" },
-  "before": { "goal": { "text": "Draft the CLI redesign", "short": null, "manual": false }, "status": "active" }
+  "changes": { "goal": { "text": "Ship the CLI redesign", "short": "CLI" }, "title": { "text": "CLI by entity" } },
+  "before": { "goal": { "text": "Draft the CLI redesign", "short": null, "manual": false }, "title": { "text": "CLI redesign", "manual": false } }
 }
 ```
 
@@ -432,7 +429,7 @@ The body is two objects of fields:
 - With `before`, each value in `changes` is merged onto its `before` value by JSON Merge Patch (RFC 7386). Objects merge member by member, an absent member keeps its `before` value, and `null` sets a member to `null`. A field is written only if its saved value equals its `before` value.
 - Without `before`, every value must be complete, and an object with a member missing fails the edit as a whole. Every field is then written whatever its saved value.
 - Flags send no `before`, so a flag always writes. A flag that changes part of a field sends the whole field as it read it, with that part changed.
-- Every written field lands in one save of the record, and an edit writes no other record. Closing a Stream leaves its Sessions' statuses as they are, and `catalog tidy` closes Sessions that have gone quiet.
+- Every written field lands in one save of the record, and an edit writes no other record. A Stream's status is derived from its Sessions, and `catalog tidy` closes Sessions that have gone quiet.
 - The result lists each requested field whose saved value differs from the requested one after the save, with its current value. An empty result means every requested field holds the requested value, including a request that changed nothing.
 
 The result in JSON names the record and the fields not written:
@@ -455,7 +452,7 @@ The edit has no actor, catalog source, captured context or membership check. The
 
 `session create HARNESS/ID --stream STREAM --title TEXT` creates the Session record for an existing conversation. `ID` is the harness's own ID for the conversation, and it must be a safe token, as `docs/session-references.md` defines. The host is always this host, so the key is `HOST/HARNESS/ID`.
 
-- `--stream STREAM` names an existing Stream, and the command fails if it does not exist. A conversation that starts new work runs `stream create` first, then `session create` with the key it printed. Each command saves one record and either succeeds or fails. If the second fails, the new Stream stays with no Sessions, and a person closes it.
+- `--stream STREAM` names an existing Stream, and the command fails if it does not exist. A conversation that starts new work runs `stream create` first, then `session create` with the key it printed. Each command saves one record and either succeeds or fails. If the second fails, the new Stream stays with no Sessions, and decays after `lifecycle.decay_days` if no Session joins it.
 - The Session takes the SESSION FIELDS that `edit` takes. An agent naming its own Session passes `--title-mode automatic`.
 - Running the command again for the same Stream changes nothing. A different Stream is refused, and `session edit --stream` moves a Session.
 
@@ -524,7 +521,7 @@ A refresh happens when the active space or tab changes, when focus moves to anot
 - `session show SESSION --json` for the focused terminal's Session. It supplies the sidebar, and its `host_id` and `stream_id` form `HOST/ID`, the key of the tab's Stream. The sidebar shows the Stream's ID, so a person can type its first characters as a prefix.
 - `stream show STREAM --json` for that Stream. Its `sessions` field supplies the pane headers.
 - `session list --key KEY… --all --fields key,stream_id,title,status,state --json`, only when a visible terminal's Session is not among the Stream's `sessions`.
-- `stream list --local --all --json --fields key,title,effective_status,last_activity_ms` for the Stream picker, when the tab has no Session.
+- `stream list --local --all --json --fields key,title,status,last_activity_ms` for the Stream picker, when the tab has no Session.
 
 The usual refresh is two commands. The mod reads `config get herdr --json` once when it starts.
 
@@ -585,7 +582,7 @@ The change is one cutover. Every caller in the repository moves in the same bran
 
 ### Verb first, with typed targets
 
-Commands such as `streams edit stream:ID --goal …` put the verb first, and a single `edit` covers every kind. `title` and `status` exist on both Streams and Sessions, both use UUIDs, and a bare ID would be ambiguous between them. The kind would have to be written in every target, so `streams stream edit` costs nothing extra and gives help per entity.
+Commands such as `streams edit stream:ID --goal …` put the verb first, and a single `edit` covers every kind. `title` exists on both Streams and Sessions, both use UUIDs, and a bare ID would be ambiguous between them. The kind would have to be written in every target, so `streams stream edit` costs nothing extra and gives help per entity.
 
 ### Generic field setters
 
@@ -641,9 +638,9 @@ The Rust hc code kept an hc document that maps each space to its Stream, written
 
 ## Detailed implementation plan
 
-This design and `docs/session-references.md` land in one cutover on the branch `cli-by-entity`, after `record-format`. This section is the plan for both, and `docs/session-references.md` points here for the order.
+This design and `docs/session-references.md` land in one cutover on the branch `cli-by-entity`, on top of `main` (which already holds `record-format` and the `herdr-app` cleanups). This section is the plan for both, and `docs/session-references.md` points here for the order.
 
-Code that this design deletes is deleted, and is not ported first. Phase 1 deletes, on format 3, everything that can go before the model changes. Phase 2 moves to format 4 and builds the new commands together, because format 4 changes what every command reads. Phase 3 moves the callers, and phase 4 writes the documents and the conversion.
+Code that this design deletes is deleted, and is not ported first. Phase 1 deletes, on format 4, everything that can go before the model changes. Phase 2 moves to format 5 and builds the new commands together, because format 5 changes what every command reads. Phase 3 moves the callers, and phase 4 writes the documents and the conversion.
 
 Each phase ends with `just build`, `just check-clippy`, `just check-fmt` and `just test-rust-fast`. A phase also edits or deletes each file the compiler names once its own changes are made, and the tables name the files known now. A phase that adds or removes a root test file changes its `mod` line in `tests/contracts.rs`, which `every_root_test_file_is_registered` checks. The Pi extension and the herdr-app mod are broken from phase 1 until phase 3 moves them, so `just test` runs from the end of phase 3. Each phase is one or a few commits.
 
@@ -651,43 +648,43 @@ The classic Herdr path keeps compiling and passing its Rust tests throughout. It
 
 ### Phase 0: before this branch
 
-- `record-format` lands.
+- `record-format` and the `herdr-app` cleanups land on `main` (format 4, derived-only Stream status, `OpenedRecords` owning state dirs and settings, `Frontend` trait, `file_watch`, and `extensions/stream-checkpoint/wire.ts`).
 
-### Phase 1: deleting on format 3
+### Phase 1: deleting on format 4
 
 | Where | Change |
 |---|---|
-| Opening code | Delete `open`, `start`, today's root `resume`, `create --open` and `frontend get`, with `src/runtime/workspace*`, `src/runtime/hc/open.rs`, `src/runtime/hc/launch.rs`, `src/runtime/hc/sources.rs`, `src/frontend/cmux.rs`, `tests/frontend_launch.rs` and `tests/runtime_launch.rs`. In `src/frontend/herdr*` and `tests/frontend.rs`, delete only the code and tests for opening work. `src/runtime/launch.rs` keeps `SessionCommand` and `resolve_executable`. Phase 2 adds `resume` back as the alias of `session resume`. |
-| `integration` | Delete the command, `src/cli/integration.rs`, `src/application/integration.rs`, `tests/integration_cli.rs`, `tests/integration_contract.rs` and `tests/integration_hc.rs`. The types from `src/integration.rs` that the classic Herdr path uses move into `src/runtime/native_cards/`. They are `LifecycleEvent`, `LifecycleReport`, `CompanionIntent`, `DesiredProjection`, `NativeRef`, `AssociationIntent`, `NameIntent`, `ConversationId` and `resolve_artifact_summary`. The rest of `src/integration.rs` goes, including the envelopes, `Streams::admit`, `WorkScope`, `ModAction`, `OpenReport` and the view types. |
-| `src/runtime/hc.rs` and `src/frontend/hc.rs` | Keep the label write that the save notice needs. Delete the routing, `RegisteredSources`, the space document and the `streams.work` label. `notify_hc_save` in `src/cli/mod.rs` writes the fixed `streams.saved` label. |
+| Opening code | Delete `open`, `start`, today's root `resume`, `create --open` and `frontend get`, with `src/runtime/workspace*`, `src/runtime/hc/open.rs`, `src/runtime/hc/launch.rs`, `src/runtime/hc/sources.rs`, `src/frontend/cmux.rs`, `tests/frontend_launch.rs` and `tests/runtime_launch.rs`. In `src/frontend/herdr*` and `tests/frontend.rs`, delete only the code and tests for opening work. `src/runtime/launch.rs` keeps `SessionCommand` and `resolve_executable`. In `src/runtime/frontends.rs`, delete `open`, `running`, `associate_caller` and `CmuxFrontend` (phase 2 deletes the rest once `--current` and `agent context` go). Phase 2 adds `resume` back as the alias of `session resume`. |
+| `integration` | Delete the command, `src/cli/integration.rs`, `src/application/integration.rs`, `tests/integration_cli.rs`, `tests/integration_contract.rs` and `tests/integration_hc.rs`. The types remaining in `src/integration.rs` that the classic Herdr path uses move into `src/runtime/native_cards/` (`LifecycleEvent`, `CompanionIntent`, `DesiredProjection` and `NameIntent` already moved there on `main`). They are `LifecycleReport`, `NativeRef`, `ConversationId`, `CompanionDisposition`, `InactiveReason`, `CompanionVisibility`, `ProjectionResult`, `NativeStatus`, `SessionView` and `resolve_artifact_summary`. The rest of `src/integration.rs` goes, including the envelopes, `Streams::admit`, `WorkScope`, `ModAction`, `OpenReport` and the other view types. |
+| `src/runtime/hc.rs` and `src/frontend/hc.rs` | Keep the label write that the save notice needs. Delete the routing, `RegisteredSources`, the space document and `src/runtime/hc/labels.rs` (`streams.work` and `streams.pi.*`). The save notice writes the fixed `streams.saved` label. |
 | `serve` becomes `card watch` | Move `src/cli/serve/native*` and `src/cli/serve/files.rs` to `src/cli/cards/watch*`, with a loop over Herdr subscription updates, file events and the end of standard input, and no request frames. Its open and close paths become `card open` and `card close`, and `set_card_mode` becomes `card mode`. `CardMode` loses `inherit`, and the card's target type moves to `src/runtime/card_settings.rs`. Delete `src/cli/serve.rs`, `src/cli/serve/dispatch.rs`, `src/cli/serve/hc.rs`, `src/cli/serve/control.rs`, `src/runtime/native_cards/control.rs`, `LaunchedCardContext.control_socket` and `src/child_protocol*`. |
 | `native` | Delete `native observe`, `open`, `project`, `check`, `focus` and `close`, with `src/cli/native_tests.rs`. Rename `native pane` to `card pane`, and change `integrations/herdr-work-cards/bin/open-rust-streams-pane.sh` in the same commit. When a person quits the card, `card pane` runs `card mode HARNESS/ID manual`. |
 | Other commands | Delete `session lifecycle`, the title-default commands with `set_title_default` and `TitleTarget`, `agent capture-inputs` and `agent preview` with `src/agent/capture.rs` and `src/agent/preview.rs`, the `reference` commands with `src/cli/references.rs`, and the `checkout` commands with `src/cli/checkouts.rs`. `tests/agent_capture.rs` and `tests/agent_preview.rs` go. |
 | Temper | Delete the check of the old report admission: `specs/report_admission.ioa.toml`, `tests/verification.rs`, its `[[test]]` target, the `temper-jit` and `temper-verify` dev-dependencies with their `profile.test.package` and `Cargo.lock` entries, and `just test-verify`. |
 | Tests | `tests/serve.rs`, `tests/serve/cards.rs` and `tests/serve/subscriptions.rs` move to `tests/card_watch.rs` and `tests/card_watch/`. Cases that sent a card request run `card open`, `card close` or `card mode` instead. `tests/serve/hc.rs` and `tests/serve/artifacts.rs` go. The fake hc core moves from `tests/integration_hc.rs` to `tests/support/hc.rs`. New cases are `card_open_reports_failure`, `card_close_keeps_watch_from_reopening`, `watch_closes_card_when_stdin_ends` and `save_writes_streams_saved_on_hc_terminal`. |
 
-### Phase 2: format 4 and the commands
+### Phase 2: format 5 and the commands
 
 This phase holds the record, edit and document parts of `docs/session-references.md`, with the edit operation built once, and every new command.
 
 | Where | Change |
 |---|---|
-| `src/model.rs`, `src/codec.rs` and `src/file_store/records.rs` | Move to format 4, as `docs/session-references.md` describes. A Session's key becomes `HOST/HARNESS/ID`. Each Session has its own directory, `hosts/HOST/sessions/HARNESS/ID/`, holding `session.json` and `artifacts/NAME`, and `Session::id_for` and `harness_session_id` go. The host ID, the harness and the Stream ID follow the same safe-token rule as the Session ID. Sessions gain `references` and `directory`, the three Session field pairs become `{text, short}`, `title` and its title mode become `{text, manual}`, the goal and its goal mode become `{text, short, manual}`, and `Stream.references`, `Stream.repositories`, `Session.checkout` and `membership_epoch` go. The Stream's `owner: {host_id}` becomes `host_id`, and every field or member with no value is `null`. A reference's `state` becomes `status`, and each entry gains `manual`. Artifacts move under their Session, `ArtifactKey` loses its Stream, and `artifacts::groups` goes. `src/storage/records.rs`, where `RecordAddress` gains the harness, `src/file_store/records/inventory.rs`, `src/file_store/records/artifacts.rs`, `src/artifacts.rs` and `src/application/artifacts.rs` follow the new layout. |
-| `src/operations/edits.rs` | Apply the edit rules to one record: the exact `before` keys, the merge onto `before`, complete values without `before`, reference keys and dropped entries. Remove `TitleMode`, its `resolve` and the goal's mode, and the check for a default that changed between capture and apply. `src/operations/references.rs`, `src/operations/membership.rs`, `MoveIntent`, `apply_move` and `move_session_observed` go. |
+| `src/model.rs`, `src/codec.rs` and `src/file_store/records.rs` | Move from format 4 to format 5, as `docs/session-references.md` describes. (`Stream` already has no stored `status`, and `RecordRead`, `ReferenceValue`, `Checkout.repository` and `RecordContext.sessions` are already gone on `main`.) A Session's key becomes `HOST/HARNESS/ID`. Each Session has its own directory, `hosts/HOST/sessions/HARNESS/ID/`, holding `session.json` and `artifacts/NAME`, and `Session::id_for` and `harness_session_id` go. The host ID, the harness and the Stream ID follow the same safe-token rule as the Session ID. Sessions gain `references` and `directory`, the three Session field pairs become `{text, short}`, `title` and its title mode become `{text, manual}`, the goal and its goal mode become `{text, short, manual}`, and `Stream.references`, `Stream.repositories`, `Session.checkout` and `membership_epoch` go. The Stream's `owner: {host_id}` becomes `host_id`, and every field or member with no value is `null`. A reference's `state` becomes `status`, and each entry gains `manual`. Artifacts move under their Session, `ArtifactKey` loses its Stream, and `artifacts::groups` goes. `src/storage/records.rs`, where `RecordAddress` gains the harness, `src/file_store/records/inventory.rs`, `src/file_store/records/artifacts.rs`, `src/artifacts.rs` and `src/application/artifacts.rs` follow the new layout. |
+| `src/operations/edits.rs` | Apply the edit rules to one record: the exact `before` keys, the merge onto `before`, complete values without `before`, reference keys and dropped entries. Remove `TitleMode`, its `resolve` and the goal's mode, and the check for a default that changed between capture and apply. `src/operations/references.rs`, `src/operations/membership.rs`, `src/operations/patches.rs`, `MoveIntent`, `apply_move`, `move_session_observed`, `tests/fixtures/agent-patch-schemas.json` and `tests/helpers/patch-schemas.mjs` go. |
 | `src/application/fields.rs` | Add. It lists each entity's editable, read-only stored and computed fields, parses `--fields`, computes the computed fields a read needs, and renders a record as a flat object of fields. |
 | `src/application/edit.rs` | Add. It parses an edit body and refuses unknown, read-only and computed fields and another host's record. Inside the `RecordStore::save` callback, on the current record, it compares `before`, merges the changes with `src/operations/edits.rs`, checks a `stream_id` destination and builds the result, so the edit is one save. |
 | `src/application/documents.rs` | Add `documents::locate`, and make inspecting a clone one function. Remove `documents::context`, `catalog.checkouts`, `document_locations`, `RepositoryDocument` and the repository form of `ResourceKey`. `src/runtime/locations.rs`, `src/runtime/checkouts.rs`, `src/runtime/checkouts/state.rs` and `src/runtime/revisions.rs` go, with `tests/runtime_registry.rs` and `tests/runtime_revisions.rs`. |
-| Code the model replaces | Delete the rest of `src/agent/`, `src/application/record_update.rs`, `src/application/enrollment*` and `src/cli/enrollment*`. `src/application/create.rs` creates a Stream or a Session for the new `create` commands, and new Streams get random IDs. `src/application/lifecycle.rs` keeps the age decay for `catalog tidy`, and its close cascade goes. |
-| Classic Herdr path | `src/cli/cards.rs`, `src/cli/cards/source.rs`, `src/cli/cards/host.rs`, `src/cli/cards/watch*`, `src/runtime/native_cards/projection.rs`, `src/runtime/native_cards/documents.rs` and `src/runtime/native_cards/launch_context.rs` stop using `RecordContext`. They read the Session by its key, resolve documents with `documents::locate`, and pass `config::source_id` and the host. Moving a Session with its pane calls `application::edit` with `stream_id` in `changes` and the old `stream_id` in `before`. The card's re-read before acting goes. `src/runtime/card_settings.rs` is keyed by `HARNESS/ID`, and its files reset. `src/tui/` and `src/tui/fixtures/*.json` move to the format 4 fields. |
+| Code the model replaces | Delete the rest of `src/agent/`, `src/application/record_update.rs`, `src/application/enrollment*`, `src/cli/enrollment*`, `src/runtime/frontends.rs` and the leftover `SessionView`. `src/application/create.rs` creates a Stream or a Session for the new `create` commands, and new Streams get random IDs. `src/application/lifecycle.rs` keeps the age decay for `catalog tidy`. `OpenedRecords` drops its registry and location accessors. |
+| Classic Herdr path | `src/cli/cards.rs`, `src/cli/cards/source.rs`, `src/cli/cards/host.rs`, `src/cli/cards/watch*`, `src/runtime/native_cards/projection.rs`, `src/runtime/native_cards/documents.rs` and `src/runtime/native_cards/launch_context.rs` stop using `RecordContext`. They read the Session by its key, resolve documents with `documents::locate`, and pass `config::source_id` and the host. Moving a Session with its pane calls `application::edit` with `stream_id` in `changes` and the old `stream_id` in `before`. The card's re-read before acting goes. `src/runtime/card_settings.rs` is keyed by `HARNESS/ID`, and its files reset. `src/tui/` and `src/tui/fixtures/*.json` move to the format 5 fields. |
 | `src/cli/args.rs` | Replace the root commands and `session` with the `stream`, `session`, `artifact`, `config` and `catalog` namespaces, the root aliases `list` and `resume`, and the flag bundles above. |
 | `src/cli/select.rs` | Add the record selector for full keys, partial keys and unique prefixes. `current_stream_id` in `src/cli/mod.rs` and its reads of hc labels and the classic Herdr workspace marker go. |
 | `src/cli/fields.rs` | Build an edit body from field flags, including `{text, short}` units, the mode flags, `--directory` and the reference flags with their path conversion. `stream edit` and `session edit` both call `application::edit`. |
 | `src/cli/workspaces.rs`, `src/cli/sessions.rs` and `src/cli/documents.rs` | Rewrite for `stream list\|show\|create\|edit` and `session list\|show\|create\|edit\|resume`, and add `session document read\|view` using `documents::locate`, with text and `--json`. `session resume` runs the harness through `SessionCommand` in `src/runtime/launch.rs`. `SessionCommand::verified` passes the ID and no longer resolves or searches for a transcript file, so that code in `src/runtime/launch.rs` and `src/runtime/conversations.rs` goes. |
 | `src/cli/artifacts.rs` | Take `--session` and `--stream`, and the list flags. `artifact list --stream` reads the Stream's member Sessions. |
 | `src/cli/settings.rs` | Serve `config get\|set\|unset\|path`, with `--overrides` conflicting with `KEY`. `naming.*` is a plain setting. |
-| `src/cli/catalog.rs` | List Streams by activity with the computed fields, `--host`, `--local` and `--limit`, and serve `catalog init\|sync\|check\|tidy`. Remove `cascade_stream_close_if_transitioned`. |
+| `src/cli/catalog.rs` | List Streams by activity with the computed fields, `--host`, `--local` and `--limit`, and serve `catalog init\|sync\|check\|tidy`. `src/application/listing.rs` aligns with the new sorting and fields. |
 | `src/cli/mod.rs` | Exit with 0, 1, 2 or 3 as the output table says, moving each exit-2 site that reports a change not written to 3. |
-| Tests | The codec, edit, `documents::locate`, path conversion, clone inspection and Session layout cases in `docs/session-references.md`. The edit cases run in `src/application/edit/tests.rs` with a fake store that changes records between read and save, and add `matching_before_writes`, `body_sent_twice_writes_once`, `read_only_and_computed_fields_are_refused`, `other_host_is_refused`, `changes_merge_onto_before`, `incomplete_value_without_before_is_refused`, `title_marked_manual_during_a_report_is_not_written` and `stream_id_edit_needs_an_existing_same_host_stream`. `src/application/fields/tests.rs` has `every_stored_field_has_a_class`, which serializes a default `Stream`, `Session` and `ArtifactEntry` and checks each key against the three lists. `tests/cli.rs`, `tests/cli_revisions.rs`, `tests/record_updates.rs`, `tests/application_records.rs`, `tests/fixtures/`, `src/file_store/records/tests.rs`, `src/file_store/records/inventory/tests.rs` and `src/sync/records/tests*` move to format 4 and the new commands. They add `stream_edit_by_prefix_saves_both_fields` (CUJ 2), `partial_key_resolves_to_one_session`, `ambiguous_prefix_lists_full_keys`, `session_create_refuses_a_bare_id_or_prefix`, `session_create_twice_for_one_stream_changes_nothing`, `session_create_for_another_stream_is_refused`, `add_document_turns_an_absolute_path_into_a_key`, `list_json_has_items_unreadable_and_more`, `exit_status_three_cases`, `session_create_saves_the_directory` and `resume_runs_the_harness_with_the_id`, which checks the arguments a fake launcher receives. |
+| Tests | The codec, edit, `documents::locate`, path conversion, clone inspection and Session layout cases in `docs/session-references.md`. The edit cases run in `src/application/edit/tests.rs` with a fake store that changes records between read and save, and add `matching_before_writes`, `body_sent_twice_writes_once`, `read_only_and_computed_fields_are_refused`, `other_host_is_refused`, `changes_merge_onto_before`, `incomplete_value_without_before_is_refused`, `title_marked_manual_during_a_report_is_not_written` and `stream_id_edit_needs_an_existing_same_host_stream`. `src/application/fields/tests.rs` has `every_stored_field_has_a_class`, which serializes a default `Stream`, `Session` and `ArtifactEntry` and checks each key against the three lists. `tests/cli.rs`, `tests/cli_revisions.rs`, `tests/record_updates.rs`, `tests/application_records.rs`, `tests/fixtures/`, `src/file_store/records/tests.rs`, `src/file_store/records/inventory/tests.rs` and `src/sync/records/tests*` move to format 5 and the new commands. They add `stream_edit_by_prefix_saves_both_fields` (CUJ 2), `partial_key_resolves_to_one_session`, `ambiguous_prefix_lists_full_keys`, `session_create_refuses_a_bare_id_or_prefix`, `session_create_twice_for_one_stream_changes_nothing`, `session_create_for_another_stream_is_refused`, `add_document_turns_an_absolute_path_into_a_key`, `list_json_has_items_unreadable_and_more`, `exit_status_three_cases`, `session_create_saves_the_directory` and `resume_runs_the_harness_with_the_id`, which checks the arguments a fake launcher receives. |
 
 ### Phase 3: the callers
 
@@ -695,7 +692,7 @@ This phase holds the record, edit and document parts of `docs/session-references
 |---|---|
 | `extensions/stream-checkpoint/` | `streams.ts`, `report-workflow.ts` and `native-rust.ts` run the commands in the extension table, name the Session as `pi/ID` in every call, write `streams.session` with `hc label`, and set Pi's name from the Session title each time they read it. `child.ts` starts `card watch`, keeps its standard input open, and closes it as Pi exits. `child-protocol.ts` goes. `core.ts`, `panel.ts`, `agent.ts` and `report-workflow.ts` move to Session references and the report rules in `docs/session-references.md`. |
 | The prompt lab | `lab.ts`, `lab-cli.mjs`, `prompt-lab.ts`, `capture.ts` and `replay.ts` read records with the commands in the section on machine interfaces, and `src/cli/debug.rs` becomes `debug prompts`. |
-| `integrations/herdr-work-cards/src/streams-context.ts` | Parses format 4, and drops what `docs/session-references.md` lists: the Stream's `references` and `repositories`, the reference array, the string progress fields and `Session.checkout`. `extensions/stream-checkpoint/streams.ts`, `core.ts`, `capture.ts`, `panel.ts` and `lab-artifacts.ts` keep importing it. |
+| `extensions/stream-checkpoint/wire.ts` | Parses format 5, and drops what `docs/session-references.md` lists: the Stream's `references` and `repositories`, the reference array, the string progress fields, `Session.checkout` and the patch-schema types. `streams.ts`, `core.ts`, `capture.ts`, `panel.ts`, `agent.ts` and `lab-artifacts.ts` keep importing it. |
 | `integrations/herdr-app/state.js` and `main.js` | Read labels, reconcile `streams.stream`, run the refresh commands above, show the focused Session's references and the Stream's ID in the sidebar, open work with `hc run … streams session resume KEY`, and view documents and artifacts through `read` or `view`. |
 | Extension tests | `tests/stream_*_test.mjs` use a fake `streams` program that records its arguments. `tests/stream_child_test.mjs`, `tests/stream_native_test.mjs`, `tests/stream_rust_native_test.mjs`, `tests/helpers/native-child.mjs` and `tests/helpers/session-id.mjs` move to `card watch` and the public commands, or go where they tested only the child protocol, and the Justfile recipes `test-pi`, `test-pi-child`, `test-pi-native` and `test-native-rust` follow. They gain `new_work_runs_stream_create_then_session_create`, `enroll_sends_directory`, `start_writes_or_clears_the_session_label`, `report_sends_before_for_each_change` and the Pi extension cases in `docs/session-references.md`. |
 | App tests | `integrations/herdr-app/tests/state.test.mjs` gains `refresh_reads_the_focused_session`, `focus_change_in_a_tab_refreshes`, `stale_session_label_is_ignored`, `opening_reuses_a_running_session`, `opening_keeps_parked_sessions`, `sidebar_shows_the_stream_id`, `space_is_found_from_stream_labels`, `refresh_relabels_a_moved_session` and one case for each kind of reference, with a fake process runner and a fake window. |
@@ -709,7 +706,7 @@ This phase holds the record, edit and document parts of `docs/session-references
 |---|---|
 | `src/cli/args.rs` | Hide `card` and `debug` from `--help`. |
 | Conversion | The conversion script in `.tmp/session-references/`, kept out of the repository, with the conversion cases in `docs/session-references.md`. |
-| Documents | Update the README, `AGENTS.md`, `CONTRIBUTING.md`, `docs/` except `docs/hc-herdr-app-design.md`, `skills/streams/SKILL.md` and its references, and `CHANGELOG.md`. The README's line on closing a Stream changes, because closing no longer closes its Sessions. |
+| Documents | Update the README, `AGENTS.md`, `CONTRIBUTING.md`, `docs/` except `docs/hc-herdr-app-design.md`, `skills/streams/SKILL.md` and its references, and `CHANGELOG.md`. The README reflects the new commands, derived Stream status and format 5. |
 | Written steps | Write the steps that replace code, which are reloading the app after changing `catalog.root` or a `herdr` setting, checking that a Session is not open before `session resume`, repairing an unreadable record, giving a second catalog its own hc core, and moving or recreating a worktree. |
 | Labels | Document the `streams.session`, `streams.stream` and `streams.saved` labels as the contract with the app, and `"$PI_SESSION_ID"` as how an agent in Pi names its Session. |
 | `AGENTS.md` | The "Modular" goal says that frontends sit outside Streams and use the CLI. |
