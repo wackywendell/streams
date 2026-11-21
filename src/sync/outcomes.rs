@@ -3,8 +3,6 @@
 use serde::Serialize;
 use strum::{AsRefStr, Display, EnumString, VariantNames};
 
-use crate::operations::Reconciliation;
-
 /// What happened to local persistence, independently of domain acceptance or sharing.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Serialize, EnumString, VariantNames, Display, AsRefStr,
@@ -40,7 +38,7 @@ crate::codec::deserialize_string_enum!(LocalStatus, SharingStatus);
 pub struct Result {
     pub sharing: SharingStatus,
     pub local: LocalStatus,
-    pub domain: Option<Reconciliation>,
+    pub domain: Option<()>,
     pub local_revision: Option<String>,
     pub remote_revision: Option<String>,
     pub detail: String,

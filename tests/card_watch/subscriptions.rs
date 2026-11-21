@@ -50,23 +50,21 @@ impl NativeFixture {
     fn with_enrollment(enroll: bool) -> Self {
         let fixture = Fixture::new();
         let id = uuid::Uuid::new_v4().to_string();
-        let stream = fixture.ok(&["create", "Work"], None)["stream"].clone();
+        let created_stream = fixture.ok(&["stream", "create", "--title", "Work"], None);
+        let stream_key = created_stream["key"].as_str().unwrap();
+        let stream = fixture.ok(&["stream", "show", stream_key], None);
         let session = if enroll {
-            fixture.ok(
+            let pair = format!("pi/{id}");
+            let created_session = fixture.ok(
                 &[
-                    "session",
-                    "attach",
-                    stream["id"].as_str().unwrap(),
-                    "--harness",
-                    "pi",
-                    "--session-id",
-                    &id,
-                    "--title",
-                    "Before",
+                    "session", "create", &pair, "--stream", stream_key, "--title", "Before",
                 ],
                 None,
-            )["session"]
-                .clone()
+            );
+            fixture.ok(
+                &["session", "show", created_session["key"].as_str().unwrap()],
+                None,
+            )
         } else {
             json!({"stream_id": stream["id"]})
         };
@@ -445,8 +443,8 @@ fn card_close_keeps_watch_from_reopening() {
     f.fixture.ok(
         &[
             "session",
-            "update",
-            f.session["id"].as_str().unwrap(),
+            "edit",
+            f.session["key"].as_str().unwrap(),
             "--state",
             "Updated after close",
         ],
@@ -533,12 +531,10 @@ fn card_watch_opens_when_conversation_enrolls_externally() {
     f.fixture.ok(
         &[
             "session",
-            "attach",
+            "create",
+            &format!("pi/{}", f.id),
+            "--stream",
             f.session["stream_id"].as_str().unwrap(),
-            "--harness",
-            "pi",
-            "--session-id",
-            &f.id,
             "--title",
             "Enrolled later",
         ],
@@ -566,10 +562,10 @@ fn ordinary_native_refreshes_associate_an_unmarked_workspace_without_changing_me
         "card watch should associate an unmarked workspace with its Stream",
     );
     let current = f.fixture.ok(
-        &["session", "show", f.session["id"].as_str().unwrap()],
+        &["session", "show", f.session["key"].as_str().unwrap()],
         None,
     );
-    assert_eq!(current["session"]["stream_id"], f.session["stream_id"]);
+    assert_eq!(current["stream_id"], f.session["stream_id"]);
     let (code, stderr) = watcher.finish();
     assert_eq!(code, 0, "{stderr}");
 }

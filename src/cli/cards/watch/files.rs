@@ -4,11 +4,7 @@ use super::Wake;
 use crate::cli::{CliError, Result, application};
 use notify::Event;
 use std::{collections::BTreeMap, path::PathBuf, sync::mpsc::Sender};
-use streams::{
-    file_store::records::relative_record_path,
-    model::{RecordKind, Session},
-    storage::records::RecordAddress,
-};
+use streams::{file_store::records::relative_record_path, storage::records::RecordAddress};
 
 use crate::cli::file_watch::{self, FileWatch};
 
@@ -28,21 +24,12 @@ impl Files {
         sender: Sender<Wake>,
     ) -> Result<Self> {
         let host = records.host().as_str();
-        let address = RecordAddress::new(
-            host,
-            RecordKind::Session,
-            Session::id_for(host, "pi", native_session),
-        )
-        .map_err(application::ApplicationError::from)?;
+        let address = RecordAddress::session(host, "pi", native_session)
+            .map_err(application::ApplicationError::from)?;
         let root = std::fs::canonicalize(records.root())?;
         let session =
             root.join(relative_record_path(&address).map_err(application::ApplicationError::from)?);
-        let streams = session
-            .parent()
-            .expect("conversation directory")
-            .parent()
-            .expect("host partition")
-            .join("streams");
+        let streams = root.join("hosts").join(host).join("streams");
         let watch = FileWatch::new(move |generation, event| {
             let _ = sender.send(Wake::Files(generation, event));
         })
@@ -64,7 +51,7 @@ impl Files {
     pub fn set_stream(&mut self, stream: Option<&str>) -> Result<()> {
         let path =
             if let Some(stream) = stream {
-                let address = RecordAddress::new(&self.host, RecordKind::Stream, stream)
+                let address = RecordAddress::stream(&self.host, stream)
                     .map_err(application::ApplicationError::from)?;
                 Some(self.root.join(
                     relative_record_path(&address).map_err(application::ApplicationError::from)?,
@@ -139,7 +126,7 @@ mod tests {
     use std::{fs, sync::mpsc};
     use streams::{
         config::{Config, Strategy},
-        model::{Record, Stream},
+        model::{Goal, Record, Session, Stream, Title},
         storage::{
             StorageError,
             records::{RecordChange, RecordStore},
@@ -177,15 +164,7 @@ mod tests {
         assert_eq!(
             path,
             records.root().join(
-                relative_record_path(
-                    &RecordAddress::new(
-                        host,
-                        RecordKind::Session,
-                        Session::id_for(host, "pi", "pi")
-                    )
-                    .unwrap()
-                )
-                .unwrap()
+                relative_record_path(&RecordAddress::session(host, "pi", "pi").unwrap()).unwrap()
             )
         );
         assert_eq!(
@@ -230,20 +209,12 @@ mod tests {
         for id in ["old", "next"] {
             save(
                 &records,
-                Record::Stream(Stream::new(id, id, None, host).unwrap()),
+                Record::Stream(Stream::new(host, id, Title::new(id, false), None).unwrap()),
             );
         }
         let session = |stream: &str| {
             Record::Session(
-                Session::new(
-                    Session::id_for(host, "pi", "native"),
-                    host,
-                    stream,
-                    "pi",
-                    "native",
-                    "Lane",
-                )
-                .unwrap(),
+                Session::new(host, "pi", "native", stream, Title::new("Lane", false)).unwrap(),
             )
         };
         save(&records, session("old"));
@@ -263,10 +234,10 @@ mod tests {
             "raw Session bytes cannot compute desired membership"
         );
         let changed = Stream::new(
-            "next",
-            "next",
-            Some("changed after context collection".into()),
             host,
+            "next",
+            Title::new("next", false),
+            Some(Goal::new("changed after context collection", None, false)),
         )
         .unwrap();
         save(&records, Record::Stream(changed));

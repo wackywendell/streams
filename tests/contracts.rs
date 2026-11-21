@@ -23,8 +23,6 @@ mod record_updates;
 mod runtime_conversations;
 mod runtime_inference;
 mod runtime_native;
-mod runtime_registry;
-mod runtime_revisions;
 mod runtime_state;
 mod tui_pty;
 

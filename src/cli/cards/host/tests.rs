@@ -34,27 +34,22 @@ fn watched_inputs_have_one_canonical_session_and_stream_address_and_both_directo
     let scope = Scope {
         catalog_source: records.source_id().into(),
         host_id: HOST.into(),
-        stream_id: "project/name".into(),
-        session_id: streams::model::Session::id_for(HOST, "pi", native_id),
+        stream_id: "project-name".into(),
+        session_id: native_id.into(),
         harness: "pi".into(),
         native_session_id: native_id.into(),
     };
     let inputs = Inputs::new(&records, &scope).unwrap();
-    let bindings = records.locations().unwrap();
     let paths = inputs.paths(&scope.stream_id).unwrap();
     assert_eq!(
         paths,
         BTreeSet::from([
-            records.root().join(format!(
-                "hosts/{HOST}/conversations/{}.json",
-                scope.session_id
-            )),
             records
                 .root()
-                .join(format!("hosts/{HOST}/streams/project%2Fname.json")),
-            records.registry().unwrap().path().into(),
-            bindings.path(streams::runtime::BindingKey::Session(&scope.session_id)),
-            bindings.path(streams::runtime::BindingKey::Stream(&scope.stream_id)),
+                .join(format!("hosts/{HOST}/sessions/pi/{native_id}/session.json")),
+            records
+                .root()
+                .join(format!("hosts/{HOST}/streams/project-name.json")),
         ])
     );
     let destination = inputs.paths("destination").unwrap();
@@ -69,7 +64,7 @@ fn watched_inputs_have_one_canonical_session_and_stream_address_and_both_directo
         !destination.contains(
             &records
                 .root()
-                .join(format!("hosts/{HOST}/streams/project%2Fname.json"))
+                .join(format!("hosts/{HOST}/streams/project-name.json"))
         )
     );
     assert!(destination.contains(&inputs.session_path));
@@ -84,14 +79,19 @@ fn watched_inputs_have_one_canonical_session_and_stream_address_and_both_directo
         };
         assert!(Inputs::new(&records, &invalid).is_err());
     }
-    let stream = streams::model::Stream::new(&scope.stream_id, "Work", None, HOST).unwrap();
-    let session = Session::new(
-        &scope.session_id,
+    let stream = streams::model::Stream::new(
         HOST,
         &scope.stream_id,
+        streams::model::Title::new("Work", false),
+        None,
+    )
+    .unwrap();
+    let session = Session::new(
+        HOST,
         "pi",
         native_id,
-        "Conversation",
+        &scope.stream_id,
+        streams::model::Title::new("Conversation", false),
     )
     .unwrap();
     application::create_record(records.records(), &Record::Stream(stream)).unwrap();
@@ -100,7 +100,7 @@ fn watched_inputs_have_one_canonical_session_and_stream_address_and_both_directo
     let session = inputs.session(&files).unwrap();
     let stream_path = records
         .root()
-        .join(format!("hosts/{HOST}/streams/project%2Fname.json"));
+        .join(format!("hosts/{HOST}/streams/project-name.json"));
     fs::write(&inputs.session_path, "not a record").unwrap();
     fs::write(stream_path, "not a record").unwrap();
     let observed = inputs

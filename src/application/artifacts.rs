@@ -1,69 +1,94 @@
-//! Record-local attachment operations. Metadata lives only in the producing Session.
+//! Record-local artifact operations. Metadata lives in `Session.artifacts`; content lives at
+//! `hosts/HOST/sessions/HARNESS/ID/artifacts/NAME`.
 
-use super::Result;
+use serde::Serialize;
+
+use super::{ApplicationError, OpenedRecords, Result, fields::ArtifactRow};
+use crate::{
+    artifacts::{
+        self, ArtifactEntry, ArtifactKey, ArtifactStore, ArtifactSummary, ContentChange,
+        validate_name,
+    },
+    model::{Record, Session, ValidationError},
+    storage::records::{RecordAddress, RecordChange, RecordReader, RecordStore},
+};
 
 #[cfg(test)]
 mod tests;
-use crate::{
-    artifacts::{self, ArtifactKey, ArtifactStore, ArtifactSummary, ContentChange},
-    model::{Record, RecordKind, Session, ValidationError},
-    storage::records::{RecordAddress, RecordChange, RecordReader},
-};
-use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct WriteArtifact {
+    pub harness: String,
     pub session_id: String,
-    pub stream_id: Option<String>,
     pub name: String,
     pub description: String,
     pub content: Option<String>,
 }
 
-fn session(reader: &dyn RecordReader, host: &str, id: &str) -> Result<Session> {
-    let key = RecordAddress::new(host, RecordKind::Session, id)?;
-    match reader.read(&key)? {
+fn read_session(reader: &dyn RecordReader, host: &str, harness: &str, id: &str) -> Result<Session> {
+    let address = RecordAddress::session(host, harness, id)?;
+    match reader.read(&address)? {
         Some(Record::Session(session)) => Ok(session),
-        _ => Err(ValidationError::new("producing Session is missing").into()),
+        _ => Err(ApplicationError::not_found(format!(
+            "no Session {host}/{harness}/{id}"
+        ))),
     }
 }
 
 pub fn list_session_artifacts(
     store: &impl ArtifactStore,
     host: &str,
+    harness: &str,
     session_id: &str,
-    stream: Option<&str>,
-) -> Result<Vec<ArtifactSummary>> {
+) -> Result<Vec<ArtifactRow>> {
     store.with_artifacts(|reader| {
-        let session = session(reader, host, session_id)?;
-        Ok(artifacts::summaries(
-            &session,
-            stream.unwrap_or(&session.stream_id),
-        ))
+        let session = read_session(reader, host, harness, session_id)?;
+        let mut rows: Vec<ArtifactRow> = artifacts::summaries(&session)
+            .into_iter()
+            .map(|summary| ArtifactRow::from_session(&session, &summary.key, &summary.description))
+            .collect();
+        rows.sort_by(|a, b| a.key.cmp(&b.key));
+        Ok(rows)
     })
 }
 
 pub fn list_stream_artifacts(
-    store: &impl ArtifactStore,
+    opened: &OpenedRecords,
     host: &str,
-    stream: &str,
-) -> Result<Vec<ArtifactSummary>> {
-    store.with_artifacts(|reader| {
-        let key = RecordAddress::new(host, RecordKind::Stream, stream)?;
-        if reader.read(&key)?.is_none() {
-            return Err(ValidationError::new("producing Stream is missing").into());
+    stream_id: &str,
+) -> Result<(
+    Vec<ArtifactRow>,
+    Vec<crate::storage::records::UnreadableRecord>,
+)> {
+    let stream_addr = RecordAddress::stream(host, stream_id)?;
+    let stream_exists = opened
+        .records()
+        .with_reader(|reader| reader.read(&stream_addr))?
+        .is_some();
+    if !stream_exists {
+        return Err(ApplicationError::not_found(format!(
+            "no Stream {host}/{stream_id}"
+        )));
+    }
+    let listing = opened.sessions_for_host(host)?;
+    let mut rows = Vec::new();
+    for record in listing.records {
+        let Record::Session(session) = record else {
+            continue;
+        };
+        if session.stream_id != stream_id {
+            continue;
         }
-        let mut outputs = Vec::new();
-        for id in reader.stream_producers(host, stream)? {
-            // An unattached leftover directory is not an artifact reference.
-            let key = RecordAddress::new(host, RecordKind::Session, id)?;
-            if let Some(Record::Session(session)) = reader.read(&key)? {
-                outputs.extend(artifacts::summaries(&session, stream));
-            }
+        for summary in artifacts::summaries(&session) {
+            rows.push(ArtifactRow::from_session(
+                &session,
+                &summary.key,
+                &summary.description,
+            ));
         }
-        outputs.sort_by(|a, b| a.key.cmp(&b.key));
-        Ok(outputs)
-    })
+    }
+    rows.sort_by(|a, b| a.key.cmp(&b.key));
+    Ok((rows, listing.unreadable))
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -75,11 +100,11 @@ pub struct ArtifactRead {
 pub fn read_artifact(store: &impl ArtifactStore, key: &ArtifactKey) -> Result<ArtifactRead> {
     key.validate()?;
     store.with_artifacts(|reader| {
-        let producer = session(reader, &key.host, &key.session)?;
-        let artifact = artifacts::summaries(&producer, &key.stream)
+        let producer = read_session(reader, &key.host, &key.harness, &key.session)?;
+        let artifact = artifacts::summaries(&producer)
             .into_iter()
             .find(|item| item.key == *key)
-            .ok_or_else(|| ValidationError::new("artifact is not attached to this Session"))?;
+            .ok_or_else(|| ApplicationError::not_found(format!("no Artifact {key}")))?;
         let content = reader
             .read_content(key)?
             .ok_or_else(|| ValidationError::new("attached artifact content is missing"))?;
@@ -87,10 +112,13 @@ pub fn read_artifact(store: &impl ArtifactStore, key: &ArtifactKey) -> Result<Ar
     })
 }
 
-fn before_session(before: Option<&Record>) -> Result<&Session> {
+fn before_session<'a>(before: Option<&'a Record>, target: &RecordAddress) -> Result<&'a Session> {
     match before {
         Some(Record::Session(session)) => Ok(session),
-        _ => Err(ValidationError::new("producing Session is missing").into()),
+        _ => Err(ApplicationError::not_found(format!(
+            "no Session {}",
+            target.full_key()
+        ))),
     }
 }
 
@@ -107,29 +135,26 @@ pub fn write_artifact(
     host: &str,
     intent: &WriteArtifact,
 ) -> Result<artifacts::ArtifactSave<ArtifactOutcome>> {
-    artifacts::ArtifactEntry {
-        name: intent.name.clone(),
+    validate_name(&intent.name)?;
+    ArtifactEntry {
         description: intent.description.clone(),
     }
     .validate()?;
     if let Some(content) = &intent.content {
         artifacts::validate_content(content)?;
     }
-    let target = RecordAddress::new(host, RecordKind::Session, &intent.session_id)?;
+    let target = RecordAddress::session(host, &intent.harness, &intent.session_id)?;
     let content = intent
         .content
         .clone()
         .map(ContentChange::Write)
         .unwrap_or(ContentChange::Keep);
-    store.save_artifact(&target, content, |reader, before| {
-        let session = before_session(before)?;
+    store.save_artifact(&target, content, |_reader, before| {
+        let session = before_session(before, &target)?;
         let key = ArtifactKey {
             host: host.into(),
+            harness: session.harness.clone(),
             session: session.id.clone(),
-            stream: intent
-                .stream_id
-                .clone()
-                .unwrap_or_else(|| session.stream_id.clone()),
             name: intent.name.clone(),
         };
         let after = artifacts::edit(
@@ -138,14 +163,11 @@ pub fn write_artifact(
             Some(&intent.description),
             intent.content.is_some(),
         )?;
-        let stream_key = RecordAddress::new(host, RecordKind::Stream, &key.stream)?;
-        if reader.read(&stream_key)?.is_none() {
-            return Err(ValidationError::new("producing Stream is missing").into());
-        }
-        let summary = artifacts::summaries(&after, &key.stream)
-            .into_iter()
-            .find(|item| item.key == key)
-            .expect("write adds metadata");
+        let summary = ArtifactSummary {
+            key: key.clone(),
+            name: key.name.clone(),
+            description: intent.description.clone(),
+        };
         Ok((
             RecordChange {
                 record: Record::Session(after),
@@ -161,9 +183,9 @@ pub fn delete_artifact(
     key: &ArtifactKey,
 ) -> Result<artifacts::ArtifactSave<ArtifactOutcome>> {
     key.validate()?;
-    let target = RecordAddress::new(&key.host, RecordKind::Session, &key.session)?;
+    let target = key.session_address()?;
     store.save_artifact(&target, ContentChange::Delete, |_, before| {
-        let after = artifacts::edit(before_session(before)?, key, None, false)?;
+        let after = artifacts::edit(before_session(before, &target)?, key, None, false)?;
         Ok((
             RecordChange {
                 record: Record::Session(after),
@@ -174,7 +196,7 @@ pub fn delete_artifact(
     })
 }
 
-/// Bounded regular-file input, shared by CLI and the child. Stdin is supplied by the CLI.
+/// Bounded regular-file input for `artifact write --file`.
 pub fn artifact_file(path: &std::path::Path) -> Result<String> {
     use std::{io::Read, os::unix::fs::OpenOptionsExt};
     let file = std::fs::OpenOptions::new()

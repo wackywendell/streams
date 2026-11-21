@@ -200,8 +200,8 @@ impl NativeCardEngine {
     fn card_caption(&self) -> String {
         format!(
             "{}: {}",
-            self.card.stream().title,
-            self.card.session().title
+            self.card.stream().title.text,
+            self.card.session().title.text
         )
     }
     pub fn observe_owner(&self) -> Result<NativeOwnerView> {

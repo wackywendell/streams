@@ -1,76 +1,72 @@
 use std::{path::PathBuf, sync::Arc};
 
-use serde::Deserialize;
-use streams::runtime::RuntimeError;
-use streams::runtime::conversations::Harness;
-use streams::runtime::native_cards::{NativeCardSource, ResolvedEditor, SourceLaunch};
-use streams::tui::{
-    CardRecords, CardSnapshot, CheckoutBinding, CheckoutSelection, DocumentLocation,
-    DocumentProblem, DocumentTarget, NativeOwnerObservation, ResolvedDocument, Scope,
+use streams::{
+    application::documents,
+    model::{Record, ReferenceKind, ReferenceStatus, Session, Stream, ValidationError},
+    runtime::{
+        RuntimeError,
+        native_cards::{NativeCardSource, ResolvedEditor, SourceLaunch},
+    },
+    storage::records::{RecordAddress, RecordStore},
+    tui::{
+        CardRecords, CardSnapshot, DocumentLocation, DocumentTarget, EditorIdentity,
+        NativeOwnerObservation, ResolvedDocument, Scope,
+    },
 };
 
-use super::super::{App, CliError, Result, application, documents};
-
-#[cfg(test)]
-mod tests;
+use super::super::{App, CliError, Result, application};
 
 pub(super) struct ApplicationSource {
     app: App,
     records: Arc<application::OpenedRecords>,
     native_session_id: String,
     expected_scope: Option<Scope>,
-    context: Option<streams::agent::RecordContext>,
+    preloaded: Option<(Stream, Session)>,
 }
+
 impl ApplicationSource {
     pub(super) fn new(
         app: App,
         records: Arc<application::OpenedRecords>,
         native_session_id: String,
         scope: Option<Scope>,
-        context: Option<streams::agent::RecordContext>,
+        preloaded: Option<(Stream, Session)>,
     ) -> Self {
         Self {
             app,
             records,
             native_session_id,
             expected_scope: scope,
-            context,
+            preloaded,
         }
     }
+
     fn records(
         &mut self,
         owner: &streams::frontend::herdr::HerdrInventoryPane,
     ) -> Result<CardRecords> {
         let missing = || CliError::message("native card requires an enrolled exact Pi Session");
-        let (stream, session, catalog_source) = match self.context.take() {
-            Some(context) => {
-                let (stream, session) = context.stream.zip(context.session).ok_or_else(missing)?;
-                (stream, session, context.catalog_source)
-            }
+        let (stream, session) = match self.preloaded.take() {
+            Some(pair) => pair,
             None => {
-                use streams::model::{Record, RecordKind, Session, ValidationError};
-                use streams::storage::records::{RecordAddress, RecordStore};
                 let host = self.records.host().as_str();
-                let id = Session::id_for(host, Harness::Pi.as_ref(), &self.native_session_id);
                 let found =
                     self.records
                         .records()
                         .with_reader(|reader| -> application::Result<_> {
-                            let session_key = RecordAddress::new(host, RecordKind::Session, &id)?;
-                            let Some(Record::Session(session)) = reader.read(&session_key)? else {
+                            let Some(session) =
+                                reader.read_session(host, "pi", &self.native_session_id)?
+                            else {
                                 return Ok(None);
                             };
-                            let stream_key =
-                                RecordAddress::new(host, RecordKind::Stream, &session.stream_id)?;
-                            let Some(Record::Stream(stream)) = reader.read(&stream_key)? else {
+                            let Some(stream) = reader.read_stream(host, &session.stream_id)? else {
                                 return Err(
                                     ValidationError::new("current Stream is missing").into()
                                 );
                             };
                             Ok(Some((stream, session)))
                         })?;
-                let (stream, session) = found.ok_or_else(missing)?;
-                (stream, session, self.records.source_id().to_owned())
+                found.ok_or_else(missing)?
             }
         };
         let owner = NativeOwnerObservation {
@@ -78,7 +74,7 @@ impl ApplicationSource {
             tab_id: owner.pane.tab_id.clone(),
             workspace_id: owner.pane.workspace_id.clone(),
         };
-        let records = CardRecords::new(stream, session, catalog_source, owner)
+        let records = CardRecords::new(stream, session, self.records.source_id().to_owned(), owner)
             .map_err(|error| CliError::message(error.to_string()))?;
         if self
             .expected_scope
@@ -91,6 +87,7 @@ impl ApplicationSource {
         }
         Ok(records)
     }
+
     fn observe(
         &mut self,
         owner: &streams::frontend::herdr::HerdrInventoryPane,
@@ -98,75 +95,55 @@ impl ApplicationSource {
         let records = self.records(owner)?;
         self.display(records)
     }
+
     pub(super) fn display(&self, records: CardRecords) -> Result<CardSnapshot> {
-        let documents: Documents = serde_json::from_value(documents::context(
-            &self.records.registry()?,
-            &self.records.locations()?,
-            records.stream(),
-            records.session(),
-        ))?;
-        let checkouts = documents
-            .checkouts
-            .into_iter()
-            .map(|checkout| CheckoutBinding {
-                repository_url: checkout.repository_url,
-                selection: CheckoutSelection {
-                    checkout_id: checkout.checkout_id,
-                    root: checkout.root,
+        let host = self.records.host().as_str();
+        let session = records.session();
+        let resolved_root = session
+            .directory
+            .as_ref()
+            .and_then(|dir| std::fs::canonicalize(&dir.path).ok());
+        let mut locations = Vec::new();
+        for (path, entry) in &session.references {
+            if entry.status == ReferenceStatus::Dropped || entry.kind != ReferenceKind::Document {
+                continue;
+            }
+            let location = match documents::locate(host, session, path) {
+                Ok(documents::DocumentLocation::Path { path: file }) => {
+                    let root = resolved_root.clone().unwrap_or_else(|| {
+                        PathBuf::from(&session.directory.as_ref().unwrap().path)
+                    });
+                    ResolvedDocument::File { root, file }
+                }
+                Ok(documents::DocumentLocation::Unavailable { reason }) => {
+                    ResolvedDocument::Unavailable { reason }
+                }
+                Err(error) => ResolvedDocument::Unavailable {
+                    reason: error
+                        .to_string()
+                        .chars()
+                        .map(|c| if c.is_control() { ' ' } else { c })
+                        .collect(),
                 },
-            })
-            .collect();
-        let locations = documents
-            .document_locations
-            .into_iter()
-            .map(|location| {
-                let selection = location
-                    .checkout_id
-                    .zip(location.root)
-                    .map(|(checkout_id, root)| CheckoutSelection { checkout_id, root });
-                let value = match (
-                    location.kind.as_deref(),
-                    selection,
-                    location.file,
-                    location.error,
-                ) {
-                    (Some("local"), Some(selection), Some(file), None) => {
-                        ResolvedDocument::File { selection, file }
-                    }
-                    (None, selection, None, Some(error)) => ResolvedDocument::Unavailable {
-                        selection,
-                        problem: DocumentProblem::Other(
-                            error
-                                .chars()
-                                .map(|c| if c.is_control() { ' ' } else { c })
-                                .collect(),
-                        ),
-                    },
-                    _ => return Err(CliError::message("invalid application document location")),
-                };
-                Ok(DocumentLocation {
-                    repository_url: location.repository_url,
-                    path: location.path,
-                    location: value,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        CardSnapshot::from_records(records, checkouts, locations)
-            .map_err(|e| CliError::message(e.to_string()))
+            };
+            locations.push(DocumentLocation {
+                path: path.clone(),
+                location,
+            });
+        }
+        CardSnapshot::from_records(records, locations).map_err(|e| CliError::message(e.to_string()))
     }
+
     fn resolve(&self, target: &DocumentTarget) -> Result<ResolvedEditor> {
         let ResolvedDocument::File {
-            selection,
-            file: expected,
+            root: expected_root,
+            file: expected_file,
         } = &target.location
         else {
             return Err(CliError::message(
-                "document is not available in the selected checkout",
+                "document is not available in the Session's directory",
             ));
         };
-        let document = target
-            .document()
-            .ok_or_else(|| CliError::message("document reference required"))?;
         if self.records.source_id() != target.scope.catalog_source
             || self.records.host().as_str() != target.scope.host_id
         {
@@ -174,63 +151,57 @@ impl ApplicationSource {
                 "captured viewing scope changed; recreate the card",
             ));
         }
-        use streams::model::{Record, RecordKind, ValidationError};
-        use streams::storage::records::{RecordAddress, RecordStore};
         let host = self.records.host().as_str();
-        let (stream, session) =
+        let session =
             self.records
                 .records()
-                .with_reader(|reader| -> application::Result<_> {
-                    let stream_key =
-                        RecordAddress::new(host, RecordKind::Stream, &target.scope.stream_id)?;
-                    let Some(Record::Stream(stream)) = reader.read(&stream_key)? else {
+                .with_reader(|reader| -> application::Result<Session> {
+                    let stream_key = RecordAddress::stream(host, &target.scope.stream_id)?;
+                    if reader.read(&stream_key)?.is_none() {
                         return Err(ValidationError::new("addressed Stream is missing").into());
-                    };
-                    let session_key =
-                        RecordAddress::new(host, RecordKind::Session, &target.scope.session_id)?;
+                    }
+                    let session_key = RecordAddress::session(
+                        host,
+                        &target.scope.harness,
+                        &target.scope.session_id,
+                    )?;
                     let Some(Record::Session(session)) = reader.read(&session_key)? else {
                         return Err(ValidationError::new("viewing Session is unavailable").into());
                     };
-                    if session.stream_id != stream.id {
+                    if session.stream_id != target.scope.stream_id {
                         return Err(ValidationError::new(
                             "viewing Session is not a current member of this Stream",
                         )
                         .into());
                     }
-                    Ok((stream, session))
+                    Ok(session)
                 })?;
-        let resolved = application::documents::resolve(
-            &self.records.registry()?,
-            &self.records.locations()?,
-            &stream,
-            &session,
-            &application::documents::DocumentKey {
-                repository: document.repository_url.clone(),
-                path: document.path.clone(),
-            },
-        )?;
-        let file = resolved.file;
-        let checkout_id = resolved.checkout.id;
-        let checkout_root = resolved.checkout.directory;
-        if checkout_id != selection.checkout_id
-            || checkout_root != selection.root
-            || &file != expected
-        {
+        let documents::DocumentLocation::Path { path: file } =
+            documents::locate(host, &session, target.path())?
+        else {
+            return Err(CliError::message("document is no longer available"));
+        };
+        let root = session
+            .directory
+            .as_ref()
+            .and_then(|dir| std::fs::canonicalize(&dir.path).ok())
+            .ok_or_else(|| CliError::message("Session directory is unavailable"))?;
+        if root != *expected_root || file != *expected_file {
             return Err(CliError::message(
-                "app-resolved document or checkout changed during resolution",
+                "app-resolved document or directory changed during resolution",
             ));
         }
         Ok(ResolvedEditor {
-            root: checkout_root,
-            identity: streams::tui::EditorIdentity {
-                catalog_source: self.records.source_id().to_owned(),
-                host_id: host.to_owned(),
-                checkout_id,
+            root,
+            identity: EditorIdentity {
+                catalog_source: target.scope.catalog_source.clone(),
+                host_id: target.scope.host_id.clone(),
                 file,
             },
         })
     }
 }
+
 impl NativeCardSource for ApplicationSource {
     fn read_records(
         &mut self,
@@ -239,6 +210,7 @@ impl NativeCardSource for ApplicationSource {
         self.records(owner)
             .map_err(|error| RuntimeError::Invalid(error.to_string()))
     }
+
     fn read(
         &mut self,
         owner: &streams::frontend::herdr::HerdrInventoryPane,
@@ -246,6 +218,7 @@ impl NativeCardSource for ApplicationSource {
         self.observe(owner)
             .map_err(|error| RuntimeError::Invalid(error.to_string()))
     }
+
     fn resolve_document(
         &mut self,
         target: &DocumentTarget,
@@ -253,35 +226,11 @@ impl NativeCardSource for ApplicationSource {
         self.resolve(target)
             .map_err(|error| RuntimeError::Invalid(error.to_string()))
     }
+
     fn launch_context(&self) -> SourceLaunch {
         SourceLaunch {
             environment: self.app.environment.clone(),
             cwd: self.app.cwd.clone(),
         }
     }
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Documents {
-    checkouts: Vec<Checkout>,
-    document_locations: Vec<Location>,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Checkout {
-    repository_url: String,
-    checkout_id: String,
-    root: PathBuf,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Location {
-    repository_url: String,
-    path: String,
-    checkout_id: Option<String>,
-    root: Option<PathBuf>,
-    kind: Option<String>,
-    file: Option<PathBuf>,
-    error: Option<String>,
 }

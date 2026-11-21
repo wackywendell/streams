@@ -1,12 +1,14 @@
 //! Owner-only read validation and a secure stdin pager; filenames never reach less.
 use super::{CliError, Result};
 use std::{
+    collections::BTreeMap,
     fs::{File, OpenOptions},
     io::{Read, Write},
     os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::Path,
     process::{Command, Stdio},
 };
+use streams::{config::ViewerMode, runtime::launch::resolve_executable};
 #[allow(dead_code)]
 const DOCUMENT_BYTES: u64 = 4 * 1024 * 1024;
 #[allow(dead_code)]
@@ -85,6 +87,50 @@ pub(super) fn show(program: &Path, content: &[u8], kind: &str) -> Result<()> {
         return Err(error.into());
     }
     Ok(())
+}
+
+/// Open an existing regular file in the configured terminal viewer (`editor`, `less`, or `hunk`).
+pub(super) fn view_file(
+    mode: ViewerMode,
+    environment: &BTreeMap<String, String>,
+    cwd: &Path,
+    path: &Path,
+) -> Result<()> {
+    match mode {
+        ViewerMode::Less | ViewerMode::Native => {
+            let program = resolve_executable("less", environment, cwd)
+                .map_err(|_| CliError::message("less is unavailable"))?;
+            let bytes = std::fs::read(path).map_err(|error| {
+                CliError::message(format!("cannot read {}: {error}", path.display()))
+            })?;
+            show(&program, &bytes, "document")
+        }
+        ViewerMode::Editor => {
+            let editor = environment
+                .get("VISUAL")
+                .or_else(|| environment.get("EDITOR"))
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .unwrap_or("vi");
+            let parts: Vec<&str> = editor.split_whitespace().collect();
+            let program = resolve_executable(parts[0], environment, cwd)
+                .map_err(|_| CliError::message(format!("editor {:?} is unavailable", parts[0])))?;
+            let status = Command::new(program).args(&parts[1..]).arg(path).status()?;
+            if !status.success() {
+                return Err(CliError::message(format!("editor exited with {status}")));
+            }
+            Ok(())
+        }
+        ViewerMode::Hunk => {
+            let program = resolve_executable("hunk", environment, cwd)
+                .map_err(|_| CliError::message("hunk is unavailable"))?;
+            let status = Command::new(program).arg(path).status()?;
+            if !status.success() {
+                return Err(CliError::message(format!("hunk exited with {status}")));
+            }
+            Ok(())
+        }
+    }
 }
 
 #[cfg(test)]

@@ -1,19 +1,21 @@
-//! Typed records with strict wire field mapping. Deserialization checks wire shapes;
-//! record validation checks local constraints, and catalog construction checks relationships.
-//! Validation preserves field values; catalog construction canonically orders records.
+//! Format-5 typed records with strict wire field mapping.
+//! Every absent value is `null`, never empty text and never omitted.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fmt;
+use std::path::Path;
 
 use chrono::{DateTime, FixedOffset, SecondsFormat};
 use percent_encoding::percent_decode_str;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Serialize, Serializer};
 use strum::{AsRefStr, Display, EnumString, VariantNames};
 use unicode_general_category::{GeneralCategory, get_general_category};
 
-use crate::codec::{RESET_HINT, object, object_map, objects, optional_object, required_nullable};
+pub use crate::artifacts::ArtifactEntry;
+use crate::artifacts::validate_name as validate_artifact_name;
+use crate::codec::{object, object_map, optional_object, required_nullable};
 
-/// Personal lifecycle of a stream or contribution; completion does not close its workspace.
+/// Personal lifecycle of a Session; Stream status is derived from its member Sessions.
 #[derive(
     Debug,
     Clone,
@@ -76,7 +78,7 @@ impl Status {
     }
 }
 
-/// Whether generated reports may replace text. Manual text remains user-owned.
+/// Whether generated reports may propose titles or goals (`naming.stream`, `naming.session`).
 #[derive(
     Debug,
     Clone,
@@ -98,39 +100,6 @@ pub enum NamingMode {
     Manual,
 }
 
-/// Per-record title policy; inheritance resolves against the record type's global default.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    Default,
-    PartialEq,
-    Eq,
-    Serialize,
-    EnumString,
-    VariantNames,
-    Display,
-    AsRefStr,
-)]
-#[serde(rename_all = "kebab-case")]
-#[strum(serialize_all = "kebab-case")]
-pub enum TitleMode {
-    Automatic,
-    Manual,
-    #[default]
-    Inherit,
-}
-
-impl TitleMode {
-    pub fn resolve(self, default: NamingMode) -> NamingMode {
-        match self {
-            Self::Automatic => NamingMode::Automatic,
-            Self::Manual => NamingMode::Manual,
-            Self::Inherit => default,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TitleDefaults {
@@ -138,7 +107,7 @@ pub struct TitleDefaults {
     pub session: NamingMode,
 }
 
-/// The record schemas accepted by catalog files and operation envelopes.
+/// The record schemas accepted by catalog files.
 #[derive(
     Debug,
     Clone,
@@ -162,7 +131,47 @@ pub enum RecordKind {
 }
 
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Serialize, EnumString, VariantNames, Display, AsRefStr,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Serialize,
+    EnumString,
+    VariantNames,
+    Display,
+    AsRefStr,
+)]
+#[serde(rename_all = "kebab-case")]
+#[strum(serialize_all = "kebab-case")]
+pub enum ReferenceKind {
+    Pr,
+    Issue,
+    Link,
+    Document,
+}
+
+impl ReferenceKind {
+    pub fn is_url(self) -> bool {
+        !matches!(self, Self::Document)
+    }
+}
+
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Serialize,
+    EnumString,
+    VariantNames,
+    Display,
+    AsRefStr,
 )]
 #[serde(rename_all = "kebab-case")]
 #[strum(serialize_all = "kebab-case")]
@@ -173,12 +182,24 @@ pub enum ReferenceRole {
     Background,
 }
 
+impl ReferenceRole {
+    /// Display sort order for cards and sidebars: deliverable, dependency, brief, background.
+    pub const fn sort_rank(self) -> u8 {
+        match self {
+            Self::Deliverable => 0,
+            Self::Dependency => 1,
+            Self::Brief => 2,
+            Self::Background => 3,
+        }
+    }
+}
+
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Serialize, EnumString, VariantNames, Display, AsRefStr,
 )]
 #[serde(rename_all = "kebab-case")]
 #[strum(serialize_all = "kebab-case")]
-pub enum ReferenceState {
+pub enum ReferenceStatus {
     Active,
     Fulfilled,
     Dropped,
@@ -187,38 +208,11 @@ pub enum ReferenceState {
 crate::codec::deserialize_string_enum!(
     Status,
     NamingMode,
-    TitleMode,
     RecordKind,
+    ReferenceKind,
     ReferenceRole,
-    ReferenceState
+    ReferenceStatus
 );
-
-fn checkout_directory() -> String {
-    ".".into()
-}
-
-fn deserialize_stream_title<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
-    String::deserialize(d)
-        .map_err(|_| serde::de::Error::custom("stream.title must be a nonempty string"))
-}
-
-mod owner {
-    use super::*;
-
-    #[derive(Serialize, Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct Owner<T> {
-        host_id: T,
-    }
-
-    pub fn serialize<S: Serializer>(host_id: &str, s: S) -> Result<S::Ok, S::Error> {
-        Owner { host_id }.serialize(s)
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
-        Ok(object::<Owner<String>, _>(d)?.host_id)
-    }
-}
 
 fn serialize_checked_at<S: Serializer>(
     checked_at: &DateTime<FixedOffset>,
@@ -253,6 +247,24 @@ pub fn short_text(text: &str) -> String {
     short.trim_end().to_owned()
 }
 
+/// Safe path token for `host_id`, `harness`, Stream `id` and Session `id`.
+/// ASCII letters, digits, `.`, `_` and `-`, starting and ending with a letter or digit.
+pub fn check_token(value: &str, name: &str) -> Result<(), ValidationError> {
+    let bytes = value.as_bytes();
+    if bytes.is_empty()
+        || !bytes[0].is_ascii_alphanumeric()
+        || !bytes[bytes.len() - 1].is_ascii_alphanumeric()
+        || !bytes
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+    {
+        return Err(ValidationError::new(format!(
+            "{name} {value:?} must use only ASCII letters, digits, '.', '_' and '-', starting and ending with a letter or digit"
+        )));
+    }
+    Ok(())
+}
+
 /// Rejects NULs and, unless allowed, empty or whitespace-only text; preserves input.
 pub fn check_text(value: &str, name: &str, empty_ok: bool) -> Result<(), ValidationError> {
     if value.contains('\0') || (!empty_ok && value.trim().is_empty()) {
@@ -266,43 +278,26 @@ pub fn check_text(value: &str, name: &str, empty_ok: bool) -> Result<(), Validat
     Ok(())
 }
 
-/// Rejects absolute paths, drive prefixes, backslashes, and parent traversal.
-pub fn check_relative_path(value: &str, name: &str) -> Result<(), ValidationError> {
-    check_text(value, name, false)?;
-    let has_drive = value.len() >= 2
-        && value.as_bytes()[0].is_ascii_alphabetic()
-        && value.as_bytes()[1] == b':';
-    if value.starts_with('/')
-        || has_drive
+/// Portable relative path key used for document reference keys and `directory.repository.within`.
+/// Segments are separated by `/`; no segment is empty, `.` or `..`; no `\`, no leading `/`,
+/// no `:` in the first segment, at least one non-whitespace char, and no ASCII control or DEL.
+pub fn check_path_key(value: &str, name: &str) -> Result<(), ValidationError> {
+    if value.is_empty()
+        || value.trim().is_empty()
+        || value.bytes().any(|b| b < 0x20 || b == 0x7f)
         || value.contains('\\')
-        || value.split('/').any(|part| part == "..")
+        || value.starts_with('/')
+        || value.split('/').any(|part| matches!(part, "" | "." | ".."))
+        || value
+            .split('/')
+            .next()
+            .is_some_and(|part| part.contains(':'))
     {
         return Err(ValidationError::new(format!(
-            "{name} must be a portable relative path"
+            "{name} {value:?} must be a portable relative path"
         )));
     }
     Ok(())
-}
-
-/// A repository URL referenced by its alias within a stream.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Repository {
-    pub url: String,
-}
-
-impl Repository {
-    /// Requires nonempty text, not a particular URL scheme or reachable repository.
-    pub fn new(url: impl Into<String>) -> Result<Self, ValidationError> {
-        let repository = Self { url: url.into() };
-        repository.validate()?;
-        Ok(repository)
-    }
-
-    /// Checks the URL text without resolving or modifying it.
-    pub fn validate(&self) -> Result<(), ValidationError> {
-        check_text(&self.url, "repository.url", false)
-    }
 }
 
 /// Checks browser safety without changing the exact saved URL identity.
@@ -344,414 +339,329 @@ pub fn reference_url(value: &str) -> Option<url::Url> {
     .then_some(url)
 }
 
-/// A document locator and recovery hints, independent of its relationship to work.
+/// A title and its manual mark, kept as one editable unit.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct RepositoryDocument {
-    pub repository_url: String,
-    pub path: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub r#ref: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub commit: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_session_id: Option<String>,
+pub struct Title {
+    pub text: String,
+    pub manual: bool,
 }
 
-impl RepositoryDocument {
+impl Title {
+    pub fn new(text: impl Into<String>, manual: bool) -> Self {
+        Self {
+            text: text.into(),
+            manual,
+        }
+    }
+
+    pub fn validate(&self, name: &str) -> Result<(), ValidationError> {
+        check_text(&self.text, &format!("{name}.text"), false)
+    }
+}
+
+/// A Stream's goal, optional short form, and manual mark, kept as one editable unit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Goal {
+    pub text: String,
+    #[serde(deserialize_with = "required_nullable")]
+    pub short: Option<String>,
+    pub manual: bool,
+}
+
+impl Goal {
+    pub fn new(text: impl Into<String>, short: Option<String>, manual: bool) -> Self {
+        Self {
+            text: text.into(),
+            short,
+            manual,
+        }
+    }
+
     pub fn validate(&self) -> Result<(), ValidationError> {
-        check_text(&self.repository_url, "document.repository_url", false)?;
-        check_relative_path(&self.path, "document.path")?;
-        for (name, value) in [
-            ("document.ref", &self.r#ref),
-            ("document.commit", &self.commit),
-            ("document.source_session_id", &self.source_session_id),
-        ] {
-            if let Some(value) = value {
-                check_text(value, name, false)?;
-            }
+        check_text(&self.text, "goal.text", false)?;
+        if let Some(short) = &self.short {
+            check_text(short, "goal.short", false)?;
         }
         Ok(())
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
-pub enum ReferenceTarget {
-    Document(RepositoryDocument),
-    Pr { url: String },
-    Issue { url: String },
-    Link { url: String },
-}
-
-impl ReferenceTarget {
-    pub fn validate(&self) -> Result<(), ValidationError> {
-        match self {
-            Self::Document(document) => document.validate(),
-            Self::Pr { url } | Self::Issue { url } | Self::Link { url } => {
-                check_text(url, "reference.target.url", false)?;
-                reference_url(url).ok_or_else(|| {
-                    ValidationError::new("reference.target.url must be a safe HTTP(S) URL")
-                })?;
-                Ok(())
-            }
-        }
-    }
-
-    pub fn key(&self) -> ResourceKey {
-        match self {
-            Self::Document(document) => ResourceKey::Document {
-                repository_url: document.repository_url.clone(),
-                path: document.path.clone(),
-            },
-            Self::Pr { url } | Self::Issue { url } | Self::Link { url } => {
-                ResourceKey::Url { url: url.clone() }
-            }
-        }
-    }
-}
-
-/// Exact identity excludes classification, relationship text and recovery hints.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
-pub enum ResourceKey {
-    Document {
-        repository_url: String,
-        path: String,
-    },
-    Url {
-        url: String,
-    },
-}
-
-impl ResourceKey {
-    pub fn validate(&self) -> Result<(), ValidationError> {
-        match self {
-            Self::Document {
-                repository_url,
-                path,
-            } => {
-                check_text(repository_url, "reference.key.repository_url", false)?;
-                check_relative_path(path, "reference.key.path")
-            }
-            Self::Url { url } => {
-                check_text(url, "reference.key.url", false)?;
-                reference_url(url).ok_or_else(|| {
-                    ValidationError::new("reference.key.url must be a safe HTTP(S) URL")
-                })?;
-                Ok(())
-            }
-        }
-    }
-}
-
+/// A progress text and its optional short form (`state`, `recap`, `remaining`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Reference {
+pub struct TextPair {
+    pub text: String,
+    #[serde(deserialize_with = "required_nullable")]
+    pub short: Option<String>,
+}
+
+impl TextPair {
+    pub fn new(text: impl Into<String>, short: Option<String>) -> Self {
+        Self {
+            text: text.into(),
+            short,
+        }
+    }
+
+    pub fn validate(&self, name: &str) -> Result<(), ValidationError> {
+        check_text(&self.text, &format!("{name}.text"), false)?;
+        if let Some(short) = &self.short {
+            check_text(short, &format!("{name}.short"), false)?;
+        }
+        Ok(())
+    }
+}
+
+/// Clone metadata inspected when a Session's directory is set.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RepositoryInfo {
+    pub url: String,
+    #[serde(deserialize_with = "required_nullable")]
+    pub within: Option<String>,
+    #[serde(deserialize_with = "required_nullable")]
+    pub branch: Option<String>,
+}
+
+impl RepositoryInfo {
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        check_text(&self.url, "directory.repository.url", false)?;
+        if let Some(within) = &self.within {
+            check_path_key(within, "directory.repository.within")?;
+        }
+        if let Some(branch) = &self.branch {
+            check_text(branch, "directory.repository.branch", false)?;
+        }
+        Ok(())
+    }
+}
+
+/// Where a Session runs on its own host, and optional clone metadata.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionDirectory {
+    pub path: String,
+    #[serde(deserialize_with = "optional_object")]
+    pub repository: Option<RepositoryInfo>,
+}
+
+impl SessionDirectory {
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        check_text(&self.path, "directory.path", false)?;
+        if !Path::new(&self.path).is_absolute() {
+            return Err(ValidationError::new(
+                "directory.path must be an absolute path",
+            ));
+        }
+        if let Some(repo) = &self.repository {
+            repo.validate()?;
+        }
+        Ok(())
+    }
+}
+
+/// One entry in a Session's `references` map; its map key is the URL or relative document path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReferenceEntry {
+    pub kind: ReferenceKind,
     pub name: String,
     pub purpose: String,
     pub role: ReferenceRole,
-    pub state: ReferenceState,
-    pub target: ReferenceTarget,
+    pub status: ReferenceStatus,
+    pub manual: bool,
 }
 
-impl Reference {
-    pub fn validate(&self) -> Result<(), ValidationError> {
-        check_text(&self.name, "reference.name", false)?;
-        check_text(&self.purpose, "reference.purpose", false)?;
-        self.target.validate()
+impl ReferenceEntry {
+    pub fn validate_for_key(&self, key: &str) -> Result<(), ValidationError> {
+        match self.kind {
+            ReferenceKind::Document => check_path_key(key, "document reference key")?,
+            ReferenceKind::Pr | ReferenceKind::Issue | ReferenceKind::Link => {
+                check_text(key, "URL reference key", false)?;
+                reference_url(key).ok_or_else(|| {
+                    ValidationError::new(format!(
+                        "reference key {key:?} must be a safe HTTP(S) URL for kind {}",
+                        self.kind
+                    ))
+                })?;
+            }
+        }
+        check_text(&self.name, &format!("reference {key:?} name"), false)?;
+        check_text(&self.purpose, &format!("reference {key:?} purpose"), false)?;
+        Ok(())
     }
 }
 
-/// A session's repository ref and working directory within its checkout.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Checkout {
-    pub repository_url: String,
-    pub r#ref: String,
-    #[serde(default = "checkout_directory")]
-    pub directory_within_checkout: String,
-}
-
-impl Checkout {
-    /// Requires a portable relative directory; `.` denotes the checkout root.
-    pub fn new(
-        repository_url: impl Into<String>,
-        r#ref: impl Into<String>,
-        directory_within_checkout: impl Into<String>,
-    ) -> Result<Self, ValidationError> {
-        let checkout = Self {
-            repository_url: repository_url.into(),
-            r#ref: r#ref.into(),
-            directory_within_checkout: directory_within_checkout.into(),
-        };
-        checkout.validate()?;
-        Ok(checkout)
-    }
-
-    /// Check portable checkout fields.
-    pub fn validate(&self) -> Result<(), ValidationError> {
-        check_text(&self.repository_url, "checkout.repository_url", false)?;
-        check_text(&self.r#ref, "checkout.ref", false)?;
-        check_relative_path(
-            &self.directory_within_checkout,
-            "checkout.directory_within_checkout",
-        )
-    }
-}
-
-/// A durable effort with stream-local repository aliases and supporting references.
+/// A durable work stream owned by one host; its status is derived from its member Sessions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Stream {
+    pub host_id: String,
     pub id: String,
-    #[serde(deserialize_with = "deserialize_stream_title")]
-    pub title: String,
-    #[serde(deserialize_with = "required_nullable")]
-    pub goal: Option<String>,
-    /// Durable ownership, separate from any current runtime host binding.
-    #[serde(rename = "owner", with = "owner")]
-    pub owner_host_id: String,
-    #[serde(default)]
-    pub title_mode: TitleMode,
-    pub goal_short: Option<String>,
-    #[serde(default)]
-    pub goal_mode: NamingMode,
-    #[serde(default, deserialize_with = "object_map")]
-    pub repositories: BTreeMap<String, Repository>,
-    #[serde(deserialize_with = "objects")]
-    pub references: Vec<Reference>,
-    /// Set only by the store when a save changes the record; see `Stamps`.
+    #[serde(deserialize_with = "object")]
+    pub title: Title,
+    #[serde(deserialize_with = "optional_object")]
+    pub goal: Option<Goal>,
     pub revision: u64,
     pub updated_at_ms: u64,
 }
 
 impl Stream {
-    /// Creates a stream with inherited title policy and no references.
     pub fn new(
+        host_id: impl Into<String>,
         id: impl Into<String>,
-        title: impl Into<String>,
-        goal: Option<String>,
-        owner_host_id: impl Into<String>,
+        title: Title,
+        goal: Option<Goal>,
     ) -> Result<Self, ValidationError> {
-        Self {
+        let stream = Self {
+            host_id: host_id.into(),
             id: id.into(),
-            title: title.into(),
+            title,
             goal,
-            owner_host_id: owner_host_id.into(),
-            title_mode: TitleMode::Inherit,
-            goal_short: None,
-            goal_mode: NamingMode::Automatic,
-            repositories: BTreeMap::new(),
-            references: Vec::new(),
             revision: 0,
             updated_at_ms: 0,
-        }
-        .validated()
+        };
+        stream.validated()
     }
 
-    /// Returns this stream unchanged after checking its local invariants.
     pub fn validated(self) -> Result<Self, ValidationError> {
         self.validate()?;
         Ok(self)
     }
 
-    /// Checks fields and exact resource-key uniqueness.
     pub fn validate(&self) -> Result<(), ValidationError> {
-        check_text(&self.id, "stream.id", false)?;
-        check_text(&self.title, "stream.title", false)?;
-        check_text(&self.owner_host_id, "stream.owner_host_id", false)?;
-        match (&self.goal, &self.goal_short) {
-            (Some(goal), _) => check_text(goal, "stream.goal", false)?,
-            (None, Some(_)) => {
-                return Err(ValidationError::new("stream.goal_short requires a goal"));
-            }
-            (None, None) => {}
-        }
-        if let Some(ref goal_short) = self.goal_short {
-            check_text(goal_short, "stream.goal_short", false)?;
-        }
-        for (alias, repo) in &self.repositories {
-            check_text(alias, "repository alias", false)?;
-            repo.validate()?;
-        }
-        let mut keys = BTreeSet::new();
-        for reference in &self.references {
-            reference.validate()?;
-            if !keys.insert(reference.target.key()) {
-                return Err(ValidationError::new("duplicate reference resource key"));
-            }
+        check_token(&self.host_id, "stream.host_id")?;
+        check_token(&self.id, "stream.id")?;
+        self.title.validate("stream.title")?;
+        if let Some(goal) = &self.goal {
+            goal.validate()?;
         }
         Ok(())
     }
 
-    /// Returns the owned wire identity without copying the stream's contents.
+    /// Full Stream key: `HOST/ID`.
+    pub fn full_key(&self) -> String {
+        format!("{}/{}", self.host_id, self.id)
+    }
+
     pub fn key(&self) -> RecordKey {
         RecordKey::Stream {
+            host_id: self.host_id.clone(),
             id: self.id.clone(),
         }
     }
 }
 
-/// A logical harness conversation across stream memberships; its ID is scoped to its host.
+/// A single agent conversation's contribution to one same-host Stream.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Session {
-    pub id: String,
     pub host_id: String,
-    pub stream_id: String,
-    /// Counts membership moves, so a captured report can tell an A → B → A return
-    /// from an unbroken membership.
-    pub membership_epoch: u64,
-    /// Attachment metadata grouped by the Stream where each output was produced.
-    #[serde(
-        default,
-        skip_serializing_if = "BTreeMap::is_empty",
-        deserialize_with = "crate::artifacts::groups"
-    )]
-    pub artifacts: BTreeMap<String, Vec<crate::artifacts::ArtifactEntry>>,
     pub harness: String,
-    pub harness_session_id: String,
-    pub title: String,
-    #[serde(default)]
-    pub title_mode: TitleMode,
-    #[serde(default)]
+    pub id: String,
+    pub stream_id: String,
+    #[serde(deserialize_with = "object")]
+    pub title: Title,
     pub status: Status,
-    /// This conversation's scope and cumulative contribution.
-    #[serde(default)]
-    pub recap: String,
-    #[serde(default)]
-    pub recap_short: Option<String>,
-    /// Current work, distinct from lifecycle status.
-    #[serde(default)]
-    pub state: String,
-    pub state_short: Option<String>,
-    #[serde(default)]
-    pub remaining: String,
-    #[serde(default)]
-    pub remaining_short: Option<String>,
-    #[serde(default, deserialize_with = "optional_object")]
-    pub checkout: Option<Checkout>,
-    /// Set only by the store when a save changes the record; see `Stamps`.
+    #[serde(deserialize_with = "optional_object")]
+    pub state: Option<TextPair>,
+    #[serde(deserialize_with = "optional_object")]
+    pub recap: Option<TextPair>,
+    #[serde(deserialize_with = "optional_object")]
+    pub remaining: Option<TextPair>,
+    #[serde(deserialize_with = "optional_object")]
+    pub directory: Option<SessionDirectory>,
+    #[serde(deserialize_with = "object_map")]
+    pub references: BTreeMap<String, ReferenceEntry>,
+    #[serde(deserialize_with = "object_map")]
+    pub artifacts: BTreeMap<String, ArtifactEntry>,
     pub revision: u64,
     pub updated_at_ms: u64,
 }
 
 impl Session {
-    /// Stable native identity, independent of current membership or physical location.
-    pub fn id_for(host_id: &str, harness: &str, native_id: &str) -> String {
-        let identity = format!(
-            "streams:session:[{}, {}, {}]",
-            crate::codec::ascii_json(host_id),
-            crate::codec::ascii_json(harness),
-            crate::codec::ascii_json(native_id),
-        );
-        uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, identity.as_bytes()).to_string()
-    }
-
-    /// The portable record format requires a direct identity.
-    pub fn validate_portable(&self) -> Result<(), ValidationError> {
-        self.validate()?;
-        if self.id != Self::id_for(&self.host_id, &self.harness, &self.harness_session_id) {
-            return Err(ValidationError::new(format!(
-                "session ID does not match its native identity; {RESET_HINT}"
-            )));
-        }
-        Ok(())
-    }
-
-    /// Creates an active conversation; stream and checkout relationships are catalog checks.
     pub fn new(
-        id: impl Into<String>,
         host_id: impl Into<String>,
-        stream_id: impl Into<String>,
         harness: impl Into<String>,
-        harness_session_id: impl Into<String>,
-        title: impl Into<String>,
+        id: impl Into<String>,
+        stream_id: impl Into<String>,
+        title: Title,
     ) -> Result<Self, ValidationError> {
-        Self {
-            id: id.into(),
+        let session = Self {
             host_id: host_id.into(),
-            stream_id: stream_id.into(),
-            membership_epoch: 0,
-            artifacts: BTreeMap::new(),
             harness: harness.into(),
-            harness_session_id: harness_session_id.into(),
-            title: title.into(),
-            title_mode: TitleMode::Inherit,
+            id: id.into(),
+            stream_id: stream_id.into(),
+            title,
             status: Status::Active,
-            recap: String::new(),
-            recap_short: None,
-            state: String::new(),
-            state_short: None,
-            remaining: String::new(),
-            remaining_short: None,
-            checkout: None,
+            state: None,
+            recap: None,
+            remaining: None,
+            directory: None,
+            references: BTreeMap::new(),
+            artifacts: BTreeMap::new(),
             revision: 0,
             updated_at_ms: 0,
-        }
-        .validated()
+        };
+        session.validated()
     }
 
-    /// Returns this conversation unchanged after checking its local invariants.
     pub fn validated(self) -> Result<Self, ValidationError> {
         self.validate()?;
         Ok(self)
     }
 
-    /// Checks fields and checkout shape, not catalog relationships or native ID uniqueness.
     pub fn validate(&self) -> Result<(), ValidationError> {
-        check_text(&self.id, "session.id", false)?;
-        check_text(&self.host_id, "session.host_id", false)?;
-        check_text(&self.stream_id, "session.stream_id", false)?;
-        for (stream, artifacts) in &self.artifacts {
-            check_text(stream, "artifact Stream", false)?;
-            let mut names = BTreeSet::new();
-            for artifact in artifacts {
-                artifact.validate()?;
-                if !names.insert(&artifact.name) {
-                    return Err(ValidationError::new(
-                        "duplicate artifact name in Session Stream group",
-                    ));
-                }
-            }
+        check_token(&self.host_id, "session.host_id")?;
+        check_token(&self.harness, "session.harness")?;
+        check_token(&self.id, "session.id")?;
+        check_token(&self.stream_id, "session.stream_id")?;
+        self.title.validate("session.title")?;
+        if let Some(state) = &self.state {
+            state.validate("session.state")?;
         }
-        check_text(&self.harness, "session.harness", false)?;
-        check_text(
-            &self.harness_session_id,
-            "session.harness_session_id",
-            false,
-        )?;
-        check_text(&self.title, "session.title", false)?;
-        check_text(&self.recap, "session.recap", true)?;
-        check_text(&self.state, "session.state", true)?;
-        check_text(&self.remaining, "session.remaining", true)?;
-        for (name, value) in [
-            ("session.recap_short", &self.recap_short),
-            ("session.state_short", &self.state_short),
-            ("session.remaining_short", &self.remaining_short),
-        ] {
-            if let Some(value) = value {
-                check_text(value, name, false)?;
-            }
+        if let Some(recap) = &self.recap {
+            recap.validate("session.recap")?;
         }
-        if let Some(ref co) = self.checkout {
-            co.validate()?;
+        if let Some(remaining) = &self.remaining {
+            remaining.validate("session.remaining")?;
+        }
+        if let Some(directory) = &self.directory {
+            directory.validate()?;
+        }
+        for (key, entry) in &self.references {
+            entry.validate_for_key(key)?;
+        }
+        for (name, entry) in &self.artifacts {
+            validate_artifact_name(name)?;
+            entry.validate()?;
         }
         Ok(())
     }
 
-    /// Returns the host-scoped owned identity without copying conversation contents.
-    pub fn key(&self) -> RecordKey {
-        RecordKey::Session {
-            id: self.id.clone(),
-            host_id: self.host_id.clone(),
-        }
+    /// Full Session key: `HOST/HARNESS/ID`.
+    pub fn full_key(&self) -> String {
+        format!("{}/{}/{}", self.host_id, self.harness, self.id)
     }
 
-    /// Native harness identity must be unique across the catalog, independent of record ID.
-    pub fn native_identity(&self) -> (&str, &str, &str) {
-        (&self.host_id, &self.harness, &self.harness_session_id)
+    /// Local Session pair: `HARNESS/ID`.
+    pub fn harness_key(&self) -> String {
+        format!("{}/{}", self.harness, self.id)
+    }
+
+    /// Owning Stream's full key: `HOST/STREAM_ID`.
+    pub fn stream_key(&self) -> String {
+        format!("{}/{}", self.host_id, self.stream_id)
+    }
+
+    pub fn key(&self) -> RecordKey {
+        RecordKey::Session {
+            host_id: self.host_id.clone(),
+            harness: self.harness.clone(),
+            id: self.id.clone(),
+        }
     }
 }
 
@@ -766,7 +676,7 @@ pub struct Host {
 }
 
 impl Host {
-    /// Requires nonempty identity/label text and a timestamp with at most microsecond precision.
+    /// Requires valid token ID, nonempty label, and timestamp with at most microsecond precision.
     pub fn new(
         id: impl Into<String>,
         label: impl Into<String>,
@@ -781,9 +691,8 @@ impl Host {
         Ok(host)
     }
 
-    /// Checks text and timestamp precision without rounding or changing the offset.
     pub fn validate(&self) -> Result<(), ValidationError> {
-        check_text(&self.id, "host.id", false)?;
+        check_token(&self.id, "host.id")?;
         check_text(&self.label, "host.label", false)?;
         if !self
             .checked_at
@@ -797,7 +706,6 @@ impl Host {
         Ok(())
     }
 
-    /// Returns the owned identity without copying host metadata.
     pub fn key(&self) -> RecordKey {
         RecordKey::Host {
             id: self.id.clone(),
@@ -818,13 +726,11 @@ pub enum Record {
 }
 
 impl Record {
-    /// Returns this record unchanged after checking its local invariants.
     pub fn validated(self) -> Result<Self, ValidationError> {
         self.validate()?;
         Ok(self)
     }
 
-    /// Checks the contained record; cross-record relationships require a catalog.
     pub fn validate(&self) -> Result<(), ValidationError> {
         match self {
             Self::Stream(s) => s.validate(),
@@ -833,15 +739,6 @@ impl Record {
         }
     }
 
-    /// Validate the current portable schema, including directly addressable Sessions.
-    pub fn validate_portable(&self) -> Result<(), ValidationError> {
-        match self {
-            Self::Session(session) => session.validate_portable(),
-            _ => self.validate(),
-        }
-    }
-
-    /// Copies only the identity fields into an owned key.
     pub fn key(&self) -> RecordKey {
         match self {
             Self::Stream(s) => s.key(),
@@ -867,7 +764,6 @@ impl Record {
         *self == other
     }
 
-    /// The save stamps of a Stream or Session. A Host record has none.
     pub fn stamps(&self) -> Option<Stamps> {
         match self {
             Self::Stream(s) => Some(Stamps::of(s.revision, s.updated_at_ms)),
@@ -876,12 +772,10 @@ impl Record {
         }
     }
 
-    /// The optimistic-concurrency token every captured edit compares. A Host record has none.
     pub fn revision(&self) -> Option<u64> {
         self.stamps().map(|stamps| stamps.revision)
     }
 
-    /// Only the record store calls this, as part of a save that changes the record.
     pub fn set_stamps(&mut self, stamps: Stamps) {
         let (revision, updated_at_ms) = match self {
             Self::Stream(s) => (&mut s.revision, &mut s.updated_at_ms),
@@ -894,8 +788,6 @@ impl Record {
 }
 
 /// A Stream or Session's save count and the time of its last changing save.
-/// The revision is the record's optimistic-concurrency token: a captured edit compares it
-/// with the stored record to learn whether anything changed since capture.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Stamps {
     pub revision: u64,
@@ -911,14 +803,22 @@ impl Stamps {
     }
 }
 
-/// An owned catalog identity; only session identities include a host scope.
+/// An owned catalog identity.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase", deny_unknown_fields)]
 pub enum RecordKey {
-    // Preserve the lexical kind/id/host ordering used by the catalog wire boundary.
-    Host { id: String },
-    Session { id: String, host_id: String },
-    Stream { id: String },
+    Host {
+        id: String,
+    },
+    Session {
+        host_id: String,
+        harness: String,
+        id: String,
+    },
+    Stream {
+        host_id: String,
+        id: String,
+    },
 }
 
 impl RecordKey {
@@ -929,15 +829,23 @@ impl RecordKey {
             Self::Host { .. } => RecordKind::Host,
         }
     }
+
     pub fn id(&self) -> &str {
         match self {
-            Self::Stream { id } | Self::Session { id, .. } | Self::Host { id } => id,
+            Self::Stream { id, .. } | Self::Session { id, .. } | Self::Host { id } => id,
         }
     }
-    /// Returns the session identity scope, not a stream owner or runtime binding.
-    pub fn host_id(&self) -> Option<&str> {
+
+    pub fn host_id(&self) -> &str {
         match self {
-            Self::Session { host_id, .. } => Some(host_id),
+            Self::Stream { host_id, .. } | Self::Session { host_id, .. } => host_id,
+            Self::Host { id } => id,
+        }
+    }
+
+    pub fn harness(&self) -> Option<&str> {
+        match self {
+            Self::Session { harness, .. } => Some(harness),
             _ => None,
         }
     }
@@ -945,9 +853,14 @@ impl RecordKey {
 
 impl fmt::Display for RecordKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.host_id() {
-            Some(host) => write!(f, "{}:{host}/{}", self.kind(), self.id()),
-            None => write!(f, "{}:{}", self.kind(), self.id()),
+        match self {
+            Self::Host { id } => f.write_str(id),
+            Self::Stream { host_id, id } => write!(f, "{host_id}/{id}"),
+            Self::Session {
+                host_id,
+                harness,
+                id,
+            } => write!(f, "{host_id}/{harness}/{id}"),
         }
     }
 }

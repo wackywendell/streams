@@ -12,8 +12,8 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 use url::Url;
 
-use super::{CardSnapshot, Target};
-use crate::model::{Reference, ReferenceRole, ReferenceState, ReferenceTarget};
+use super::{CardSnapshot, LinkTarget, Target};
+use crate::model::{ReferenceKind, ReferenceRole, ReferenceStatus};
 
 pub(super) const DOCUMENT_KEYS: &str = "abcdefghijklmnoprstuvwxyz";
 const DIM: Style = Style::new().add_modifier(Modifier::DIM);
@@ -156,7 +156,7 @@ enum Row {
     },
     Link {
         label: String,
-        reference: Option<Reference>,
+        link: Option<LinkTarget>,
         index: usize,
     },
 }
@@ -172,7 +172,7 @@ impl Row {
 pub(super) struct Rendering {
     pub buffer: Buffer,
     pub documents: BTreeMap<char, Target>,
-    pub links: Vec<(usize, Reference, Rect)>,
+    pub links: Vec<(usize, LinkTarget, Rect)>,
 }
 
 struct ReferenceBlock {
@@ -181,96 +181,76 @@ struct ReferenceBlock {
 }
 
 fn reference_blocks(snapshot: &CardSnapshot, width: usize) -> Vec<ReferenceBlock> {
-    let visible: Vec<_> = snapshot
-        .stream()
+    let mut visible: Vec<_> = snapshot
+        .session()
         .references
         .iter()
-        .filter(|r| r.state != ReferenceState::Dropped)
+        .filter(|(_, entry)| entry.status != ReferenceStatus::Dropped)
         .collect();
-    let repositories: std::collections::BTreeSet<_> = visible
-        .iter()
-        .filter_map(|r| match &r.target {
-            ReferenceTarget::Document(d) => Some(&d.repository_url),
-            _ => None,
-        })
-        .collect();
-    let viewing_url = snapshot
-        .session()
-        .checkout
-        .as_ref()
-        .map(|c| c.repository_url.as_str());
+    // Cards and the app list entries by role, then name, then key.
+    visible.sort_by(|(key_a, a), (key_b, b)| {
+        a.role
+            .cmp(&b.role)
+            .then_with(|| a.name.cmp(&b.name))
+            .then_with(|| key_a.cmp(key_b))
+    });
     let mut blocks = Vec::new();
     let mut document_index = 0;
     let mut url_index = 0;
-    for group in 0..4 {
-        for reference in &visible {
-            let (kind, order) = match &reference.target {
-                ReferenceTarget::Document(_) => ("Document", 0),
-                ReferenceTarget::Pr { .. } => ("PR", 1),
-                ReferenceTarget::Issue { .. } => ("Issue", 2),
-                ReferenceTarget::Link { .. } => ("Link", 3),
-            };
-            if order != group {
-                continue;
+    for (ref_key, entry) in visible {
+        let kind = match entry.kind {
+            ReferenceKind::Document => "Document",
+            ReferenceKind::Pr => "PR",
+            ReferenceKind::Issue => "Issue",
+            ReferenceKind::Link => "Link",
+        };
+        let role = match entry.role {
+            ReferenceRole::Deliverable => "Deliverable",
+            ReferenceRole::Dependency => "Dependency",
+            ReferenceRole::Brief => "Brief",
+            ReferenceRole::Background => "Background",
+        };
+        let status = match entry.status {
+            ReferenceStatus::Active => "Active",
+            ReferenceStatus::Fulfilled => "Fulfilled",
+            ReferenceStatus::Dropped => unreachable!(),
+        };
+        let label = plain(&format!("{kind} {} · {role} · {status}", entry.name));
+        let header = match entry.kind {
+            ReferenceKind::Document => {
+                let key = DOCUMENT_KEYS.chars().nth(document_index);
+                document_index += 1;
+                Row::Documents {
+                    entries: vec![Entry {
+                        label,
+                        key,
+                        target: Target::Document(Box::new(snapshot.target(ref_key, entry))),
+                    }],
+                    widths: vec![width],
+                }
             }
-            let role = match reference.role {
-                ReferenceRole::Deliverable => "Deliverable",
-                ReferenceRole::Dependency => "Dependency",
-                ReferenceRole::Brief => "Brief",
-                ReferenceRole::Background => "Background",
-            };
-            let state = match reference.state {
-                ReferenceState::Active => "Active",
-                ReferenceState::Fulfilled => "Fulfilled",
-                ReferenceState::Dropped => unreachable!(),
-            };
-            let qualifier = match &reference.target {
-                ReferenceTarget::Document(d)
-                    if repositories.len() > 1 || viewing_url != Some(d.repository_url.as_str()) =>
-                {
-                    format!(" ({})", d.repository_url)
+            ReferenceKind::Pr | ReferenceKind::Issue | ReferenceKind::Link => {
+                url_index += 1;
+                Row::Link {
+                    label: format!("[{url_index}] {label}"),
+                    link: web_url(ref_key).map(|_| LinkTarget {
+                        url: ref_key.clone(),
+                        entry: entry.clone(),
+                    }),
+                    index: url_index,
                 }
-                _ => String::new(),
-            };
-            let label = plain(&format!(
-                "{kind} {}{qualifier} · {role} · {state}",
-                reference.name
-            ));
-            let header = match &reference.target {
-                ReferenceTarget::Document(_) => {
-                    let key = DOCUMENT_KEYS.chars().nth(document_index);
-                    document_index += 1;
-                    Row::Documents {
-                        entries: vec![Entry {
-                            label,
-                            key,
-                            target: Target::Document(Box::new(snapshot.target(reference))),
-                        }],
-                        widths: vec![width],
-                    }
-                }
-                ReferenceTarget::Pr { url }
-                | ReferenceTarget::Issue { url }
-                | ReferenceTarget::Link { url } => {
-                    url_index += 1;
-                    Row::Link {
-                        label: format!("[{url_index}] {label}"),
-                        reference: web_url(url).map(|_| (*reference).clone()),
-                        index: url_index,
-                    }
-                }
-            };
-            let purpose_text = plain(&reference.purpose);
-            let mut purpose = wrap(
-                &purpose_text,
-                width.saturating_sub(4).max(1),
-                purpose_text.len().saturating_add(1).min(u16::MAX as usize),
-            );
-            if purpose.is_empty() {
-                purpose.push(String::new());
             }
-            blocks.push(ReferenceBlock { header, purpose });
+        };
+        let purpose_text = plain(&entry.purpose);
+        let mut purpose = wrap(
+            &purpose_text,
+            width.saturating_sub(4).max(1),
+            purpose_text.len().saturating_add(1).min(u16::MAX as usize),
+        );
+        if purpose.is_empty() {
+            purpose.push(String::new());
         }
+        blocks.push(ReferenceBlock { header, purpose });
     }
     blocks
 }
@@ -302,15 +282,14 @@ pub(super) fn render(
     if let Some(snapshot) = snapshot.filter(|_| content_height > 0) {
         let blocks = reference_blocks(snapshot, width);
         let document_count = snapshot
-            .stream()
+            .session()
             .references
-            .iter()
-            .filter(|r| {
-                r.state != ReferenceState::Dropped
-                    && matches!(r.target, ReferenceTarget::Document(_))
+            .values()
+            .filter(|entry| {
+                entry.status != ReferenceStatus::Dropped && entry.kind == ReferenceKind::Document
             })
             .count();
-        let artifacts = crate::artifacts::summaries(snapshot.session(), &snapshot.stream().id);
+        let artifacts = crate::artifacts::summaries(snapshot.session());
         let mut entries = Vec::new();
         for artifact in artifacts {
             let key = DOCUMENT_KEYS.chars().nth(document_count + entries.len());
@@ -346,12 +325,46 @@ pub(super) fn render(
         };
         let status = format!("{symbol} {status}");
         let status_width = cells(&status);
-        let goal = plain(snapshot.stream().goal.as_deref().unwrap_or_default())
-            .trim()
-            .to_owned();
-        let recap = plain(&snapshot.session().recap).trim().to_owned();
-        let now = plain(&snapshot.session().state).trim().to_owned();
-        let remaining = plain(&snapshot.session().remaining).trim().to_owned();
+        let goal = plain(
+            snapshot
+                .stream()
+                .goal
+                .as_ref()
+                .map(|g| g.text.as_str())
+                .unwrap_or_default(),
+        )
+        .trim()
+        .to_owned();
+        let recap = plain(
+            snapshot
+                .session()
+                .recap
+                .as_ref()
+                .map(|p| p.text.as_str())
+                .unwrap_or_default(),
+        )
+        .trim()
+        .to_owned();
+        let now = plain(
+            snapshot
+                .session()
+                .state
+                .as_ref()
+                .map(|p| p.text.as_str())
+                .unwrap_or_default(),
+        )
+        .trim()
+        .to_owned();
+        let remaining = plain(
+            snapshot
+                .session()
+                .remaining
+                .as_ref()
+                .map(|p| p.text.as_str())
+                .unwrap_or_default(),
+        )
+        .trim()
+        .to_owned();
         let mut sections = vec![("", goal, true)];
         for (label, body) in [
             ("Session", recap),
@@ -596,20 +609,14 @@ pub(super) fn render(
                     offset += widths[column] + 2;
                 }
             }
-            Row::Link {
-                label,
-                reference,
-                index,
-            } => {
+            Row::Link { label, link, index } => {
                 let text = fit(&label, room);
                 if !text.is_empty()
-                    && let Some(reference) = reference
+                    && let Some(link) = link
                 {
-                    result.links.push((
-                        index,
-                        reference,
-                        Rect::new(area.x, y, cells(&text) as u16, 1),
-                    ));
+                    result
+                        .links
+                        .push((index, link, Rect::new(area.x, y, cells(&text) as u16, 1)));
                 }
                 spans.push(Span::styled(text, CYAN));
             }

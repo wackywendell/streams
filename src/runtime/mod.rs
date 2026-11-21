@@ -4,19 +4,12 @@
 //! not publish their paths or use them to infer conversation membership.
 
 pub mod card_settings;
-pub mod checkouts;
 pub mod conversations;
-pub mod frontends;
 pub mod hc;
 pub mod launch;
-pub mod locations;
 pub mod native_cards;
 pub mod native_markers;
-pub mod revisions;
 pub mod state;
-
-pub use checkouts::{CheckoutLocation, CheckoutRegistry, RepositoryInspection};
-pub use locations::{BindingKey, BoundCheckout, DirectoryBinding, DirectoryBindings};
 
 use std::path::Path;
 

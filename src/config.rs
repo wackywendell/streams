@@ -18,7 +18,7 @@ use uuid::Uuid;
 
 use crate::file_io;
 use crate::frontend::{FrontendId, FrontendMode};
-use crate::model::{NamingMode, TitleDefaults};
+use crate::model::NamingMode;
 use crate::storage::StorageError;
 
 #[cfg(test)]
@@ -289,19 +289,36 @@ impl Default for LifecycleSettings {
     }
 }
 
+/// Naming defaults (`naming.stream` and `naming.session`).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NamingSettings {
+    pub stream: NamingMode,
+    pub session: NamingMode,
+}
+
 /// Effective host-local settings.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Settings {
     pub catalog_root: PathBuf,
     pub frontend: FrontendMode,
-    pub naming: TitleDefaults,
+    pub naming: NamingSettings,
     pub lifecycle: LifecycleSettings,
     pub herdr: HerdrSettings,
     pub pi: PiSettings,
 }
 
 #[derive(
-    Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, EnumString, VariantNames, strum::Display,
+    Debug,
+    Default,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Serialize,
+    EnumString,
+    VariantNames,
+    strum::Display,
+    strum::AsRefStr,
 )]
 #[serde(rename_all = "lowercase")]
 #[strum(serialize_all = "lowercase")]
@@ -383,9 +400,6 @@ impl Config {
     }
     pub fn host_path(&self) -> PathBuf {
         self.config_path.with_file_name("host.json")
-    }
-    pub fn checkout_state_dir(&self) -> PathBuf {
-        self.state_home.join("streams/checkouts")
     }
 
     /// Bind runtime state to an already-open catalog instead of reloading mutable settings.
@@ -679,7 +693,7 @@ impl Config {
         Ok(Settings {
             catalog_root: PathBuf::from(root_val.as_str().expect("validated string")),
             frontend,
-            naming: TitleDefaults {
+            naming: NamingSettings {
                 stream: stream_naming,
                 session: session_naming,
             },

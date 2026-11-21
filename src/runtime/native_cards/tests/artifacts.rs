@@ -7,11 +7,10 @@ impl NativeCardSource for ArtifactSource {
         let original = self.0.read_records(owner)?;
         let mut session = original.session().clone();
         session.artifacts.insert(
-            "effort".into(),
-            vec![ArtifactEntry {
-                name: "assessment.md".into(),
+            "assessment.md".into(),
+            ArtifactEntry {
                 description: "Findings".into(),
-            }],
+            },
         );
         CardRecords::new(
             original.stream().clone(),
@@ -22,7 +21,7 @@ impl NativeCardSource for ArtifactSource {
         .map_err(|e| invalid(e.to_string()))
     }
     fn read(&mut self, owner: &HerdrInventoryPane) -> Result<CardSnapshot> {
-        CardSnapshot::from_records(self.read_records(owner)?, vec![], vec![])
+        CardSnapshot::from_records(self.read_records(owner)?, vec![])
             .map_err(|e| invalid(e.to_string()))
     }
     fn resolve_document(&mut self, target: &DocumentTarget) -> Result<ResolvedEditor> {
@@ -50,7 +49,7 @@ fn engine(f: &Fixture, client: HerdrClient) -> NativeCardEngine {
     .unwrap()
 }
 fn target(engine: &NativeCardEngine) -> ArtifactSummary {
-    crate::artifacts::summaries(engine.card.session(), "effort").remove(0)
+    crate::artifacts::summaries(engine.card.session()).remove(0)
 }
 
 #[test]

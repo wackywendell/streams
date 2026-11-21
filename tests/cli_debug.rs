@@ -61,6 +61,7 @@ fn debug_preserves_literal_arguments_and_pins_the_cli_selector() {
     for arguments in [
         vec![
             "debug",
+            "prompts",
             "prepare",
             "literal identity",
             "--prompt",
@@ -70,6 +71,7 @@ fn debug_preserves_literal_arguments_and_pins_the_cli_selector() {
         vec![
             "--json",
             "debug",
+            "prompts",
             "prepare",
             "literal identity",
             "--prompt",
@@ -110,7 +112,7 @@ fn debug_retains_runner_exit_status_without_initializing_catalog() {
     let status = fixture
         .command()
         .env("STREAMS_PROMPT_LAB_RUNNER", runner)
-        .args(["debug", "list", "request"])
+        .args(["debug", "prompts", "list", "request"])
         .status()
         .unwrap();
     assert_eq!(status.code(), Some(7));
@@ -124,10 +126,10 @@ fn invalid_explicit_runner_does_not_fall_back() {
         let output = fixture
             .command()
             .env("STREAMS_PROMPT_LAB_RUNNER", runner)
-            .args(["debug", "--help"])
+            .args(["debug", "prompts", "--help"])
             .output()
             .unwrap();
-        assert_eq!(output.status.code(), Some(2));
+        assert_eq!(output.status.code(), Some(1));
         assert!(String::from_utf8_lossy(&output.stderr).contains("STREAMS_PROMPT_LAB_RUNNER"));
         fixture.assert_no_catalog();
     }

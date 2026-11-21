@@ -6,9 +6,9 @@ use std::sync::{Arc, Barrier};
 
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use streams::config::{Config, ConfigKey, HostIdentity, resolve_path, source_id};
+use streams::config::{Config, ConfigKey, HostIdentity, NamingSettings, resolve_path, source_id};
 use streams::frontend::{FrontendId, FrontendMode};
-use streams::model::{NamingMode, TitleDefaults};
+use streams::model::NamingMode;
 
 const HOST: &str = "01234567-89ab-4def-8123-456789abcdef";
 
@@ -91,11 +91,7 @@ fn defaults_and_reads_create_nothing() {
     let settings = f.config.load().unwrap();
     assert_eq!(settings.catalog_root, f.home.join("data/streams/catalog"));
     assert_eq!(settings.frontend, FrontendMode::Auto);
-    assert_eq!(settings.naming, TitleDefaults::default());
-    assert_eq!(
-        f.config.checkout_state_dir(),
-        f.home.join("state/streams/checkouts")
-    );
+    assert_eq!(settings.naming, NamingSettings::default());
     assert!(
         f.config
             .runtime_state_dir_for(&settings.catalog_root)
@@ -144,10 +140,6 @@ fn home_fallbacks_and_explicit_environment() {
     assert_eq!(
         config.load().unwrap().catalog_root,
         f.home.join(".local/share/streams/catalog")
-    );
-    assert_eq!(
-        config.checkout_state_dir(),
-        f.home.join(".local/state/streams/checkouts")
     );
     assert!(Config::new(&BTreeMap::new(), &f.home).is_err());
     assert!(Config::new(&env, Path::new("relative")).is_err());

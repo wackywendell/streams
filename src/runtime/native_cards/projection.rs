@@ -27,14 +27,26 @@ impl From<&Session> for SessionView {
         Self {
             id: value.id.clone(),
             stream: value.stream_id.clone(),
-            title: value.title.clone(),
+            title: value.title.text.clone(),
             status: value.status,
-            recap: value.recap.clone(),
-            recap_short: value.recap_short.clone(),
-            state: value.state.clone(),
-            state_short: value.state_short.clone(),
-            remaining: value.remaining.clone(),
-            remaining_short: value.remaining_short.clone(),
+            recap: value
+                .recap
+                .as_ref()
+                .map(|p| p.text.clone())
+                .unwrap_or_default(),
+            recap_short: value.recap.as_ref().and_then(|p| p.short.clone()),
+            state: value
+                .state
+                .as_ref()
+                .map(|p| p.text.clone())
+                .unwrap_or_default(),
+            state_short: value.state.as_ref().and_then(|p| p.short.clone()),
+            remaining: value
+                .remaining
+                .as_ref()
+                .map(|p| p.text.clone())
+                .unwrap_or_default(),
+            remaining_short: value.remaining.as_ref().and_then(|p| p.short.clone()),
         }
     }
 }
@@ -119,18 +131,18 @@ impl DesiredProjection {
         Self {
             stream: stream.id.clone(),
             stream_display: StreamDisplay {
-                title: stream.title.clone(),
-                goal_short: stream.goal_short.clone(),
+                title: stream.title.text.clone(),
+                goal_short: stream.goal.as_ref().and_then(|g| g.short.clone()),
             },
             stream_name: if stream_naming {
-                NameIntent::Set(stream.title.clone())
+                NameIntent::Set(stream.title.text.clone())
             } else {
                 NameIntent::LeaveUnchanged
             },
             sessions: vec![SessionProjection {
                 view: SessionView::from(session),
                 name: if session_naming {
-                    NameIntent::Set(session.title.clone())
+                    NameIntent::Set(session.title.text.clone())
                 } else {
                     NameIntent::LeaveUnchanged
                 },
@@ -224,7 +236,7 @@ impl NativeCardEngine {
                 desired_pi_name: self
                     .config
                     .session_naming()
-                    .then(|| self.card.session().title.clone()),
+                    .then(|| self.card.session().title.text.clone()),
                 warnings: vec![],
             },
         })
@@ -282,9 +294,7 @@ impl NativeCardEngine {
             .keys()
             .any(|key| current.contains_key(key))
             .then_some(&named);
-        if crate::operations::membership::placement(&association, observed)
-            == crate::operations::membership::Placement::Conflict
-        {
+        if observed.is_some_and(|obs| obs != &association) {
             return Err(invalid(
                 "workspace markers name another Stream, catalog or host",
             ));

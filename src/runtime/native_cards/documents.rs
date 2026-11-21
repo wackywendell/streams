@@ -9,14 +9,8 @@ impl NativeCardEngine {
                 "document viewing scope changed; redraw before opening",
             ));
         }
-        let document = target
-            .document()
-            .ok_or_else(|| invalid("document reference required"))?;
-        if card
-            .document_target(&document.repository_url, &document.path)
-            .as_ref()
-            != Some(target)
-        {
+        let doc_path = target.path();
+        if card.document_target(doc_path).as_ref() != Some(target) {
             return Err(invalid(
                 "document viewing context changed; redraw before opening",
             ));
@@ -25,20 +19,20 @@ impl NativeCardEngine {
         let expected = target
             .editor_identity()
             .map_err(|error| invalid(error.to_string()))?;
-        let ResolvedDocument::File { selection, .. } = &target.location else {
+        let ResolvedDocument::File { root, .. } = &target.location else {
             return Err(invalid("document is unavailable"));
         };
         if resolved.identity != expected
-            || resolved.root != selection.root
+            || resolved.root != *root
             || !resolved.identity.file.starts_with(&resolved.root)
             || resolved.identity.file == resolved.root
             || resolved.root.canonicalize()? != resolved.root
             || resolved.identity.file.canonicalize()? != resolved.identity.file
             || !std::fs::metadata(&resolved.identity.file)?.is_file()
         {
-            return Err(invalid("document or checkout changed during resolution"));
+            return Err(invalid("document or directory changed during resolution"));
         }
-        self.open_resolved_document(&document.path, resolved)
+        self.open_resolved_document(doc_path, resolved)
     }
 
     /// Native effects for an owner-resolved target; no saved-reference lookup.
@@ -46,7 +40,6 @@ impl NativeCardEngine {
         let key = json_digest(&(
             &resolved.identity.catalog_source,
             &resolved.identity.host_id,
-            &resolved.identity.checkout_id,
             &resolved.identity.file,
         ))?;
         let existing = self

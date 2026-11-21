@@ -8,7 +8,6 @@ extern crate self as streams;
 #[path = "../tests/support/herdr.rs"]
 mod fake_herdr;
 
-pub mod agent;
 pub mod application;
 pub mod artifacts;
 pub mod cancellation;

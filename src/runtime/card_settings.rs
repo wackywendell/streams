@@ -35,7 +35,7 @@ impl From<&Session> for ConversationId {
     fn from(value: &Session) -> Self {
         Self {
             harness: value.harness.clone(),
-            native_id: value.harness_session_id.clone(),
+            native_id: value.id.clone(),
         }
     }
 }
@@ -59,16 +59,20 @@ impl CardSettings {
         text(host)?;
         text(&conversation.harness)?;
         text(&conversation.native_id)?;
+        let key = digest(
+            format!(
+                "{}\0{}\0{}",
+                host, conversation.harness, conversation.native_id
+            )
+            .as_bytes(),
+        );
         Ok(Self {
             path: config
                 .runtime_state_dir_for(catalog)
                 .map_err(|error| invalid(error.to_string()))?
                 .join(host)
                 .join("card-settings")
-                .join(format!(
-                    "{}.json",
-                    Session::id_for(host, &conversation.harness, &conversation.native_id)
-                )),
+                .join(format!("{key}.json")),
         })
     }
     pub fn path(&self) -> &Path {

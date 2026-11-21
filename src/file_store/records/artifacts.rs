@@ -1,12 +1,11 @@
-//! Raw outputs share the catalog lock and host partition with their Session metadata.
+//! Raw outputs live beside their Session record: `hosts/HOST/sessions/HARNESS/ID/artifacts/NAME`.
 
-use super::{FileRecordStore, Reader, RecordIoEvent, check_parents, invalid};
+use super::{FileRecordStore, Reader, check_parents, invalid};
 use crate::{
     artifacts::{
         ArtifactKey, ArtifactReader, ArtifactSave, ArtifactStore, ContentChange, validate_content,
     },
-    file_io::{atomic_write, ensure_directory, sync_directory},
-    file_store::encode_component,
+    file_io::{atomic_write, sync_directory},
     model::{Record, RecordKind},
     storage::{
         StorageError,
@@ -18,31 +17,36 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub(super) fn directory(host: &str, stream: &str) -> PathBuf {
-    PathBuf::from("hosts")
-        .join(encode_component(host))
-        .join("streams")
-        .join(encode_component(stream))
-        .join("artifacts")
-}
-
 pub fn relative_artifact_path(key: &ArtifactKey) -> Result<PathBuf, StorageError> {
     key.validate().map_err(invalid)?;
-    Ok(directory(&key.host, &key.stream)
-        .join(encode_component(&key.session))
+    Ok(PathBuf::from("hosts")
+        .join(&key.host)
+        .join("sessions")
+        .join(&key.harness)
+        .join(&key.session)
+        .join("artifacts")
         .join(&key.name))
 }
 
 pub fn artifact_key_from_path(path: &Path) -> Result<ArtifactKey, StorageError> {
     let parts = super::inventory::components(path)?;
-    let ["hosts", host, "streams", stream, "artifacts", session, name] = parts.as_slice() else {
+    let [
+        "hosts",
+        host,
+        "sessions",
+        harness,
+        session,
+        "artifacts",
+        name,
+    ] = parts.as_slice()
+    else {
         return Err(invalid("unexpected artifact path"));
     };
     let key = ArtifactKey {
-        host: super::inventory::component(host)?,
-        stream: super::inventory::component(stream)?,
-        session: super::inventory::component(session)?,
-        name: name.to_string(),
+        host: super::inventory::token_component(host, "host")?,
+        harness: super::inventory::token_component(harness, "harness")?,
+        session: super::inventory::token_component(session, "Session ID")?,
+        name: (*name).to_owned(),
     };
     if relative_artifact_path(&key)?.as_os_str() != path.as_os_str() {
         return Err(invalid("non-canonical artifact path"));
@@ -62,35 +66,6 @@ impl ArtifactReader for Reader<'_> {
             .read_named(&relative_artifact_path(key)?)?
             .map(|bytes| decode_artifact_content(&bytes))
             .transpose()
-    }
-
-    fn stream_producers(&self, host: &str, stream: &str) -> Result<Vec<String>, StorageError> {
-        crate::model::check_text(host, "artifact host", false).map_err(invalid)?;
-        crate::model::check_text(stream, "artifact Stream", false).map_err(invalid)?;
-        let relative = directory(host, stream);
-        check_parents(&self.store.root, &relative.join("entry"))?;
-        let path = self.store.root.join(relative);
-        ensure_directory(&path, false)?;
-        self.store.observe(RecordIoEvent::List(path.clone()));
-        let entries = match fs::read_dir(path) {
-            Ok(entries) => entries,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(e) => return Err(invalid(e)),
-        };
-        let mut sessions = Vec::new();
-        for entry in entries {
-            let entry = entry.map_err(invalid)?;
-            if !entry.file_type().map_err(invalid)?.is_dir() {
-                return Err(invalid("artifact producer must be a directory"));
-            }
-            let name = entry.file_name();
-            sessions.push(super::inventory::component(
-                name.to_str()
-                    .ok_or_else(|| invalid("artifact producer must be UTF-8"))?,
-            )?);
-        }
-        sessions.sort();
-        Ok(sessions)
     }
 }
 
@@ -122,7 +97,7 @@ impl ArtifactStore for FileRecordStore {
         let mut content_saved = false;
         let saved = self.save_scoped(&scope, target, |reader, before| {
             let (change, key) = apply(reader, before)?;
-            if *target != RecordAddress::new(&key.host, RecordKind::Session, &key.session)? {
+            if *target != key.session_address()? {
                 return Err(invalid("artifact key must match its producing Session").into());
             }
             let relative = relative_artifact_path(&key)?;
@@ -131,7 +106,6 @@ impl ArtifactStore for FileRecordStore {
             path = Some(content_path.clone());
             let path = &content_path;
             if let ContentChange::Write(text) = &content {
-                // A raw output is never read to obtain its name or description.
                 if path.is_symlink() || (path.exists() && !path.is_file()) {
                     return Err(invalid("artifact content must be a regular file").into());
                 }
@@ -146,8 +120,7 @@ impl ArtifactStore for FileRecordStore {
         let save = saved.map_err(|error: E| {
             if content_saved {
                 invalid(format!(
-                    "artifact content was saved, but its Session metadata save failed: {}",
-                    error
+                    "artifact content was saved, but its Session metadata save failed: {error}"
                 ))
                 .into()
             } else {
@@ -156,7 +129,6 @@ impl ArtifactStore for FileRecordStore {
         })?;
         let mut content_written = content_saved;
         let mut warnings = Vec::new();
-        // Deleting again after the reference is gone still removes leftover content.
         if matches!(content, ContentChange::Delete) {
             let path = path.expect("a save derives its content path");
             let deleted = match fs::symlink_metadata(&path) {

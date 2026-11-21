@@ -1,14 +1,8 @@
-//! Domain-owned intent and pure reconciliation, independent of persistence.
+//! Pure domain calculations and record edit rules, independent of persistence.
 
 pub mod edits;
-pub mod membership;
-pub mod patches;
-pub mod references;
 
-use serde::Serialize;
-use strum::{AsRefStr, Display, EnumString, VariantNames};
-
-use crate::model::{Record, Session, Status, Stream};
+use crate::model::{Session, Status, Stream};
 
 const DAY_MS: u64 = 86_400_000;
 
@@ -39,7 +33,7 @@ pub fn stream_activity_ms(stream: &Stream, members: &[&Session]) -> u64 {
 
 /// Derived Stream status: the highest status among its Sessions under
 /// `active > blocked > waiting > parked > done > closed` (or `active` when empty),
-/// with read-only age decay (`cutoff_ms`) matching what `streams tidy` persists.
+/// with read-only age decay (`cutoff_ms`) matching what `catalog tidy` persists.
 pub fn derived_stream_status(
     stream: &Stream,
     members: &[&Session],
@@ -58,137 +52,5 @@ pub fn derived_stream_status(
         }
     } else {
         status
-    }
-}
-
-/// Who supplied the intent. Automatic writes cannot change lifecycle or manual naming modes.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Serialize, EnumString, VariantNames, Display, AsRefStr,
-)]
-#[serde(rename_all = "kebab-case")]
-#[strum(serialize_all = "kebab-case")]
-pub enum Actor {
-    User,
-    Automatic,
-    /// Library-only verified native membership transitions, never model-generated intent.
-    Native,
-}
-
-/// Domain acceptance only; it says nothing about persistence or publication.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Serialize, EnumString, VariantNames, Display, AsRefStr,
-)]
-#[serde(rename_all = "kebab-case")]
-#[strum(serialize_all = "kebab-case")]
-pub enum DomainOutcome {
-    Changes,
-    NoChange,
-    Superseded,
-    Conflict,
-}
-
-crate::codec::deserialize_string_enum!(Actor, DomainOutcome);
-
-/// The domain decision, separate from whether a coordinator saved or published it.
-/// Only changes carry a record; refusals retain field names and a reason.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Reconciliation {
-    Changes {
-        record: Box<Record>,
-    },
-    NoChange {
-        reason: String,
-    },
-    Superseded {
-        conflicts: Vec<String>,
-        reason: String,
-    },
-    Conflict {
-        conflicts: Vec<String>,
-        reason: String,
-    },
-}
-
-impl Reconciliation {
-    pub fn no_change(reason: impl Into<String>) -> Self {
-        Self::NoChange {
-            reason: reason.into(),
-        }
-    }
-
-    pub fn outcome(&self) -> DomainOutcome {
-        match self {
-            Self::Changes { .. } => DomainOutcome::Changes,
-            Self::NoChange { .. } => DomainOutcome::NoChange,
-            Self::Superseded { .. } => DomainOutcome::Superseded,
-            Self::Conflict { .. } => DomainOutcome::Conflict,
-        }
-    }
-
-    pub fn conflicts(&self) -> &[String] {
-        match self {
-            Self::Superseded { conflicts, .. } | Self::Conflict { conflicts, .. } => conflicts,
-            Self::Changes { .. } | Self::NoChange { .. } => &[],
-        }
-    }
-
-    pub fn reason(&self) -> &str {
-        match self {
-            Self::NoChange { reason, .. }
-            | Self::Superseded { reason, .. }
-            | Self::Conflict { reason, .. } => reason,
-            Self::Changes { .. } => "",
-        }
-    }
-}
-
-/// What a captured edit's save reports. Reference saves add a result for each row.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct EditOutcome {
-    pub outcome: DomainOutcome,
-    pub conflicts: Vec<String>,
-    pub reason: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reference_results: Option<Vec<references::ReferenceResult>>,
-}
-
-impl EditOutcome {
-    pub fn of(decision: &Reconciliation) -> Self {
-        Self {
-            outcome: decision.outcome(),
-            conflicts: decision.conflicts().to_vec(),
-            reason: decision.reason().into(),
-            reference_results: None,
-        }
-    }
-
-    /// Accepted outcomes; refusals keep the caller's input for inspection.
-    pub fn accepted(&self) -> bool {
-        matches!(
-            self.outcome,
-            DomainOutcome::Changes | DomainOutcome::NoChange
-        )
-    }
-}
-
-impl Serialize for Reconciliation {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        #[derive(Serialize)]
-        struct Decision<'a> {
-            outcome: DomainOutcome,
-            record: Option<&'a Record>,
-            conflicts: &'a [String],
-            reason: &'a str,
-        }
-        Decision {
-            outcome: self.outcome(),
-            record: match self {
-                Self::Changes { record, .. } => Some(record),
-                _ => None,
-            },
-            conflicts: self.conflicts(),
-            reason: self.reason(),
-        }
-        .serialize(serializer)
     }
 }

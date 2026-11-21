@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     codec::record_to_data,
-    model::{Session, Stream},
+    model::{RecordKind, Session, Stream, Title},
 };
 
 fn bytes(record: &Record) -> Vec<u8> {
@@ -11,17 +11,9 @@ fn tree() -> BTreeMap<PathBuf, Vec<u8>> {
     let mut tree = BTreeMap::new();
     for host in ["host", "other"] {
         for record in [
-            Record::Stream(Stream::new("same-id", host, None, host).unwrap()),
+            Record::Stream(Stream::new(host, "same-id", Title::new(host, false), None).unwrap()),
             Record::Session(
-                Session::new(
-                    Session::id_for(host, "pi", "native"),
-                    host,
-                    "same-id",
-                    "pi",
-                    "native",
-                    "Work",
-                )
-                .unwrap(),
+                Session::new(host, "pi", "native", "same-id", Title::new("Work", false)).unwrap(),
             ),
         ] {
             let address = RecordAddress::for_record(&record);
@@ -33,14 +25,11 @@ fn tree() -> BTreeMap<PathBuf, Vec<u8>> {
 
 #[test]
 fn canonical_paths_decode_exact_host_qualified_identities() {
-    for kind in [RecordKind::Stream, RecordKind::Session, RecordKind::Host] {
-        let host = "høst/encoded";
-        let id = if kind == RecordKind::Host {
-            host
-        } else {
-            "ID /😀"
-        };
-        let address = RecordAddress::new(host, kind, id).unwrap();
+    for address in [
+        RecordAddress::host_record("host.1").unwrap(),
+        RecordAddress::stream("host.1", "work-1").unwrap(),
+        RecordAddress::session("host.1", "pi", "sess_1").unwrap(),
+    ] {
         assert_eq!(
             address_from_relative_path(&relative_record_path(&address).unwrap()).unwrap(),
             address
@@ -52,8 +41,9 @@ fn canonical_paths_decode_exact_host_qualified_identities() {
         "hosts/host/streams/./a.json",
         "hosts//host/streams/a.json",
         "hosts/host/streams/%4a.json",
-        "hosts/host/streams/UPPER.json",
         "hosts/host/streams/a.yaml",
+        "hosts/host/conversations/a.json",
+        "hosts/host/sessions/pi/a.json",
         "streams/a.json",
         "hosts/host/a.json",
     ] {
@@ -68,10 +58,7 @@ fn canonical_paths_decode_exact_host_qualified_identities() {
 fn tree_validation_allows_equal_stream_ids_on_different_hosts_but_requires_local_relationships() {
     let mut tree = tree();
     assert_eq!(decode_record_tree(&tree).unwrap().len(), 4);
-    tree.remove(
-        &relative_record_path(&RecordAddress::new("host", RecordKind::Stream, "same-id").unwrap())
-            .unwrap(),
-    );
+    tree.remove(&relative_record_path(&RecordAddress::stream("host", "same-id").unwrap()).unwrap());
     assert!(
         decode_record_tree(&tree)
             .unwrap_err()
@@ -146,10 +133,7 @@ fn listings_name_undecodable_records_and_still_fail_on_unexpected_layout() {
     assert_eq!(streams.unreadable, listing.unreadable);
     assert_eq!(
         streams.complete().unwrap_err().to_string(),
-        format!(
-            "{}. {}",
-            listing.unreadable[0], listing.unreadable[0].repair
-        )
+        listing.unreadable[0].to_string()
     );
     assert!(store.host_sessions("host").unwrap().unreadable.is_empty());
 

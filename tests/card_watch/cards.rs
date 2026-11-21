@@ -7,7 +7,6 @@ use streams::{
     application,
     config::Config,
     file_store::records::relative_record_path,
-    model::Record,
     runtime::native_cards::{LaunchedCardContext, PiOwner, SourceLaunch},
     storage::records::RecordAddress,
     tui::Scope,
@@ -126,17 +125,20 @@ impl CardFixture {
         }
     }
     fn save_recap(&self, recap: &str) {
-        let mut session: streams::model::Session =
-            serde_json::from_value(self.native.session.clone()).unwrap();
-        session.recap = recap.into();
-        session.revision += 1;
-        let value = serde_json::to_value(&session).unwrap();
-        let record = Record::Session(session);
+        let host = self.native.session["host_id"].as_str().unwrap();
+        let harness = self.native.session["harness"].as_str().unwrap();
+        let id = self.native.session["id"].as_str().unwrap();
+        let address = RecordAddress::session(host, harness, id).unwrap();
         let path = self
             .native
             .fixture
             .root()
-            .join(relative_record_path(&RecordAddress::for_record(&record)).unwrap());
+            .join(relative_record_path(&address).unwrap());
+        let mut session: streams::model::Session =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        session.recap = Some(streams::model::TextPair::new(recap, None));
+        session.revision += 1;
+        let value = serde_json::to_value(&session).unwrap();
         let staging = path.with_extension("staging");
         fs::write(&staging, serde_json::to_vec(&value).unwrap()).unwrap();
         fs::rename(staging, path).unwrap();
@@ -219,8 +221,8 @@ fn real_card_activation_launches_a_persistent_artifact_reader() {
             "artifact",
             "write",
             "assessment.md",
-            "--session-id",
-            f.native.session["id"].as_str().unwrap(),
+            "--session",
+            f.native.session["key"].as_str().unwrap(),
             "--description",
             "Findings",
         ],
@@ -486,8 +488,10 @@ fn a_real_card_can_refresh_after_its_initial_session_read_failed() {
         .root()
         .join("hosts")
         .join(&f.launch.scope.host_id)
-        .join("conversations")
-        .join(format!("{}.json", f.native.session["id"].as_str().unwrap()));
+        .join("sessions")
+        .join("pi")
+        .join(f.native.session["id"].as_str().unwrap())
+        .join("session.json");
     let original = fs::read(&path).unwrap();
     fs::write(&path, b"not a record").unwrap();
     let mut pty = f.spawn();
@@ -516,14 +520,16 @@ fn a_real_card_refuses_a_rekey_instead_of_discovering_a_neighbor_session() {
         .root()
         .join("hosts")
         .join(&f.launch.scope.host_id)
-        .join("conversations");
-    let mut value: Value =
-        serde_json::from_slice(&fs::read(directory.join(format!("{old}.json"))).unwrap()).unwrap();
+        .join("sessions")
+        .join("pi");
+    let old_path = directory.join(old).join("session.json");
+    let mut value: Value = serde_json::from_slice(&fs::read(&old_path).unwrap()).unwrap();
     let new = "22222222-2222-4222-8222-222222222222";
     value["id"] = new.into();
-    value["title"] = "Must not be discovered".into();
-    fs::write(directory.join(format!("{new}.json")), value.to_string()).unwrap();
-    fs::remove_file(directory.join(format!("{old}.json"))).unwrap();
+    value["title"] = json!({"text": "Must not be discovered", "manual": true});
+    fs::create_dir_all(directory.join(new)).unwrap();
+    fs::write(directory.join(new).join("session.json"), value.to_string()).unwrap();
+    fs::remove_file(&old_path).unwrap();
     pty.until(|p| p.screen().contains("Card unavailable"));
     assert!(!pty.screen().contains("Must not be discovered"));
     pty.send(b"q");

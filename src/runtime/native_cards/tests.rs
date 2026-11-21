@@ -4,7 +4,10 @@ mod documents;
 use super::*;
 use crate::{
     fake_herdr::{FakeHerdr, Reply},
-    model::{Session, Stream},
+    model::{
+        ReferenceEntry, ReferenceKind, ReferenceRole, ReferenceStatus, Session, Stream, TextPair,
+        Title,
+    },
     tui::DisplayContext,
 };
 use std::{
@@ -15,14 +18,13 @@ use std::{
 
 const NATIVE: &str = "11234567-89ab-4def-8123-456789abcdef";
 fn card(owner: &HerdrInventoryPane) -> CardSnapshot {
-    let stream = Stream::new("effort", "Effort", None, "host").unwrap();
+    let stream = Stream::new("host", "effort", Title::new("Effort", false), None).unwrap();
     let session = Session::new(
-        Session::id_for("host", "pi", NATIVE),
         "host",
-        "effort",
         "pi",
         NATIVE,
-        "Conversation",
+        "effort",
+        Title::new("Conversation", false),
     )
     .unwrap();
     CardSnapshot::new(
@@ -31,7 +33,6 @@ fn card(owner: &HerdrInventoryPane) -> CardSnapshot {
         DisplayContext {
             catalog_source: "catalog".into(),
             owner: owner::location(owner),
-            checkouts: vec![],
             documents: vec![],
         },
     )
@@ -372,7 +373,7 @@ fn an_invalid_caption_is_rejected_before_opening_a_card() {
     let mut engine = f.engine().unwrap();
     engine.config.tab_naming = false;
     let mut session = engine.card.session().clone();
-    session.title = "Hidden\u{200b}format".into();
+    session.title = Title::new("Hidden\u{200b}format", false);
     engine.card = CardRecords::new(
         engine.card.stream().clone(),
         session,
@@ -392,11 +393,14 @@ fn projection_owns_combined_caption_and_all_three_pi_short_forms() {
     let f = Fixture::new();
     f.world.lock().unwrap().row("pane", "card")["label"] = json!("Old caption");
     let mut engine = f.engine().unwrap();
-    let set_short = |engine: &mut NativeCardEngine, recap, state, remaining| {
+    let set_short = |engine: &mut NativeCardEngine,
+                     recap: Option<String>,
+                     state: Option<String>,
+                     remaining: Option<String>| {
         let mut session = engine.card.session().clone();
-        session.recap_short = recap;
-        session.state_short = state;
-        session.remaining_short = remaining;
+        session.recap = recap.map(|s| TextPair::new("Recap", Some(s)));
+        session.state = state.map(|s| TextPair::new("State", Some(s)));
+        session.remaining = remaining.map(|s| TextPair::new("Remaining", Some(s)));
         engine.card = CardRecords::new(
             engine.card.stream().clone(),
             session,
@@ -444,13 +448,17 @@ fn opening_a_document_rereads_display_inputs_and_refuses_a_removed_reference() {
     let target = DocumentTarget {
         scope: engine.card.scope().clone(),
         owner: engine.card.owner().clone(),
-        reference: serde_json::from_value(json!({
-            "name":"Removed","purpose":"Guide the work","role":"brief","state":"active",
-            "target":{"kind":"document","repository_url":"repository","path":"removed.md","ref":"main"}
-        })).unwrap(),
+        path: "removed.md".into(),
+        entry: ReferenceEntry {
+            kind: ReferenceKind::Document,
+            name: "Removed".into(),
+            purpose: "Guide the work".into(),
+            role: ReferenceRole::Brief,
+            status: ReferenceStatus::Active,
+            manual: false,
+        },
         location: crate::tui::ResolvedDocument::Unavailable {
-            selection: None,
-            problem: crate::tui::DocumentProblem::MissingCheckout,
+            reason: "no directory here".into(),
         },
     };
     f.server.clear();

@@ -1,417 +1,510 @@
-//! Local current-file hints are not native effect authority or historical revisions.
+//! Session directory inspection, document path normalization, and document file lookup.
 
-use crate::{
-    model::{ReferenceState, ReferenceTarget, Session, Stream},
-    runtime::{BindingKey, CheckoutRegistry, DirectoryBindings},
+pub mod canonical;
+
+use std::{
+    ffi::OsStr,
+    fs,
+    io::ErrorKind,
+    path::{Component, Path, PathBuf},
+    process::Command,
 };
-use serde_json::{Value, json};
-use std::collections::{BTreeMap, BTreeSet};
 
-pub fn context(
-    registry: &CheckoutRegistry,
-    locations: &DirectoryBindings,
-    stream: &Stream,
-    session: &Session,
-) -> Value {
-    let documents: Vec<_> = stream
-        .references
-        .iter()
-        .filter(|reference| reference.state != ReferenceState::Dropped)
-        .filter_map(|reference| match &reference.target {
-            ReferenceTarget::Document(document) => Some(document),
-            _ => None,
-        })
-        .collect();
-    let mut urls: BTreeSet<String> = documents.iter().map(|d| d.repository_url.clone()).collect();
-    if let Some(checkout) = &session.checkout {
-        urls.insert(checkout.repository_url.clone());
+use serde::{Deserialize, Serialize};
+
+use crate::model::{RepositoryInfo, Session, SessionDirectory, check_path_key};
+
+use super::ApplicationError;
+
+/// Result of locating a Session document on the local host.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum DocumentLocation {
+    Path { path: PathBuf },
+    Unavailable { reason: String },
+}
+
+impl DocumentLocation {
+    pub fn available_path(&self) -> Option<&Path> {
+        match self {
+            Self::Path { path } => Some(path.as_path()),
+            Self::Unavailable { .. } => None,
+        }
     }
-    let mut snapshot = registry.snapshot().map_err(|error| error.to_string());
-    let selected = (|| -> Result<_, String> {
-        let checkouts = snapshot.as_mut().map_err(|error| error.clone())?;
-        let selected = locations
-            .read_with_checkouts(BindingKey::Session(&session.id), checkouts)
-            .map_err(|error| error.to_string())?;
-        if let Some(selected) = &selected {
-            if let Some(checkout) = &selected.checkout {
-                let primary = checkouts
-                    .get(&checkout.id)
-                    .map_err(|error| error.to_string())?;
-                urls.extend(primary.repository_urls.iter().cloned());
-                if primary.repository_urls.is_empty() {
-                    return Err("the Session checkout has no repository binding; register its repository URL explicitly".into());
-                }
-            } else if selected.cwd.ancestors().any(|directory| {
-                [".git", ".jj"].iter().any(|name| {
-                    let marker = directory.join(name);
-                    marker.exists() || marker.is_symlink()
-                })
-            }) {
-                return Err(
-                    "the Session checkout is not registered; use streams checkout register".into(),
-                );
+
+    pub fn unavailable_reason(&self) -> Option<&str> {
+        match self {
+            Self::Path { .. } => None,
+            Self::Unavailable { reason } => Some(reason.as_str()),
+        }
+    }
+}
+
+/// Locate a document reference's file on `local_host` without starting any VCS process.
+///
+/// 1. Check `key` against the path key rule.
+/// 2. If the Session belongs to another host or has no `directory`, return "no directory here".
+/// 3. Canonicalize `directory.path` and `directory.path / key`; missing directory gives
+///    "no directory here", missing file gives "missing".
+/// 4. Verify the resolved file stays inside the resolved directory and is a regular file.
+pub fn locate(
+    local_host: &str,
+    session: &Session,
+    key: &str,
+) -> Result<DocumentLocation, ApplicationError> {
+    check_path_key(key, "document path")?;
+    if session.host_id != local_host {
+        return Ok(DocumentLocation::Unavailable {
+            reason: "no directory here".into(),
+        });
+    }
+    let Some(directory) = &session.directory else {
+        return Ok(DocumentLocation::Unavailable {
+            reason: "no directory here".into(),
+        });
+    };
+    let dir_path = Path::new(&directory.path);
+    let resolved_dir = match fs::canonicalize(dir_path) {
+        Ok(path) => path,
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            return Ok(DocumentLocation::Unavailable {
+                reason: "no directory here".into(),
+            });
+        }
+        Err(error) => {
+            return Err(ApplicationError::invalid(format!(
+                "cannot resolve Session directory {}: {error}",
+                dir_path.display()
+            )));
+        }
+    };
+    let candidate = resolved_dir.join(key);
+    let resolved_file = match fs::canonicalize(&candidate) {
+        Ok(path) => path,
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            return Ok(DocumentLocation::Unavailable {
+                reason: "missing".into(),
+            });
+        }
+        Err(error) => {
+            return Err(ApplicationError::invalid(format!(
+                "cannot resolve document {}: {error}",
+                candidate.display()
+            )));
+        }
+    };
+    if !resolved_file.starts_with(&resolved_dir) {
+        return Ok(DocumentLocation::Unavailable {
+            reason: "outside the Session's directory".into(),
+        });
+    }
+    let metadata = fs::metadata(&resolved_file).map_err(|error| {
+        ApplicationError::invalid(format!(
+            "cannot inspect document {}: {error}",
+            resolved_file.display()
+        ))
+    })?;
+    if !metadata.is_file() {
+        return Ok(DocumentLocation::Unavailable {
+            reason: "not a file".into(),
+        });
+    }
+    Ok(DocumentLocation::Path {
+        path: resolved_file,
+    })
+}
+
+/// Normalize a user-supplied document path (relative or absolute) into a Session path key.
+pub fn normalize_document_key(
+    session_directory: Option<&SessionDirectory>,
+    raw: &str,
+) -> Result<String, ApplicationError> {
+    if raw.contains('\\') {
+        return Err(ApplicationError::invalid(
+            "document path must use forward slashes",
+        ));
+    }
+    let path = Path::new(raw);
+    if path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(ApplicationError::invalid(format!(
+            "document path {raw:?} cannot contain '..'"
+        )));
+    }
+    if !path.is_absolute() {
+        check_path_key(raw, "document path")?;
+        return Ok(raw.to_owned());
+    }
+    let Some(dir) = session_directory else {
+        return Err(ApplicationError::invalid(format!(
+            "absolute document path {raw:?} requires the Session to have a directory; set --directory, save an artifact, or add a link"
+        )));
+    };
+    let dir_path = Path::new(&dir.path);
+    if let Ok(remainder) = path.strip_prefix(dir_path) {
+        return finish_relative_key(remainder, &dir.path);
+    }
+    // Resolve the longest existing ancestor of the parent directory while keeping the final
+    // filename untouched (supports non-existent files and symlinked filenames).
+    let canonical_input = canonicalize_parent_keep_leaf(path);
+    if let Some(resolved) = canonical_input {
+        if let Ok(remainder) = resolved.strip_prefix(dir_path) {
+            return finish_relative_key(remainder, &dir.path);
+        }
+        if let Ok(canonical_dir) = fs::canonicalize(dir_path)
+            && let Ok(remainder) = resolved.strip_prefix(&canonical_dir)
+        {
+            return finish_relative_key(remainder, &dir.path);
+        }
+    }
+    Err(ApplicationError::invalid(format!(
+        "document path {raw:?} is outside the Session's directory {}; save it as an artifact or add a link instead",
+        dir.path
+    )))
+}
+
+fn canonicalize_parent_keep_leaf(path: &Path) -> Option<PathBuf> {
+    let file_name = path.file_name()?;
+    let parent = path.parent()?;
+    let mut current = parent;
+    let mut tail: Vec<&OsStr> = Vec::new();
+    loop {
+        if let Ok(resolved) = fs::canonicalize(current) {
+            let mut out = resolved;
+            for part in tail.into_iter().rev() {
+                out.push(part);
+            }
+            out.push(file_name);
+            return Some(out);
+        }
+        let part = current.file_name()?;
+        tail.push(part);
+        current = current.parent()?;
+    }
+}
+
+fn finish_relative_key(remainder: &Path, dir_path: &str) -> Result<String, ApplicationError> {
+    let mut segments = Vec::new();
+    for component in remainder.components() {
+        match component {
+            Component::Normal(part) => {
+                let text = part.to_str().ok_or_else(|| {
+                    ApplicationError::invalid("document path must be valid UTF-8")
+                })?;
+                segments.push(text);
+            }
+            Component::CurDir => {}
+            _ => {
+                return Err(ApplicationError::invalid(format!(
+                    "document path is outside the Session's directory {dir_path}; save it as an artifact or add a link instead"
+                )));
             }
         }
-        Ok(selected)
-    })();
-    let binding = selected
-        .as_ref()
-        .ok()
-        .and_then(Option::as_ref)
-        .and_then(|binding| binding.checkout.as_ref());
-    let selected_id = binding.map(|checkout| checkout.id.as_str());
-    // A portable URL without a selected checkout must not prevent explicit defaults.
-    let repository_url = selected_id.and_then(|_| {
-        session
-            .checkout
-            .as_ref()
-            .map(|portable| portable.repository_url.as_str())
-            .or_else(|| binding.and_then(|checkout| checkout.repository_url.as_deref()))
-    });
-    let mut checkouts = Vec::new();
-    let mut repositories = BTreeMap::new();
-    for url in urls {
-        let resolved = match &selected {
-            Err(error) => Err(error.clone()),
-            Ok(_) => snapshot
-                .as_mut()
-                .expect("selection admitted the registry")
-                .resolve(&url, selected_id, repository_url)
-                .map_err(|error| error.to_string()),
-        };
-        if let Ok(checkout) = &resolved {
-            checkouts.push(
-                json!({"repository_url":url,"checkout_id":checkout.id,"root":checkout.directory}),
-            );
-        }
-        repositories.insert(url, resolved);
     }
-    let document_locations: Vec<_> = documents
-        .into_iter()
-        .map(|document| {
-            let resolved = &repositories[&document.repository_url];
-            let (checkout, error) = match resolved {
-                Ok(checkout) => (Some(checkout), None),
-                Err(error) => (None, Some(error)),
-            };
-            let mut location = json!({"repository_url":document.repository_url,"path":document.path,
-                "checkout_id":checkout.map(|checkout|&checkout.id),"root":checkout.map(|checkout|&checkout.directory),
-                "kind":null,"file":null,"error":error});
-            if let Some(checkout) = checkout {
-                match checkout.document(&document.path) {
-                    Ok(file) => {
-                        location["file"] = json!(file);
-                        location["kind"] = json!("local");
-                    }
-                    Err(error) => {
-                        location["error"] = json!(format!(
-                            "Document not present in this checkout: {}. {error}",
-                            document.path
-                        ))
-                    }
-                }
-            }
-            location
-        })
-        .collect();
-    json!({"checkouts":checkouts,"document_locations":document_locations})
+    let key = segments.join("/");
+    check_path_key(&key, "document path")?;
+    Ok(key)
 }
 
-fn selected_directory(
-    locations: &DirectoryBindings,
-    session: &Session,
-    checkouts: &mut crate::runtime::checkouts::CheckoutSnapshot<'_>,
-) -> Result<crate::runtime::DirectoryBinding, String> {
-    let selected = locations
-        .read_with_checkouts(BindingKey::Session(&session.id), checkouts)
-        .map_err(|error| error.to_string())?
-        .ok_or("no directory is selected for this Session; use streams session directory")?;
-    if let Some(checkout) = &selected.checkout {
-        let primary = checkouts
-            .get(&checkout.id)
-            .map_err(|error| error.to_string())?;
-        if primary.repository_urls.is_empty() {
-            return Err("the Session checkout has no repository binding; register its repository URL explicitly".into());
-        }
-    } else if selected.cwd.ancestors().any(|directory| {
-        [".git", ".jj"].iter().any(|name| {
-            let marker = directory.join(name);
-            marker.exists() || marker.is_symlink()
-        })
-    }) {
-        return Err("the Session checkout is not registered; use streams checkout register".into());
-    }
-    Ok(selected)
-}
-
-fn preferred_repository_url<'a>(
-    session: &'a Session,
-    selected: Option<&'a crate::runtime::DirectoryBinding>,
-) -> Option<&'a str> {
-    session
-        .checkout
-        .as_ref()
-        .map(|portable| portable.repository_url.as_str())
-        .or_else(|| {
-            selected
-                .and_then(|binding| binding.checkout.as_ref())
-                .and_then(|checkout| checkout.repository_url.as_deref())
-        })
-}
-
+/// Output of one VCS subprocess invocation.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DocumentKey {
-    pub repository: String,
-    pub path: String,
+pub struct VcsOutput {
+    pub status: i32,
+    pub stdout: String,
+    pub stderr: String,
 }
 
-/// Resolve one freshly selected saved document, using the same checkout policy as card hints.
-pub fn resolve(
-    registry: &CheckoutRegistry,
-    locations: &DirectoryBindings,
-    stream: &Stream,
-    session: &Session,
-    key: &DocumentKey,
-) -> crate::runtime::Result<WorkingDocument> {
-    use crate::runtime::RuntimeError;
-    let repository_url = if stream.references.iter().any(|reference| {
-        reference.state != ReferenceState::Dropped
-            && matches!(
-                &reference.target,
-                ReferenceTarget::Document(doc)
-                    if doc.repository_url == key.repository && doc.path == key.path
-            )
-    }) {
-        key.repository.as_str()
-    } else if let Some(repo) = stream.repositories.get(&key.repository)
-        && stream.references.iter().any(|reference| {
-            reference.state != ReferenceState::Dropped
-                && matches!(
-                    &reference.target,
-                    ReferenceTarget::Document(doc)
-                        if doc.repository_url == repo.url && doc.path == key.path
-                )
-        })
-    {
-        repo.url.as_str()
-    } else {
-        return Err(RuntimeError::Invalid(
-            "saved document reference is unavailable".into(),
-        ));
-    };
-    let mut checkouts = registry.snapshot()?;
-    let selected =
-        selected_directory(locations, session, &mut checkouts).map_err(RuntimeError::Invalid)?;
-    let selected_id = selected
-        .checkout
-        .as_ref()
-        .map(|checkout| checkout.id.as_str());
-    let preferred_url = preferred_repository_url(session, Some(&selected));
-    let checkout = checkouts.resolve(repository_url, selected_id, preferred_url)?;
-    let file = checkout.document(&key.path)?;
-    Ok(WorkingDocument { checkout, file })
+/// Injectable VCS runner so directory inspection tests stay deterministic and fast.
+pub trait VcsRunner {
+    /// Returns `Ok(None)` when `program` is not installed (`ErrorKind::NotFound`).
+    fn run(&self, program: &str, args: &[&str]) -> Result<Option<VcsOutput>, ApplicationError>;
 }
 
-pub struct WorkingDocument {
-    pub checkout: crate::runtime::checkouts::CheckoutLocation,
-    pub file: std::path::PathBuf,
-}
+pub struct SystemVcsRunner;
 
-/// Recheck an observed checkout and file before a native effect.
-pub fn revalidate(
-    registry: &CheckoutRegistry,
-    checkout_id: &str,
-    root: &std::path::Path,
-    repository_url: &str,
-    path: &str,
-    expected_file: &std::path::Path,
-) -> crate::runtime::Result<WorkingDocument> {
-    use crate::runtime::RuntimeError;
-    let checkout = registry.get(checkout_id)?;
-    if checkout.directory != root
-        || !checkout
-            .repository_urls
-            .iter()
-            .any(|url| url == repository_url)
-        || std::fs::canonicalize(root)? != root
-    {
-        return Err(RuntimeError::Invalid(
-            "selected checkout root or repository binding changed".into(),
-        ));
-    }
-    let file = checkout.document(path)?;
-    if file != expected_file
-        || !std::fs::metadata(&file)?.is_file()
-        || std::fs::canonicalize(&file)? != file
-        || std::fs::canonicalize(root)? != root
-    {
-        return Err(RuntimeError::Invalid(
-            "app-resolved document or checkout changed during resolution".into(),
-        ));
-    }
-    Ok(WorkingDocument { checkout, file })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::model::{
-        Reference, ReferenceRole, ReferenceState, ReferenceTarget, Repository, RepositoryDocument,
-    };
-    use crate::runtime::{Result, checkouts::RepositoryInspection};
-    use std::path::Path;
-
-    fn inspect(path: &Path) -> Result<Option<RepositoryInspection>> {
-        Ok(Some(RepositoryInspection {
-            root: path.to_owned(),
-            relative_cwd: ".".into(),
+impl VcsRunner for SystemVcsRunner {
+    fn run(&self, program: &str, args: &[&str]) -> Result<Option<VcsOutput>, ApplicationError> {
+        let output = match Command::new(program).args(args).output() {
+            Ok(output) => output,
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(ApplicationError::invalid(format!(
+                    "failed to run {program}: {error}"
+                )));
+            }
+        };
+        Ok(Some(VcsOutput {
+            status: output.status.code().unwrap_or(-1),
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
         }))
     }
+}
 
-    fn doc_ref(repo_url: &str, path: &str, name: &str) -> Reference {
-        let reference = Reference {
-            name: name.into(),
-            purpose: "Guide".into(),
-            role: ReferenceRole::Brief,
-            state: ReferenceState::Active,
-            target: ReferenceTarget::Document(RepositoryDocument {
-                repository_url: repo_url.into(),
-                path: path.into(),
-                r#ref: Some("main".into()),
-                commit: None,
-                source_session_id: None,
-            }),
+/// Resolve `path` and inspect its VCS clone once to construct a `SessionDirectory`.
+pub fn inspect_directory(path: &Path) -> Result<SessionDirectory, ApplicationError> {
+    inspect_directory_with_runner(path, &SystemVcsRunner)
+}
+
+fn canonical_directory(path: &Path) -> Result<PathBuf, ApplicationError> {
+    let resolved = fs::canonicalize(path).map_err(|error| {
+        ApplicationError::invalid(format!(
+            "cannot resolve directory {}: {error}",
+            path.display()
+        ))
+    })?;
+    if !resolved.is_dir() {
+        return Err(ApplicationError::invalid(format!(
+            "{} is not a directory",
+            resolved.display()
+        )));
+    }
+    canonical::spelling(&resolved).map_err(|error| {
+        ApplicationError::invalid(format!(
+            "cannot resolve directory {}: {error}",
+            path.display()
+        ))
+    })
+}
+
+pub fn inspect_directory_with_runner(
+    path: &Path,
+    runner: &dyn VcsRunner,
+) -> Result<SessionDirectory, ApplicationError> {
+    let canonical_dir = canonical_directory(path)?;
+    let dir_str = canonical_dir
+        .to_str()
+        .ok_or_else(|| ApplicationError::invalid("directory path must be valid UTF-8"))?
+        .to_owned();
+
+    let repository = if let Some(repo) = inspect_jj(&canonical_dir, &dir_str, runner)? {
+        repo
+    } else {
+        inspect_git(&canonical_dir, &dir_str, runner)?
+    };
+
+    let session_dir = SessionDirectory {
+        path: dir_str,
+        repository,
+    };
+    session_dir.validate()?;
+    Ok(session_dir)
+}
+
+/// Returns `Ok(Some(opt_repo))` when `dir` is inside a jj workspace (`opt_repo` is `None` when
+/// the workspace has no git remote), or `Ok(None)` when `dir` is not a jj workspace (or `jj` is
+/// unavailable) so callers fall through to Git inspection.
+fn inspect_jj(
+    canonical_dir: &Path,
+    dir_str: &str,
+    runner: &dyn VcsRunner,
+) -> Result<Option<Option<RepositoryInfo>>, ApplicationError> {
+    let Some(root_out) = runner.run(
+        "jj",
+        &["--ignore-working-copy", "--repository", dir_str, "root"],
+    )?
+    else {
+        return Ok(None);
+    };
+    if root_out.status != 0 {
+        let lower = root_out.stderr.to_ascii_lowercase();
+        if lower.contains("no jj repo") || lower.contains("there is no jj repo") {
+            return Ok(None);
+        }
+        return Err(ApplicationError::invalid(format!(
+            "jj root failed for {dir_str}: {}",
+            root_out.stderr.trim()
+        )));
+    }
+    let root_text = root_out.stdout.trim();
+    let repo_root =
+        canonical_directory(Path::new(root_text)).unwrap_or_else(|_| PathBuf::from(root_text));
+    let within = compute_within(canonical_dir, &repo_root)?;
+
+    let remotes_out = runner
+        .run(
+            "jj",
+            &[
+                "--ignore-working-copy",
+                "--repository",
+                dir_str,
+                "git",
+                "remote",
+                "list",
+            ],
+        )?
+        .ok_or_else(|| ApplicationError::invalid("jj disappeared during inspection"))?;
+    if remotes_out.status != 0 {
+        let lower = remotes_out.stderr.to_ascii_lowercase();
+        if lower.contains("not a git") || lower.contains("no git") {
+            return Ok(Some(None));
+        }
+        return Err(ApplicationError::invalid(format!(
+            "jj git remote list failed for {dir_str}: {}",
+            remotes_out.stderr.trim()
+        )));
+    }
+    let Some(url) = pick_jj_remote(&remotes_out.stdout) else {
+        return Ok(Some(None));
+    };
+
+    let branch_out = runner
+        .run(
+            "jj",
+            &[
+                "--ignore-working-copy",
+                "--repository",
+                dir_str,
+                "log",
+                "-r",
+                "heads(::@ & bookmarks())",
+                "--no-graph",
+                "-T",
+                "local_bookmarks.map(|b| b.name()).join(\"\\n\") ++ \"\\n\"",
+            ],
+        )?
+        .ok_or_else(|| ApplicationError::invalid("jj disappeared during inspection"))?;
+    if branch_out.status != 0 {
+        return Err(ApplicationError::invalid(format!(
+            "jj bookmark lookup failed for {dir_str}: {}",
+            branch_out.stderr.trim()
+        )));
+    }
+    let bookmarks: Vec<&str> = branch_out
+        .stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    let branch = if bookmarks.len() == 1 {
+        Some(bookmarks[0].to_owned())
+    } else {
+        None
+    };
+
+    Ok(Some(Some(RepositoryInfo {
+        url,
+        within,
+        branch,
+    })))
+}
+
+fn pick_jj_remote(output: &str) -> Option<String> {
+    let mut first = None;
+    for line in output.lines() {
+        let mut parts = line.split_whitespace();
+        let Some(name) = parts.next() else {
+            continue;
         };
-        reference.validate().unwrap();
-        reference
+        let Some(url) = parts.next() else {
+            continue;
+        };
+        if name == "origin" {
+            return Some(url.to_owned());
+        }
+        if first.is_none() {
+            first = Some(url.to_owned());
+        }
     }
+    first
+}
 
-    #[test]
-    fn hints_and_action_revalidation_preserve_selected_checkout_and_repository() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().canonicalize().unwrap();
-        let checkout = root.join("checkout");
-        std::fs::create_dir(&checkout).unwrap();
-        let file = checkout.join("guide.md");
-        std::fs::write(&file, "Saved document").unwrap();
-        let registry = CheckoutRegistry::new(root.join("state"), "host")
-            .unwrap()
-            .with_inspector(inspect);
-        let locations = DirectoryBindings::new(root.join("bindings"), registry.clone());
-        let mut stream = Stream::new("stream", "Stream", None, "host").unwrap();
-        stream.repositories.insert(
-            "repo".into(),
-            Repository::new("https://example.test/repo").unwrap(),
-        );
-        stream
-            .references
-            .push(doc_ref("https://example.test/repo", "guide.md", "Guide"));
-        let session = Session::new("session", "host", "stream", "pi", "native", "Session").unwrap();
-        let selected = locations
-            .remember(
-                BindingKey::Session("session"),
-                &checkout,
-                false,
-                Some("https://example.test/repo"),
-                None,
-            )
-            .unwrap();
-        let id = selected.checkout.unwrap().id;
-        let hints = context(&registry, &locations, &stream, &session);
-        assert_eq!(
-            hints["checkouts"],
-            json!([{"repository_url":"https://example.test/repo","checkout_id":id,"root":checkout}])
-        );
-        assert_eq!(hints["document_locations"][0]["file"], json!(file));
-        assert_eq!(hints["document_locations"][0]["error"], Value::Null);
-        let resolved = revalidate(
-            &registry,
-            &id,
-            &checkout,
-            "https://example.test/repo",
-            "guide.md",
-            &file,
-        )
-        .unwrap();
-        assert_eq!(resolved.checkout.id, id);
-        assert_eq!(resolved.file, file);
-        let fresh = resolve(
-            &registry,
-            &locations,
-            &stream,
-            &session,
-            &DocumentKey {
-                repository: "https://example.test/repo".into(),
-                path: "guide.md".into(),
-            },
-        )
-        .unwrap();
-        assert_eq!(fresh.file, file);
-        assert_eq!(fresh.checkout.id, id);
-        assert!(
-            revalidate(
-                &registry,
-                &id,
-                &checkout,
-                "https://example.test/other",
-                "guide.md",
-                &file
-            )
-            .is_err()
-        );
-        assert!(
-            revalidate(
-                &registry,
-                &id,
-                &checkout,
-                "https://example.test/repo",
-                "guide.md",
-                &root.join("other")
-            )
-            .is_err()
-        );
+fn inspect_git(
+    canonical_dir: &Path,
+    dir_str: &str,
+    runner: &dyn VcsRunner,
+) -> Result<Option<RepositoryInfo>, ApplicationError> {
+    let Some(root_out) = runner.run("git", &["-C", dir_str, "rev-parse", "--show-toplevel"])?
+    else {
+        return Ok(None);
+    };
+    if root_out.status != 0 {
+        let lower = root_out.stderr.to_ascii_lowercase();
+        if lower.contains("not a git repository") {
+            return Ok(None);
+        }
+        return Err(ApplicationError::invalid(format!(
+            "git rev-parse failed for {dir_str}: {}",
+            root_out.stderr.trim()
+        )));
     }
+    let root_text = root_out.stdout.trim();
+    let repo_root =
+        canonical_directory(Path::new(root_text)).unwrap_or_else(|_| PathBuf::from(root_text));
+    let within = compute_within(canonical_dir, &repo_root)?;
 
-    #[test]
-    fn unregistered_vcs_ancestor_remains_unavailable_without_creating_registry_state() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().canonicalize().unwrap();
-        let registry = CheckoutRegistry::new(root.join("state"), "host").unwrap();
-        let locations = DirectoryBindings::new(root.join("bindings"), registry.clone());
-        locations
-            .remember(BindingKey::Session("session"), &root, false, None, None)
-            .unwrap();
-        std::fs::create_dir(root.join(".git")).unwrap();
-        let mut stream = Stream::new("stream", "Stream", None, "host").unwrap();
-        stream.repositories.insert(
-            "repo".into(),
-            Repository::new("https://example.test/repo").unwrap(),
-        );
-        stream
-            .references
-            .push(doc_ref("https://example.test/repo", "guide.md", "Guide"));
-        let session = Session::new("session", "host", "stream", "pi", "native", "Session").unwrap();
-        let hints = context(&registry, &locations, &stream, &session);
-        assert_eq!(hints["checkouts"], json!([]));
-        assert!(
-            hints["document_locations"][0]["error"]
-                .as_str()
-                .unwrap()
-                .contains("not registered")
-        );
-        assert!(!registry.path().exists());
-        let error = resolve(
-            &registry,
-            &locations,
-            &stream,
-            &session,
-            &DocumentKey {
-                repository: "https://example.test/repo".into(),
-                path: "guide.md".into(),
-            },
-        )
-        .err()
-        .unwrap();
-        assert!(error.to_string().contains("not registered"));
+    let url_out = runner
+        .run(
+            "git",
+            &["-C", dir_str, "config", "--get", "remote.origin.url"],
+        )?
+        .ok_or_else(|| ApplicationError::invalid("git disappeared during inspection"))?;
+    let url = if url_out.status == 0 {
+        let trimmed = url_out.stdout.trim();
+        if trimmed.is_empty() {
+            return Ok(None);
+        }
+        trimmed.to_owned()
+    } else if url_out.status == 1 && url_out.stderr.trim().is_empty() {
+        // No origin remote configured.
+        return Ok(None);
+    } else {
+        return Err(ApplicationError::invalid(format!(
+            "git remote lookup failed for {dir_str}: {}",
+            url_out.stderr.trim()
+        )));
+    };
+
+    let branch_out = runner
+        .run(
+            "git",
+            &["-C", dir_str, "symbolic-ref", "--short", "-q", "HEAD"],
+        )?
+        .ok_or_else(|| ApplicationError::invalid("git disappeared during inspection"))?;
+    let branch = if branch_out.status == 0 {
+        let trimmed = branch_out.stdout.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_owned())
+    } else if branch_out.status == 1 && branch_out.stderr.trim().is_empty() {
+        // Detached HEAD.
+        None
+    } else {
+        return Err(ApplicationError::invalid(format!(
+            "git branch lookup failed for {dir_str}: {}",
+            branch_out.stderr.trim()
+        )));
+    };
+
+    Ok(Some(RepositoryInfo {
+        url,
+        within,
+        branch,
+    }))
+}
+
+fn compute_within(dir: &Path, repo_root: &Path) -> Result<Option<String>, ApplicationError> {
+    let relative = dir.strip_prefix(repo_root).map_err(|_| {
+        ApplicationError::invalid(format!(
+            "directory {} is not inside repository root {}",
+            dir.display(),
+            repo_root.display()
+        ))
+    })?;
+    let mut parts = Vec::new();
+    for component in relative.components() {
+        if let Component::Normal(part) = component {
+            let text = part
+                .to_str()
+                .ok_or_else(|| ApplicationError::invalid("repository path must be valid UTF-8"))?;
+            parts.push(text);
+        }
+    }
+    if parts.is_empty() {
+        Ok(None)
+    } else {
+        let joined = parts.join("/");
+        check_path_key(&joined, "directory.repository.within")?;
+        Ok(Some(joined))
     }
 }

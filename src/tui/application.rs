@@ -619,20 +619,13 @@ mod idle_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tui::{
-        CheckoutBinding, CheckoutSelection, DisplayContext, DocumentLocation,
-        NativeOwnerObservation, ResolvedDocument,
-    };
+    use crate::tui::{DisplayContext, DocumentLocation, NativeOwnerObservation, ResolvedDocument};
     use ratatui::crossterm::event::KeyEvent;
 
     pub(super) fn snapshot() -> CardSnapshot {
         let fixtures: serde_json::Value =
             serde_json::from_str(include_str!("fixtures/active-renderer.json")).unwrap();
         let source = &fixtures[0]["snapshot"];
-        let selection = CheckoutSelection {
-            checkout_id: "lib".into(),
-            root: "/code/library".into(),
-        };
         CardSnapshot::new(
             serde_json::from_value(source["stream"].clone()).unwrap(),
             serde_json::from_value(source["session"].clone()).unwrap(),
@@ -643,15 +636,10 @@ mod tests {
                     tab_id: "w:t1".into(),
                     workspace_id: "w".into(),
                 },
-                checkouts: vec![CheckoutBinding {
-                    repository_url: "https://example.com/lib".into(),
-                    selection: selection.clone(),
-                }],
                 documents: vec![DocumentLocation {
-                    repository_url: "https://example.com/lib".into(),
                     path: "docs/design.md".into(),
                     location: ResolvedDocument::File {
-                        selection,
+                        root: "/code/library".into(),
                         file: "/code/library/docs/design.md".into(),
                     },
                 }],
@@ -858,15 +846,12 @@ mod tests {
     #[test]
     fn lowercase_r_is_a_document_key_and_links_use_hit_regions() {
         let mut s = snapshot();
+        let template = s.records.session.references["docs/design.md"].clone();
         for index in 1..18 {
-            let mut reference = s.records.stream.references[0].clone();
-            let crate::model::ReferenceTarget::Document(document) = &mut reference.target else {
-                panic!()
-            };
-            document.path = format!("docs/{index}.md");
+            let path = format!("docs/{index}.md");
             let mut location = s.context.documents[0].clone();
-            location.path = document.path.clone();
-            s.records.stream.references.push(reference);
+            location.path = path.clone();
+            s.records.session.references.insert(path, template.clone());
             s.context.documents.push(location);
         }
         let s = CardSnapshot::new(s.records.stream, s.records.session, s.context).unwrap();
@@ -875,7 +860,7 @@ mod tests {
             panic!()
         };
         c.complete(Response::Read(token, Ok(Box::new(s)))).unwrap();
-        let expected = c.paint(Rect::new(0, 0, 120, 40)).documents[&'r']
+        let expected = c.paint(Rect::new(0, 0, 120, 60)).documents[&'r']
             .target()
             .clone();
         assert!(

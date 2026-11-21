@@ -2,7 +2,7 @@ use std::fs;
 use std::os::unix::fs::symlink;
 
 use super::*;
-use crate::model::{Record, Session, Stream};
+use crate::model::{Record, Session, Stream, Title};
 use serde_json::{Value, json};
 
 thread_local! {
@@ -33,7 +33,7 @@ fn setup() -> (tempfile::TempDir, FileRecordStore) {
 }
 
 fn stream(id: &str, title: &str) -> Record {
-    Record::Stream(Stream::new(id, title, None, "host").unwrap())
+    Record::Stream(Stream::new("host", id, Title::new(title, false), None).unwrap())
 }
 
 fn put(store: &FileRecordStore, record: Record) -> RecordSave<()> {
@@ -92,24 +92,22 @@ fn replacement_observation_distinguishes_installed_bytes_from_definite_failure()
 }
 
 #[test]
-fn canonical_paths_include_host_for_every_kind_and_encode_components() {
-    for (kind, id, suffix) in [
-        (RecordKind::Host, "host/..", "host.json"),
-        (RecordKind::Stream, "work/..", "streams/work%2F...json"),
-        (
-            RecordKind::Session,
-            "work/..",
-            "conversations/work%2F...json",
-        ),
-    ] {
-        let key = RecordAddress::new("host/..", kind, id).unwrap();
-        assert_eq!(
-            relative_record_path(&key).unwrap(),
-            PathBuf::from("hosts/host%2F..").join(suffix)
-        );
-    }
-    assert!(RecordAddress::new("host", RecordKind::Host, "other").is_err());
-    assert!(RecordAddress::new("", RecordKind::Stream, "work").is_err());
+fn canonical_paths_include_host_and_harness_for_every_kind() {
+    assert_eq!(
+        relative_record_path(&RecordAddress::host_record("host.1").unwrap()).unwrap(),
+        PathBuf::from("hosts/host.1/host.json")
+    );
+    assert_eq!(
+        relative_record_path(&RecordAddress::stream("host.1", "work-1").unwrap()).unwrap(),
+        PathBuf::from("hosts/host.1/streams/work-1.json")
+    );
+    assert_eq!(
+        relative_record_path(&RecordAddress::session("host.1", "pi", "sess_1").unwrap()).unwrap(),
+        PathBuf::from("hosts/host.1/sessions/pi/sess_1/session.json")
+    );
+    assert!(RecordAddress::stream("host/..", "work").is_err());
+    assert!(RecordAddress::stream("", "work").is_err());
+    assert!(RecordAddress::session("host", "pi", "../escape").is_err());
 }
 
 #[test]
@@ -136,42 +134,18 @@ fn exact_reads_create_nothing_and_require_explicit_completed_format() {
 }
 
 #[test]
-fn portable_sessions_require_native_ids_and_resolved_checkout_urls() {
+fn portable_sessions_require_matching_physical_identity_and_valid_shape() {
     let (_dir, store) = setup();
-    let session = Session::new(
-        Session::id_for("host", "pi", "native"),
-        "host",
-        "work",
-        "pi",
-        "native",
-        "Work",
-    )
-    .unwrap();
-    let mut legacy = session.clone();
-    legacy.id = "legacy".into();
-    let key = RecordAddress::for_record(&Record::Session(legacy.clone()));
-    assert!(
-        store
-            .save::<_, StorageError>(&key, |_, _| Ok(RecordChange {
-                record: Record::Session(legacy),
-                outcome: ()
-            }))
-            .is_err()
-    );
-    assert!(
-        !store
-            .root
-            .join(relative_record_path(&key).unwrap())
-            .exists()
-    );
+    let session = Session::new("host", "pi", "native", "work", Title::new("Work", false)).unwrap();
     let record = Record::Session(session);
     put(&store, record.clone());
     let key = RecordAddress::for_record(&record);
     let path = store.root.join(relative_record_path(&key).unwrap());
     let original: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     for edit in [
-        |v: &mut Value| v["harness_session_id"] = json!("different"),
-        |v: &mut Value| v["checkout"] = json!({"repository":"label", "ref":"main"}),
+        |v: &mut Value| v["id"] = json!("different"),
+        |v: &mut Value| v["harness"] = json!("codex"),
+        |v: &mut Value| v["directory"] = json!({"path": "relative", "repository": null}),
     ] {
         let mut value = original.clone();
         edit(&mut value);
@@ -187,21 +161,21 @@ fn format_marker_requires_strict_json_and_the_configured_producer() {
     let (_dir, store) = setup();
     let key = RecordAddress::for_record(&stream("work", "Work"));
     for bytes in [
-        "version: 3\nhost: host\n",
-        r#"[3,"host"]"#,
-        r#"{"version":3,"version":3,"host":"host"}"#,
-        r#"{"version":3,"host":"host","unknown":true}"#,
-        r#"{"version":"3","host":"host"}"#,
-        r#"{"version":3,"host":"other"}"#,
+        "version: 5\nhost: host\n",
+        r#"[5,"host"]"#,
+        r#"{"version":5,"version":5,"host":"host"}"#,
+        r#"{"version":5,"host":"host","unknown":true}"#,
+        r#"{"version":"5","host":"host"}"#,
+        r#"{"version":5,"host":"other"}"#,
     ] {
         fs::write(store.root.join(FORMAT), bytes).unwrap();
         assert!(read(&store, &key).is_err(), "{bytes}");
     }
     // A catalog from an older Streams version names the reset step.
-    fs::write(store.root.join(FORMAT), r#"{"version":3,"host":"host"}"#).unwrap();
+    fs::write(store.root.join(FORMAT), r#"{"version":4,"host":"host"}"#).unwrap();
     let error = read(&store, &key).unwrap_err().to_string();
     assert!(error.contains(RESET_HINT), "{error}");
-    fs::write(store.root.join(FORMAT), r#"{"version":4,"host":"host"}"#).unwrap();
+    fs::write(store.root.join(FORMAT), r#"{"version":5,"host":"host"}"#).unwrap();
     assert!(read(&store, &key).unwrap().is_none());
 }
 
@@ -242,15 +216,7 @@ fn shell_reads_only_explicit_dependencies_and_save_returns_without_reopening() {
     let source = stream("source", "Source");
     let destination = stream("destination", "Destination");
     let session = Record::Session(
-        Session::new(
-            Session::id_for("host", "pi", "native"),
-            "host",
-            "source",
-            "pi",
-            "native",
-            "Work",
-        )
-        .unwrap(),
+        Session::new("host", "pi", "native", "source", Title::new("Work", false)).unwrap(),
     );
     for record in [source.clone(), destination.clone(), session.clone()] {
         put(&store, record);
@@ -366,7 +332,7 @@ fn only_changed_saves_write_and_advance_the_stamps() {
 #[test]
 fn foreign_writes_and_target_replacement_fail_before_any_replacement() {
     let (_dir, store) = setup();
-    let foreign = RecordAddress::new("other", RecordKind::Stream, "work").unwrap();
+    let foreign = RecordAddress::stream("other", "work").unwrap();
     let (error, paths) =
         reads(|| store.save::<(), StorageError>(&foreign, |_, _| panic!("foreign apply")));
     assert!(error.is_err());
@@ -392,7 +358,8 @@ fn foreign_replicas_are_directly_readable_but_never_writable() {
     let other_dir = tempfile::tempdir().unwrap();
     let other = FileRecordStore::new(other_dir.path(), "other").unwrap();
     other.initialize().unwrap();
-    let record = Record::Stream(Stream::new("work", "Foreign", None, "other").unwrap());
+    let record =
+        Record::Stream(Stream::new("other", "work", Title::new("Foreign", false), None).unwrap());
     let saved = put(&other, record.clone());
     let key = RecordAddress::for_record(&record);
     let relative = relative_record_path(&key).unwrap();
@@ -463,7 +430,7 @@ fn malformed_duplicate_key_and_wrong_identity_records_are_never_absence() {
         |v: &mut Value| v["updated_at_ms"] = json!(-1),
         |v: &mut Value| v["unknown"] = json!(true),
         |v: &mut Value| v["id"] = json!("other"),
-        |v: &mut Value| v["owner"]["host_id"] = json!("other"),
+        |v: &mut Value| v["host_id"] = json!("other"),
         |v: &mut Value| *v = json!({"version": 2, "record": v.clone(), "receipts": {}}),
     ] {
         let mut value = original.clone();
@@ -494,7 +461,7 @@ fn unreadable_records_are_named_by_kind_path_and_cause() {
     );
     assert!(error.contains("unknown field `archived`"), "{error}");
     let decoded = decode_record(&key, value.to_string().as_bytes()).unwrap_err();
-    assert_eq!(error, format!("{decoded}. {}", decoded.repair));
+    assert_eq!(error, decoded.to_string());
     assert!(error.contains("/streams reset"), "{error}");
 }
 

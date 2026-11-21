@@ -4,78 +4,138 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::model::{Record, RecordKind, Session, Stream, check_text};
+use crate::model::{Record, RecordKind, Session, Stream, check_token};
 
 use super::StorageError;
 
-/// Host is part of every portable record's identity, including Streams.
+/// Host is part of every portable record's identity; Sessions also include harness.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct RecordAddress {
     host: String,
     kind: RecordKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    harness: Option<String>,
     id: String,
 }
 
 impl RecordAddress {
-    pub fn new(
-        host: impl Into<String>,
-        kind: RecordKind,
-        id: impl Into<String>,
-    ) -> Result<Self, StorageError> {
+    pub fn host_record(host: impl Into<String>) -> Result<Self, StorageError> {
+        let host = host.into();
+        let address = Self {
+            id: host.clone(),
+            host,
+            kind: RecordKind::Host,
+            harness: None,
+        };
+        address.validate()?;
+        Ok(address)
+    }
+
+    pub fn stream(host: impl Into<String>, id: impl Into<String>) -> Result<Self, StorageError> {
         let address = Self {
             host: host.into(),
-            kind,
+            kind: RecordKind::Stream,
+            harness: None,
             id: id.into(),
         };
         address.validate()?;
         Ok(address)
     }
 
-    pub fn stream(stream: &Stream) -> Self {
+    pub fn session(
+        host: impl Into<String>,
+        harness: impl Into<String>,
+        id: impl Into<String>,
+    ) -> Result<Self, StorageError> {
+        let address = Self {
+            host: host.into(),
+            kind: RecordKind::Session,
+            harness: Some(harness.into()),
+            id: id.into(),
+        };
+        address.validate()?;
+        Ok(address)
+    }
+
+    pub fn for_stream(stream: &Stream) -> Self {
         Self {
-            host: stream.owner_host_id.clone(),
+            host: stream.host_id.clone(),
             kind: RecordKind::Stream,
+            harness: None,
             id: stream.id.clone(),
         }
     }
 
-    pub fn session(session: &Session) -> Self {
+    pub fn for_session(session: &Session) -> Self {
         Self {
             host: session.host_id.clone(),
             kind: RecordKind::Session,
+            harness: Some(session.harness.clone()),
             id: session.id.clone(),
         }
     }
 
     pub fn for_record(record: &Record) -> Self {
-        let host = match record {
-            Record::Stream(record) => &record.owner_host_id,
-            Record::Session(record) => &record.host_id,
-            Record::Host(record) => &record.id,
-        };
-        Self {
-            host: host.clone(),
-            kind: record.kind(),
-            id: record.key().id().into(),
+        match record {
+            Record::Stream(record) => Self::for_stream(record),
+            Record::Session(record) => Self::for_session(record),
+            Record::Host(record) => Self {
+                host: record.id.clone(),
+                kind: RecordKind::Host,
+                harness: None,
+                id: record.id.clone(),
+            },
         }
     }
 
     pub fn host(&self) -> &str {
         &self.host
     }
+
     pub fn kind(&self) -> RecordKind {
         self.kind
     }
+
+    pub fn harness(&self) -> Option<&str> {
+        self.harness.as_deref()
+    }
+
     pub fn id(&self) -> &str {
         &self.id
     }
 
-    pub fn validate(&self) -> Result<(), StorageError> {
-        for (name, text) in [("record host", &self.host), ("record ID", &self.id)] {
-            check_text(text, name, false).map_err(|e| StorageError::new(e.to_string()))?;
+    /// Full record key (`HOST/ID` for Stream, `HOST/HARNESS/ID` for Session, `HOST` for Host).
+    pub fn full_key(&self) -> String {
+        match self.kind {
+            RecordKind::Host => self.host.clone(),
+            RecordKind::Stream => format!("{}/{}", self.host, self.id),
+            RecordKind::Session => format!(
+                "{}/{}/{}",
+                self.host,
+                self.harness.as_deref().unwrap_or(""),
+                self.id
+            ),
         }
-        if self.kind == RecordKind::Host && self.id != self.host {
-            return Err(StorageError::new("host record ID must match its partition"));
+    }
+
+    pub fn validate(&self) -> Result<(), StorageError> {
+        check_token(&self.host, "record host").map_err(|e| StorageError::new(e.to_string()))?;
+        check_token(&self.id, "record ID").map_err(|e| StorageError::new(e.to_string()))?;
+        match (self.kind, &self.harness) {
+            (RecordKind::Session, Some(harness)) => {
+                check_token(harness, "record harness")
+                    .map_err(|e| StorageError::new(e.to_string()))?;
+            }
+            (RecordKind::Session, None) => {
+                return Err(StorageError::new("Session address requires a harness"));
+            }
+            (_, Some(_)) => {
+                return Err(StorageError::new("only Session addresses carry a harness"));
+            }
+            (RecordKind::Host, None) if self.id != self.host => {
+                return Err(StorageError::new("host record ID must match its partition"));
+            }
+            _ => {}
         }
         Ok(())
     }
@@ -124,9 +184,10 @@ impl std::fmt::Display for UnreadableRecord {
         };
         write!(
             f,
-            "{kind} record {} is unreadable: {}",
+            "{kind} record {} is unreadable: {} ({})",
             self.path.display(),
-            self.cause
+            self.cause,
+            self.repair
         )
     }
 }
@@ -165,16 +226,10 @@ pub struct RecordSave<T> {
 }
 
 impl<T> RecordSave<T> {
-    /// Names the saved record in a response that reports several saves.
     pub fn target(&self) -> String {
-        format!(
-            "{}:{}",
-            self.current.kind().as_ref(),
-            self.current.key().id()
-        )
+        self.current.key().to_string()
     }
 
-    /// The `local` save status every caller reports.
     pub fn local(&self) -> &'static str {
         if self.written {
             "persisted"
@@ -190,16 +245,21 @@ pub trait RecordReader {
 
     /// The Stream `host` owns with this ID.
     fn read_stream(&self, host: &str, id: &str) -> Result<Option<Stream>, StorageError> {
-        match self.read(&RecordAddress::new(host, RecordKind::Stream, id)?)? {
+        match self.read(&RecordAddress::stream(host, id)?)? {
             None => Ok(None),
             Some(Record::Stream(stream)) => Ok(Some(stream)),
             Some(_) => Err(StorageError::new("a Stream address holds another record")),
         }
     }
 
-    /// The Session `host` holds with this ID.
-    fn read_session(&self, host: &str, id: &str) -> Result<Option<Session>, StorageError> {
-        match self.read(&RecordAddress::new(host, RecordKind::Session, id)?)? {
+    /// The Session `host` holds for `(harness, id)`.
+    fn read_session(
+        &self,
+        host: &str,
+        harness: &str,
+        id: &str,
+    ) -> Result<Option<Session>, StorageError> {
+        match self.read(&RecordAddress::session(host, harness, id)?)? {
             None => Ok(None),
             Some(Record::Session(session)) => Ok(Some(session)),
             Some(_) => Err(StorageError::new("a Session address holds another record")),

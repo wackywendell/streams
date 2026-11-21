@@ -16,7 +16,7 @@ use crate::{
         atomic_write, decode_json, ensure_directory, existing_write_lock, inspection_lock, lock,
         read_bytes, write_json,
     },
-    model::{Record, RecordKind, Stamps, check_text},
+    model::{Record, RecordKind, Stamps, check_token},
     storage::{
         StorageError,
         records::{
@@ -25,26 +25,29 @@ use crate::{
     },
 };
 
-use super::encode_component;
-
 const FORMAT: &str = ".catalog-local/records.json";
 /// Bumped whenever record files change shape. Older catalogs are reset, never read.
-const FORMAT_VERSION: u32 = 4;
+const FORMAT_VERSION: u32 = 5;
 
-/// Canonical relative paths for the new format; callers never probe legacy locations.
+/// Canonical relative paths for format 5; callers never probe legacy locations.
 pub fn relative_record_path(address: &RecordAddress) -> Result<PathBuf, StorageError> {
     address.validate()?;
     Ok(record_path(address))
 }
 
-/// The path an address names; encoding keeps every component inside its partition.
+/// The path an address names. Every component satisfies `check_token`.
 fn record_path(address: &RecordAddress) -> PathBuf {
-    let partition = PathBuf::from("hosts").join(encode_component(address.host()));
-    let name = format!("{}.json", encode_component(address.id()));
+    let partition = PathBuf::from("hosts").join(address.host());
     match address.kind() {
         RecordKind::Host => partition.join("host.json"),
-        RecordKind::Stream => partition.join("streams").join(name),
-        RecordKind::Session => partition.join("conversations").join(name),
+        RecordKind::Stream => partition
+            .join("streams")
+            .join(format!("{}.json", address.id())),
+        RecordKind::Session => partition
+            .join("sessions")
+            .join(address.harness().expect("Session address carries harness"))
+            .join(address.id())
+            .join("session.json"),
     }
 }
 
@@ -102,7 +105,7 @@ pub struct FileRecordStore {
 impl FileRecordStore {
     pub fn new(root: impl AsRef<Path>, host: impl Into<String>) -> Result<Self, StorageError> {
         let host = host.into();
-        check_text(&host, "record-store host", false).map_err(invalid)?;
+        check_token(&host, "record-store host").map_err(invalid)?;
         Ok(Self {
             root: std::path::absolute(root).map_err(invalid)?,
             host,
@@ -241,7 +244,7 @@ fn decode_record_bytes(address: &RecordAddress, bytes: &[u8]) -> Result<Record, 
     let text = std::str::from_utf8(bytes).map_err(invalid)?;
     let record =
         record_from_data(address.kind(), &load_json(text).map_err(invalid)?).map_err(invalid)?;
-    record.validate_portable().map_err(invalid)?;
+    record.validate().map_err(invalid)?;
     if RecordAddress::for_record(&record) != *address {
         return Err(StorageError::new(
             "record identity does not match its physical location",
@@ -294,7 +297,7 @@ impl FileRecordStore {
             mut record,
             outcome,
         } = apply(scope, previous.as_ref())?;
-        record.validate_portable().map_err(invalid)?;
+        record.validate().map_err(invalid)?;
         if RecordAddress::for_record(&record) != *target {
             return Err(StorageError::new("save cannot change target identity or host").into());
         }
@@ -356,7 +359,7 @@ impl FileRecordStore {
         };
         match replacement {
             Some(mut record) => {
-                record.validate_portable().map_err(invalid)?;
+                record.validate().map_err(invalid)?;
                 if RecordAddress::for_record(&record) != *target {
                     return Err(StorageError::new(
                         "a replacement must keep the target's identity",

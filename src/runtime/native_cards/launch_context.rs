@@ -30,12 +30,7 @@ impl LaunchedCardContext {
         }
         if context.scope.harness != "pi"
             || context.owner.native_session_id != context.scope.native_session_id
-            || context.scope.session_id
-                != crate::model::Session::id_for(
-                    &context.scope.host_id,
-                    "pi",
-                    &context.scope.native_session_id,
-                )
+            || context.scope.session_id != context.scope.native_session_id
             || !context.reader.cwd.is_absolute()
             || !context.lock_directory.is_absolute()
             || !context.plugin_root.is_absolute()

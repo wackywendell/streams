@@ -2,11 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::{
-    Result,
-    conversations::{ConversationRoots, Harness, conversation_file},
-    invalid, text,
-};
+use super::{Result, conversations::Harness, invalid, text};
 use crate::model::Session;
 
 /// Resolve on the owner before hc can interpret argv[0] as a template name.
@@ -56,31 +52,19 @@ pub fn resolve_executable(
         .ok_or_else(|| invalid("owner executable is unavailable"))
 }
 
-/// Verified filesystem input, not ownership authority or a native-effect permit.
-#[derive(Debug, Clone)]
+/// Harness invocation for resuming a Session in its directory.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionCommand {
     harness: Harness,
     argv: Vec<String>,
-    locator: PathBuf,
 }
+
 impl SessionCommand {
-    pub fn verified(
-        session: &Session,
-        locator: Option<&Path>,
-        roots: &ConversationRoots,
-    ) -> Result<Self> {
+    pub fn for_session(session: &Session) -> Result<Self> {
         let harness: Harness = session
             .harness
             .parse()
             .map_err(|_| invalid(format!("unsupported session harness {:?}", session.harness)))?;
-        let locator = conversation_file(harness, &session.harness_session_id, locator, roots)?;
-        let target = if harness == Harness::Pi {
-            locator
-                .to_str()
-                .ok_or_else(|| invalid("conversation path must be UTF-8"))?
-        } else {
-            &session.harness_session_id
-        };
         let argv = vec![
             harness.to_string(),
             match harness {
@@ -89,25 +73,18 @@ impl SessionCommand {
                 Harness::Claude => "--resume",
             }
             .into(),
-            target.into(),
+            session.id.clone(),
         ];
         for arg in &argv {
             text(arg)?;
         }
-        Ok(Self {
-            harness,
-            argv,
-            locator,
-        })
+        Ok(Self { harness, argv })
     }
     pub fn harness(&self) -> Harness {
         self.harness
     }
     pub fn argv(&self) -> &[String] {
         &self.argv
-    }
-    pub fn locator(&self) -> &Path {
-        &self.locator
     }
     pub fn command_text(&self) -> String {
         self.argv

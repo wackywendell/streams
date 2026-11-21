@@ -80,13 +80,6 @@ impl<'de, T: DeserializeOwned> Deserialize<'de> for Object<T> {
     }
 }
 
-pub(crate) fn objects<'de, T: DeserializeOwned, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Vec<T>, D::Error> {
-    Vec::<Object<T>>::deserialize(deserializer)
-        .map(|items| items.into_iter().map(|item| item.0).collect())
-}
-
 pub(crate) fn object_map<'de, T: DeserializeOwned, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<BTreeMap<String, T>, D::Error> {

@@ -1,10 +1,9 @@
 use std::collections::BTreeMap;
 
-use crate::model::Reference;
 use ratatui::{buffer::Buffer, layout::Rect};
 use uuid::Uuid;
 
-use super::{CardSnapshot, DocumentTarget, Scope, render};
+use super::{CardSnapshot, DocumentTarget, LinkTarget, Scope, render};
 
 /// Display freshness is independent of the contribution's domain status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,7 +35,7 @@ pub struct RefreshToken {
 pub enum Target {
     Document(Box<DocumentTarget>),
     Artifact(Box<crate::artifacts::ArtifactSummary>),
-    Link(Box<Reference>),
+    Link(Box<LinkTarget>),
 }
 
 /// An exact target captured against the geometry and scope of a visible current frame.

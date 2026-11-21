@@ -10,8 +10,8 @@ use streams::{
     application,
     config::Config,
     file_store::records::{FileRecordStore, RecordIoEvent, relative_record_path},
-    model::{Record, RecordKind, Session, Stream, TitleDefaults},
-    operations::DomainOutcome,
+    model::{Record, Session, Stream, Title},
+    operations::edits::EditRequest,
     storage::{
         StorageError,
         records::{RecordAddress, RecordChange, RecordStore},
@@ -37,18 +37,11 @@ fn one_record_creation_reads_only_its_target_and_membership_and_a_retry_writes_n
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(path, "not a record").unwrap();
         }
-        let stream = Record::Stream(Stream::new("work", "Work", None, HOST).unwrap());
+        let stream =
+            Record::Stream(Stream::new(HOST, "work", Title::new("Work", false), None).unwrap());
         application::create_record(&store, &stream).unwrap();
         let session = Record::Session(
-            Session::new(
-                Session::id_for(HOST, "pi", "native"),
-                HOST,
-                "work",
-                "pi",
-                "native",
-                "Lane",
-            )
-            .unwrap(),
+            Session::new(HOST, "pi", "native", "work", Title::new("Lane", false)).unwrap(),
         );
         let target = root.join(relative_record_path(&RecordAddress::for_record(&session)).unwrap());
         let dependency =
@@ -82,7 +75,6 @@ fn one_record_creation_reads_only_its_target_and_membership_and_a_retry_writes_n
         events.lock().unwrap().clear();
         let retry = application::create_record(&store, &session).unwrap();
         assert!(!retry.written);
-        assert_eq!(retry.outcome, DomainOutcome::NoChange);
         assert_eq!(retry.current, created.current);
         assert_eq!(fs::read(&target).unwrap(), bytes);
         let trace = events.lock().unwrap().clone();
@@ -102,18 +94,24 @@ fn one_record_creation_reads_only_its_target_and_membership_and_a_retry_writes_n
         let Record::Session(created) = &created.current else {
             panic!("created a Session")
         };
-        application::save_session_edit(
-            &store,
-            created,
-            streams::operations::patches::SessionPatch {
-                state: Some("Later progress".into()),
-                ..Default::default()
-            },
-            TitleDefaults::default(),
-        )
+        let req = EditRequest::parse(&json!({
+            "changes": {"state": {"text": "Later progress", "short": null}}
+        }))
         .unwrap();
+        application::edit_session(&store, &RecordAddress::for_session(created), &req).unwrap();
         let bytes = fs::read(&target).unwrap();
-        assert!(application::create_record(&store, &session).is_err());
+        // Creating again for the SAME Stream changes nothing.
+        let retry_same_stream = application::create_record(&store, &session).unwrap();
+        assert!(!retry_same_stream.written);
+        assert_eq!(fs::read(&target).unwrap(), bytes);
+        // Creating again for a DIFFERENT Stream is refused.
+        let other_stream =
+            Record::Stream(Stream::new(HOST, "other", Title::new("Other", false), None).unwrap());
+        application::create_record(&store, &other_stream).unwrap();
+        let different = Record::Session(
+            Session::new(HOST, "pi", "native", "other", Title::new("Lane", false)).unwrap(),
+        );
+        assert!(application::create_record(&store, &different).is_err());
         assert_eq!(fs::read(target).unwrap(), bytes);
     }
 }
@@ -124,15 +122,7 @@ fn session_creation_refuses_a_missing_same_host_stream_without_installing_a_targ
     let store = FileRecordStore::new(directory.path(), HOST).unwrap();
     store.initialize().unwrap();
     let session = Record::Session(
-        Session::new(
-            Session::id_for(HOST, "pi", "native"),
-            HOST,
-            "missing",
-            "pi",
-            "native",
-            "Lane",
-        )
-        .unwrap(),
+        Session::new(HOST, "pi", "native", "missing", Title::new("Lane", false)).unwrap(),
     );
     assert!(application::create_record(&store, &session).is_err());
     assert!(
@@ -211,8 +201,9 @@ fn record_factory_opens_only_fixed_metadata_and_retains_source_identity() {
         ]
     );
     let source = opened.source_id().to_owned();
-    let record = Record::Stream(Stream::new("work", "Work", None, HOST).unwrap());
-    let address = RecordAddress::new(HOST, RecordKind::Stream, "work").unwrap();
+    let record =
+        Record::Stream(Stream::new(HOST, "work", Title::new("Work", false), None).unwrap());
+    let address = RecordAddress::stream(HOST, "work").unwrap();
 
     opened
         .records()
@@ -335,6 +326,5 @@ fn opened_records_keeps_the_settings_it_was_opened_with() {
 
     let opened = application::open_records(&config).unwrap();
     assert_eq!(opened.settings(), &expected);
-    assert!(opened.locations().is_ok());
-    assert!(opened.registry().is_ok());
+    assert!(opened.runtime_state().is_ok());
 }

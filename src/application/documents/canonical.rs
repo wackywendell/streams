@@ -5,7 +5,7 @@ use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
-use super::{Result, invalid};
+use crate::runtime::{Result, invalid};
 
 // Compare entries within this lookup only; this is not a saved checkout identity.
 fn physical(metadata: &fs::Metadata) -> (u64, u64) {

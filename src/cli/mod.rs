@@ -1,360 +1,350 @@
-//! CLI orchestration uses the same backend for reads, captured intent and receipts.
-//! Native activation is deliberately not installed by this experimental binary.
+//! Entity-organized CLI entry point, dispatch, formatting, and exit codes.
 
 mod args;
 mod artifacts;
 mod cards;
 mod catalog;
+mod config;
 mod debug;
-mod documents;
-mod enrollment;
-mod fields;
 mod file_watch;
 mod pager;
+mod select;
 mod sessions;
 mod settings;
-mod workspaces;
+mod stream_cmd;
 
-use args::{AgentCommand, CardCommand, Command, ConfigCommand, Target};
-use clap::Parser;
-use icu_casemap::CaseMapper;
-use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
-    fs,
-    io::{self, Write},
+    env, fs,
+    io::{self, Read, Write},
     path::{Path, PathBuf},
     process::ExitCode,
 };
+
+use clap::Parser;
+use serde::Serialize;
+use serde_json::{Map, Value, json};
 use streams::{
-    agent::{self, ContextRequest},
-    application,
-    config::{Config, ConfigKey, ConfigPath, encode_toml, toml_table_to_json, toml_value_to_json},
-    frontend::{self, FrontendMode, FrontendRequest, FrontendSelection},
-    model::{Record, Stream, TitleMode, ValidationError},
-    operations::Actor,
-    runtime::{
-        self,
-        frontends::{self, Frontend},
-    },
-    sync::outcomes,
+    application::{self, ApplicationError, EditResult, fields::format_cell},
+    codec::load_json,
+    config::{Config, ConfigError},
+    frontend::{self, FrontendMode, FrontendRequest, FrontendSelection, FrontendSelectionError},
+    model::ValidationError,
+    operations::edits::EditRequest,
+    runtime::{RuntimeError, hc as runtime_hc},
+    storage::{StorageError, records::UnreadableRecord},
+    sync::state::RepairRequired,
 };
 
-type Result<T> = std::result::Result<T, CliError>;
+use args::{CardCommand, Cli, Command, DebugCommand};
 
 #[derive(Debug, thiserror::Error)]
 pub(super) enum CliError {
     #[error("{0}")]
-    Message(String),
-    #[error("{0}")]
-    InvalidRef(String),
+    Usage(String),
     #[error("{0}")]
     NotFound(String),
-    #[error("{0}")]
-    UnsupportedCommand(String),
     #[error("{message}")]
     Ambiguous {
         message: String,
         candidates: Vec<String>,
     },
+    #[error("{0}")]
+    InvalidRef(String),
+    #[error("{0}")]
+    Message(String),
+    #[error(transparent)]
+    Config(#[from] ConfigError),
+    #[error(transparent)]
+    Storage(#[from] StorageError),
+    #[error(transparent)]
+    Validation(#[from] ValidationError),
+    #[error(transparent)]
+    Runtime(#[from] RuntimeError),
+    #[error(transparent)]
+    Io(#[from] io::Error),
+    #[error(transparent)]
+    Json(#[from] serde_json::Error),
 }
 
 impl CliError {
     pub(super) fn message(message: impl Into<String>) -> Self {
         Self::Message(message.into())
     }
+
+    fn exit_code(&self) -> i32 {
+        match self {
+            Self::Usage(_) => 2,
+            _ => 1,
+        }
+    }
+
     fn data(&self) -> Value {
-        let kind = match self {
-            Self::Message(_) => "error",
-            Self::InvalidRef(_) => "invalid-ref",
-            Self::NotFound(_) => "not-found",
-            Self::UnsupportedCommand(_) => "unsupported-command",
-            Self::Ambiguous { .. } => "ambiguous",
-        };
-        let mut error = json!({"kind":kind,"message":self.to_string()});
-        if let Self::Ambiguous { candidates, .. } = self {
-            error["candidates"] = json!(candidates);
-        }
-        json!({"error":error})
-    }
-}
-
-macro_rules! message_error {
-    ($($kind:ty),+ $(,)?) => { $(impl From<$kind> for CliError {
-        fn from(error: $kind) -> Self { Self::message(error.to_string()) }
-    })+ };
-}
-message_error!(
-    io::Error,
-    serde_json::Error,
-    ValidationError,
-    application::ApplicationError,
-    streams::config::ConfigError,
-    streams::sync::state::RepairRequired
-);
-
-impl From<frontend::FrontendSelectionError> for CliError {
-    fn from(error: frontend::FrontendSelectionError) -> Self {
-        let message = error.to_string();
-        match error {
-            frontend::FrontendSelectionError::IncompleteHerdr => Self::Message(message),
-            frontend::FrontendSelectionError::Ambiguous(candidates) => Self::Ambiguous {
+        match self {
+            Self::NotFound(message) => json!({
+                "error": { "kind": "not-found", "message": message }
+            }),
+            Self::Ambiguous {
                 message,
-                candidates: candidates.into_iter().map(|id| id.to_string()).collect(),
-            },
+                candidates,
+            } => json!({
+                "error": {
+                    "kind": "ambiguous",
+                    "message": message,
+                    "candidates": candidates,
+                }
+            }),
+            Self::InvalidRef(message) => json!({
+                "error": { "kind": "invalid-ref", "message": message }
+            }),
+            other => json!({
+                "error": { "kind": "error", "message": other.to_string() }
+            }),
         }
     }
 }
 
-impl From<runtime::RuntimeError> for CliError {
-    fn from(error: runtime::RuntimeError) -> Self {
+impl From<ApplicationError> for CliError {
+    fn from(error: ApplicationError) -> Self {
         match error {
-            runtime::RuntimeError::NotFound(message) => Self::NotFound(message),
-            runtime::RuntimeError::Ambiguous {
+            ApplicationError::NotFound(message) => Self::NotFound(message),
+            ApplicationError::Invalid(message) => Self::Message(message),
+            ApplicationError::Ambiguous {
                 message,
                 candidates,
             } => Self::Ambiguous {
                 message,
                 candidates,
             },
-            error => Self::message(error.to_string()),
+            ApplicationError::Config(e) => Self::Config(e),
+            ApplicationError::Storage(e) => Self::Storage(e),
+            ApplicationError::Validation(e) => Self::Validation(e),
+            ApplicationError::Repair(RepairRequired(message)) => Self::Message(message),
+            ApplicationError::Runtime(e) => Self::Runtime(e),
         }
     }
 }
 
-struct Output {
-    value: Value,
-    plain: Option<String>,
-    notices: Vec<String>,
-    code: u8,
-    /// Domain accepted the save (drives `SavedWithWarnings` framing and completion steps).
-    accepted_save: bool,
-    /// At least one record, artifact or setting was written (drives post-save notices/effects).
-    wrote: bool,
-}
-impl Output {
-    fn value(value: Value) -> Self {
-        Self {
-            value,
-            plain: None,
-            notices: Vec::new(),
-            code: 0,
-            accepted_save: false,
-            wrote: false,
-        }
-    }
-    fn plain(value: Value, plain: String) -> Self {
-        Self {
-            value,
-            plain: Some(plain),
-            notices: Vec::new(),
-            code: 0,
-            accepted_save: false,
-            wrote: false,
-        }
-    }
-    fn receipt(value: Value, ok: bool) -> Self {
-        Self {
-            value,
-            plain: None,
-            notices: Vec::new(),
-            code: if ok { 0 } else { 2 },
-            accepted_save: false,
-            wrote: false,
-        }
+impl From<frontend::FrontendError> for CliError {
+    fn from(error: frontend::FrontendError) -> Self {
+        Self::Runtime(RuntimeError::Frontend(error))
     }
 }
 
-#[derive(Clone, Default)]
+impl From<FrontendSelectionError> for CliError {
+    fn from(error: FrontendSelectionError) -> Self {
+        Self::Message(error.to_string())
+    }
+}
+
+type Result<T> = std::result::Result<T, CliError>;
+
+#[derive(Clone)]
 enum Input {
-    #[default]
     Stdin,
 }
+
 impl Input {
     fn read(&self) -> Result<String> {
         match self {
-            Self::Stdin => Ok(io::read_to_string(io::stdin())?),
-        }
-    }
-}
-
-fn execute(command: Command, input: Input, json: bool) -> Result<Output> {
-    match command {
-        Command::Debug { arguments } => debug::forward(arguments, json),
-        Command::Card {
-            command: CardCommand::Pane,
-        } if json => Err(CliError::message(
-            "card pane is interactive and does not support --json",
-        )),
-        Command::Artifact {
-            command: args::ArtifactCommand::View { .. },
-        } if json => Err(CliError::message(
-            "artifact view is interactive and does not support --json",
-        )),
-        command => {
-            let mut app = App::new()?;
-            app.input = input;
-            let output = app.execute(command)?;
-            if output.wrote
-                && let Err(error) = app.notify_saved()
-            {
-                eprintln!("streams: {error}");
+            Self::Stdin => {
+                let mut text = String::new();
+                io::stdin().read_to_string(&mut text)?;
+                Ok(text)
             }
-            Ok(output)
+        }
+    }
+
+    fn read_bounded(&self, max_bytes: usize) -> Result<String> {
+        match self {
+            Self::Stdin => {
+                let mut bytes = Vec::new();
+                io::stdin()
+                    .take((max_bytes + 1) as u64)
+                    .read_to_end(&mut bytes)?;
+                if bytes.len() > max_bytes {
+                    return Err(CliError::message(format!(
+                        "input exceeds maximum size of {max_bytes} bytes"
+                    )));
+                }
+                String::from_utf8(bytes).map_err(|_| CliError::message("input must be valid UTF-8"))
+            }
         }
     }
 }
 
-pub(super) fn run() -> ExitCode {
-    let argv: Vec<_> = std::env::args_os().collect();
-    let requested_json = argv
-        .iter()
-        .take_while(|arg| *arg != "--")
-        .any(|arg| arg == "--json");
-    let parsed = match args::Cli::try_parse_from(argv) {
-        Ok(parsed) => parsed,
+#[derive(Clone)]
+pub(super) struct HerdrRead {
+    pub client: streams::frontend::herdr::HerdrClient,
+    pub snapshot: Option<streams::frontend::herdr::HerdrNativeSnapshot>,
+    pub owner: Option<streams::runtime::native_cards::PiOwner>,
+}
+
+#[derive(Clone)]
+pub(super) struct App {
+    pub(super) config: Config,
+    pub(super) environment: BTreeMap<String, String>,
+    pub(super) cwd: PathBuf,
+    input: Input,
+    pub(super) herdr: Option<HerdrRead>,
+}
+
+pub(super) struct Output {
+    pub code: i32,
+    pub value: Value,
+    pub plain: Option<String>,
+    pub raw_bytes: Option<Vec<u8>>,
+    pub silent: bool,
+    pub notices: Vec<String>,
+    pub accepted_save: bool,
+    pub wrote: bool,
+}
+
+impl Output {
+    pub(super) fn value(value: Value) -> Self {
+        Self {
+            code: 0,
+            value,
+            plain: None,
+            raw_bytes: None,
+            silent: false,
+            notices: Vec::new(),
+            accepted_save: false,
+            wrote: false,
+        }
+    }
+
+    pub(super) fn plain(value: Value, plain: String) -> Self {
+        Self {
+            code: 0,
+            value,
+            plain: Some(plain),
+            raw_bytes: None,
+            silent: false,
+            notices: Vec::new(),
+            accepted_save: false,
+            wrote: false,
+        }
+    }
+
+    pub(super) fn raw_bytes(bytes: Vec<u8>) -> Self {
+        Self {
+            code: 0,
+            value: Value::Null,
+            plain: None,
+            raw_bytes: Some(bytes),
+            silent: false,
+            notices: Vec::new(),
+            accepted_save: false,
+            wrote: false,
+        }
+    }
+
+    pub(super) fn silent() -> Self {
+        Self {
+            code: 0,
+            value: Value::Null,
+            plain: None,
+            raw_bytes: None,
+            silent: true,
+            notices: Vec::new(),
+            accepted_save: false,
+            wrote: false,
+        }
+    }
+}
+
+pub fn run() -> ExitCode {
+    ExitCode::from(run_code() as u8)
+}
+
+fn run_code() -> i32 {
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
         Err(error) => {
-            let code = error.exit_code() as u8;
-            if code == 0 || !requested_json {
-                let _ = error.print();
-            } else {
-                let _ = writeln!(
-                    io::stdout(),
-                    "{}",
-                    CliError::message(error.to_string()).data()
-                );
-            }
-            return ExitCode::from(code);
+            let code = error.exit_code();
+            let _ = error.print();
+            return code;
         }
     };
+    let json_mode = cli.json;
+    let app = match App::from_process() {
+        Ok(app) => app,
+        Err(error) => return print_error(&error, json_mode),
+    };
+
     if let Command::Card {
         command: CardCommand::Watch {
             session,
             plugin_root,
         },
-    } = parsed.command
+    } = cli.command
     {
-        return match App::new().and_then(|app| app.card_watch(&session, plugin_root)) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(error) => {
-                eprintln!("streams card watch: {error}");
-                ExitCode::from(2)
-            }
+        return match app.card_watch(&session, plugin_root) {
+            Ok(()) => 0,
+            Err(error) => print_error(&error, json_mode),
         };
     }
-    let raw_content = !parsed.json
-        && matches!(
-            &parsed.command,
-            Command::Artifact {
-                command: args::ArtifactCommand::Read { .. }
+
+    match app.dispatch(cli.command, json_mode) {
+        Ok(mut output) => {
+            if output.accepted_save
+                && output.wrote
+                && let Some(warning) = app.notify_saved()
+            {
+                output.notices.push(warning);
             }
-        );
-    let outcome = execute(parsed.command, Input::Stdin, parsed.json);
-    let (text, code) = match outcome {
-        Ok(output) => {
-            if !parsed.json {
-                for notice in &output.notices {
-                    eprintln!("{notice}");
+            if let Some(bytes) = output.raw_bytes {
+                if let Err(error) = io::stdout().write_all(&bytes) {
+                    return print_error(&CliError::Io(error), false);
+                }
+                return output.code;
+            }
+            if !output.silent {
+                if json_mode {
+                    match serde_json::to_string_pretty(&output.value) {
+                        Ok(text) => println!("{text}"),
+                        Err(error) => return print_error(&CliError::Json(error), true),
+                    }
+                } else if let Some(plain) = &output.plain {
+                    if !plain.is_empty() {
+                        println!("{plain}");
+                    }
+                } else if !output.value.is_null() {
+                    match serde_json::to_string_pretty(&output.value) {
+                        Ok(text) => println!("{text}"),
+                        Err(error) => return print_error(&CliError::Json(error), false),
+                    }
                 }
             }
-            let text = if parsed.json {
-                serde_json::to_string_pretty(&output.value)
-            } else if let Some(plain) = output.plain {
-                Ok(plain)
-            } else {
-                serde_json::to_string_pretty(&output.value)
-            };
-            match text {
-                Ok(text) => (text, output.code),
-                Err(error) => {
-                    eprintln!(
-                        "streams: could not encode output; inspect catalog before retrying: {error}"
-                    );
-                    return ExitCode::from(2);
-                }
+            for notice in &output.notices {
+                eprintln!("{notice}");
             }
+            output.code
         }
-        Err(error) if parsed.json => (error.data().to_string(), 2),
-        Err(error) => {
-            eprintln!("streams: {error}");
-            return ExitCode::from(2);
-        }
-    };
-    let printed = if raw_content {
-        write!(io::stdout(), "{text}")
-    } else {
-        writeln!(io::stdout(), "{text}")
-    };
-    if let Err(error) = printed {
-        eprintln!("streams: output failed; inspect catalog before retrying: {error}");
-        return ExitCode::from(2);
+        Err(error) => print_error(&error, json_mode),
     }
-    ExitCode::from(code)
 }
 
-#[derive(Clone)]
-struct HerdrRead {
-    client: frontend::herdr::HerdrClient,
-    snapshot: Option<frontend::herdr::HerdrNativeSnapshot>,
-    owner: Option<runtime::native_cards::PiOwner>,
-    /// The Stream the Pi pane's workspace names: the child's one record of observed
-    /// placement. Layout never changes Session membership, so this only guides
-    /// enrollment and association; a later change could show it to the agent.
-    workspace_stream: Option<String>,
+fn print_error(error: &CliError, json_mode: bool) -> i32 {
+    let code = error.exit_code();
+    if json_mode && !matches!(error, CliError::Usage(_)) {
+        if let Ok(text) = serde_json::to_string_pretty(&error.data()) {
+            println!("{text}");
+        }
+    } else {
+        eprintln!("error: {error}");
+    }
+    code
 }
 
-#[derive(Clone)]
-struct App {
-    config: Config,
-    environment: BTreeMap<String, String>,
-    cwd: PathBuf,
-    input: Input,
-    herdr: Option<HerdrRead>,
-}
 impl App {
-    fn new() -> Result<Self> {
-        let cwd = std::env::current_dir()?;
+    fn from_process() -> Result<Self> {
+        let cwd = env::current_dir()?;
         let mut environment = BTreeMap::new();
-        for key in [
-            "HOME",
-            "XDG_CONFIG_HOME",
-            "XDG_DATA_HOME",
-            "XDG_STATE_HOME",
-            "CMUX_WORKSPACE_ID",
-            "CMUX_SOCKET_PATH",
-            "HERDR_ENV",
-            "HERDR_PANE_ID",
-            "STREAMS_STREAM_ID",
-            "HERDR_BIN_PATH",
-            "HERDR_SOCKET_PATH",
-            "HERDR_SESSION",
-            "HC_SOCKET",
-            "HC_SESSION",
-            "HC_TERMINAL_ID",
-            "PI_CODING_AGENT_DIR",
-            "PI_OFFLINE",
-            "CODEX_HOME",
-            "CLAUDE_CONFIG_DIR",
-            "PATH",
-            "HERDR_TAB_ID",
-            "HERDR_WORKSPACE_ID",
-            "EDITOR",
-            "STREAMS_CARDS_CONTEXT",
-            "STREAMS_ARTIFACT_CATALOG_SOURCE",
-            "STREAMS_BIN_PATH",
-            "DISPLAY",
-            "WAYLAND_DISPLAY",
-            "XDG_RUNTIME_DIR",
-            "DBUS_SESSION_BUS_ADDRESS",
-        ] {
-            match std::env::var(key) {
-                Ok(value) => {
-                    environment.insert(key.into(), value);
-                }
-                Err(std::env::VarError::NotPresent) => {}
-                Err(std::env::VarError::NotUnicode(_)) => {
-                    return Err(CliError::message(format!("{key} must be UTF-8")));
-                }
+        for (key, value) in env::vars_os() {
+            if let (Some(key), Some(value)) = (key.to_str(), value.to_str()) {
+                environment.insert(key.to_owned(), value.to_owned());
             }
         }
         Ok(Self {
@@ -365,7 +355,8 @@ impl App {
             herdr: None,
         })
     }
-    fn selection(
+
+    pub(super) fn selection(
         &self,
         configured: FrontendMode,
         requested: Option<FrontendRequest>,
@@ -376,588 +367,193 @@ impl App {
             &self.environment,
         )?)
     }
-    /// The selected frontend, serving the caller of this command on `opened`'s records.
-    fn frontend(
-        &self,
-        opened: &application::OpenedRecords,
-        requested: Option<FrontendRequest>,
-        timeout: f64,
-    ) -> Result<Option<Box<dyn Frontend>>> {
-        self.selection(opened.settings().frontend.clone(), requested)?
-            .resolved
-            .map(|id| self.connect_frontend(id, opened, timeout))
-            .transpose()
-    }
-    fn connect_frontend(
-        &self,
-        id: frontend::FrontendId,
-        opened: &application::OpenedRecords,
-        timeout: f64,
-    ) -> Result<Box<dyn Frontend>> {
-        if id == frontend::FrontendId::Herdr {
-            return Ok(Box::new(self.herdr_frontend(opened, timeout)));
-        }
-        Ok(frontends::connect(id, self.records_caller(opened, timeout)))
-    }
-    /// Herdr, through the card watcher's connection and last observation when it holds them.
-    fn herdr_frontend(
-        &self,
-        opened: &application::OpenedRecords,
-        timeout: f64,
-    ) -> frontends::HerdrFrontend {
-        let caller = self.records_caller(opened, timeout);
-        match &self.herdr {
-            Some(read) => frontends::HerdrFrontend::observed(
-                caller,
-                read.client.clone(),
-                read.workspace_stream.clone(),
-            ),
-            None => frontends::HerdrFrontend::new(caller),
+
+    fn notify_saved(&self) -> Option<String> {
+        match runtime_hc::notify_saved(&self.environment, &self.cwd, 2.0) {
+            Ok(()) => None,
+            Err(error) => Some(format!("warning: could not update hc saved label: {error}")),
         }
     }
-    fn records_caller(
-        &self,
-        opened: &application::OpenedRecords,
-        timeout: f64,
-    ) -> frontends::Caller {
-        frontends::Caller {
-            catalog_source: opened.source_id().into(),
-            host: opened.host().as_str().into(),
-            environment: self.environment.clone(),
-            cwd: self.cwd.clone(),
-            timeout,
-        }
-    }
-    fn current_stream_id(
-        &self,
-        opened: &application::OpenedRecords,
-        requested: Option<FrontendRequest>,
-    ) -> Result<String> {
-        if let Some(id) = self.environment.get("STREAMS_STREAM_ID") {
-            streams::model::check_text(id, "STREAMS_STREAM_ID", false)?;
-            return Ok(id.to_owned());
-        }
-        let mut frontend = self.frontend(opened, requested, 30.0)?.ok_or_else(|| {
-            CliError::message("--current requires an explicit Stream key or a frontend")
-        })?;
-        frontend.caller_stream()?.ok_or_else(|| {
-            CliError::message(
-                "calling workspace has no Stream selector; pass an explicit reference",
-            )
-        })
-    }
-    /// Write the fixed `streams.saved` label on the caller's hc terminal (`HC_TERMINAL_ID`).
-    pub(super) fn notify_saved(&self) -> Result<()> {
-        Ok(streams::runtime::hc::notify_saved(
-            &self.environment,
-            &self.cwd,
-            5.0,
-        )?)
-    }
-    fn record_target(
-        &self,
-        opened: &application::OpenedRecords,
-        target: &Target,
-    ) -> Result<Stream> {
-        use streams::storage::records::RecordStore;
-        if target.current {
-            if target.reference.is_some() {
-                return Err(CliError::message(
-                    "--current cannot be combined with a reference",
-                ));
-            }
-            let id = self.current_stream_id(opened, target.frontend.clone())?;
-            return Ok(opened
-                .records()
-                .with_reader(|reader| -> application::Result<Stream> {
-                    Ok(reader
-                        .read_stream(opened.host().as_str(), &id)?
-                        .ok_or_else(|| ValidationError::new("current Stream is missing"))?)
-                })?);
-        }
-        let reference = target
-            .reference
-            .as_deref()
-            .ok_or_else(|| CliError::InvalidRef("supply a reference or --current".into()))?;
-        Ok(catalog::select_stream(&opened.inventory()?, reference)?.clone())
-    }
-    fn sync_records(&self) -> Result<Output> {
-        let opened = application::open_records(&self.config)?;
-        catalog::sync(&opened)
-    }
-    fn refresh_records(&self, opened: &application::OpenedRecords) -> Result<Value> {
-        let transport =
-            streams::sync::records::RecordSync::open(opened.root(), opened.host().as_str())
-                .map_err(application::ApplicationError::from)?;
-        result_data(&transport.sync())
-    }
-    fn show_records(&self, target: &Target, refresh: bool) -> Result<Output> {
-        if target.current && target.reference.is_some() {
-            return Err(CliError::message(
-                "--current cannot be combined with a reference",
-            ));
-        }
-        if !target.current && target.reference.is_none() {
-            return Err(CliError::InvalidRef(
-                "supply a reference or --current".into(),
-            ));
-        }
-        let opened = application::open_records(&self.config)?;
-        let cutoff_ms =
-            streams::operations::decay_cutoff_ms(opened.settings().lifecycle.decay_days, now_ms());
-        let publication = if refresh {
-            Some(self.refresh_records(&opened)?)
-        } else {
-            None
-        };
-        let mut value = if target.current {
-            let stream = self.record_target(&opened, target)?;
-            let members: Vec<_> = opened
-                .host_sessions()?
-                .records
-                .into_iter()
-                .filter_map(|read| match read {
-                    Record::Session(session)
-                        if session.stream_id == stream.id
-                            && session.host_id == stream.owner_host_id =>
-                    {
-                        Some(session)
-                    }
-                    _ => None,
-                })
-                .collect();
-            let member_refs: Vec<&_> = members.iter().collect();
-            let stream_cutoff =
-                cutoff_ms.filter(|_| stream.owner_host_id == opened.host().as_str());
-            let status =
-                streams::operations::derived_stream_status(&stream, &member_refs, stream_cutoff);
-            json!({"stream":stream,"status":status})
-        } else {
-            let reference = target
-                .reference
-                .as_deref()
-                .ok_or_else(|| CliError::InvalidRef("supply a reference or --current".into()))?;
-            let records = opened.inventory()?;
-            let stream = catalog::select_stream(&records, reference)?;
-            let sessions: Vec<_> = records
-                .iter()
-                .filter_map(|read| match read {
-                    Record::Session(session)
-                        if session.stream_id == stream.id
-                            && session.host_id == stream.owner_host_id =>
-                    {
-                        Some(session)
-                    }
-                    _ => None,
-                })
-                .collect();
-            let stream_cutoff =
-                cutoff_ms.filter(|_| stream.owner_host_id == opened.host().as_str());
-            let status =
-                streams::operations::derived_stream_status(stream, &sessions, stream_cutoff);
-            json!({"stream":stream,"status":status,"sessions":sessions})
-        };
-        if let Some(publication) = publication {
-            value["sharing"] = publication;
-        }
-        Ok(Output::value(value))
-    }
-    fn path(&self, path: &Path) -> Result<PathBuf> {
-        if path == Path::new("~") || path.starts_with("~/") {
-            let home = self
-                .environment
-                .get("HOME")
-                .ok_or_else(|| CliError::message("HOME is unavailable"))?;
-            let suffix = path
-                .strip_prefix("~")
-                .map_err(|error| CliError::message(error.to_string()))?;
-            return Ok(Path::new(home).join(suffix));
-        }
-        Ok(path.to_path_buf())
-    }
-    fn read_text(&self, path: &Path) -> Result<String> {
-        if path == Path::new("-") {
-            self.input.read()
-        } else {
-            Ok(fs::read_to_string(self.path(path)?)?)
-        }
-    }
-    fn execute(&self, command: Command) -> Result<Output> {
+
+    fn dispatch(&self, command: Command, json_mode: bool) -> Result<Output> {
         match command {
-            Command::Debug { arguments } => debug::forward(arguments, false),
+            Command::List(args) => self.stream_list(args, json_mode),
+            Command::Resume { session } => self.session_resume(&session, json_mode),
+            Command::Stream { command } => self.stream(command, json_mode),
+            Command::Session { command } => self.session(*command, json_mode),
+            Command::Artifact { command } => self.artifact(command, json_mode),
+            Command::Config { command } => self.config_cmd(command),
+            Command::Catalog { command } => self.catalog_cmd(command),
             Command::Card { command } => self.card(command),
-            Command::Init {
-                sync,
-                remote,
-                branch,
-            } => {
-                let opened = application::initialize_records(
-                    &self.config,
-                    sync,
-                    remote.as_deref(),
-                    &branch,
-                )?;
-                Ok(Output::value(
-                    json!({"catalog":opened.root(),"host_id":opened.host().as_str(),"sync":sync}),
-                ))
-            }
-            Command::Config { overrides, action } => self.configure(overrides, action),
-            Command::List {
-                query,
-                status,
-                closed,
-                all,
-                refresh,
-            } => {
-                let opened = application::open_records(&self.config)?;
-                let cutoff_ms = streams::operations::decay_cutoff_ms(
-                    opened.settings().lifecycle.decay_days,
-                    now_ms(),
-                );
-                let publication = if refresh {
-                    Some(self.refresh_records(&opened)?)
-                } else {
-                    None
-                };
-                catalog::list_records(
-                    &opened,
-                    query.as_deref(),
-                    &status,
-                    closed,
-                    all,
-                    cutoff_ms,
-                    publication,
-                )
-            }
-            Command::Show { target, refresh } => self.show_records(&target, refresh),
-            Command::Create { title, fields, cwd } => self.create_stream(title, fields, cwd),
-            Command::Update {
-                target,
-                title,
-                fields,
-            } => {
-                let opened = application::open_records(&self.config)?;
-                let stream = self.record_target(&opened, &target)?;
-                catalog::update_record(
-                    &opened,
-                    &stream,
-                    title,
-                    &fields,
-                    opened.settings().naming,
-                    |path| self.read_text(path),
-                )
-            }
-            Command::Check { reference } => {
-                let opened = application::open_records(&self.config)?;
-                catalog::check(&opened, reference.as_deref())
-            }
-            Command::Tidy { days } => {
-                let opened = application::open_records(&self.config)?;
-                let decay_days = days.unwrap_or(opened.settings().lifecycle.decay_days);
-                let summary =
-                    application::lifecycle::decay_host_records(&opened, decay_days, now_ms())?;
-                let plain = format!(
-                    "closed {} session(s) (decay_days={})",
-                    summary.closed_sessions, decay_days
-                );
-                let mut output = Output::plain(
-                    json!({
-                        "decay_days": decay_days,
-                        "closed_sessions": summary.closed_sessions,
-                        "errors": summary.errors,
-                    }),
-                    plain,
-                );
-                let wrote = summary.closed_sessions > 0;
-                output.accepted_save = wrote;
-                output.wrote = wrote;
-                if !summary.errors.is_empty() {
-                    output.code = 2;
-                    output.notices.extend(summary.errors);
-                }
-                Ok(output)
-            }
-            Command::Sync => self.sync_records(),
-            Command::Artifact { command } => self.artifact_cli(command),
-            Command::Session { command } => self.session(command),
-            Command::Agent { command } => self.agent(command),
+            Command::Debug { command } => match command {
+                DebugCommand::Prompts { arguments } => debug::forward(arguments, json_mode),
+            },
         }
-    }
-    fn configure(&self, overrides_flag: bool, action: Option<ConfigCommand>) -> Result<Output> {
-        let format_plain = |toml_val: &toml::Value, json_val: &Value| -> Result<String> {
-            Ok(match toml_val.as_table() {
-                Some(table) => encode_toml(table)?.trim_end_matches('\n').to_owned(),
-                None => json_val
-                    .as_str()
-                    .map(str::to_owned)
-                    .unwrap_or_else(|| json_val.to_string()),
-            })
-        };
-        let has_catalog = || application::open_records(&self.config).is_ok();
-        match action {
-            None | Some(ConfigCommand::List { .. }) => {
-                let only_overrides = overrides_flag
-                    || matches!(action, Some(ConfigCommand::List { overrides: true }));
-                let table = if only_overrides {
-                    self.config.read_overrides_toml()?
-                } else {
-                    self.config.values_toml()?
-                };
-                let json_val = toml_table_to_json(&table)?;
-                let text = encode_toml(&table)?;
-                Ok(Output::plain(
-                    json_val,
-                    text.trim_end_matches('\n').to_owned(),
-                ))
-            }
-            Some(ConfigCommand::Get { key }) => {
-                let toml_val = self.config.get_path_toml(key)?;
-                let json_val = toml_value_to_json(&toml_val)?;
-                let plain = format_plain(&toml_val, &json_val)?;
-                Ok(Output::plain(json_val, plain))
-            }
-            Some(ConfigCommand::Set { key, value }) => {
-                self.config.set(key, &value)?;
-                let toml_val = self.config.get_path_toml(ConfigPath::Key(key))?;
-                let json_val = toml_value_to_json(&toml_val)?;
-                let plain = if key == ConfigKey::PiReportingModel {
-                    value
-                } else {
-                    format_plain(&toml_val, &json_val)?
-                };
-                let mut output = Output::plain(json_val, plain);
-                let has_catalog = has_catalog();
-                output.accepted_save = has_catalog;
-                output.wrote = has_catalog;
-                Ok(output)
-            }
-            Some(ConfigCommand::Unset { key }) => {
-                self.config.unset(key)?;
-                let mut output = Output::plain(Value::Null, format!("unset {key}"));
-                let has_catalog = has_catalog();
-                output.accepted_save = has_catalog;
-                output.wrote = has_catalog;
-                Ok(output)
-            }
-            Some(ConfigCommand::Path) => {
-                let path = self.config.config_path().to_string_lossy().into_owned();
-                Ok(Output::plain(Value::String(path.clone()), path))
-            }
-        }
-    }
-    fn context_from_records(
-        &self,
-        opened: &application::OpenedRecords,
-        request: ContextRequest<'_>,
-        title_defaults: streams::model::TitleDefaults,
-    ) -> Result<agent::RecordContext> {
-        streams::storage::records::RecordStore::with_reader(opened.records(), |reader| {
-            agent::record_context(
-                reader,
-                opened.host().as_str(),
-                opened.source_id(),
-                request,
-                title_defaults,
-            )
-        })
-        .map_err(|error| CliError::message(error.to_string()))
     }
 
-    fn agent_observation(
-        &self,
-        harness: streams::runtime::conversations::Harness,
-        session_id: &str,
-        stream_id: Option<&str>,
-    ) -> Result<AgentObservation> {
-        let opened = application::open_records(&self.config)?;
-        let naming = opened.settings().naming;
-        let request = ContextRequest {
-            harness,
-            native_id: session_id,
-            stream_id,
-            environment_stream_id: self
-                .environment
-                .get("STREAMS_STREAM_ID")
-                .map(String::as_str),
-            workspace_stream_id: None,
-        };
-        let mut context = application::with_workspace_stream(
-            self.context_from_records(&opened, request, naming)?,
-            request,
-            || {
-                self.frontend(&opened, None, 5.0)
-                    .ok()
-                    .flatten()
-                    .and_then(|mut frontend| frontend.context_stream())
-            },
-            |request| self.context_from_records(&opened, request, naming),
-        )?;
-        if let Some(stream) = &context.stream {
-            let cutoff_ms = streams::operations::decay_cutoff_ms(
-                opened.settings().lifecycle.decay_days,
-                now_ms(),
-            )
-            .filter(|_| stream.owner_host_id == opened.host().as_str());
-            let members: Vec<_> = opened
-                .host_sessions()?
-                .records
-                .into_iter()
-                .filter_map(|read| match read {
-                    Record::Session(session)
-                        if session.stream_id == stream.id
-                            && session.host_id == stream.owner_host_id =>
-                    {
-                        Some(session)
-                    }
-                    _ => None,
-                })
-                .collect();
-            let member_refs: Vec<&_> = members.iter().collect();
-            context.stream_status = Some(streams::operations::derived_stream_status(
-                stream,
-                &member_refs,
-                cutoff_ms,
+    pub(super) fn resolve_cwd_path(&self, path: &Path) -> PathBuf {
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.cwd.join(path)
+        }
+    }
+
+    pub(super) fn read_text_file(&self, path: &Path) -> Result<String> {
+        let resolved = self.resolve_cwd_path(path);
+        let text = fs::read_to_string(&resolved).map_err(|error| {
+            CliError::message(format!("cannot read {}: {error}", resolved.display()))
+        })?;
+        Ok(text.trim_end_matches(['\r', '\n']).to_owned())
+    }
+
+    pub(super) fn read_stdin_bounded(&self, max_bytes: usize) -> Result<String> {
+        self.input.read_bounded(max_bytes)
+    }
+
+    pub(super) fn read_edit_input(&self, source: &str) -> Result<EditRequest> {
+        if source != "-" {
+            return Err(CliError::Usage(
+                "--input accepts only \"-\" (JSON edit request on stdin)".into(),
             ));
         }
-        let documents = if let (Some(stream), Some(session)) = (&context.stream, &context.session) {
-            documents::context(&opened.registry()?, &opened.locations()?, stream, session)
-        } else {
-            json!({"checkouts":[],"document_locations":[]})
-        };
-        Ok(AgentObservation { context, documents })
+        let raw = self.input.read()?;
+        let parsed =
+            load_json(&raw).map_err(|e| CliError::message(format!("invalid JSON: {e}")))?;
+        Ok(EditRequest::parse(&parsed)?)
     }
 
-    fn agent(&self, command: AgentCommand) -> Result<Output> {
-        match command {
-            AgentCommand::Enroll => self.enroll(),
-            AgentCommand::Apply => {
-                self.apply_request(streams::codec::load_json(&self.input.read()?)?)
-            }
-            AgentCommand::Context {
-                harness,
-                session_id,
-                stream_id,
-            } => self
-                .agent_observation(harness, &session_id, stream_id.as_deref())?
-                .output(),
-        }
-    }
-
-    fn apply_request(&self, request: serde_json::Value) -> Result<Output> {
-        let opened = application::open_records(&self.config)?;
-        self.apply_request_opened(&opened, request)
-    }
-
-    fn apply_request_opened(
+    pub(super) fn render_list_output(
         &self,
-        opened: &application::OpenedRecords,
-        request: serde_json::Value,
-    ) -> Result<Output> {
-        catalog::apply_opened(opened, request)
-    }
-}
+        items: Vec<Map<String, Value>>,
+        fields: &[&str],
+        total: usize,
+        unreadable: Vec<UnreadableRecord>,
+        local_host: &str,
+    ) -> Output {
+        let more = items.len() < total;
+        let remaining = total.saturating_sub(items.len());
 
-pub(super) fn now_ms() -> u64 {
-    u64::try_from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis(),
-    )
-    .unwrap_or(u64::MAX)
-}
+        let mut lines = Vec::new();
+        let header: Vec<String> = fields.iter().map(|f| f.to_ascii_uppercase()).collect();
+        lines.push(header.join("  "));
+        for item in &items {
+            let cells: Vec<String> = fields
+                .iter()
+                .map(|field| {
+                    let cell = item
+                        .get(*field)
+                        .map(|v| format_cell(field, v))
+                        .unwrap_or_else(|| "-".into());
+                    printable(&cell)
+                })
+                .collect();
+            lines.push(cells.join("  "));
+        }
+        if more {
+            lines.push(format!("{remaining} more; raise --limit"));
+        }
 
-struct AgentObservation {
-    context: agent::RecordContext,
-    documents: Value,
-}
-impl AgentObservation {
-    fn output(self) -> Result<Output> {
-        let mut value = serde_json::to_value(self.context.wire())?;
-        value.as_object_mut().expect("context object").extend(
-            self.documents
-                .as_object()
-                .expect("document context object")
-                .clone(),
+        let json_items: Vec<Value> = items.into_iter().map(Value::Object).collect();
+        let value = json!({
+            "items": json_items,
+            "unreadable": unreadable,
+            "more": more,
+        });
+        let mut output = Output::plain(value, lines.join("\n"));
+        output.notices.extend(
+            unreadable
+                .iter()
+                .map(|record| format!("{record}\n  {}", record.repair)),
         );
-        Ok(Output::value(value))
+        if unreadable.iter().any(|record| record.host != local_host) {
+            output.notices.push(
+                "/streams reset repairs only this host's records; repair another host's records on that host."
+                    .into(),
+            );
+        }
+        output
+    }
+
+    pub(super) fn render_show_output(&self, object: Map<String, Value>, fields: &[&str]) -> Output {
+        let mut lines = Vec::new();
+        for &field in fields {
+            let Some(val) = object.get(field) else {
+                continue;
+            };
+            let rendered = match val {
+                Value::Array(_) | Value::Object(_)
+                    if matches!(
+                        field,
+                        "sessions" | "artifacts" | "references" | "document_files"
+                    ) =>
+                {
+                    serde_json::to_string_pretty(val).unwrap_or_else(|_| val.to_string())
+                }
+                _ => printable(&format_cell(field, val)),
+            };
+            lines.push(format!("{field}: {rendered}"));
+        }
+        Output::plain(Value::Object(object), lines.join("\n"))
+    }
+
+    pub(super) fn render_create_output(
+        &self,
+        key: &str,
+        files: Vec<PathBuf>,
+        wrote: bool,
+    ) -> Output {
+        let file_strings: Vec<String> = files
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        let plain = if wrote {
+            format!("saved {key}")
+        } else {
+            format!("unchanged {key}")
+        };
+        let mut output = Output::plain(json!({ "key": key, "files": file_strings }), plain);
+        output.accepted_save = true;
+        output.wrote = wrote;
+        output
+    }
+
+    pub(super) fn render_edit_output(&self, result: EditResult) -> Output {
+        let complete = result.is_complete();
+        let value = json!({
+            "key": result.key,
+            "not_written": result.not_written,
+        });
+        let plain = if complete {
+            if result.written {
+                format!("saved {}", result.key)
+            } else {
+                format!("unchanged {}", result.key)
+            }
+        } else {
+            let skipped: Vec<&str> = result.not_written.keys().map(String::as_str).collect();
+            format!(
+                "partial edit on {}; not written: {} (re-read and retry if needed)",
+                result.key,
+                skipped.join(", ")
+            )
+        };
+        let mut output = Output::plain(value, plain);
+        if !complete {
+            output.code = 3;
+        }
+        output.accepted_save = true;
+        output.wrote = result.written;
+        output
     }
 }
 
-fn fold(value: &str) -> String {
-    CaseMapper::new().fold_string(value).into_owned()
-}
-fn printable(value: &str) -> String {
-    use unicode_general_category::{GeneralCategory::*, get_general_category};
-    value
-        .chars()
-        .map(|c| match get_general_category(c) {
-            Control | Format | Surrogate | PrivateUse | Unassigned | LineSeparator
-            | ParagraphSeparator | SpaceSeparator
-                if c != ' ' =>
-            {
-                ' '
-            }
-            _ => c,
-        })
+pub(super) fn printable(text: &str) -> String {
+    text.chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
         .collect()
 }
-fn resolve<'a, T>(
-    records: &'a [T],
-    reference: &str,
-    identity: impl Fn(&T) -> (&str, &str, Option<&str>),
-) -> Result<&'a T> {
-    if reference.trim().is_empty() {
-        return Err(CliError::InvalidRef("reference must not be blank".into()));
-    }
-    let folded = fold(reference);
-    let candidates = records
-        .iter()
-        .filter(|item| {
-            let (id, _, host) = identity(item);
-            id == reference || host.is_some_and(|host| reference == format!("{host}/{id}"))
-        })
-        .collect::<Vec<_>>();
-    let candidates = if candidates.is_empty() {
-        records
-            .iter()
-            .filter(|item| fold(identity(item).1) == folded)
-            .collect()
-    } else {
-        candidates
-    };
-    let candidates = if candidates.is_empty() {
-        records
-            .iter()
-            .filter(|item| fold(identity(item).1).contains(&folded))
-            .collect()
-    } else {
-        candidates
-    };
-    match candidates.as_slice() {
-        [record] => Ok(*record),
-        [] => Err(CliError::NotFound(format!(
-            "no record matches {reference:?}"
-        ))),
-        _ => Err(CliError::Ambiguous {
-            message: format!("ambiguous reference {reference:?}; choose a stable ID"),
-            candidates: candidates
-                .iter()
-                .map(|item| {
-                    let (id, _, host) = identity(item);
-                    host.map_or_else(|| id.to_owned(), |host| format!("{host}/{id}"))
-                })
-                .collect(),
-        }),
-    }
-}
-fn result_data(result: &outcomes::Result) -> Result<Value> {
-    let mut value = serde_json::to_value(result)?;
-    if let Some(domain) = value.get_mut("domain").and_then(Value::as_object_mut) {
-        domain.remove("record");
-    }
-    Ok(value)
-}
-fn binding_data(binding: &runtime::DirectoryBinding) -> Value {
-    json!({"cwd":binding.cwd,"checkout_id":binding.checkout.as_ref().map(|c|&c.id),"relative_cwd":binding.checkout.as_ref().map(|c|&c.relative_cwd),"repository_url":binding.checkout.as_ref().and_then(|c|c.repository_url.as_ref())})
+
+pub(super) fn result_data<T: Serialize>(value: &T) -> Result<Value> {
+    Ok(serde_json::to_value(value)?)
 }

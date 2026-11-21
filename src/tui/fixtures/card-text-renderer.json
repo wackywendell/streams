@@ -32,12 +32,12 @@
       "Status: Implement | verify",
       "Remaining: 界😀é | release",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
-      "[a] Document Design (https://example.com/lib) · Brief · Active",
-      "    Design",
       "[1] PR Review · Deliverable · Active",
       "    Review",
       "[2] Issue Track work · Dependency · Active",
       "    Track work",
+      "[a] Document Design · Brief · Active",
+      "    Design",
       "                                                                                           [q] close"
     ],
     "links": [
@@ -79,12 +79,12 @@
       "Status: Implement | verify",
       "Remaining: 界😀é | release",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
-      "[a] Document Design (https://example.com/lib) · Brief · Active",
-      "    Design",
       "[1] PR Review · Deliverable · Active",
       "    Review",
       "[2] Issue Track work · Dependency · Active",
       "    Track work",
+      "[a] Document Design · Brief · Active",
+      "    Design",
       "                                                                                           [q] close"
     ],
     "links": [
@@ -126,12 +126,12 @@
       "Status: Implement | verify",
       "Remaining: 界😀é | release",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
-      "[a] Document Design (https://example.com/lib) · Brief · Active",
-      "    Design",
       "[1] PR Review · Deliverable · Active",
       "    Review",
       "[2] Issue Track work · Dependency · Active",
       "    Track work",
+      "[a] Document Design · Brief · Active",
+      "    Design",
       "                                                                                           [q] close"
     ],
     "links": [
@@ -173,12 +173,12 @@
       "Status: Implement | verify",
       "Remaining: 界😀é | release",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
-      "[a] Document Design (https://example.com/lib) · Brief · Active",
-      "    Design",
       "[1] PR Review · Deliverable · Active",
       "    Review",
       "[2] Issue Track work · Dependency · Active",
       "    Track work",
+      "[a] Document Design · Brief · Active",
+      "    Design",
       "                                                                                           [q] close"
     ],
     "links": [
@@ -220,12 +220,12 @@
       "Status: Implement | verify",
       "Remaining: 界😀é | release",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
-      "[a] Document Design (https://example.com/lib) · Brief · Active",
-      "    Design",
       "[1] PR Review · Deliverable · Active",
       "    Review",
       "[2] Issue Track work · Dependency · Active",
       "    Track work",
+      "[a] Document Design · Brief · Active",
+      "    Design",
       "                                                                                           [q] close"
     ],
     "links": [
@@ -267,12 +267,12 @@
       "Status: Other stage",
       "Remaining: Other todo",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
-      "[a] Document Design (https://example.com/lib) · Brief · Active",
-      "    Design",
       "[1] PR Review · Deliverable · Active",
       "    Review",
       "[2] Issue Track work · Dependency · Active",
       "    Track work",
+      "[a] Document Design · Brief · Active",
+      "    Design",
       "                                                                                           [q] close"
     ],
     "links": [
@@ -578,12 +578,14 @@
       "…",
       "…",
       "…",
-      "[",
+      "…",
       "",
       "",
       "…"
     ],
-    "links": [],
+    "links": [
+      "https://example.com/org/repo/pull/51"
+    ],
     "name": "geometry-1-8"
   },
   {
@@ -692,12 +694,14 @@
       "i…",
       "S…",
       "R…",
-      "[a",
+      "[…",
       "",
       "",
       "…"
     ],
-    "links": [],
+    "links": [
+      "https://example.com/org/repo/pull/51"
+    ],
     "name": "geometry-2-8"
   },
   {
@@ -790,9 +794,7 @@
     "name": "geometry-3-5"
   },
   {
-    "documents": [
-      "a"
-    ],
+    "documents": [],
     "historical": {
       "documents": [
         "a",
@@ -816,12 +818,14 @@
       "p…",
       "St…",
       "Re…",
-      "[a]",
+      "[1…",
       "",
       "",
       "[q]"
     ],
-    "links": [],
+    "links": [
+      "https://example.com/org/repo/pull/51"
+    ],
     "name": "geometry-3-8"
   },
   {
@@ -914,9 +918,7 @@
     "name": "geometry-5-5"
   },
   {
-    "documents": [
-      "a"
-    ],
+    "documents": [],
     "historical": {
       "documents": [
         "a",
@@ -940,12 +942,14 @@
       "libr…",
       "Stat…",
       "Rema…",
-      "[a] …",
-      "    G",
+      "[1] …",
+      "    R",
       "    …",
       "… [q]"
     ],
-    "links": [],
+    "links": [
+      "https://example.com/org/repo/pull/51"
+    ],
     "name": "geometry-5-8"
   },
   {
@@ -1038,9 +1042,7 @@
     "name": "geometry-8-5"
   },
   {
-    "documents": [
-      "a"
-    ],
+    "documents": [],
     "historical": {
       "documents": [
         "a",
@@ -1064,12 +1066,14 @@
       "library…",
       "Status:…",
       "Remaini…",
-      "[a] Doc…",
-      "    Guid",
-      "    e…",
+      "[1] PR …",
+      "    Revi",
+      "    ew",
       "… 29 [q]"
     ],
-    "links": [],
+    "links": [
+      "https://example.com/org/repo/pull/51"
+    ],
     "name": "geometry-8-8"
   },
   {
@@ -1162,9 +1166,7 @@
     "name": "geometry-9-5"
   },
   {
-    "documents": [
-      "a"
-    ],
+    "documents": [],
     "historical": {
       "documents": [
         "a",
@@ -1188,12 +1190,14 @@
       "library…",
       "Status:…",
       "Remainin…",
-      "[a] Docu…",
-      "    Guide",
-      "    the…",
+      "[1] PR R…",
+      "    Revie",
+      "    w",
       "[q] close"
     ],
-    "links": [],
+    "links": [
+      "https://example.com/org/repo/pull/51"
+    ],
     "name": "geometry-9-8"
   },
   {
@@ -1286,9 +1290,7 @@
     "name": "geometry-18-5"
   },
   {
-    "documents": [
-      "a"
-    ],
+    "documents": [],
     "historical": {
       "documents": [
         "a",
@@ -1313,11 +1315,13 @@
       "Status: Implement…",
       "Remaining: 界😀é…",
       "──────────────────",
-      "[a] Document docs…",
-      "    Guide the work",
+      "[1] PR Review · D…",
+      "    Review",
       "… 29 more[q] close"
     ],
-    "links": [],
+    "links": [
+      "https://example.com/org/repo/pull/51"
+    ],
     "name": "geometry-18-8"
   },
   {
@@ -1410,9 +1414,7 @@
     "name": "geometry-28-5"
   },
   {
-    "documents": [
-      "a"
-    ],
+    "documents": [],
     "historical": {
       "documents": [
         "a",
@@ -1437,11 +1439,13 @@
       "Status: Implement | verify",
       "Remaining: 界😀é | release",
       "────────────────────────────",
-      "[a] Document docs/é-0.md (h…",
-      "    Guide the work",
+      "[1] PR Review · Deliverable…",
+      "    Review",
       "… 29 more; enlarge [q] close"
     ],
-    "links": [],
+    "links": [
+      "https://example.com/org/repo/pull/51"
+    ],
     "name": "geometry-28-8"
   },
   {
@@ -1536,10 +1540,7 @@
     "name": "geometry-35-5"
   },
   {
-    "documents": [
-      "a",
-      "b"
-    ],
+    "documents": [],
     "historical": {
       "documents": [
         "a",
@@ -1567,13 +1568,16 @@
       "Ship library | client      ● active",
       "Status: Implement | verify",
       "Remaining: 界😀é | release",
-      "[a] Document docs/é-0.md (https://…",
-      "    Guide the work",
-      "[b] Document docs/é-1.md (https://…",
-      "    Guide the work",
+      "[1] PR Review · Deliverable · Acti…",
+      "    Review",
+      "[2] Issue Track work · Dependency …",
+      "    Track work",
       "… 28 more; enlarge pane   [q] close"
     ],
-    "links": [],
+    "links": [
+      "https://example.com/org/repo/pull/51",
+      "https://example.com/org/repo/issues/42"
+    ],
     "name": "geometry-35-8"
   },
   {
@@ -1668,10 +1672,7 @@
     "name": "geometry-50-5"
   },
   {
-    "documents": [
-      "a",
-      "b"
-    ],
+    "documents": [],
     "historical": {
       "documents": [
         "a",
@@ -1699,13 +1700,16 @@
       "Ship library | client                     ● active",
       "Status: Implement | verify",
       "Remaining: 界😀é | release",
-      "[a] Document docs/é-0.md (https://example.com/lib…",
-      "    Guide the work",
-      "[b] Document docs/é-1.md (https://example.com/lib…",
-      "    Guide the work",
+      "[1] PR Review · Deliverable · Active",
+      "    Review",
+      "[2] Issue Track work · Dependency · Active",
+      "    Track work",
       "… 28 more; enlarge pane                  [q] close"
     ],
-    "links": [],
+    "links": [
+      "https://example.com/org/repo/pull/51",
+      "https://example.com/org/repo/issues/42"
+    ],
     "name": "geometry-50-8"
   },
   {
@@ -1806,10 +1810,7 @@
     "name": "geometry-100-5"
   },
   {
-    "documents": [
-      "a",
-      "b"
-    ],
+    "documents": [],
     "historical": {
       "documents": [
         "a",
@@ -1849,13 +1850,16 @@
       "Ship library | client                                                                       ● active",
       "Status: Implement | verify",
       "Remaining: 界😀é | release",
-      "[a] Document docs/é-0.md (https://example.com/lib) · Brief · Active",
-      "    Guide the work",
-      "[b] Document docs/é-1.md (https://example.com/lib) · Brief · Active",
-      "    Guide the work",
+      "[1] PR Review · Deliverable · Active",
+      "    Review",
+      "[2] Issue Track work · Dependency · Active",
+      "    Track work",
       "… 28 more; enlarge pane                                                                    [q] close"
     ],
-    "links": [],
+    "links": [
+      "https://example.com/org/repo/pull/51",
+      "https://example.com/org/repo/issues/42"
+    ],
     "name": "geometry-100-8"
   },
   {
@@ -4131,7 +4135,7 @@
       "Purpose                                   ● active",
       "Status: Stage",
       "Remaining: Next work",
-      "[a] Document docs/a.md (https://example.com/lib) …",
+      "[a] Document docs/a.md · Brief · Active",
       "    Guide the work",
       "… 7 more; enlarge pane                   [q] close"
     ],
@@ -4198,7 +4202,7 @@
       "Status: Stage",
       "Remaining: Next work",
       "──────────────────────────────────────────────────",
-      "[a] Document docs/a.md (https://example.com/lib) …",
+      "[a] Document docs/a.md · Brief · Active",
       "    Guide the work",
       "… 7 more; enlarge pane                   [q] close"
     ],
@@ -4235,7 +4239,7 @@
       "Purpose                                   ● active",
       "Status: Stage",
       "Remaining: Next work",
-      "[a] Document docs/a.md (https://example.com/lib) …",
+      "[a] Document docs/a.md · Brief · Active",
       "    Guide the work",
       "… 7 more; enlarge pane",
       "Notice 界😀é                             [q] close"
@@ -4275,9 +4279,9 @@
       "Purpose                                   ● active",
       "Status: Stage",
       "Remaining: Next work",
-      "[a] Document docs/a.md (https://example.com/lib) …",
+      "[a] Document docs/a.md · Brief · Active",
       "    Guide the work",
-      "[b] Document docs/b.md (https://example.com/lib) …",
+      "[b] Document docs/b.md · Brief · Active",
       "    Guide the work",
       "… 6 more; enlarge pane                   [q] close"
     ],
@@ -4316,7 +4320,7 @@
       "Status: Stage",
       "Remaining: Next work",
       "──────────────────────────────────────────────────",
-      "[a] Document docs/a.md (https://example.com/lib) …",
+      "[a] Document docs/a.md · Brief · Active",
       "    Guide the work",
       "… 7 more; enlarge pane",
       "Notice 界😀é                             [q] close"
@@ -4358,9 +4362,9 @@
       "Status: Stage",
       "Remaining: Next work",
       "──────────────────────────────────────────────────",
-      "[a] Document docs/a.md (https://example.com/lib) …",
+      "[a] Document docs/a.md · Brief · Active",
       "    Guide the work",
-      "[b] Document docs/b.md (https://example.com/lib) …",
+      "[b] Document docs/b.md · Brief · Active",
       "    Guide the work",
       "… 6 more; enlarge pane                   [q] close"
     ],
@@ -4400,9 +4404,9 @@
       "Purpose                                   ● active",
       "Status: Stage",
       "Remaining: Next work",
-      "[a] Document docs/a.md (https://example.com/lib) …",
+      "[a] Document docs/a.md · Brief · Active",
       "    Guide the work",
-      "[b] Document docs/b.md (https://example.com/lib) …",
+      "[b] Document docs/b.md · Brief · Active",
       "    Guide the work",
       "… 6 more; enlarge pane",
       "Notice 界😀é                             [q] close"
@@ -4439,10 +4443,7 @@
   },
   {
     "documents": [
-      "a",
-      "b",
-      "c",
-      "d"
+      "a"
     ],
     "historical": {
       "documents": [
@@ -4472,19 +4473,22 @@
     },
     "lines": [
       "Ship library | client                                                                                                                                                       ● active",
+      "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
       "Status: Implement | verify",
       "Remaining: 界😀é | release",
-      "[a] Document docs/design.md (https://example.com/lib) · Brief · Active",
+      "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+      "[1] PR Review · Deliverable · Active",
+      "    Review",
+      "[2] Issue Track work · Dependency · Active",
+      "    Track work",
+      "[a] Document docs/design.md · Brief · Active",
       "    Guide the work",
-      "[b] Document docs/design.md (https://example.com/client) · Brief · Active",
-      "    Guide the work",
-      "[c] Document docs/design.md (https://example.com/same) · Brief · Active",
-      "    Guide the work",
-      "[d] Document docs/design.md (https://example.com/unbound) · Brief · Active",
-      "    Guide the work",
-      "… 2 more; enlarge pane                                                                                                                                                     [q] close"
+      "                                                                                                                                                                           [q] close"
     ],
-    "links": [],
+    "links": [
+      "https://example.com/org/repo/pull/51",
+      "https://example.com/org/repo/issues/42"
+    ],
     "name": "distinguishing-roots-provenance"
   },
   {
@@ -4517,12 +4521,12 @@
       "Status: Implement | verify",
       "Remaining: 界😀é | release",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
-      "[a] Document Design (https://example.com/lib) · Brief · Active",
-      "    Design",
       "[1] PR Review · Deliverable · Active",
       "    Review",
       "[2] Issue Track work · Dependency · Active",
-      "    Track work                                                                             [q] close"
+      "    Track work",
+      "[a] Document Design · Brief · Active",
+      "    Design                                                                                 [q] close"
     ],
     "links": [
       "https://example.com/org/repo/pull/51",
@@ -4560,12 +4564,12 @@
       "Status: Implement | verify",
       "Remaining: 界😀é | release",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
-      "[a] Document Design (https://example.com/lib) · Brief · Active",
-      "    Design",
       "[1] PR Review · Deliverable · Active",
       "    Review",
       "[2] Issue Track work · Dependency · Active",
-      "    Track work                                                                             [q] close"
+      "    Track work",
+      "[a] Document Design · Brief · Active",
+      "    Design                                                                                 [q] close"
     ],
     "links": [
       "https://example.com/org/repo/pull/51",
@@ -4603,12 +4607,12 @@
       "Status: Implement | verify",
       "Remaining: 界😀é | release",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
-      "[a] Document Design (https://example.com/lib) · Brief · Active",
-      "    Design",
       "[1] PR Review · Deliverable · Active",
       "    Review",
       "[2] Issue Track work · Dependency · Active",
-      "    Track work                                                                             [q] close"
+      "    Track work",
+      "[a] Document Design · Brief · Active",
+      "    Design                                                                                 [q] close"
     ],
     "links": [
       "https://example.com/org/repo/pull/51",
@@ -4617,9 +4621,7 @@
     "name": "No registered checkout"
   },
   {
-    "documents": [
-      "a"
-    ],
+    "documents": [],
     "historical": {
       "documents": [
         "a"
@@ -4649,20 +4651,21 @@
       "Ship library | client                                                                       ● active",
       "Status: Implement | verify",
       "Remaining: 界😀é | release",
-      "[a] Document Design (https://example.com/lib) · Brief · Active",
-      "    Design",
       "[1] PR Duplicate · Deliverable · Active",
       "    Duplicate",
       "[2] PR https://example.com/19?pull=20#21 · Deliverable · Active",
       "    Guide the work",
       "[3] Issue Duplicate · Dependency · Active",
       "    Duplicate",
+      "[4] Issue Duplicate · Dependency · Active",
+      "    Duplicate",
       "… 1 more; enlarge pane                                                                     [q] close"
     ],
     "links": [
       "https://github.enterprise.test/team/repo/pull/7/files",
       "https://example.com/19?pull=20#21",
-      "https://github.com/acme/project/issues/42#issuecomment-900"
+      "https://github.com/acme/project/issues/42#issuecomment-900",
+      "https://gitlab.example/team/subgroup/repo/-/issues/456"
     ],
     "name": "duplicate-link-names-order-targets"
   },
@@ -4696,10 +4699,10 @@
       "Status: Implement | verify",
       "Remaining: 界😀é | release",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
-      "[a] Document Design (https://example.com/lib) · Brief · Active",
-      "    Design",
       "[1] Issue Unsafe or canonicalized · Dependency · Active",
       "    Unsafe or canonicalized",
+      "[a] Document Design · Brief · Active",
+      "    Design",
       "                                                                                           [q] close"
     ],
     "links": [
@@ -4737,10 +4740,10 @@
       "Status: Implement | verify",
       "Remaining: 界😀é | release",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
-      "[a] Document Design (https://example.com/lib) · Brief · Active",
-      "    Design",
       "[1] Issue Unsafe or canonicalized · Dependency · Active",
       "    Unsafe or canonicalized",
+      "[a] Document Design · Brief · Active",
+      "    Design",
       "                                                                                           [q] close"
     ],
     "links": [
@@ -4804,12 +4807,12 @@
       "Status: Implement | verify",
       "Remaining: 界😀é | release",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
-      "[a] Document Design (https://example.com/lib) · Brief · Active",
-      "    Design",
       "[1] PR Review · Deliverable · Active",
       "    Review",
       "[2] Issue Track work · Dependency · Active",
       "    Track work",
+      "[a] Document Design · Brief · Active",
+      "    Design",
       "Refreshing…                                                                                [q] close"
     ],
     "links": [

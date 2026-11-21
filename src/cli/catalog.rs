@@ -1,233 +1,133 @@
-//! Catalog actions over admitted records; publication is a separate transport request.
+//! `streams catalog` subcommand handlers (`init`, `sync`, `check`, `tidy`).
 
-#[cfg(test)]
-mod tests;
+use std::{
+    collections::BTreeSet,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
-use super::args::StreamFields;
-use super::{CliError, Output, Result, fields, printable, resolve, result_data};
 use serde_json::json;
-use std::{collections::BTreeSet, path::Path};
 use streams::{
-    agent,
     application::{self, OpenedRecords},
-    codec::record_to_data,
-    model::{Record, Status, Stream, TitleDefaults, ValidationError},
-    operations::{
-        DomainOutcome, EditOutcome,
-        patches::{Patch, StreamPatch},
-    },
-    storage::records::RecordSave,
+    config::Strategy,
+    model::{Record, ValidationError},
     sync::records::RecordSync,
 };
 
-pub(super) fn list_records(
-    opened: &streams::application::OpenedRecords,
-    query: Option<&str>,
-    status: &[Status],
-    closed: bool,
-    all: bool,
-    cutoff_ms: Option<u64>,
-    publication: Option<serde_json::Value>,
-) -> Result<Output> {
-    let listing = application::list_streams(
-        opened,
-        application::StreamFilter {
-            query,
-            status,
-            closed,
-            all,
-        },
-        cutoff_ms,
-    )?;
-    let streams = listing.streams;
-    let mut plain = String::from("HOST/ID  STATUS  TITLE");
-    for entry in &streams {
-        plain.push_str(&format!(
-            "\n{}/{}  {}  {}",
-            entry.stream.owner_host_id,
-            entry.stream.id,
-            entry.status,
-            printable(&entry.stream.title)
-        ));
-    }
-    let mut output = Output::plain(
-        json!({"streams":streams,"unreadable":listing.unreadable}),
-        plain,
-    );
-    // The listing still succeeds: it names each record it skipped, and how to repair it.
-    output.notices.extend(
-        listing
-            .unreadable
-            .iter()
-            .map(|record| format!("{record}\n  {}", record.repair)),
-    );
-    if listing
-        .unreadable
-        .iter()
-        .any(|record| record.host != opened.host().as_str())
-    {
-        output.notices.push(
-            "/streams reset repairs only this host's records; repair another host's records on that host.".into(),
-        );
-    }
-    if let Some(publication) = publication {
-        if let Some(detail) = publication["detail"]
-            .as_str()
-            .filter(|detail| !detail.is_empty())
-        {
-            output.notices.push(detail.into());
-        }
-        output.value["sharing"] = publication;
-    }
-    Ok(output)
+use super::{App, Output, Result, args::CatalogCommand, result_data, select};
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
-pub(super) fn select_stream<'a>(records: &'a [Record], reference: &str) -> Result<&'a Stream> {
-    let streams: Vec<_> = records
-        .iter()
-        .filter_map(|read| match read {
-            Record::Stream(stream) => Some(stream),
-            _ => None,
-        })
-        .collect();
-    Ok(*resolve(&streams, reference, |stream| {
-        (&stream.id, &stream.title, Some(&stream.owner_host_id))
-    })?)
-}
-
-pub(super) fn update_record(
-    opened: &OpenedRecords,
-    stream: &Stream,
-    title: Option<String>,
-    intent: &StreamFields,
-    defaults: TitleDefaults,
-    mut read: impl FnMut(&Path) -> Result<String>,
-) -> Result<Output> {
-    let mut patch = fields::stream(stream, intent, &mut read)?;
-    if title.is_some() {
-        patch.title = title;
-    }
-    if patch.is_empty() {
-        return Err(CliError::message(
-            "update requires at least one field change",
-        ));
-    }
-    save_stream_edit(opened, stream, patch, defaults)
-}
-
-pub(super) fn save_stream_edit(
-    opened: &OpenedRecords,
-    stream: &Stream,
-    patch: StreamPatch,
-    defaults: TitleDefaults,
-) -> Result<Output> {
-    Ok(finish_record(application::save_stream_edit(
-        opened.records(),
-        stream,
-        patch,
-        defaults,
-    )?))
-}
-
-#[cfg(test)]
-pub(super) fn apply(
-    store: &impl streams::storage::records::RecordStore,
-    captured: &str,
-    source_id: &str,
-    defaults: streams::model::TitleDefaults,
-) -> Result<Output> {
-    let update =
-        agent::parse_record_update(streams::codec::load_json(captured)?, source_id, defaults)?;
-    Ok(finish_record(application::save_record_update(
-        store, &update,
-    )?))
-}
-
-pub(super) fn apply_opened(opened: &OpenedRecords, request: serde_json::Value) -> Result<Output> {
-    let update = agent::parse_record_update(request, opened.source_id(), opened.settings().naming)?;
-    Ok(finish_record(application::save_record_update(
-        opened.records(),
-        &update,
-    )?))
-}
-
-/// A created record reports like an edit with nothing refused.
-pub(super) fn finish_created(saved: RecordSave<DomainOutcome>) -> Output {
-    finish_record(RecordSave {
-        current: saved.current,
-        written: saved.written,
-        outcome: EditOutcome {
-            outcome: saved.outcome,
-            conflicts: Vec::new(),
-            reason: String::new(),
-            reference_results: None,
-        },
-    })
-}
-
-pub(super) fn finish_record(saved: RecordSave<EditOutcome>) -> Output {
-    let ok = saved.outcome.accepted();
-    let kind = saved.current.kind().as_ref().to_owned();
-    let mut output = Output::receipt(
-        json!({
-            "save":{"local":saved.local(),"domain":saved.outcome},
-            (kind):record_to_data(&saved.current),
-        }),
-        ok,
-    );
-    output.accepted_save = ok;
-    output.wrote = saved.written;
-    for row in saved.outcome.reference_results.iter().flatten() {
-        if matches!(
-            row.outcome,
-            DomainOutcome::Conflict | DomainOutcome::Superseded
-        ) {
-            let key = serde_json::to_string(&row.key).unwrap_or_default();
-            let mut safe_key = String::with_capacity(key.len());
-            for ch in key.chars() {
-                if ch.is_ascii() && !ch.is_ascii_control() {
-                    safe_key.push(ch);
-                } else {
-                    for unit in ch.encode_utf16(&mut [0; 2]) {
-                        safe_key.push_str(&format!("\\u{unit:04x}"));
-                    }
+impl App {
+    pub(super) fn catalog_cmd(&self, command: CatalogCommand) -> Result<Output> {
+        match command {
+            CatalogCommand::Init {
+                sync,
+                remote,
+                branch,
+            } => {
+                if sync == Strategy::Git && remote.is_none() {
+                    return Err(super::CliError::Usage(
+                        "--remote is required when --sync git".into(),
+                    ));
                 }
+                let opened = application::initialize_records(
+                    &self.config,
+                    sync,
+                    remote.as_deref(),
+                    &branch,
+                )?;
+                let value = json!({
+                    "catalog": opened.root(),
+                    "host_id": opened.host().as_str(),
+                    "sync": sync,
+                });
+                let plain = format!(
+                    "initialized catalog at {} (host {}, sync {})",
+                    opened.root().display(),
+                    opened.host().as_str(),
+                    sync
+                );
+                Ok(Output::plain(value, plain))
             }
-            output.notices.push(format!(
-                "Reference not applied: {safe_key}; {}",
-                super::printable(&row.reason),
-            ));
+            CatalogCommand::Sync => {
+                let opened = application::open_records(&self.config)?;
+                sync(&opened)
+            }
+            CatalogCommand::Check { stream } => {
+                let opened = application::open_records(&self.config)?;
+                check(&opened, stream.as_deref())
+            }
+            CatalogCommand::Tidy { days } => {
+                let opened = application::open_records(&self.config)?;
+                let decay_days = days.unwrap_or(opened.settings().lifecycle.decay_days);
+                let summary =
+                    application::lifecycle::decay_host_records(&opened, decay_days, now_ms())?;
+                let plain = format!(
+                    "closed {} session(s) (decay_days={decay_days})",
+                    summary.closed_sessions
+                );
+                let mut output = Output::plain(
+                    json!({
+                        "decay_days": decay_days,
+                        "closed_sessions": summary.closed_sessions,
+                        "errors": summary.errors,
+                    }),
+                    plain,
+                );
+                let wrote = summary.closed_sessions > 0;
+                output.accepted_save = wrote;
+                output.wrote = wrote;
+                if !summary.errors.is_empty() {
+                    output.code = 3;
+                    output.notices.extend(summary.errors);
+                }
+                Ok(output)
+            }
         }
     }
-    if !output.notices.is_empty() {
-        output.code = 2;
-    }
-    output
 }
 
 pub(super) fn sync(opened: &OpenedRecords) -> Result<Output> {
     let transport = RecordSync::open(opened.root(), opened.host().as_str())
         .map_err(application::ApplicationError::from)?;
     let result = transport.sync();
-    let mut output = Output::receipt(result_data(&result)?, !result.needs_attention());
+    let ok = !result.needs_attention();
+    let value = result_data(&result)?;
+    let plain = if ok {
+        format!(
+            "sync complete (local: {:?}, sharing: {:?})",
+            result.local, result.sharing
+        )
+    } else {
+        format!(
+            "sync needs attention (local: {:?}, sharing: {:?})",
+            result.local, result.sharing
+        )
+    };
+    let mut output = Output::plain(value, plain);
+    if !ok {
+        output.code = 3;
+    }
     output.accepted_save = true;
-    // `sync` reaches `Committed` only after `advance` succeeds; a `RepairRequired`
-    // failure between `install` and `advance` leaves `wrote = false`, accepted here
-    // because the caller already gets a nonzero exit and repair status.
     output.wrote = result.local == streams::sync::outcomes::LocalStatus::Committed;
     Ok(output)
 }
 
 /// Explicit human validation/discovery, never a prerequisite for a local save.
-pub(super) fn check(opened: &OpenedRecords, reference: Option<&str>) -> Result<Output> {
+pub(super) fn check(opened: &OpenedRecords, selector: Option<&str>) -> Result<Output> {
     let records = opened.inventory()?;
-    let selected = reference
-        .map(|reference| select_stream(&records, reference))
+    let selected = selector
+        .map(|sel| select::select_stream(opened, sel))
         .transpose()?;
     let streams: BTreeSet<_> = records
         .iter()
         .filter_map(|read| match read {
-            Record::Stream(stream) => Some((stream.owner_host_id.as_str(), stream.id.as_str())),
+            Record::Stream(stream) => Some((stream.host_id.as_str(), stream.id.as_str())),
             _ => None,
         })
         .collect();
@@ -235,8 +135,8 @@ pub(super) fn check(opened: &OpenedRecords, reference: Option<&str>) -> Result<O
         .iter()
         .filter_map(|read| match read {
             Record::Session(session)
-                if selected.is_none_or(|stream| {
-                    session.host_id == stream.owner_host_id && session.stream_id == stream.id
+                if selected.as_ref().is_none_or(|stream| {
+                    session.host_id == stream.host_id && session.stream_id == stream.id
                 }) =>
             {
                 Some(session)
@@ -249,7 +149,15 @@ pub(super) fn check(opened: &OpenedRecords, reference: Option<&str>) -> Result<O
             return Err(ValidationError::new("Session's same-host Stream is missing").into());
         }
     }
-    Ok(Output::value(
-        json!({"valid":true,"streams":if selected.is_some(){1}else{streams.len()},"sessions":sessions.len()}),
-    ))
+    let stream_count = if selected.is_some() { 1 } else { streams.len() };
+    let value = json!({
+        "valid": true,
+        "streams": stream_count,
+        "sessions": sessions.len(),
+    });
+    let plain = format!(
+        "catalog valid ({stream_count} stream(s), {} session(s))",
+        sessions.len()
+    );
+    Ok(Output::plain(value, plain))
 }

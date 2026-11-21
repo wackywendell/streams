@@ -10,10 +10,10 @@ pub(crate) fn resolve_artifact_summary(
     session: &Session,
 ) -> Result<ArtifactSummary> {
     key.validate().map_err(|error| invalid(error.to_string()))?;
-    if session.id != key.session || session.host_id != key.host {
+    if session.id != key.session || session.harness != key.harness || session.host_id != key.host {
         return Err(invalid("saved artifact reference is unavailable"));
     }
-    crate::artifacts::summaries(session, &key.stream)
+    crate::artifacts::summaries(session)
         .into_iter()
         .find(|summary| &summary.key == key)
         .ok_or_else(|| invalid("saved artifact reference is unavailable"))

@@ -11,6 +11,7 @@ pub mod records;
 pub struct StorageError {
     pub message: String,
     kind: StorageErrorKind,
+    unreadable: Option<Box<records::UnreadableRecord>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,7 +23,11 @@ pub enum StorageErrorKind {
 /// A point read of an undecodable record fails definitely; listings keep the typed value.
 impl From<records::UnreadableRecord> for StorageError {
     fn from(record: records::UnreadableRecord) -> Self {
-        Self::new(format!("{record}. {}", record.repair))
+        Self {
+            message: format!("{record}"),
+            kind: StorageErrorKind::Definite,
+            unreadable: Some(Box::new(record)),
+        }
     }
 }
 
@@ -32,6 +37,7 @@ impl StorageError {
         Self {
             message: message.into(),
             kind: StorageErrorKind::Definite,
+            unreadable: None,
         }
     }
 
@@ -40,7 +46,12 @@ impl StorageError {
         Self {
             message: message.into(),
             kind: StorageErrorKind::Uncertain,
+            unreadable: None,
         }
+    }
+
+    pub fn into_unreadable(self) -> Option<records::UnreadableRecord> {
+        self.unreadable.map(|boxed| *boxed)
     }
 
     pub fn is_uncertain(&self) -> bool {

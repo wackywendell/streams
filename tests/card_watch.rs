@@ -19,7 +19,7 @@ impl Fixture {
         let fixture = Self {
             directory: tempfile::tempdir().unwrap(),
         };
-        fixture.ok(&["init", "--sync", "none"], None);
+        fixture.ok(&["catalog", "init", "--sync", "none"], None);
         fixture.ok(&["config", "set", "frontend.mode", "none"], None);
         fixture
     }
@@ -179,7 +179,11 @@ fn save_writes_streams_saved_on_hc_terminal() {
     command
         .env("HC_TERMINAL_ID", "t42")
         .env("HC_SOCKET", &core.socket);
-    let (code, value) = fixture.cli_with(command, &["create", "Save Notice Work"], None);
+    let (code, value) = fixture.cli_with(
+        command,
+        &["stream", "create", "--title", "Save Notice Work"],
+        None,
+    );
     assert_eq!(code, 0, "{value}");
     let calls = core.finish();
     assert_eq!(calls.len(), 2);

@@ -21,9 +21,15 @@ fn save_during_network(root: &Path, host: &str, goal: &str) -> Result<(), GitErr
     );
     let records = FileRecordStore::new(root, host).unwrap();
     let mut current = stream(&records, host);
-    current.goal = Some(goal.into());
+    current.goal = Some(Goal::new(goal, None, false));
     put(&records, Record::Stream(current));
-    assert_eq!(stream(&records, host).goal.as_deref(), Some(goal));
+    assert_eq!(
+        stream(&records, host)
+            .goal
+            .as_ref()
+            .map(|g| g.text.as_str()),
+        Some(goal)
+    );
     Ok(())
 }
 
@@ -60,8 +66,14 @@ fn network_calls_leave_catalog_writable_and_push_only_the_prepared_snapshot() {
             "{phase}: {}",
             result.detail
         );
-        assert_eq!(stream(&records, "host").goal.as_deref(), Some(phase));
-        let address = RecordAddress::new("host", RecordKind::Stream, "work").unwrap();
+        assert_eq!(
+            stream(&records, "host")
+                .goal
+                .as_ref()
+                .map(|g| g.text.as_str()),
+            Some(phase)
+        );
+        let address = RecordAddress::stream("host", "work").unwrap();
         let path = crate::file_store::records::relative_record_path(&address).unwrap();
         let published =
             RecordSync::tree(&Git::new(&remote, 30.0), "refs/heads/records-v2").unwrap();
@@ -71,7 +83,7 @@ fn network_calls_leave_catalog_writable_and_push_only_the_prepared_snapshot() {
             unreachable!()
         };
         assert_eq!(
-            published.goal.as_deref(),
+            published.goal.as_ref().map(|g| g.text.as_str()),
             (phase != "push").then_some(phase)
         );
         if phase == "push" {
@@ -84,7 +96,10 @@ fn network_calls_leave_catalog_writable_and_push_only_the_prepared_snapshot() {
             else {
                 unreachable!()
             };
-            assert_eq!(published.goal.as_deref(), Some("push"));
+            assert_eq!(
+                published.goal.as_ref().map(|g| g.text.as_str()),
+                Some("push")
+            );
         }
     }
 }
@@ -135,7 +150,7 @@ fn a_save_during_fetch_is_checkpointed_before_same_file_divergence_is_decided() 
     }
     let peer_records = FileRecordStore::new(&b, "owner").unwrap();
     let mut incoming = stream(&peer_records, "owner");
-    incoming.goal = Some("remote work".into());
+    incoming.goal = Some(Goal::new("remote work", None, false));
     put(&peer_records, Record::Stream(incoming));
     assert_eq!(peer.sync().sharing, SharingStatus::Confirmed);
     sync.git = sync.git.clone().with_hook(Arc::new(Mutex::new(
@@ -157,11 +172,17 @@ fn a_save_during_fetch_is_checkpointed_before_same_file_divergence_is_decided() 
         result.detail
     );
     assert_eq!(
-        stream(&records, "owner").goal.as_deref(),
+        stream(&records, "owner")
+            .goal
+            .as_ref()
+            .map(|g| g.text.as_str()),
         Some("local during fetch")
     );
     assert_eq!(
-        stream(&peer_records, "owner").goal.as_deref(),
+        stream(&peer_records, "owner")
+            .goal
+            .as_ref()
+            .map(|g| g.text.as_str()),
         Some("remote work")
     );
 }

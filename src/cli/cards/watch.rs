@@ -4,6 +4,7 @@ mod files;
 mod tests;
 
 use files::Files;
+use serde_json::{Map, Value};
 use std::{
     io::Read,
     path::PathBuf,
@@ -16,7 +17,6 @@ use std::{
     time::{Duration, Instant},
 };
 use streams::{
-    agent::{ContextRequest, RecordContext},
     cancellation::Cancellation,
     frontend::{
         FrontendId,
@@ -25,13 +25,16 @@ use streams::{
             events::{EventFilter, EventKind, SubscriptionCancel, SubscriptionUpdate},
         },
     },
+    model::{Session, Stream, Title},
+    operations::edits::EditRequest,
     runtime::{
         card_settings::ConversationId,
-        conversations::Harness,
         native_cards::{LifecycleEvent, NativeCardEngine, NativeCardsConfig, PiOwner},
         native_markers,
     },
+    storage::records::{RecordAddress, RecordStore},
 };
+use uuid::Uuid;
 
 use crate::cli::{App, CliError, HerdrRead, Result, application, cards};
 
@@ -59,7 +62,7 @@ enum FileBaseline {
 struct Pass {
     newly_bound: bool,
     records: Arc<application::OpenedRecords>,
-    context: RecordContext,
+    pair: Option<(Stream, Session)>,
     config: NativeCardsConfig,
 }
 
@@ -76,6 +79,7 @@ pub(super) struct Controller {
     files: Option<Files>,
     catalog_source: Option<String>,
     binding: Binding,
+    last_workspace: Option<String>,
 }
 
 impl Controller {
@@ -99,6 +103,7 @@ impl Controller {
             files: None,
             catalog_source: None,
             binding: Binding::Unobserved,
+            last_workspace: None,
         }
     }
 
@@ -177,6 +182,73 @@ impl Controller {
         Ok(true)
     }
 
+    fn read_pair(&self, records: &application::OpenedRecords) -> Result<Option<(Stream, Session)>> {
+        let host = records.host().as_str();
+        let found = records
+            .records()
+            .with_reader(|reader| -> application::Result<_> {
+                let Some(session) = reader.read_session(host, "pi", &self.session_id)? else {
+                    return Ok(None);
+                };
+                let Some(stream) = reader.read_stream(host, &session.stream_id)? else {
+                    return Err(application::ApplicationError::not_found(format!(
+                        "no Stream {host}/{}",
+                        session.stream_id
+                    )));
+                };
+                Ok(Some((stream, session)))
+            })?;
+        Ok(found)
+    }
+
+    /// Move an enrolled Session when its pane moves into another Herdr workspace,
+    /// calling the same `edit_session` with `before` holding the old `stream_id`.
+    fn sync_workspace_move(
+        &mut self,
+        records: &application::OpenedRecords,
+        workspace: &str,
+        selected: Option<&str>,
+        pair: Option<(Stream, Session)>,
+    ) -> Result<Option<(Stream, Session)>> {
+        let workspace_changed = self
+            .last_workspace
+            .as_deref()
+            .is_some_and(|prev| prev != workspace);
+        self.last_workspace = Some(workspace.to_owned());
+        if !workspace_changed {
+            return Ok(pair);
+        }
+        let Some((_stream, session)) = pair else {
+            return Ok(None);
+        };
+        let host = records.host().as_str();
+        let dest_stream_id = match selected {
+            Some(id) if id == session.stream_id => return self.read_pair(records),
+            Some(id) => id.to_owned(),
+            None => {
+                let new_id = Uuid::new_v4().to_string();
+                let new_stream =
+                    Stream::new(host, &new_id, Title::new(&session.title.text, false), None)?;
+                application::create_stream(records.records(), &new_stream)?;
+                new_id
+            }
+        };
+        let mut changes = Map::new();
+        changes.insert("stream_id".into(), Value::String(dest_stream_id));
+        let mut before = Map::new();
+        before.insert("stream_id".into(), Value::String(session.stream_id.clone()));
+        let target = RecordAddress::for_session(&session);
+        let _ = application::edit_session(
+            records.records(),
+            &target,
+            &EditRequest {
+                changes,
+                before: Some(before),
+            },
+        )?;
+        self.read_pair(records)
+    }
+
     fn observe_opened(
         &mut self,
         records: Arc<application::OpenedRecords>,
@@ -221,41 +293,21 @@ impl Controller {
                 .mode()?
                 .resolve(settings.herdr.cards_auto_open),
         );
-        let session_id = self.session_id.clone();
-        let environment_stream_id = self.app.environment.get("STREAMS_STREAM_ID").cloned();
-        let request = ContextRequest {
-            harness: Harness::Pi,
-            native_id: &session_id,
-            stream_id: None,
-            environment_stream_id: environment_stream_id.as_deref(),
-            workspace_stream_id: None,
-        };
-        let context = self
-            .app
-            .context_from_records(&records, request, settings.naming)?;
-        // Establish the catalog baseline even if Herdr has not detected Pi yet.
-        // Later binding changes are observed only after native observation succeeds.
+        let pair = self.read_pair(&records)?;
         if self.binding == Binding::Unobserved {
-            self.observe_binding(&context);
+            self.observe_binding(pair.as_ref().map(|(_, s)| s));
         }
         let owner = match &self.owner {
             Some(owner) => owner.clone(),
-            None => {
-                let locator = if let Some(session) = &context.session {
-                    records.locations()?.transcript_file(&session.id)?
-                } else {
-                    None
-                };
-                PiOwner::select_initial(
-                    &snapshot,
-                    self.app
-                        .environment
-                        .get("HERDR_PANE_ID")
-                        .map(String::as_str),
-                    &self.session_id,
-                    locator.as_deref(),
-                )?
-            }
+            None => PiOwner::select_initial(
+                &snapshot,
+                self.app
+                    .environment
+                    .get("HERDR_PANE_ID")
+                    .map(String::as_str),
+                &self.session_id,
+                None,
+            )?,
         };
         let (pane, _transcript) = owner
             .observe(&snapshot)?
@@ -273,15 +325,7 @@ impl Controller {
             records.source_id(),
             records.host().as_str(),
         )?;
-        let context = streams::application::with_workspace_stream(
-            context,
-            request,
-            || selected.clone(),
-            |request| {
-                self.app
-                    .context_from_records(&records, request, settings.naming)
-            },
-        )?;
+        let pair = self.sync_workspace_move(&records, &workspace, selected.as_deref(), pair)?;
         if cancelled.load(Ordering::Acquire) {
             return Err(CliError::message("card watch cancelled"));
         }
@@ -291,29 +335,23 @@ impl Controller {
         self.files
             .as_mut()
             .unwrap()
-            .set_stream(context.stream.as_ref().map(|stream| stream.id.as_str()))?;
+            .set_stream(pair.as_ref().map(|(stream, _)| stream.id.as_str()))?;
         self.app.herdr = Some(HerdrRead {
             client,
             snapshot: Some(snapshot),
             owner: Some(owner),
-            workspace_stream: selected,
         });
-        let newly_bound = self.observe_binding(&context);
+        let newly_bound = self.observe_binding(pair.as_ref().map(|(_, s)| s));
         Ok(Pass {
             newly_bound,
             records,
-            context,
+            pair,
             config,
         })
     }
 
-    fn observe_binding(&mut self, context: &RecordContext) -> bool {
-        let binding = context
-            .session
-            .as_ref()
-            .map_or(Binding::Unbound, |session| {
-                Binding::Session(session.id.clone())
-            });
+    fn observe_binding(&mut self, session: Option<&Session>) -> bool {
+        let binding = session.map_or(Binding::Unbound, |s| Binding::Session(s.id.clone()));
         let newly_bound = self.binding != Binding::Unobserved
             && self.binding != binding
             && matches!(binding, Binding::Session(_));
@@ -331,7 +369,7 @@ impl Controller {
             pass.config,
             cancelled,
             Some(pass.records),
-            Some(pass.context),
+            pass.pair,
         )
     }
 
@@ -348,7 +386,7 @@ impl Controller {
         cancelled: Arc<AtomicBool>,
     ) -> Result<()> {
         let pass = self.observe_opened(records, &cancelled, FileBaseline::Required)?;
-        if pass.context.session.is_some() {
+        if pass.pair.is_some() {
             let mut engine = self.engine(pass, cancelled)?;
             engine.lifecycle(LifecycleEvent::Started)?;
             self.watch_engine(&engine);
@@ -366,7 +404,7 @@ impl Controller {
             return Ok(());
         }
         let pass = self.observe_opened(records, &cancelled, baseline)?;
-        if pass.context.session.is_some() {
+        if pass.pair.is_some() {
             let newly_bound = pass.newly_bound;
             let mut engine = self.engine(pass, cancelled)?;
             if newly_bound {
@@ -436,7 +474,7 @@ impl Controller {
         let Ok(pass) = self.observe_opened(records, &cancelled, FileBaseline::Required) else {
             return;
         };
-        if pass.context.session.is_none() {
+        if pass.pair.is_none() {
             return;
         }
         if let Ok(mut engine) = self.engine(pass, cancelled) {
@@ -464,8 +502,8 @@ impl Drop for Controller {
 }
 
 pub(super) fn run(app: App, session_id: String, plugin_root: PathBuf) -> Result<()> {
-    uuid::Uuid::parse_str(&session_id)
-        .map_err(|_| CliError::message("native Pi session ID must be a UUID"))?;
+    streams::model::check_token(&session_id, "Session ID")
+        .map_err(|e| CliError::InvalidRef(e.to_string()))?;
     let records = Arc::new(application::open_records(&app.config)?);
     if app
         .selection(records.settings().frontend.clone(), None)?
@@ -488,7 +526,6 @@ pub(super) fn run(app: App, session_id: String, plugin_root: PathBuf) -> Result<
         })?;
     let mut controller = Controller::new(app, session_id, plugin_root, sender, stopping.clone());
     if let Err(error) = controller.start(records, cancelled.clone()) {
-        // Subscription setup failure cannot watch anything; fail fast.
         if controller.client.is_none() {
             return Err(error);
         }

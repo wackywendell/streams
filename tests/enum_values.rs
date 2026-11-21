@@ -7,8 +7,8 @@ use serde::{Serialize, de::DeserializeOwned};
 use serde_json::json;
 use streams::{
     codec::record_from_data,
-    model::{NamingMode, RecordKind, ReferenceRole, ReferenceState, Status, TitleMode},
-    operations::{Actor, DomainOutcome},
+    config::CardMode,
+    model::{NamingMode, RecordKind, ReferenceKind, ReferenceRole, ReferenceStatus, Status},
     runtime::conversations::{Harness, NativeIdentityKind},
     sync::outcomes::{LocalStatus, SharingStatus},
 };
@@ -50,39 +50,29 @@ fn domain_enums_have_one_strict_wire_spelling() {
         (NamingMode::Manual, "manual"),
     ]);
     roundtrip(&[
-        (TitleMode::Automatic, "automatic"),
-        (TitleMode::Manual, "manual"),
-        (TitleMode::Inherit, "inherit"),
+        (CardMode::Automatic, "automatic"),
+        (CardMode::Manual, "manual"),
     ]);
     roundtrip(&[
         (RecordKind::Host, "host"),
         (RecordKind::Session, "session"),
         (RecordKind::Stream, "stream"),
     ]);
-    roundtrip(&[
-        (Actor::User, "user"),
-        (Actor::Automatic, "automatic"),
-        (Actor::Native, "native"),
-    ]);
-    roundtrip(&[
-        (DomainOutcome::Changes, "changes"),
-        (DomainOutcome::NoChange, "no-change"),
-        (DomainOutcome::Superseded, "superseded"),
-        (DomainOutcome::Conflict, "conflict"),
-    ]);
     assert_eq!(Status::default(), Status::Active);
     assert_eq!(NamingMode::default(), NamingMode::Automatic);
-    assert_eq!(TitleMode::default(), TitleMode::Inherit);
-    for default in [NamingMode::Automatic, NamingMode::Manual] {
-        assert_eq!(TitleMode::Inherit.resolve(default), default);
-        assert_eq!(TitleMode::Automatic.resolve(default), NamingMode::Automatic);
-        assert_eq!(TitleMode::Manual.resolve(default), NamingMode::Manual);
-    }
+    assert_eq!(CardMode::default(), CardMode::Automatic);
     assert!("inherit".parse::<NamingMode>().is_err());
+    assert!("inherit".parse::<CardMode>().is_err());
 }
 
 #[test]
-fn reference_roles_and_states_have_one_strict_wire_spelling() {
+fn reference_kinds_roles_and_statuses_have_one_strict_wire_spelling() {
+    roundtrip(&[
+        (ReferenceKind::Pr, "pr"),
+        (ReferenceKind::Issue, "issue"),
+        (ReferenceKind::Link, "link"),
+        (ReferenceKind::Document, "document"),
+    ]);
     roundtrip(&[
         (ReferenceRole::Deliverable, "deliverable"),
         (ReferenceRole::Dependency, "dependency"),
@@ -90,9 +80,9 @@ fn reference_roles_and_states_have_one_strict_wire_spelling() {
         (ReferenceRole::Background, "background"),
     ]);
     roundtrip(&[
-        (ReferenceState::Active, "active"),
-        (ReferenceState::Fulfilled, "fulfilled"),
-        (ReferenceState::Dropped, "dropped"),
+        (ReferenceStatus::Active, "active"),
+        (ReferenceStatus::Fulfilled, "fulfilled"),
+        (ReferenceStatus::Dropped, "dropped"),
     ]);
 }
 
@@ -129,20 +119,30 @@ fn sync_enums_preserve_hyphenated_wire_values() {
 
 #[test]
 fn invalid_enum_fields_are_rejected_at_record_decode() {
-    for field in ["status", "title_mode", "goal_mode"] {
-        for invalid in [
-            json!("unknown"),
-            json!("ACTIVE"),
-            json!(null),
-            json!(true),
-            json!(10),
-        ] {
-            let mut wire = json!({"id": "work", "title": "Work", "goal": null, "owner": {"host_id": "host"}, "references":[]});
-            wire[field] = invalid;
-            assert!(
-                record_from_data(RecordKind::Stream, &wire).is_err(),
-                "{field}"
-            );
-        }
+    for invalid in [
+        json!("unknown"),
+        json!("ACTIVE"),
+        json!(null),
+        json!(true),
+        json!(10),
+    ] {
+        let mut wire = json!({
+            "host_id": "host",
+            "harness": "pi",
+            "id": "sess",
+            "stream_id": "work",
+            "title": {"text": "Work", "manual": false},
+            "status": "active",
+            "recap": null,
+            "state": null,
+            "remaining": null,
+            "directory": null,
+            "references": {},
+            "artifacts": {},
+            "revision": 1,
+            "updated_at_ms": 0
+        });
+        wire["status"] = invalid;
+        assert!(record_from_data(RecordKind::Session, &wire).is_err());
     }
 }

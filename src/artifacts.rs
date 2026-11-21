@@ -1,7 +1,8 @@
-//! Session-owned attachment metadata and separately stored output text.
+//! Session-owned artifact metadata and separately stored output text.
+//! An artifact's key is `HOST/HARNESS/ID/NAME`, stored at `hosts/HOST/sessions/HARNESS/ID/artifacts/NAME`.
 
 use crate::{
-    model::{Record, Session, ValidationError, check_text},
+    model::{Record, Session, ValidationError, check_text, check_token},
     storage::{
         StorageError,
         records::{RecordAddress, RecordChange, RecordReader, RecordSave, RecordStore},
@@ -10,61 +11,6 @@ use crate::{
 use serde::{Deserialize, Serialize};
 
 pub const MAX_CONTENT_BYTES: usize = 1024 * 1024;
-
-/// Typed child and CLI intents. Missing Session IDs select the child's bound Session only.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
-pub enum ArtifactRequest {
-    Write {
-        name: String,
-        description: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        session_id: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        stream_id: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        text: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        file: Option<std::path::PathBuf>,
-    },
-    Read {
-        reference: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        offset: Option<usize>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        limit: Option<usize>,
-    },
-    ListSession {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        host: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        session_id: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        stream_id: Option<String>,
-    },
-    ListStream {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        host: Option<String>,
-        stream_id: String,
-    },
-    Delete {
-        reference: String,
-    },
-}
-
-pub(crate) fn groups<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> Result<std::collections::BTreeMap<String, Vec<ArtifactEntry>>, D::Error> {
-    #[derive(Deserialize)]
-    #[serde(transparent)]
-    struct Entries(#[serde(deserialize_with = "crate::codec::objects")] Vec<ArtifactEntry>);
-    std::collections::BTreeMap::<String, Entries>::deserialize(deserializer).map(|groups| {
-        groups
-            .into_iter()
-            .map(|(stream, entries)| (stream, entries.0))
-            .collect()
-    })
-}
 
 pub fn validate_name(name: &str) -> Result<(), ValidationError> {
     let mut bytes = name.bytes();
@@ -88,16 +34,23 @@ pub fn validate_content(content: &str) -> Result<(), ValidationError> {
     Ok(())
 }
 
+/// Stored value in `Session.artifacts[NAME]`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ArtifactEntry {
-    pub name: String,
     pub description: String,
 }
 
 impl ArtifactEntry {
+    pub fn new(description: impl Into<String>) -> Result<Self, ValidationError> {
+        let entry = Self {
+            description: description.into(),
+        };
+        entry.validate()?;
+        Ok(entry)
+    }
+
     pub fn validate(&self) -> Result<(), ValidationError> {
-        validate_name(&self.name)?;
         check_text(&self.description, "artifact description", false)?;
         if self.description.chars().count() > 240 || self.description.chars().any(char::is_control)
         {
@@ -109,59 +62,54 @@ impl ArtifactEntry {
     }
 }
 
+/// Full artifact identity: `HOST/HARNESS/ID/NAME`.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ArtifactKey {
     pub host: String,
-    pub stream: String,
+    pub harness: String,
     pub session: String,
     pub name: String,
 }
 
 impl ArtifactKey {
     pub fn validate(&self) -> Result<(), ValidationError> {
-        for (label, value) in [
-            ("artifact host", &self.host),
-            ("artifact Stream", &self.stream),
-            ("artifact Session", &self.session),
-        ] {
-            check_text(value, label, false)?;
-        }
+        check_token(&self.host, "artifact host")?;
+        check_token(&self.harness, "artifact harness")?;
+        check_token(&self.session, "artifact Session")?;
         validate_name(&self.name)
     }
 
     pub fn reference(&self) -> String {
-        [&self.host, &self.stream, &self.session, &self.name]
-            .map(|part| crate::file_store::encode_component(part))
-            .join("/")
+        format!(
+            "{}/{}/{}/{}",
+            self.host, self.harness, self.session, self.name
+        )
+    }
+
+    pub fn session_address(&self) -> Result<RecordAddress, StorageError> {
+        RecordAddress::session(&self.host, &self.harness, &self.session)
     }
 
     pub fn parse(reference: &str) -> Result<Self, ValidationError> {
-        let parts = reference
-            .split('/')
-            .map(|part| {
-                percent_encoding::percent_decode_str(part)
-                    .decode_utf8()
-                    .map(|s| s.into_owned())
-                    .map_err(|_| ValidationError::new("artifact reference must be UTF-8"))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let [host, stream, session, name]: [String; 4] = parts.try_into().map_err(|_| {
-            ValidationError::new("artifact reference must be host/stream/session/name")
-        })?;
+        let parts: Vec<&str> = reference.split('/').collect();
+        let [host, harness, session, name]: [&str; 4] = parts
+            .try_into()
+            .map_err(|_| ValidationError::new("artifact key must be HOST/HARNESS/ID/NAME"))?;
         let key = Self {
-            host,
-            stream,
-            session,
-            name,
+            host: host.into(),
+            harness: harness.into(),
+            session: session.into(),
+            name: name.into(),
         };
         key.validate()?;
-        if key.reference() != reference {
-            return Err(ValidationError::new(
-                "artifact reference must use canonical component encoding",
-            ));
-        }
         Ok(key)
+    }
+}
+
+impl std::fmt::Display for ArtifactKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.reference())
     }
 }
 
@@ -169,38 +117,38 @@ impl ArtifactKey {
 #[serde(deny_unknown_fields)]
 pub struct ArtifactSummary {
     pub key: ArtifactKey,
-    pub reference: String,
+    pub name: String,
     pub description: String,
 }
 
-pub fn summaries(session: &Session, stream: &str) -> Vec<ArtifactSummary> {
+impl ArtifactSummary {
+    pub fn full_key(&self) -> String {
+        self.key.reference()
+    }
+}
+
+pub fn summaries(session: &Session) -> Vec<ArtifactSummary> {
     session
         .artifacts
-        .get(stream)
-        .into_iter()
-        .flatten()
-        .map(|entry| {
-            let key = ArtifactKey {
+        .iter()
+        .map(|(name, entry)| ArtifactSummary {
+            key: ArtifactKey {
                 host: session.host_id.clone(),
-                stream: stream.into(),
+                harness: session.harness.clone(),
                 session: session.id.clone(),
-                name: entry.name.clone(),
-            };
-            ArtifactSummary {
-                reference: key.reference(),
-                key,
-                description: entry.description.clone(),
-            }
+                name: name.clone(),
+            },
+            name: name.clone(),
+            description: entry.description.clone(),
         })
         .collect()
 }
 
 pub fn entry<'a>(session: &'a Session, key: &ArtifactKey) -> Option<&'a ArtifactEntry> {
-    session
-        .artifacts
-        .get(&key.stream)?
-        .iter()
-        .find(|entry| entry.name == key.name)
+    if session.host_id != key.host || session.harness != key.harness || session.id != key.session {
+        return None;
+    }
+    session.artifacts.get(&key.name)
 }
 
 pub enum ContentChange {
@@ -217,7 +165,6 @@ pub struct ArtifactSave<T> {
 
 pub trait ArtifactReader: RecordReader {
     fn read_content(&self, key: &ArtifactKey) -> Result<Option<String>, StorageError>;
-    fn stream_producers(&self, host: &str, stream: &str) -> Result<Vec<String>, StorageError>;
 }
 
 pub trait ArtifactStore: RecordStore {
@@ -236,7 +183,7 @@ pub trait ArtifactStore: RecordStore {
     ) -> Result<ArtifactSave<T>, E>;
 }
 
-/// Pure metadata change. Moving a Session leaves all producing-Stream groups intact.
+/// Pure metadata change on a Session's `artifacts` map.
 pub fn edit(
     session: &Session,
     key: &ArtifactKey,
@@ -244,36 +191,19 @@ pub fn edit(
     has_content: bool,
 ) -> Result<Session, ValidationError> {
     key.validate()?;
-    if session.host_id != key.host || session.id != key.session {
-        return Err(ValidationError::new(
-            "artifact producer does not match Session",
-        ));
+    if session.host_id != key.host || session.harness != key.harness || session.id != key.session {
+        return Err(ValidationError::new("artifact key does not match Session"));
     }
-    let exists = entry(session, key).is_some();
-    if !exists && description.is_some() && (session.stream_id != key.stream || !has_content) {
-        return Err(ValidationError::new(
-            "new artifacts require content and current Stream membership",
-        ));
+    let exists = session.artifacts.contains_key(&key.name);
+    if !exists && description.is_some() && !has_content {
+        return Err(ValidationError::new("new artifacts require content"));
     }
     let mut after = session.clone();
     if let Some(description) = description {
-        let replacement = ArtifactEntry {
-            name: key.name.clone(),
-            description: description.into(),
-        };
-        replacement.validate()?;
-        let entries = after.artifacts.entry(key.stream.clone()).or_default();
-        if let Some(entry) = entries.iter_mut().find(|entry| entry.name == key.name) {
-            *entry = replacement;
-        } else {
-            entries.push(replacement);
-        }
-        entries.sort_by(|a, b| a.name.cmp(&b.name));
-    } else if let Some(entries) = after.artifacts.get_mut(&key.stream) {
-        entries.retain(|entry| entry.name != key.name);
-        if entries.is_empty() {
-            after.artifacts.remove(&key.stream);
-        }
+        let replacement = ArtifactEntry::new(description)?;
+        after.artifacts.insert(key.name.clone(), replacement);
+    } else {
+        after.artifacts.remove(&key.name);
     }
     after.validate()?;
     Ok(after)

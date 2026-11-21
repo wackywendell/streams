@@ -8,9 +8,8 @@ mod view;
 
 pub use ratatui::{buffer::Buffer, layout::Rect};
 pub use snapshot::{
-    CardRecords, CardSnapshot, CheckoutBinding, CheckoutSelection, DisplayContext,
-    DocumentLocation, DocumentProblem, DocumentTarget, EditorIdentity, NativeOwnerObservation,
-    ResolvedDocument, Scope,
+    CardRecords, CardSnapshot, DisplayContext, DocumentLocation, DocumentTarget, EditorIdentity,
+    LinkTarget, NativeOwnerObservation, ResolvedDocument, Scope,
 };
 pub use view::{
     CapturedAction, CardView, FrameIdentity, Freshness, PaintedFrame, RefreshToken, Target,

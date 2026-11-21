@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use crate::{
     config::{Config, HostIdentity, Settings, Strategy, source_id},
     file_store::records::{FileRecordStore, RecordIoEvent},
-    model::{Record, RecordKind, Session, Stream},
-    runtime::{CheckoutRegistry, DirectoryBindings, conversations::Harness, state::RuntimeState},
+    model::{Record, Stream, Title},
+    runtime::state::RuntimeState,
     storage::records::{RecordAddress, RecordInventory, RecordListing, RecordStore},
     sync::records::RecordSync,
 };
@@ -19,7 +19,6 @@ pub struct OpenedRecords {
     host: HostIdentity,
     source_id: String,
     settings: Settings,
-    checkout_state_dir: PathBuf,
     runtime_state_dir: PathBuf,
 }
 
@@ -34,24 +33,12 @@ impl OpenedRecords {
     pub fn settings(&self) -> &Settings {
         &self.settings
     }
-    /// This host's checkout registry for the configuration this catalog was opened with.
-    pub fn registry(&self) -> Result<CheckoutRegistry> {
-        Ok(CheckoutRegistry::new(
-            &self.checkout_state_dir,
-            self.host.as_str(),
-        )?)
-    }
     /// This host's runtime state directory for this catalog.
     pub fn runtime_state(&self) -> Result<RuntimeState> {
         Ok(RuntimeState::new(
             &self.runtime_state_dir,
             self.host.as_str(),
         )?)
-    }
-    /// This host's directory bindings for this catalog.
-    pub fn locations(&self) -> Result<DirectoryBindings> {
-        let state = self.runtime_state()?;
-        Ok(DirectoryBindings::new(state.root(), self.registry()?))
     }
     pub fn source_id(&self) -> &str {
         &self.source_id
@@ -70,6 +57,14 @@ impl OpenedRecords {
     pub fn host_streams(&self) -> Result<RecordListing> {
         Ok(self.records.host_streams(self.host.as_str())?)
     }
+    /// Inspect a named host's direct Session partition.
+    pub fn sessions_for_host(&self, host: &str) -> Result<RecordListing> {
+        Ok(self.records.host_sessions(host)?)
+    }
+    /// Inspect a named host's direct Stream partition.
+    pub fn streams_for_host(&self, host: &str) -> Result<RecordListing> {
+        Ok(self.records.host_streams(host)?)
+    }
     /// Explicit human discovery/inspection only; ordinary commands use `records()`.
     pub fn inventory(&self) -> Result<Vec<Record>> {
         Ok(self.records.inventory()?)
@@ -79,22 +74,10 @@ impl OpenedRecords {
         Ok(self.records.listing()?)
     }
     /// Discard whichever records of a conversation's card cannot be decoded, so a reset can
-    /// rebuild them. The card is the conversation's Session, found by its native identity, and
-    /// the Stream that Session names. An unreadable Session is removed: the Stream it named is
-    /// unknown, so the conversation enrolls again. An unreadable Stream is replaced by a new
-    /// Stream with the same ID, so every member keeps its membership; it takes the Session's
-    /// title until the reset infers its own.
-    pub fn discard_unreadable_card(
-        &self,
-        harness: Harness,
-        native_id: &str,
-    ) -> Result<DiscardedCard> {
+    /// rebuild them.
+    pub fn discard_unreadable_card(&self, harness: &str, id: &str) -> Result<DiscardedCard> {
         let host = self.host.as_str();
-        let session_address = RecordAddress::new(
-            host,
-            RecordKind::Session,
-            Session::id_for(host, harness.as_ref(), native_id),
-        )?;
+        let session_address = RecordAddress::session(host, harness, id)?;
         if let Some(session) = self.records.discard_unreadable(&session_address, None)? {
             return Ok(DiscardedCard {
                 session: Some(session),
@@ -107,8 +90,13 @@ impl OpenedRecords {
         let Some(Record::Session(session)) = session else {
             return Ok(DiscardedCard::default());
         };
-        let stream_address = RecordAddress::new(host, RecordKind::Stream, &session.stream_id)?;
-        let fresh = Stream::new(&session.stream_id, &session.title, None, host)?;
+        let stream_address = RecordAddress::stream(host, &session.stream_id)?;
+        let fresh = Stream::new(
+            host,
+            &session.stream_id,
+            Title::new(&session.title.text, false),
+            None,
+        )?;
         Ok(DiscardedCard {
             session: None,
             stream: self
@@ -146,14 +134,12 @@ pub fn initialize_records(
     )?;
     let source_id =
         records.with_reader(|_| -> Result<String> { Ok(source_id(records.root(), &host)?) })?;
-    let checkout_state_dir = config.checkout_state_dir();
     let runtime_state_dir = config.runtime_state_dir_for(records.root())?;
     Ok(OpenedRecords {
         records,
         host,
         source_id,
         settings,
-        checkout_state_dir,
         runtime_state_dir,
     })
 }
@@ -182,17 +168,14 @@ fn open(
     if let Some(observe) = observe {
         records = records.with_io_observer(observe);
     }
-    // Check source identity under the same shared lock as the completed-format gate.
     let source_id =
         records.with_reader(|_| -> Result<String> { Ok(source_id(records.root(), &host)?) })?;
-    let checkout_state_dir = config.checkout_state_dir();
     let runtime_state_dir = config.runtime_state_dir_for(records.root())?;
     Ok(OpenedRecords {
         records,
         host,
         source_id,
         settings,
-        checkout_state_dir,
         runtime_state_dir,
     })
 }

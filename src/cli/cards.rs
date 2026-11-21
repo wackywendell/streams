@@ -10,12 +10,12 @@ use super::{
 };
 use std::sync::{Arc, atomic::AtomicBool};
 use streams::{
-    agent::RecordContext,
     config::CardMode,
     frontend::{
         FrontendId,
         herdr::{HerdrClient, HerdrNativeSnapshot},
     },
+    model::{Session, Stream},
     process::{NativeProcessRunner, ProcessRequest, ProcessRunner},
     runtime::{
         card_settings::ConversationId,
@@ -75,9 +75,9 @@ impl App {
 
     pub(super) fn card(&self, command: CardCommand) -> Result<Output> {
         match command {
-            CardCommand::Watch { .. } => Err(CliError::UnsupportedCommand(
-                "nested card watch is not supported".into(),
-            )),
+            CardCommand::Watch { .. } => {
+                Err(CliError::message("nested card watch is not supported"))
+            }
             CardCommand::Mode { session, mode } => {
                 let conversation = ConversationId::parse_pair(&session)?;
                 match mode {
@@ -211,7 +211,7 @@ pub(super) fn build(
     config: NativeCardsConfig,
     cancel: Arc<AtomicBool>,
     records: Option<Arc<application::OpenedRecords>>,
-    context: Option<RecordContext>,
+    preloaded: Option<(Stream, Session)>,
 ) -> Result<NativeCardEngine> {
     let launched = LaunchedCardContext::from_environment(&app.environment)?;
     let mut read_environment = app.environment.clone();
@@ -294,7 +294,7 @@ pub(super) fn build(
         records,
         session_id.into(),
         launched.as_ref().map(|context| context.scope.clone()),
-        context,
+        preloaded,
     );
     let directory = options
         .state_dir
@@ -357,21 +357,15 @@ fn activate(
     match target {
         ViewTarget::Document(document) => engine.open_document(document).map_err(|e| e.to_string()),
         ViewTarget::Artifact(artifact) => engine.open_artifact(artifact).map_err(|e| e.to_string()),
-        ViewTarget::Link(reference) => {
+        ViewTarget::Link(link) => {
             engine
                 .client()
                 .check_subscription()
                 .map_err(|error| error.to_string())?;
-            if !snapshot.contains_link(reference) || !fresh.contains_link(reference) {
+            if !snapshot.contains_link(link) || !fresh.contains_link(link) {
                 return Err("unsafe browser URL".into());
             }
-            let raw = match &reference.target {
-                streams::model::ReferenceTarget::Pr { url }
-                | streams::model::ReferenceTarget::Issue { url }
-                | streams::model::ReferenceTarget::Link { url } => url,
-                _ => return Err("browser action requires a URL reference".into()),
-            };
-            let url = streams::model::reference_url(raw).ok_or("unsafe browser URL")?;
+            let url = streams::model::reference_url(&link.url).ok_or("unsafe browser URL")?;
             let env = environment
                 .iter()
                 .filter(|(key, _)| {

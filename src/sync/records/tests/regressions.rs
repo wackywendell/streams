@@ -78,7 +78,7 @@ fn pull_only_and_noop_sync_never_push_and_noop_does_not_fetch() {
     );
     // Subsequent foreign changes are still fetched and installed without publication.
     let mut changed = stream(&b_records, "b-host");
-    changed.goal = Some("new remote work".into());
+    changed.goal = Some(Goal::new("new remote work", None, false));
     put(&b_records, Record::Stream(changed));
     assert_eq!(b_sync.sync().sharing, SharingStatus::Confirmed);
     assert_eq!(a_sync.sync().sharing, SharingStatus::Confirmed);
@@ -114,7 +114,7 @@ fn git_ignore_rules_cannot_hide_records_or_unexpected_physical_entries() {
         .unwrap();
     put(
         &records,
-        Record::Stream(Stream::new("added", "Added", None, "host").unwrap()),
+        Record::Stream(Stream::new("host", "added", Title::new("Added", false), None).unwrap()),
     );
     assert_eq!(sync.sync().sharing, SharingStatus::LocalOnly);
     assert!(
@@ -155,17 +155,12 @@ fn remote_deletion_combines_with_an_independent_local_change() {
     assert_eq!(b_sync.sync().sharing, SharingStatus::Confirmed);
     assert_eq!(a_sync.sync().sharing, SharingStatus::Confirmed);
     let relative = crate::file_store::records::relative_record_path(
-        &RecordAddress::new(
-            "b-host",
-            RecordKind::Session,
-            Session::id_for("b-host", "pi", "native"),
-        )
-        .unwrap(),
+        &RecordAddress::session("b-host", "pi", "native").unwrap(),
     )
     .unwrap();
     fs::remove_file(b.join(&relative)).unwrap();
     let mut own = stream(&a_records, "a-host");
-    own.goal = Some("independent local edit".into());
+    own.goal = Some(Goal::new("independent local edit", None, false));
     put(&a_records, Record::Stream(own));
     assert_eq!(b_sync.sync().sharing, SharingStatus::Confirmed);
     let result = a_sync.sync();
@@ -177,7 +172,10 @@ fn remote_deletion_combines_with_an_independent_local_change() {
     );
     assert!(!a.join(&relative).exists());
     assert_eq!(
-        stream(&a_records, "a-host").goal.as_deref(),
+        stream(&a_records, "a-host")
+            .goal
+            .as_ref()
+            .map(|g| g.text.as_str()),
         Some("independent local edit")
     );
     assert!(
@@ -205,12 +203,7 @@ fn incoming_broken_membership_is_rejected_before_install_or_ref_advance() {
     assert_eq!(b_sync.sync().sharing, SharingStatus::Confirmed);
     assert_eq!(a_sync.sync().sharing, SharingStatus::Confirmed);
     let relative = crate::file_store::records::relative_record_path(
-        &RecordAddress::new(
-            "b-host",
-            RecordKind::Session,
-            Session::id_for("b-host", "pi", "native"),
-        )
-        .unwrap(),
+        &RecordAddress::session("b-host", "pi", "native").unwrap(),
     )
     .unwrap();
     let original = fs::read(a.join(&relative)).unwrap();

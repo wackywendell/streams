@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     application::artifacts::{
-        WriteArtifact, delete_artifact, list_stream_artifacts, read_artifact, write_artifact,
+        WriteArtifact, delete_artifact, list_session_artifacts, read_artifact, write_artifact,
     },
     artifacts::ArtifactKey,
 };
@@ -17,19 +17,18 @@ fn artifact_content_and_session_metadata_sync_to_a_read_only_foreign_replica() {
     let b_records = setup(&b, "b-host");
     let a_sync = transport(&a, "a-host", Some(&remote));
     let b_sync = transport(&b, "b-host", Some(&remote));
-    let session_id = Session::id_for("a-host", "pi", "native");
     let key = ArtifactKey {
         host: "a-host".into(),
-        stream: "work".into(),
-        session: session_id.clone(),
+        harness: "pi".into(),
+        session: "native".into(),
         name: "assessment.md".into(),
     };
     write_artifact(
         &a_records,
         "a-host",
         &WriteArtifact {
-            session_id,
-            stream_id: None,
+            harness: "pi".into(),
+            session_id: "native".into(),
             name: key.name.clone(),
             description: "Findings".into(),
             content: Some("useful output\n".into()),
@@ -43,7 +42,7 @@ fn artifact_content_and_session_metadata_sync_to_a_read_only_foreign_replica() {
         "useful output\n"
     );
     assert_eq!(
-        list_stream_artifacts(&b_records, "a-host", "work")
+        list_session_artifacts(&b_records, "a-host", "pi", "native")
             .unwrap()
             .len(),
         1

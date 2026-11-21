@@ -10,13 +10,10 @@ use streams::{
     cancellation::Cancellation,
     file_store::records::{decode_record, relative_record_path},
     frontend::herdr::{HerdrClient, HerdrNativeSnapshot, events::EventPane},
-    model::{Record, RecordKind, Session},
-    runtime::{
-        locations::BindingKey,
-        native_cards::{
-            CardPlacement, DisplayLifetime, LaunchedCardContext, NativeCardsConfig,
-            SOURCE_ENV_KEYS, publish_card_marker,
-        },
+    model::{Record, Session},
+    runtime::native_cards::{
+        CardPlacement, DisplayLifetime, LaunchedCardContext, NativeCardsConfig, SOURCE_ENV_KEYS,
+        publish_card_marker,
     },
     storage::records::{RecordAddress, RecordStore},
     tui::{
@@ -33,54 +30,37 @@ struct Inputs {
     scope: Scope,
     session: RecordAddress,
     session_path: PathBuf,
-    registry: PathBuf,
-    directories: [PathBuf; 2],
 }
 impl Inputs {
     fn new(records: &application::OpenedRecords, scope: &Scope) -> Result<Self> {
         if scope.catalog_source != records.source_id()
             || scope.host_id != records.host().as_str()
             || scope.harness != "pi"
-            || scope.session_id
-                != streams::model::Session::id_for(&scope.host_id, "pi", &scope.native_session_id)
+            || scope.session_id != scope.native_session_id
         {
             return Err("watched scope does not match its admitted catalog conversation".into());
         }
         let root = std::fs::canonicalize(records.root()).map_err(|e| e.to_string())?;
-        let session = RecordAddress::new(&scope.host_id, RecordKind::Session, &scope.session_id)
+        let session = RecordAddress::session(&scope.host_id, "pi", &scope.session_id)
             .map_err(|e| e.to_string())?;
         let session_path = root.join(relative_record_path(&session).map_err(|e| e.to_string())?);
-        let registry = records.registry().map_err(|e| e.to_string())?;
-        let bindings = records.locations().map_err(|e| e.to_string())?;
-        let physical =
-            |path: PathBuf| streams::config::resolve_path(&path).map_err(|e| e.to_string());
-        let directories = [
-            physical(bindings.path(BindingKey::Session(&scope.session_id)))?,
-            physical(bindings.path(BindingKey::Stream(&scope.stream_id)))?,
-        ];
         Ok(Self {
             root,
             scope: scope.clone(),
             session,
             session_path,
-            registry: physical(registry.path().to_path_buf())?,
-            directories,
         })
     }
     fn paths(&self, stream: &str) -> Result<BTreeSet<PathBuf>> {
-        let address = RecordAddress::new(&self.scope.host_id, RecordKind::Stream, stream)
-            .map_err(|e| e.to_string())?;
-        Ok(self
-            .directories
-            .iter()
-            .cloned()
-            .chain([
-                self.session_path.clone(),
-                self.root
-                    .join(relative_record_path(&address).map_err(|e| e.to_string())?),
-                self.registry.clone(),
-            ])
-            .collect())
+        let address =
+            RecordAddress::stream(&self.scope.host_id, stream).map_err(|e| e.to_string())?;
+        Ok([
+            self.session_path.clone(),
+            self.root
+                .join(relative_record_path(&address).map_err(|e| e.to_string())?),
+        ]
+        .into_iter()
+        .collect())
     }
     fn session(&self, files: &Files) -> Result<Session> {
         let bytes = files
@@ -93,7 +73,7 @@ impl Inputs {
         };
         if session.host_id != self.scope.host_id
             || session.harness != self.scope.harness
-            || session.harness_session_id != self.scope.native_session_id
+            || session.id != self.scope.native_session_id
         {
             return Err("watched Session belongs to another conversation".into());
         }
@@ -105,9 +85,8 @@ impl Inputs {
         session: Session,
         owner: streams::tui::NativeOwnerObservation,
     ) -> Result<CardRecords> {
-        let address =
-            RecordAddress::new(&self.scope.host_id, RecordKind::Stream, &session.stream_id)
-                .map_err(|error| error.to_string())?;
+        let address = RecordAddress::stream(&self.scope.host_id, &session.stream_id)
+            .map_err(|error| error.to_string())?;
         let path = self
             .root
             .join(relative_record_path(&address).map_err(|error| error.to_string())?);
@@ -398,7 +377,6 @@ impl PaneHost for Host {
             client: self.client.as_ref().unwrap().clone(),
             snapshot: self.snapshot.clone(),
             owner: Some(self.lifetime.context().owner.clone()),
-            workspace_stream: None,
         });
         let mut engine = build(
             app,

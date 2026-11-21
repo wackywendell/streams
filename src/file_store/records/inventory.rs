@@ -5,7 +5,7 @@ use super::{
 };
 use crate::{
     file_io::ensure_directory,
-    model::{Record, RecordKind},
+    model::{Record, check_token},
     storage::{
         StorageError,
         records::{RecordAddress, RecordInventory, RecordListing, UnreadableRecord},
@@ -20,21 +20,19 @@ use std::{
 /// Reject non-canonical spellings instead of creating aliases for physical record identities.
 pub fn address_from_relative_path(path: &Path) -> Result<RecordAddress, StorageError> {
     let parts = components(path)?;
-    let (host, kind, id) = match parts.as_slice() {
-        ["hosts", host, "host.json"] => {
-            let host = component(host)?;
-            (host.clone(), RecordKind::Host, host)
-        }
+    let address = match parts.as_slice() {
+        ["hosts", host, "host.json"] => RecordAddress::host_record(*host)?,
         ["hosts", host, "streams", file] => {
-            (component(host)?, RecordKind::Stream, filename(path, file)?)
+            RecordAddress::stream(*host, stream_filename(path, file)?)?
         }
-        ["hosts", host, "conversations", file] => {
-            (component(host)?, RecordKind::Session, filename(path, file)?)
+        ["hosts", host, "sessions", harness, id, "session.json"] => {
+            RecordAddress::session(*host, *harness, *id)?
         }
-        ["hosts", _, "host.yaml"] => return Err(old_format(path)),
+        ["hosts", _, "host.yaml"] | ["hosts", _, "conversations", _] => {
+            return Err(old_format(path));
+        }
         _ => return Err(StorageError::new("unexpected catalog record path")),
     };
-    let address = RecordAddress::new(host, kind, id)?;
     if relative_record_path(&address)?.as_os_str() != path.as_os_str() {
         return Err(StorageError::new("non-canonical catalog record path"));
     }
@@ -53,16 +51,12 @@ pub(super) fn components(path: &Path) -> Result<Vec<&str>, StorageError> {
         })
         .collect()
 }
-pub(super) fn component(value: &str) -> Result<String, StorageError> {
-    let decoded = percent_encoding::percent_decode_str(value)
-        .decode_utf8()
-        .map_err(invalid)?
-        .into_owned();
-    if super::super::encode_component(&decoded) != value {
-        return Err(StorageError::new("non-canonical record identity encoding"));
-    }
-    Ok(decoded)
+
+pub(super) fn token_component(value: &str, name: &str) -> Result<String, StorageError> {
+    check_token(value, name).map_err(invalid)?;
+    Ok(value.to_owned())
 }
+
 /// Validate either portable file kind without making artifacts work-card records.
 pub fn catalog_path_host(path: &Path) -> Result<String, StorageError> {
     if let Ok(key) = super::artifacts::artifact_key_from_path(path) {
@@ -72,15 +66,15 @@ pub fn catalog_path_host(path: &Path) -> Result<String, StorageError> {
     }
 }
 
-fn filename(path: &Path, value: &str) -> Result<String, StorageError> {
+fn stream_filename(path: &Path, value: &str) -> Result<String, StorageError> {
     match value.strip_suffix(".json") {
-        Some(id) => component(id),
+        Some(id) => token_component(id, "stream ID"),
         None if value.ends_with(".yaml") => Err(old_format(path)),
         None => Err(StorageError::new("record filename must end in .json")),
     }
 }
 
-/// Records from before the current format were YAML-named envelopes.
+/// Records from before format 5 used `conversations/` or YAML-named envelopes.
 fn old_format(path: &Path) -> StorageError {
     StorageError::new(format!(
         "record {} is from an older catalog format; {RESET_HINT}",
@@ -91,8 +85,7 @@ fn old_format(path: &Path) -> StorageError {
 fn relationships(records: &BTreeMap<RecordAddress, Record>) -> Result<(), StorageError> {
     for record in records.values() {
         if let Record::Session(session) = record {
-            let stream =
-                RecordAddress::new(&session.host_id, RecordKind::Stream, &session.stream_id)?;
+            let stream = RecordAddress::stream(&session.host_id, &session.stream_id)?;
             if !records.contains_key(&stream) {
                 return Err(StorageError::new("Session's same-host Stream is missing"));
             }
@@ -118,16 +111,10 @@ pub fn decode_record_tree(files: &BTreeMap<PathBuf, Vec<u8>>) -> Result<Vec<Reco
         let Record::Session(session) = record else {
             continue;
         };
-        for stream in session.artifacts.keys() {
-            let stream_key = RecordAddress::new(&session.host_id, RecordKind::Stream, stream)?;
-            if !records.contains_key(&stream_key) {
-                return Err(StorageError::new("artifact's producing Stream is missing"));
-            }
-            for summary in crate::artifacts::summaries(session, stream) {
-                let path = super::artifacts::relative_artifact_path(&summary.key)?;
-                if !files.contains_key(&path) {
-                    return Err(StorageError::new("attached artifact content is missing"));
-                }
+        for summary in crate::artifacts::summaries(session) {
+            let path = super::artifacts::relative_artifact_path(&summary.key)?;
+            if !files.contains_key(&path) {
+                return Err(StorageError::new("attached artifact content is missing"));
             }
         }
     }
@@ -173,21 +160,19 @@ impl FileRecordStore {
             if entry.file_type().map_err(invalid)?.is_dir() {
                 let parts = components(relative)?;
                 match parts.as_slice() {
-                    ["hosts", host] => {
-                        component(host)?;
+                    ["hosts", host] | ["hosts", host, "streams" | "sessions"] => {
+                        token_component(host, "host")?;
                     }
-                    ["hosts", host, "streams" | "conversations"] => {
-                        component(host)?;
+                    ["hosts", _, "conversations"] => return Err(old_format(relative)),
+                    ["hosts", host, "sessions", harness] => {
+                        token_component(host, "host")?;
+                        token_component(harness, "harness")?;
                     }
-                    ["hosts", host, "streams", stream]
-                    | ["hosts", host, "streams", stream, "artifacts"] => {
-                        component(host)?;
-                        component(stream)?;
-                    }
-                    ["hosts", host, "streams", stream, "artifacts", session] => {
-                        component(host)?;
-                        component(stream)?;
-                        component(session)?;
+                    ["hosts", host, "sessions", harness, id]
+                    | ["hosts", host, "sessions", harness, id, "artifacts"] => {
+                        token_component(host, "host")?;
+                        token_component(harness, "harness")?;
+                        token_component(id, "Session ID")?;
                     }
                     _ => return Err(StorageError::new("unexpected catalog directory")),
                 }
@@ -204,43 +189,62 @@ impl FileRecordStore {
 
 impl RecordInventory for FileRecordStore {
     fn host_sessions(&self, host: &str) -> Result<RecordListing, StorageError> {
-        self.host_partition(host, RecordKind::Session, "Session")
-    }
-
-    fn host_streams(&self, host: &str) -> Result<RecordListing, StorageError> {
-        self.host_partition(host, RecordKind::Stream, "Stream")
-    }
-
-    fn inventory(&self) -> Result<Vec<Record>, StorageError> {
         let _scope = self.scope(false)?;
-        decode_record_tree(&self.read_locked_tree()?)
-    }
-
-    fn listing(&self) -> Result<RecordListing, StorageError> {
-        let _scope = self.scope(false)?;
+        check_token(host, "record host").map_err(invalid)?;
+        let relative = PathBuf::from("hosts").join(host).join("sessions");
+        super::check_parents(&self.root, &relative.join("entry"))?;
+        let sessions_dir = self.root.join(&relative);
+        ensure_directory(&sessions_dir, false)?;
+        self.observe(RecordIoEvent::List(sessions_dir.clone()));
+        let harnesses = match fs::read_dir(&sessions_dir) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(RecordListing::default());
+            }
+            Err(error) => return Err(invalid(error)),
+        };
         let mut listing = RecordListing::default();
-        for (path, bytes) in self.read_locked(false)? {
-            let address = address_from_relative_path(&path)?;
-            list(&mut listing, decode_record(&address, &bytes));
+        for harness_entry in harnesses {
+            let harness_entry = harness_entry.map_err(invalid)?;
+            if !harness_entry.file_type().map_err(invalid)?.is_dir() {
+                return Err(invalid("Session harness entry must be a directory"));
+            }
+            let harness_name = harness_entry
+                .file_name()
+                .into_string()
+                .map_err(|_| invalid("record path must be UTF-8"))?;
+            token_component(&harness_name, "harness")?;
+            let harness_dir = harness_entry.path();
+            self.observe(RecordIoEvent::List(harness_dir.clone()));
+            for session_entry in fs::read_dir(&harness_dir).map_err(invalid)? {
+                let session_entry = session_entry.map_err(invalid)?;
+                if !session_entry.file_type().map_err(invalid)?.is_dir() {
+                    return Err(invalid("Session directory entry must be a directory"));
+                }
+                let id_name = session_entry
+                    .file_name()
+                    .into_string()
+                    .map_err(|_| invalid("record path must be UTF-8"))?;
+                token_component(&id_name, "Session ID")?;
+                let record_relative = relative
+                    .join(&harness_name)
+                    .join(&id_name)
+                    .join("session.json");
+                let address = RecordAddress::session(host, &harness_name, &id_name)?;
+                if let Some(bytes) = self.read_named(&record_relative)? {
+                    list(&mut listing, decode_record(&address, &bytes));
+                }
+            }
         }
         Ok(sorted(listing))
     }
-}
 
-impl FileRecordStore {
-    fn host_partition(
-        &self,
-        host: &str,
-        kind: RecordKind,
-        label: &str,
-    ) -> Result<RecordListing, StorageError> {
+    fn host_streams(&self, host: &str) -> Result<RecordListing, StorageError> {
         let _scope = self.scope(false)?;
-        let sample = RecordAddress::new(host, kind, "entry")?;
-        let relative = relative_record_path(&sample)?;
-        super::check_parents(&self.root, &relative)?;
-        let directory = self
-            .root
-            .join(relative.parent().expect("partition directory"));
+        check_token(host, "record host").map_err(invalid)?;
+        let relative = PathBuf::from("hosts").join(host).join("streams");
+        super::check_parents(&self.root, &relative.join("entry"))?;
+        let directory = self.root.join(&relative);
         ensure_directory(&directory, false)?;
         self.observe(RecordIoEvent::List(directory.clone()));
         let entries = match fs::read_dir(&directory) {
@@ -253,19 +257,8 @@ impl FileRecordStore {
         let mut listing = RecordListing::default();
         for entry in entries {
             let entry = entry.map_err(invalid)?;
-            let file_type = entry.file_type().map_err(invalid)?;
-            if kind == RecordKind::Stream && file_type.is_dir() {
-                let name = entry
-                    .file_name()
-                    .into_string()
-                    .map_err(|_| invalid("record path must be UTF-8"))?;
-                component(&name)?;
-                continue;
-            }
-            if !file_type.is_file() {
-                return Err(invalid(format!(
-                    "{label} inventory entry must be a regular record"
-                )));
+            if !entry.file_type().map_err(invalid)?.is_file() {
+                return Err(invalid("Stream inventory entry must be a regular record"));
             }
             let path = entry.path();
             let relative = path
@@ -274,7 +267,22 @@ impl FileRecordStore {
             let address = address_from_relative_path(relative)?;
             let bytes = self
                 .read_named(relative)?
-                .ok_or_else(|| invalid(format!("{label} disappeared during inspection")))?;
+                .ok_or_else(|| invalid("Stream disappeared during inspection"))?;
+            list(&mut listing, decode_record(&address, &bytes));
+        }
+        Ok(sorted(listing))
+    }
+
+    fn inventory(&self) -> Result<Vec<Record>, StorageError> {
+        let _scope = self.scope(false)?;
+        decode_record_tree(&self.read_locked_tree()?)
+    }
+
+    fn listing(&self) -> Result<RecordListing, StorageError> {
+        let _scope = self.scope(false)?;
+        let mut listing = RecordListing::default();
+        for (path, bytes) in self.read_locked(false)? {
+            let address = address_from_relative_path(&path)?;
             list(&mut listing, decode_record(&address, &bytes));
         }
         Ok(sorted(listing))

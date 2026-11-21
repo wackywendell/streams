@@ -14,8 +14,8 @@ use std::{
     time::{Duration, Instant},
 };
 use streams::tui::{
-    CardSnapshot, CheckoutBinding, CheckoutSelection, DisplayContext, DocumentLocation,
-    NativeOwnerObservation, ResolvedDocument, Target,
+    CardSnapshot, DisplayContext, DocumentLocation, NativeOwnerObservation, ResolvedDocument,
+    Target,
     application::{self, PaneHost},
 };
 
@@ -23,12 +23,11 @@ fn snapshot(read: usize) -> CardSnapshot {
     let fixtures: serde_json::Value =
         serde_json::from_str(include_str!("../src/tui/fixtures/active-renderer.json")).unwrap();
     let source = &fixtures[0]["snapshot"];
-    let selection = CheckoutSelection {
-        checkout_id: "lib".into(),
-        root: "/code/library".into(),
-    };
     let mut session = source["session"].clone();
-    session["recap"] = format!("Contribution [read {read}]").into();
+    session["recap"] = serde_json::json!({
+        "text": format!("Contribution [read {read}]"),
+        "short": null
+    });
     CardSnapshot::new(
         serde_json::from_value(source["stream"].clone()).unwrap(),
         serde_json::from_value(session).unwrap(),
@@ -39,15 +38,10 @@ fn snapshot(read: usize) -> CardSnapshot {
                 tab_id: "w:t1".into(),
                 workspace_id: "w".into(),
             },
-            checkouts: vec![CheckoutBinding {
-                repository_url: "https://example.com/lib".into(),
-                selection: selection.clone(),
-            }],
             documents: vec![DocumentLocation {
-                repository_url: "https://example.com/lib".into(),
                 path: "docs/design.md".into(),
                 location: ResolvedDocument::File {
-                    selection,
+                    root: "/code/library".into(),
                     file: "/code/library/docs/design.md".into(),
                 },
             }],
@@ -119,9 +113,7 @@ impl PaneHost for Host {
             Target::Document(document) => {
                 assert_eq!(
                     **document,
-                    self.snapshot
-                        .document_target("https://example.com/lib", "docs/design.md")
-                        .unwrap()
+                    self.snapshot.document_target("docs/design.md").unwrap()
                 );
                 self.event("document:lib:docs/design.md");
             }

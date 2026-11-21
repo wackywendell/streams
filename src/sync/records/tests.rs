@@ -4,7 +4,7 @@ mod regressions;
 
 use super::*;
 use crate::{
-    model::{Record, RecordKind, Session, Stream},
+    model::{Goal, Record, Session, Stream, Title},
     storage::records::{RecordAddress, RecordChange, RecordStore},
 };
 use serde_json::json;
@@ -24,20 +24,12 @@ fn setup(path: &Path, host: &str) -> FileRecordStore {
     store.initialize().unwrap();
     put(
         &store,
-        Record::Stream(Stream::new("work", "Work", None, host).unwrap()),
+        Record::Stream(Stream::new(host, "work", Title::new("Work", false), None).unwrap()),
     );
     put(
         &store,
         Record::Session(
-            Session::new(
-                Session::id_for(host, "pi", "native"),
-                host,
-                "work",
-                "pi",
-                "native",
-                "Work",
-            )
-            .unwrap(),
+            Session::new(host, "pi", "native", "work", Title::new("Work", false)).unwrap(),
         ),
     );
     store
@@ -59,7 +51,7 @@ fn bare(path: &Path) {
         .unwrap();
 }
 fn stream(store: &FileRecordStore, host: &str) -> Stream {
-    let address = RecordAddress::new(host, RecordKind::Stream, "work").unwrap();
+    let address = RecordAddress::stream(host, "work").unwrap();
     let read = store
         .with_reader::<_, StorageError>(|reader| reader.read(&address))
         .unwrap()
@@ -104,7 +96,7 @@ fn git_checkpoints_changed_records_but_never_opens_legacy_operation_history() {
     )
     .unwrap();
     let mut changed = stream(&records, "host");
-    changed.goal = Some("checkpointed".into());
+    changed.goal = Some(Goal::new("checkpointed", None, false));
     put(&records, Record::Stream(changed));
     let result = sync.sync();
     assert_eq!(result.sharing, SharingStatus::LocalOnly);
@@ -137,8 +129,8 @@ fn fresh_producer_baselines_join_disjoint_files_and_repopulate_foreign_replicas(
     assert_eq!(a_sync.sync().sharing, SharingStatus::Confirmed);
     assert_eq!(a_records.inventory().unwrap().len(), 4);
     assert_eq!(b_records.inventory().unwrap().len(), 4);
-    assert_eq!(stream(&a_records, "b-host").owner_host_id, "b-host");
-    assert_eq!(stream(&b_records, "a-host").owner_host_id, "a-host");
+    assert_eq!(stream(&a_records, "b-host").host_id, "b-host");
+    assert_eq!(stream(&b_records, "a-host").host_id, "a-host");
     assert_eq!(
         a_sync.git.files(&a_sync.git.head().unwrap()).unwrap(),
         b_sync.git.files(&b_sync.git.head().unwrap()).unwrap()
@@ -162,22 +154,25 @@ fn foreign_working_tree_edits_are_not_published_or_repaired() {
     let head = a_sync.git.head().unwrap();
     let path = a.join(
         crate::file_store::records::relative_record_path(
-            &RecordAddress::new("b-host", RecordKind::Stream, "work").unwrap(),
+            &RecordAddress::stream("b-host", "work").unwrap(),
         )
         .unwrap(),
     );
     let mut record: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    record["goal"] = json!("foreign edit");
+    record["goal"] = json!({"text": "foreign edit", "short": null, "manual": false});
     fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
     let result = a_sync.sync();
     assert_eq!(result.sharing, SharingStatus::Blocked);
     assert!(result.detail.contains("another producer"));
     assert_eq!(a_sync.git.head().unwrap(), head);
     let mut own = stream(&a_records, "a-host");
-    own.goal = Some("local remains writable".into());
+    own.goal = Some(Goal::new("local remains writable", None, false));
     put(&a_records, Record::Stream(own));
     assert_eq!(
-        stream(&a_records, "a-host").goal.as_deref(),
+        stream(&a_records, "a-host")
+            .goal
+            .as_ref()
+            .map(|g| g.text.as_str()),
         Some("local remains writable")
     );
     assert_eq!(
@@ -233,16 +228,16 @@ fn same_record_divergence_refuses_even_when_text_fields_do_not_overlap() {
     }
     let b_records = FileRecordStore::new(&b, "owner").unwrap();
     let mut left = stream(&a_records, "owner");
-    left.goal = Some("left".into());
+    left.goal = Some(Goal::new("left", None, false));
     put(&a_records, Record::Stream(left));
     let mut right = stream(&b_records, "owner");
-    right.title = "right".into();
+    right.title = Title::new("right", false);
     put(&b_records, Record::Stream(right));
     assert_eq!(a_sync.sync().sharing, SharingStatus::Confirmed);
     let result = b_sync.sync();
     assert_eq!(result.sharing, SharingStatus::Blocked);
     assert!(result.detail.contains("same record file"));
-    assert_eq!(stream(&b_records, "owner").title, "right");
+    assert_eq!(stream(&b_records, "owner").title.text, "right");
     assert!(stream(&b_records, "owner").goal.is_none());
     assert!(!b.join(".git/MERGE_HEAD").exists());
 }

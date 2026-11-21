@@ -1,494 +1,512 @@
-//! Pure captured edits. Conversation work and effort prose have different input guards.
+//! Pure record-local edit rules for format-5 Streams and Sessions.
+//!
+//! One request is `{"changes": {...}, "before": {...}?}`.
+//! - Without `before`, every value in `changes` must be complete and overwrites the field.
+//! - With `before`, keys must match `changes` (at top level and inside `references`), each
+//!   value merges onto `before` via modified RFC 7386 (explicit `null` sets the member to
+//!   `null`, absent keeps `before`), and each unit writes only when the saved value equals
+//!   `before`.
+//! - `not_written` lists every requested unit whose saved value after apply differs from the
+//!   requested merged value, with its current saved value (`null` for an absent reference).
 
-use serde::Serialize;
+use std::collections::BTreeSet;
 
-use super::patches::{Access, Channel, Patch, PatchField, SessionPatch, StreamPatch};
-use super::{Actor, Reconciliation};
-use crate::model::{NamingMode, Session, Stream, TitleMode, ValidationError};
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
-/// What a captured automatic report observes about its target when it is applied.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ReportAdmission {
-    pub in_captured_stream: bool,
-    pub membership_unchanged: bool,
-    pub session_inputs_clean: bool,
-    pub stream_inputs_clean: bool,
-    pub session_protected: bool,
-    pub stream_protected: bool,
+use crate::codec::{object, require_object};
+use crate::model::{
+    Goal, ReferenceEntry, Session, SessionDirectory, Status, Stream, TextPair, Title,
+    ValidationError, check_token,
+};
+
+pub const STREAM_EDITABLE_FIELDS: &[&str] = &["title", "goal"];
+pub const SESSION_EDITABLE_FIELDS: &[&str] = &[
+    "title",
+    "stream_id",
+    "status",
+    "recap",
+    "state",
+    "remaining",
+    "directory",
+    "references",
+];
+
+/// Parsed edit envelope (`changes` plus optional `before`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EditRequest {
+    pub changes: Map<String, Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<Map<String, Value>>,
 }
 
-impl Default for ReportAdmission {
-    fn default() -> Self {
-        Self {
-            in_captured_stream: true,
-            membership_unchanged: true,
-            session_inputs_clean: true,
-            stream_inputs_clean: true,
-            session_protected: false,
-            stream_protected: false,
-        }
-    }
-}
-
-impl ReportAdmission {
-    pub fn admits_session(self) -> bool {
-        self.session_inputs_clean && !self.session_protected
-    }
-
-    pub fn admits_stream(self) -> bool {
-        self.membership_unchanged && self.stream_inputs_clean && !self.stream_protected
-    }
-
-    fn admits(self, target: AdmissionTarget) -> bool {
-        match target {
-            AdmissionTarget::Session => self.admits_session(),
-            AdmissionTarget::Stream => self.admits_stream(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AdmissionTarget {
-    Session,
-    Stream,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct SessionEdit {
-    before: Session,
-    after: Session,
-    actor: Actor,
-    title_default: NamingMode,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct StreamEdit {
-    before: Stream,
-    after: Stream,
-    actor: Actor,
-    captured_session: Option<Session>,
-    title_default: NamingMode,
-}
-
-/// Why an automatic report may not replace text: a reason and the conflicting fields.
-type Protection = Option<(&'static str, &'static [&'static str])>;
-
-impl SessionEdit {
-    pub fn new(
-        before: &Session,
-        patch: SessionPatch,
-        actor: Actor,
-        channel: Channel,
-        title_default: NamingMode,
-    ) -> Result<Self, ValidationError> {
-        let patch = admitted(
-            patch,
-            actor,
-            channel,
-            &SessionPatch::protected(before, title_default),
-        )?;
-        if actor == Actor::Automatic && patch.status.is_some_and(|status| !status.reportable()) {
-            return Err(ValidationError::new(
-                "automatic reports cannot set session status to closed",
-            ));
-        }
-        let after = applied(before, &patch.normalized(before, actor))?;
-        Ok(Self {
-            before: before.clone(),
-            after,
-            actor,
-            title_default,
-        })
-    }
-    pub fn before(&self) -> &Session {
-        &self.before
-    }
-
-    /// A valid move does not invalidate conversation-local work or retarget it to another record.
-    pub fn apply(
-        &self,
-        current: &Session,
-        stream: &Stream,
-        title_default: NamingMode,
-    ) -> Reconciliation {
-        if current.id != self.before.id
-            || current.native_identity() != self.before.native_identity()
-            || current.stream_id != stream.id
-            || current.host_id != stream.owner_host_id
-        {
-            return refuse(
-                self.actor,
-                "current conversation/Stream relationship is invalid",
-                &["relationships"],
-                false,
-            );
-        }
-        if let Err(error) = stream.validate() {
-            return refuse(self.actor, &error.to_string(), &["relationships"], false);
-        }
-        let changed = SessionPatch::between(&self.before, &self.after);
-        if self.actor == Actor::Automatic {
-            let (admission, protection) =
-                self.admission_and_protection(current, &changed, title_default);
-            apply_automatic(
-                current,
-                &changed,
-                AdmissionTarget::Session,
-                admission,
-                protection,
-            )
-        } else {
-            apply_user_fields(&self.before, current, &changed)
-        }
-    }
-
-    pub fn admission_context(
-        &self,
-        current: &Session,
-        current_default: NamingMode,
-    ) -> ReportAdmission {
-        let changed = SessionPatch::between(&self.before, &self.after);
-        self.admission_and_protection(current, &changed, current_default)
-            .0
-    }
-
-    fn admission_and_protection(
-        &self,
-        current: &Session,
-        changed: &SessionPatch,
-        current_default: NamingMode,
-    ) -> (ReportAdmission, Protection) {
-        let protection = changed.title.as_ref().and_then(|_| {
-            title_protection(
-                self.before.title_mode,
-                current.title_mode,
-                self.title_default,
-                current_default,
-            )
-        });
-        let admission = ReportAdmission {
-            in_captured_stream: same_captured_stream(&self.before, Some(current)),
-            membership_unchanged: same_membership_period(&self.before, Some(current)),
-            session_inputs_clean: prose_inputs_clean(&self.before, current, changed),
-            session_protected: protection.is_some(),
-            ..ReportAdmission::default()
-        };
-        (admission, protection)
-    }
-}
-
-impl StreamEdit {
-    pub fn new(
-        before: &Stream,
-        patch: StreamPatch,
-        actor: Actor,
-        channel: Channel,
-        captured_session: Option<Session>,
-        title_default: NamingMode,
-    ) -> Result<Self, ValidationError> {
-        let patch = admitted(
-            patch,
-            actor,
-            channel,
-            &StreamPatch::protected(before, title_default),
-        )?;
-        let after = applied(before, &patch.normalized(before, actor))?;
-        if actor == Actor::User && captured_session.is_some() {
-            return Err(ValidationError::new(
-                "user Stream edits cannot capture a Session dependency",
-            ));
-        }
-        if actor == Actor::Automatic && captured_session.is_none() {
-            return Err(ValidationError::new(
-                "generated Stream edits require their captured conversation",
-            ));
-        }
-        if let Some(session) = &captured_session {
-            session.validate_portable()?;
-            if session.host_id != before.owner_host_id || session.stream_id != before.id {
-                return Err(ValidationError::new(
-                    "captured conversation does not belong to the target Stream",
-                ));
+impl EditRequest {
+    pub fn parse(value: &Value) -> Result<Self, ValidationError> {
+        let root = require_object(value, "edit request")?;
+        for key in root.keys() {
+            if !matches!(key.as_str(), "changes" | "before") {
+                return Err(ValidationError::new(format!(
+                    "unknown edit request field {key:?}; expected only \"changes\" and optional \"before\""
+                )));
             }
         }
-        Ok(Self {
-            before: before.clone(),
-            after,
-            actor,
-            captured_session,
-            title_default,
-        })
-    }
-    pub fn before(&self) -> &Stream {
-        &self.before
-    }
-    /// The Stream this edit makes of its captured record.
-    pub fn after(&self) -> &Stream {
-        &self.after
-    }
-    pub fn captured_session(&self) -> Option<&Session> {
-        self.captured_session.as_ref()
-    }
-
-    /// Compare the captured membership period, including an A → B → A return.
-    pub fn apply(
-        &self,
-        current: &Stream,
-        session: Option<&Session>,
-        title_default: NamingMode,
-    ) -> Reconciliation {
-        if current.id != self.before.id || current.owner_host_id != self.before.owner_host_id {
-            return refuse(
-                self.actor,
-                "target Stream identity changed",
-                &["identity"],
-                false,
-            );
-        }
-        let changed = StreamPatch::between(&self.before, &self.after);
-        if self.actor == Actor::Automatic {
-            let (admission, protection) =
-                self.admission_and_protection(current, session, &changed, title_default);
-            apply_automatic(
-                current,
-                &changed,
-                AdmissionTarget::Stream,
-                admission,
-                protection,
-            )
-        } else {
-            apply_user_fields(&self.before, current, &changed)
-        }
-    }
-
-    pub fn admission_context(
-        &self,
-        current: &Stream,
-        session: Option<&Session>,
-        current_default: NamingMode,
-    ) -> ReportAdmission {
-        let changed = StreamPatch::between(&self.before, &self.after);
-        self.admission_and_protection(current, session, &changed, current_default)
-            .0
-    }
-
-    fn admission_and_protection(
-        &self,
-        current: &Stream,
-        session: Option<&Session>,
-        changed: &StreamPatch,
-        current_default: NamingMode,
-    ) -> (ReportAdmission, Protection) {
-        let title = changed.title.as_ref().and_then(|_| {
-            title_protection(
-                self.before.title_mode,
-                current.title_mode,
-                self.title_default,
-                current_default,
-            )
-        });
-        let goal = (current.goal_mode == NamingMode::Manual
-            && (changed.goal.is_some() || changed.goal_short.is_some()))
-        .then_some(("manual text is protected", &["goal_mode"][..]));
-        let protection = title.or(goal);
-        let captured = self.captured_session.as_ref();
-        let admission = ReportAdmission {
-            in_captured_stream: captured
-                .is_some_and(|captured| same_captured_stream(captured, session)),
-            membership_unchanged: captured
-                .is_some_and(|captured| same_membership_period(captured, session)),
-            stream_inputs_clean: prose_inputs_clean(&self.before, current, changed),
-            stream_protected: protection.is_some(),
-            ..ReportAdmission::default()
+        let changes_val = root
+            .get("changes")
+            .ok_or_else(|| ValidationError::new("edit request requires \"changes\""))?;
+        let changes = require_object(changes_val, "edit changes")?.clone();
+        let before = match root.get("before") {
+            None | Some(Value::Null) => None,
+            Some(before_val) => Some(require_object(before_val, "edit before")?.clone()),
         };
-        (admission, protection)
+        Ok(Self { changes, before })
     }
 }
 
-/// The patch `actor` may submit through `channel`, without the fields the record protects
-/// from automatic reports.
-fn admitted<P: Patch>(
-    mut patch: P,
-    actor: Actor,
-    channel: Channel,
-    protected: &[P::Field],
-) -> Result<P, ValidationError> {
-    if actor == Actor::Native {
-        return Err(ValidationError::new(
-            "native membership changes use the move operation",
-        ));
+/// Pure result of applying an edit to one Stream or Session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditOutcome<T> {
+    pub after: T,
+    pub not_written: Map<String, Value>,
+    pub changed: bool,
+    /// Set when `stream_id` was changed on a Session and the caller must verify the destination Stream.
+    pub target_stream_id: Option<String>,
+}
+
+/// Modified RFC 7386 merge: objects merge member by member, absent members keep `before`,
+/// and `null` sets the member to `null` (never deletes the key).
+pub fn merge_value(before: &Value, change: &Value) -> Value {
+    match (before, change) {
+        (Value::Object(before_map), Value::Object(change_map)) => {
+            let mut merged = before_map.clone();
+            for (key, change_val) in change_map {
+                let next = match merged.get(key) {
+                    Some(before_val) => merge_value(before_val, change_val),
+                    None => change_val.clone(),
+                };
+                merged.insert(key.clone(), next);
+            }
+            Value::Object(merged)
+        }
+        _ => change.clone(),
     }
-    if let Some(field) = patch
-        .fields()
-        .into_iter()
-        .find(|field| !field.access().permits(actor, channel))
-    {
+}
+
+fn check_before_keys(
+    changes: &Map<String, Value>,
+    before: &Map<String, Value>,
+    scope: &str,
+) -> Result<(), ValidationError> {
+    let change_keys: BTreeSet<&str> = changes.keys().map(String::as_str).collect();
+    let before_keys: BTreeSet<&str> = before.keys().map(String::as_str).collect();
+    if change_keys != before_keys {
+        let extra_before: Vec<_> = before_keys.difference(&change_keys).copied().collect();
+        let missing_before: Vec<_> = change_keys.difference(&before_keys).copied().collect();
         return Err(ValidationError::new(format!(
-            "field is not editable by this actor: {}",
-            field.name()
+            "{scope} \"before\" keys must match \"changes\" keys (missing in before: {missing_before:?}, extra in before: {extra_before:?})"
         )));
     }
-    if actor == Actor::Automatic {
-        for field in protected {
-            patch.remove(*field);
-        }
-    }
-    Ok(patch)
+    Ok(())
 }
 
-fn applied<P: Patch>(before: &P::Record, patch: &P) -> Result<P::Record, ValidationError> {
-    P::check(before)?;
-    let mut after = before.clone();
-    patch.apply(&mut after);
-    P::check(&after)?;
-    Ok(after)
+fn decode_strict<T: serde::de::DeserializeOwned>(
+    value: &Value,
+    field: &str,
+) -> Result<T, ValidationError> {
+    object::<T, _>(value.clone())
+        .map_err(|error| ValidationError::new(format!("invalid value for {field}: {error}")))
 }
 
-fn refuse(actor: Actor, reason: &str, fields: &[&str], stale: bool) -> Reconciliation {
-    let conflicts = fields.iter().map(|field| (*field).into()).collect();
-    if stale && actor == Actor::Automatic {
-        Reconciliation::Superseded {
-            conflicts,
-            reason: reason.into(),
-        }
+fn decode_optional_strict<T: serde::de::DeserializeOwned>(
+    value: &Value,
+    field: &str,
+) -> Result<Option<T>, ValidationError> {
+    if value.is_null() {
+        Ok(None)
     } else {
-        Reconciliation::Conflict {
-            conflicts,
-            reason: reason.into(),
-        }
+        decode_strict::<T>(value, field).map(Some)
     }
 }
 
-fn same_captured_stream(captured: &Session, current: Option<&Session>) -> bool {
-    current.is_some_and(|session| {
-        session.id == captured.id
-            && session.native_identity() == captured.native_identity()
-            && session.host_id == captured.host_id
-            && session.stream_id == captured.stream_id
+fn target_value(
+    changes: &Map<String, Value>,
+    before: Option<&Map<String, Value>>,
+    field: &str,
+) -> Value {
+    let change = &changes[field];
+    match before {
+        Some(before_map) => merge_value(&before_map[field], change),
+        None => change.clone(),
+    }
+}
+
+/// Apply an edit request to a Stream.
+pub fn apply_stream(
+    current: &Stream,
+    request: &EditRequest,
+    classify_field: impl Fn(&str) -> Result<(), ValidationError>,
+) -> Result<EditOutcome<Stream>, ValidationError> {
+    for key in request.changes.keys() {
+        classify_field(key)?;
+    }
+    if let Some(before) = &request.before {
+        check_before_keys(&request.changes, before, "stream edit")?;
+    }
+
+    // Phase 1: merge & validate every requested unit before mutating anything.
+    let mut desired_title: Option<(Title, Value)> = None;
+    let mut desired_goal: Option<(Option<Goal>, Value)> = None;
+
+    for key in request.changes.keys() {
+        let merged = target_value(&request.changes, request.before.as_ref(), key);
+        match key.as_str() {
+            "title" => {
+                let title: Title = decode_strict(&merged, "title")?;
+                title.validate("stream.title")?;
+                let canonical = serde_json::to_value(&title).expect("title json");
+                desired_title = Some((title, canonical));
+            }
+            "goal" => {
+                let goal: Option<Goal> = decode_optional_strict(&merged, "goal")?;
+                if let Some(g) = &goal {
+                    g.validate()?;
+                }
+                let canonical = serde_json::to_value(&goal).expect("goal json");
+                desired_goal = Some((goal, canonical));
+            }
+            other => {
+                return Err(ValidationError::new(format!(
+                    "Stream field {other:?} is not editable"
+                )));
+            }
+        }
+    }
+
+    // Phase 2: compare against current record and apply admitted units.
+    let mut after = current.clone();
+    let mut not_written = Map::new();
+
+    if let Some((title, desired_val)) = desired_title {
+        let current_val = serde_json::to_value(&current.title).expect("title json");
+        let admit = request
+            .before
+            .as_ref()
+            .is_none_or(|b| current_val == b["title"]);
+        if admit {
+            after.title = title;
+        }
+        let final_val = serde_json::to_value(&after.title).expect("title json");
+        if final_val != desired_val {
+            not_written.insert("title".into(), final_val);
+        }
+    }
+
+    if let Some((goal, desired_val)) = desired_goal {
+        let current_val = serde_json::to_value(&current.goal).expect("goal json");
+        let admit = request
+            .before
+            .as_ref()
+            .is_none_or(|b| current_val == b["goal"]);
+        if admit {
+            after.goal = goal;
+        }
+        let final_val = serde_json::to_value(&after.goal).expect("goal json");
+        if final_val != desired_val {
+            not_written.insert("goal".into(), final_val);
+        }
+    }
+
+    after.validate()?;
+    let changed = after != *current;
+    Ok(EditOutcome {
+        after,
+        not_written,
+        changed,
+        target_stream_id: None,
     })
 }
 
-fn same_membership_period(captured: &Session, current: Option<&Session>) -> bool {
-    same_captured_stream(captured, current)
-        && current.is_some_and(|session| session.membership_epoch == captured.membership_epoch)
-}
+/// Apply an edit request to a Session.
+pub fn apply_session(
+    current: &Session,
+    request: &EditRequest,
+    classify_field: impl Fn(&str) -> Result<(), ValidationError>,
+) -> Result<EditOutcome<Session>, ValidationError> {
+    for key in request.changes.keys() {
+        classify_field(key)?;
+    }
+    if let Some(before) = &request.before {
+        check_before_keys(&request.changes, before, "session edit")?;
+    }
 
-/// Whether the record still holds the captured report prose and the fields this edit sets.
-fn prose_inputs_clean<P: Patch>(before: &P::Record, current: &P::Record, changed: &P) -> bool {
-    let drift = P::between(before, current);
-    !drift.overlaps(changed)
-        && drift
-            .fields()
-            .iter()
-            .all(|field| field.access() != Access::Report)
-}
+    struct DesiredReference {
+        key: String,
+        entry: ReferenceEntry,
+        canonical: Value,
+        before: Option<Value>,
+    }
 
-fn title_protection(
-    captured_mode: TitleMode,
-    current_mode: TitleMode,
-    captured_default: NamingMode,
-    current_default: NamingMode,
-) -> Protection {
-    if captured_mode == TitleMode::Inherit && captured_default != current_default {
-        return Some(("title generation default changed", &["title_default"]));
-    }
-    if current_mode.resolve(current_default) == NamingMode::Manual {
-        return Some(("manual text is protected", &["title_mode"]));
-    }
-    None
-}
+    // Phase 1: merge & validate every requested unit before mutating anything.
+    let mut desired_title: Option<(Title, Value)> = None;
+    let mut desired_stream_id: Option<(String, Value)> = None;
+    let mut desired_status: Option<(Status, Value)> = None;
+    let mut desired_recap: Option<(Option<TextPair>, Value)> = None;
+    let mut desired_state: Option<(Option<TextPair>, Value)> = None;
+    let mut desired_remaining: Option<(Option<TextPair>, Value)> = None;
+    let mut desired_directory: Option<(Option<SessionDirectory>, Value)> = None;
+    let mut desired_references: Option<Vec<DesiredReference>> = None;
 
-fn apply_automatic<P: Patch>(
-    current: &P::Record,
-    changed: &P,
-    target: AdmissionTarget,
-    admission: ReportAdmission,
-    protection: Protection,
-) -> Reconciliation {
-    if let Err(error) = P::check(current) {
-        return refuse(
-            Actor::Automatic,
-            &error.to_string(),
-            &["relationships"],
-            false,
-        );
-    }
-    let mut candidate = current.clone();
-    changed.apply(&mut candidate);
-    // A retried report that already landed, or one the record already holds, is no change.
-    if candidate == *current {
-        return Reconciliation::no_change("");
-    }
-    if target == AdmissionTarget::Stream && !admission.membership_unchanged {
-        return refuse(
-            Actor::Automatic,
-            "captured conversation or membership period changed",
-            &["inputs"],
-            true,
-        );
-    }
-    if let Some((reason, fields)) = protection {
-        return refuse(Actor::Automatic, reason, fields, true);
-    }
-    if !admission.admits(target) {
-        return refuse(
-            Actor::Automatic,
-            "generated description inputs changed",
-            &["inputs"],
-            true,
-        );
-    }
-    if let Err(error) = P::check(&candidate) {
-        return refuse(
-            Actor::Automatic,
-            &error.to_string(),
-            &["relationships"],
-            false,
-        );
-    }
-    Reconciliation::Changes {
-        record: Box::new(P::into_record(candidate)),
-    }
-}
-
-/// User edits compare and swap on the captured revision. A retry that already landed, or
-/// intent the record already holds, is no change.
-fn apply_user_fields<P: Patch>(
-    before: &P::Record,
-    current: &P::Record,
-    changed: &P,
-) -> Reconciliation {
-    if let Err(error) = P::check(current) {
-        return refuse(Actor::User, &error.to_string(), &["relationships"], false);
-    }
-    let mut candidate = current.clone();
-    changed.apply(&mut candidate);
-    if candidate == *current {
-        return Reconciliation::no_change("");
-    }
-    if P::revision(current) != P::revision(before) {
-        let mut conflicts: Vec<&str> = P::between(before, current)
-            .fields()
-            .into_iter()
-            .map(PatchField::name)
-            .collect();
-        if conflicts.is_empty() {
-            conflicts.push("revision");
+    for key in request.changes.keys() {
+        if key == "references" {
+            let change_refs = require_object(&request.changes["references"], "references")?;
+            let before_refs = match &request.before {
+                Some(before_map) => {
+                    let map = require_object(&before_map["references"], "before.references")?;
+                    check_before_keys(change_refs, map, "references")?;
+                    Some(map)
+                }
+                None => None,
+            };
+            let mut entries = Vec::with_capacity(change_refs.len());
+            for (ref_key, change_entry) in change_refs {
+                if change_entry.is_null() {
+                    return Err(ValidationError::new(format!(
+                        "reference {ref_key:?} cannot be null; set status to \"dropped\" instead"
+                    )));
+                }
+                let before_entry = before_refs.map(|m| m[ref_key].clone());
+                let merged = match &before_entry {
+                    Some(before_val) => merge_value(before_val, change_entry),
+                    None => change_entry.clone(),
+                };
+                let parsed: ReferenceEntry =
+                    decode_strict(&merged, &format!("references[{ref_key:?}]"))?;
+                parsed.validate_for_key(ref_key)?;
+                let canonical = serde_json::to_value(&parsed).expect("reference entry json");
+                entries.push(DesiredReference {
+                    key: ref_key.clone(),
+                    entry: parsed,
+                    canonical,
+                    before: before_entry,
+                });
+            }
+            desired_references = Some(entries);
+            continue;
         }
-        return refuse(
-            Actor::User,
-            "record changed since capture; capture fresh inputs",
-            &conflicts,
-            false,
-        );
-    }
-    if let Err(error) = P::check(&candidate) {
-        return refuse(Actor::User, &error.to_string(), &["relationships"], false);
-    }
-    Reconciliation::Changes {
-        record: Box::new(P::into_record(candidate)),
-    }
-}
 
-#[cfg(test)]
-mod tests;
+        let merged = target_value(&request.changes, request.before.as_ref(), key);
+        match key.as_str() {
+            "title" => {
+                let title: Title = decode_strict(&merged, "title")?;
+                title.validate("session.title")?;
+                let canonical = serde_json::to_value(&title).expect("title json");
+                desired_title = Some((title, canonical));
+            }
+            "stream_id" => {
+                let stream_id: String = serde_json::from_value(merged.clone()).map_err(|e| {
+                    ValidationError::new(format!("invalid value for stream_id: {e}"))
+                })?;
+                check_token(&stream_id, "session.stream_id")?;
+                let canonical = Value::String(stream_id.clone());
+                desired_stream_id = Some((stream_id, canonical));
+            }
+            "status" => {
+                let status: Status = serde_json::from_value(merged.clone())
+                    .map_err(|e| ValidationError::new(format!("invalid value for status: {e}")))?;
+                let canonical = serde_json::to_value(status).expect("status json");
+                desired_status = Some((status, canonical));
+            }
+            "recap" => {
+                let pair: Option<TextPair> = decode_optional_strict(&merged, "recap")?;
+                if let Some(p) = &pair {
+                    p.validate("session.recap")?;
+                }
+                let canonical = serde_json::to_value(&pair).expect("recap json");
+                desired_recap = Some((pair, canonical));
+            }
+            "state" => {
+                let pair: Option<TextPair> = decode_optional_strict(&merged, "state")?;
+                if let Some(p) = &pair {
+                    p.validate("session.state")?;
+                }
+                let canonical = serde_json::to_value(&pair).expect("state json");
+                desired_state = Some((pair, canonical));
+            }
+            "remaining" => {
+                let pair: Option<TextPair> = decode_optional_strict(&merged, "remaining")?;
+                if let Some(p) = &pair {
+                    p.validate("session.remaining")?;
+                }
+                let canonical = serde_json::to_value(&pair).expect("remaining json");
+                desired_remaining = Some((pair, canonical));
+            }
+            "directory" => {
+                let dir: Option<SessionDirectory> = decode_optional_strict(&merged, "directory")?;
+                if let Some(d) = &dir {
+                    d.validate()?;
+                }
+                let canonical = serde_json::to_value(&dir).expect("directory json");
+                desired_directory = Some((dir, canonical));
+            }
+            other => {
+                return Err(ValidationError::new(format!(
+                    "Session field {other:?} is not editable"
+                )));
+            }
+        }
+    }
+
+    // Phase 2: compare against current record and apply admitted units.
+    let mut after = current.clone();
+    let mut not_written = Map::new();
+    let mut target_stream_id = None;
+
+    if let Some((title, desired_val)) = desired_title {
+        let current_val = serde_json::to_value(&current.title).expect("title json");
+        if request
+            .before
+            .as_ref()
+            .is_none_or(|b| current_val == b["title"])
+        {
+            after.title = title;
+        }
+        let final_val = serde_json::to_value(&after.title).expect("title json");
+        if final_val != desired_val {
+            not_written.insert("title".into(), final_val);
+        }
+    }
+
+    if let Some((stream_id, desired_val)) = desired_stream_id {
+        let current_val = Value::String(current.stream_id.clone());
+        if request
+            .before
+            .as_ref()
+            .is_none_or(|b| current_val == b["stream_id"])
+        {
+            if after.stream_id != stream_id {
+                target_stream_id = Some(stream_id.clone());
+            }
+            after.stream_id = stream_id;
+        }
+        let final_val = Value::String(after.stream_id.clone());
+        if final_val != desired_val {
+            not_written.insert("stream_id".into(), final_val);
+        }
+    }
+
+    if let Some((status, desired_val)) = desired_status {
+        let current_val = serde_json::to_value(current.status).expect("status json");
+        if request
+            .before
+            .as_ref()
+            .is_none_or(|b| current_val == b["status"])
+        {
+            after.status = status;
+        }
+        let final_val = serde_json::to_value(after.status).expect("status json");
+        if final_val != desired_val {
+            not_written.insert("status".into(), final_val);
+        }
+    }
+
+    if let Some((recap, desired_val)) = desired_recap {
+        let current_val = serde_json::to_value(&current.recap).expect("recap json");
+        if request
+            .before
+            .as_ref()
+            .is_none_or(|b| current_val == b["recap"])
+        {
+            after.recap = recap;
+        }
+        let final_val = serde_json::to_value(&after.recap).expect("recap json");
+        if final_val != desired_val {
+            not_written.insert("recap".into(), final_val);
+        }
+    }
+
+    if let Some((state, desired_val)) = desired_state {
+        let current_val = serde_json::to_value(&current.state).expect("state json");
+        if request
+            .before
+            .as_ref()
+            .is_none_or(|b| current_val == b["state"])
+        {
+            after.state = state;
+        }
+        let final_val = serde_json::to_value(&after.state).expect("state json");
+        if final_val != desired_val {
+            not_written.insert("state".into(), final_val);
+        }
+    }
+
+    if let Some((remaining, desired_val)) = desired_remaining {
+        let current_val = serde_json::to_value(&current.remaining).expect("remaining json");
+        if request
+            .before
+            .as_ref()
+            .is_none_or(|b| current_val == b["remaining"])
+        {
+            after.remaining = remaining;
+        }
+        let final_val = serde_json::to_value(&after.remaining).expect("remaining json");
+        if final_val != desired_val {
+            not_written.insert("remaining".into(), final_val);
+        }
+    }
+
+    if let Some((directory, desired_val)) = desired_directory {
+        let current_val = serde_json::to_value(&current.directory).expect("directory json");
+        if request
+            .before
+            .as_ref()
+            .is_none_or(|b| current_val == b["directory"])
+        {
+            after.directory = directory;
+        }
+        let final_val = serde_json::to_value(&after.directory).expect("directory json");
+        if final_val != desired_val {
+            not_written.insert("directory".into(), final_val);
+        }
+    }
+
+    if let Some(entries) = desired_references {
+        let mut ref_not_written = Map::new();
+        for DesiredReference {
+            key: ref_key,
+            entry: parsed,
+            canonical: desired_val,
+            before: before_entry,
+        } in entries
+        {
+            let current_val = match current.references.get(&ref_key) {
+                Some(entry) => serde_json::to_value(entry).expect("reference json"),
+                None => Value::Null,
+            };
+            let admit = match &before_entry {
+                Some(expected) => current_val == *expected,
+                None => true,
+            };
+            if admit {
+                after.references.insert(ref_key.clone(), parsed);
+            }
+            let final_val = match after.references.get(&ref_key) {
+                Some(entry) => serde_json::to_value(entry).expect("reference json"),
+                None => Value::Null,
+            };
+            if final_val != desired_val {
+                ref_not_written.insert(ref_key, final_val);
+            }
+        }
+        if !ref_not_written.is_empty() {
+            not_written.insert("references".into(), Value::Object(ref_not_written));
+        }
+    }
+
+    after.validate()?;
+    let changed = after != *current;
+    Ok(EditOutcome {
+        after,
+        not_written,
+        changed,
+        target_stream_id,
+    })
+}
