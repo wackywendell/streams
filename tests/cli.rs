@@ -593,3 +593,58 @@ fn top_level_help_hides_card_and_debug_while_subcommands_remain_callable() {
         assert!(String::from_utf8(stdout).unwrap().contains("Usage:"));
     }
 }
+
+#[test]
+fn stream_delete_only_removes_empty_local_streams() {
+    let f = Fixture::new();
+    let s1 = f.ok_json(&["stream", "create", "--title", "Primary"], None);
+    let s1_key = s1["key"].as_str().unwrap();
+    let s2 = f.ok_json(&["stream", "create", "--title", "Temporary"], None);
+    let s2_key = s2["key"].as_str().unwrap();
+
+    let sess = f.ok_json(
+        &[
+            "session",
+            "create",
+            "pi/01b10000",
+            "--stream",
+            s2_key,
+            "--title",
+            "Lane",
+        ],
+        None,
+    );
+    let sess_key = sess["key"].as_str().unwrap();
+
+    // Non-empty Stream cannot be deleted.
+    let (code, err, _) = f.run_json(&["stream", "delete", s2_key], None);
+    assert_eq!(code, 1);
+    assert!(
+        err["error"]["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("still has 1 Session"),
+        "expected non-empty error, got: {err}"
+    );
+
+    // Move Session to Primary, then delete the now-empty Temporary Stream.
+    f.ok_json(&["session", "edit", sess_key, "--stream", s1_key], None);
+    let deleted = f.ok_json(&["stream", "delete", s2_key], None);
+    assert_eq!(deleted["key"], s2_key);
+    assert_eq!(deleted["deleted"], true);
+
+    // Listing and catalog check reflect the deletion cleanly.
+    let listed = f.ok_json(&["stream", "list", "--all"], None);
+    let keys: Vec<&str> = listed["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["key"].as_str().unwrap())
+        .collect();
+    assert_eq!(keys, vec![s1_key]);
+
+    let check = f.ok_json(&["catalog", "check"], None);
+    assert_eq!(check["valid"], true);
+    assert_eq!(check["streams"], 1);
+    assert_eq!(check["sessions"], 1);
+}

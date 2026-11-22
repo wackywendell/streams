@@ -53,6 +53,7 @@ impl App {
                 input,
                 fields,
             } => self.stream_edit(&stream, input.as_deref(), fields),
+            StreamCommand::Delete { stream } => self.stream_delete(&stream),
         }
     }
 
@@ -203,6 +204,29 @@ impl App {
         let target = RecordAddress::for_stream(&stream);
         let result = application::edit_stream(opened.records(), &target, &request)?;
         Ok(self.render_edit_output(result))
+    }
+
+    fn stream_delete(&self, selector: &str) -> Result<Output> {
+        let opened = application::open_records(&self.config)?;
+        let stream = select::select_stream(&opened, selector)?;
+        if stream.host_id != opened.host().as_str() {
+            return Err(CliError::message(format!(
+                "cannot delete Stream {} owned by host {:?} from host {:?}",
+                stream.key(),
+                stream.host_id,
+                opened.host().as_str()
+            )));
+        }
+        let key = stream.key().to_string();
+        let target = RecordAddress::for_stream(&stream);
+        opened.delete_stream(&target)?;
+        let mut output = Output::plain(
+            json!({ "key": key, "deleted": true }),
+            format!("deleted {key}"),
+        );
+        output.accepted_save = true;
+        output.wrote = true;
+        Ok(output)
     }
 
     fn build_stream_flag_request(

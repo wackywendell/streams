@@ -14,7 +14,7 @@ use crate::{
     codec::{RESET_HINT, load_json, record_from_data, record_to_data},
     file_io::{
         atomic_write, decode_json, ensure_directory, existing_write_lock, inspection_lock, lock,
-        read_bytes, write_json,
+        read_bytes, sync_directory, write_json,
     },
     model::{Record, RecordKind, Stamps, check_token},
     storage::{
@@ -374,6 +374,55 @@ impl FileRecordStore {
             None => std::fs::remove_file(self.root.join(relative)).map_err(invalid)?,
         }
         Ok(Some(unreadable.to_string()))
+    }
+
+    /// Delete a local Stream record only when no same-host Session references it.
+    /// Returns `Ok(false)` when the Stream file does not exist.
+    pub fn delete_empty_stream(&self, target: &RecordAddress) -> Result<bool, StorageError> {
+        target.validate()?;
+        if target.kind() != RecordKind::Stream {
+            return Err(StorageError::new(
+                "delete_empty_stream requires a Stream address",
+            ));
+        }
+        if target.host() != self.host {
+            return Err(StorageError::new("cannot write another host's partition"));
+        }
+        let scope = self.scope(true)?;
+        if scope.read(target)?.is_none() {
+            return Ok(false);
+        }
+        let sessions = self.read_host_sessions(&self.host)?;
+        if !sessions.unreadable.is_empty() {
+            return Err(StorageError::new(format!(
+                "cannot verify Stream {} is empty while {} local Session record(s) are unreadable",
+                target.full_key(),
+                sessions.unreadable.len()
+            )));
+        }
+        let member_count = sessions
+            .records
+            .iter()
+            .filter(|record| matches!(record, Record::Session(s) if s.stream_id == target.id()))
+            .count();
+        if member_count > 0 {
+            return Err(StorageError::new(format!(
+                "cannot delete Stream {}: it still has {} Session(s); move them with `streams session edit <session> --stream <other>` first",
+                target.full_key(),
+                member_count
+            )));
+        }
+        let relative = relative_record_path(target)?;
+        check_parents(&self.root, &relative)?;
+        let path = self.root.join(&relative);
+        let metadata = std::fs::symlink_metadata(&path).map_err(invalid)?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() {
+            return Err(invalid("Stream record path is not a regular file"));
+        }
+        std::fs::remove_file(&path).map_err(invalid)?;
+        sync_directory(path.parent().expect("stream record parent"))
+            .map_err(StorageError::after_write)?;
+        Ok(true)
     }
 }
 

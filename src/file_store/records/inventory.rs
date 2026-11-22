@@ -187,9 +187,8 @@ impl FileRecordStore {
     }
 }
 
-impl RecordInventory for FileRecordStore {
-    fn host_sessions(&self, host: &str) -> Result<RecordListing, StorageError> {
-        let _scope = self.scope(false)?;
+impl FileRecordStore {
+    pub(super) fn read_host_sessions(&self, host: &str) -> Result<RecordListing, StorageError> {
         check_token(host, "record host").map_err(invalid)?;
         let relative = PathBuf::from("hosts").join(host).join("sessions");
         super::check_parents(&self.root, &relative.join("entry"))?;
@@ -237,6 +236,13 @@ impl RecordInventory for FileRecordStore {
             }
         }
         Ok(sorted(listing))
+    }
+}
+
+impl RecordInventory for FileRecordStore {
+    fn host_sessions(&self, host: &str) -> Result<RecordListing, StorageError> {
+        let _scope = self.scope(false)?;
+        self.read_host_sessions(host)
     }
 
     fn host_streams(&self, host: &str) -> Result<RecordListing, StorageError> {

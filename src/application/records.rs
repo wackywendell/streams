@@ -73,6 +73,25 @@ impl OpenedRecords {
     pub fn listing(&self) -> Result<RecordListing> {
         Ok(self.records.listing()?)
     }
+    /// Delete an empty local Stream record owned by this host.
+    pub fn delete_stream(&self, target: &RecordAddress) -> Result<()> {
+        if target.host() != self.host.as_str() {
+            return Err(super::ApplicationError::invalid(format!(
+                "cannot delete Stream {} owned by host {:?} from host {:?}",
+                target.full_key(),
+                target.host(),
+                self.host.as_str()
+            )));
+        }
+        let deleted = self.records.delete_empty_stream(target)?;
+        if !deleted {
+            return Err(super::ApplicationError::not_found(format!(
+                "no Stream {}",
+                target.full_key()
+            )));
+        }
+        Ok(())
+    }
     /// Discard whichever records of a conversation's card cannot be decoded, so a reset can
     /// rebuild them.
     pub fn discard_unreadable_card(&self, harness: &str, id: &str) -> Result<DiscardedCard> {

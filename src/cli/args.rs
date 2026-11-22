@@ -229,6 +229,12 @@ pub(super) enum StreamCommand {
         #[command(flatten)]
         fields: StreamEditFieldArgs,
     },
+
+    /// Delete an empty Stream owned by this host
+    Delete {
+        /// Stream full key, ID, or unique ID prefix
+        stream: String,
+    },
 }
 
 #[derive(Debug, Args, Clone, Default)]

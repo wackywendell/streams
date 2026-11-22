@@ -32,6 +32,7 @@ The CLI does not read Pi env vars, `hc` labels, or frontend state to select reco
 | Show a Stream and its Sessions | `streams stream show STREAM [--json]` |
 | Create a Stream | `streams stream create --title "Title" [--goal "Goal"] [--json]` |
 | Edit a Stream | `streams stream edit STREAM --title "Title" [--clear-goal]` |
+| Delete an empty Stream | `streams stream delete STREAM [--json]` |
 | List Sessions | `streams session list [--stream STREAM] [--all] [--json]` |
 | Show a Session | `streams session show SESSION [--json]` |
 | Create (enroll) a Session | `streams session create HARNESS/ID --stream STREAM --title "Lane" [--directory PATH]` |
