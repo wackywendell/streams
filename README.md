@@ -15,7 +15,7 @@ just build
 
 The examples below use `streams`; from this checkout, substitute `./target/debug/streams` (or `$CARGO_TARGET_DIR/debug/streams`). Use isolated XDG directories when testing; commands otherwise use your normal configuration and catalog.
 
-The Pi extension selects this checkout's debug Rust build by default. `STREAMS_BIN_PATH` can select another absolute Rust executable. There is no `PATH` fallback.
+The Pi extension runs an absolute `STREAMS_BIN_PATH` if set, then the first `streams` on `PATH` (installed by `just install-cli`), then this checkout's debug Rust build. Loaded from a checkout, it refuses a binary built from other sources, so reinstall after pulling.
 
 ## Initialise a catalog
 

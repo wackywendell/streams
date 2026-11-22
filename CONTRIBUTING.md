@@ -45,7 +45,7 @@ Tasks isolate fixture repositories from personal Git configuration, hooks, fsmon
 
 ## Try local changes without installing
 
-Use `target/debug/streams`, or `$CARGO_TARGET_DIR/debug/streams` when configured. The Pi extension resolves the same debug target by default; an absolute `STREAMS_BIN_PATH` overrides it.
+Use `target/debug/streams`, or `$CARGO_TARGET_DIR/debug/streams` when configured. The Pi extension prefers an installed `streams` on `PATH` over the debug target, so set `STREAMS_BIN_PATH` to the absolute debug path when `streams` is installed. An absolute `STREAMS_BIN_PATH` overrides both.
 
 Load only one checkout's Pi extension. Building and testing do not replace installed tools or reload running processes. Use isolated homes and fake native endpoints when testing.
 

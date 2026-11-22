@@ -16,10 +16,9 @@ the inline editor and call Pi's session-name setter.
 
 The split removes the Python CLI and Node-to-Python advisory-lock helper without
 keeping a fallback runtime. Reporting and native requests share one executable:
-an explicit absolute `STREAMS_BIN_PATH`, or this checkout's debug Cargo target.
-A packaged extension needs an explicit matching executable. Missing or invalid
-builds fail rather than selecting an installed command from `PATH`. From a
-checkout, the child's ready frame carries the digest of the sources it was built
+an explicit absolute `STREAMS_BIN_PATH`, then the first `streams` on `PATH`, then
+this checkout's debug Cargo target. An invalid `STREAMS_BIN_PATH` fails rather than
+falling back. From a checkout, the child's ready frame carries the digest of the sources it was built
 from, and the extension refuses a child whose digest differs from its checkout's
 without restarting it.
 

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { delimiter, dirname, join, resolve } from 'node:path';
 import { createJiti } from 'jiti';
 
 const jiti = createJiti(import.meta.url);
@@ -22,19 +22,28 @@ async function fixture(t) {
   return { root, select: resolveStreamsBin, source: checkoutSource, executable };
 }
 
-test('selector import is inert; default ignores .venv, PATH and stale release binaries', async t => {
+test('selector import is inert; without PATH streams, the default ignores .venv and stale release binaries', async t => {
   const f = await fixture(t);
   const python = f.executable(join(f.root, '.venv/bin/streams'));
-  const pathBinary = f.executable(join(f.root, 'path/streams'));
   f.executable(join(f.root, 'target/release/streams'));
-  assert.throws(() => f.select({ PATH: dirname(pathBinary) }), error => {
+  const empty = join(f.root, 'empty');mkdirSync(empty);
+  assert.throws(() => f.select({ PATH: empty }), error => {
     assert.ok(error.message.includes(join(f.root, 'target/debug/streams')));
     assert.match(error.message, /cargo build --locked --bin streams/);
     assert.ok(!error.message.includes(python));
     return true;
   });
   const debug = f.executable(join(f.root, 'target/debug/streams'));
-  assert.equal(f.select({ PATH: dirname(pathBinary) }), debug);
+  assert.equal(f.select({ PATH: empty }), debug);
+});
+
+test('streams on PATH takes priority over the checkout debug build, skipping unusable entries', async t => {
+  const f = await fixture(t);
+  f.executable(join(f.root, 'target/debug/streams'));
+  const unusable = f.executable(join(f.root, 'unusable/streams'));chmodSync(unusable, 0o600);
+  const installed = f.executable(join(f.root, 'installed/streams'));
+  const path = ['', 'relative', dirname(unusable), dirname(installed)].join(delimiter);
+  assert.equal(f.select({ PATH: path }), installed);
 });
 
 test('Cargo target requests resolve against package root, never the caller cwd or default target', async t => {
