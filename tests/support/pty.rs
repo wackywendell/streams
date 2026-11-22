@@ -42,18 +42,18 @@ impl Pty {
             ws_ypixel: 0,
         };
         // SAFETY: openpty initializes both descriptors on success; optional pointers are null.
-        assert_eq!(
-            unsafe {
-                libc::openpty(
-                    &mut master,
-                    &mut slave,
-                    std::ptr::null_mut(),
-                    std::ptr::null_mut(),
-                    &mut size,
-                )
-            },
-            0
-        );
+        // libc declares the window size `*const` on Linux and `*mut` on macOS.
+        #[allow(clippy::unnecessary_mut_passed)]
+        let opened = unsafe {
+            libc::openpty(
+                &mut master,
+                &mut slave,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut size,
+            )
+        };
+        assert_eq!(opened, 0);
         // SAFETY: each fresh descriptor is transferred to exactly one File.
         let (master, slave) = unsafe { (File::from_raw_fd(master), File::from_raw_fd(slave)) };
         for file in [&master, &slave] {
