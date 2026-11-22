@@ -30,6 +30,7 @@ import {
   SESSION_STATUSES,
   resolveRole,
   observeNoticeToken,
+  resolveSpaceStreamKey,
   resolveSidebarView,
   effectiveSessionStatus,
   resolveTabRenameTarget,
@@ -1077,8 +1078,16 @@ export default class StreamsMod extends View {
 
     const activeSpace = snap.activeSpace;
     const monoFont = settings()?.font_family ?? "JetBrains Mono";
+    const spaceStreamKey = resolveSpaceStreamKey({
+      space: activeSpace,
+      panes: snap.panes,
+      terminalList: snap.terminalList,
+      agents: snap.agents,
+      frames: coordinator.frames,
+      lastFocusedStreamBySpace: coordinator.lastFocusedStreamBySpace,
+    });
     const view = resolveSidebarView({
-      activeView: coordinator.activeView,
+      preferredView: coordinator.preferredView,
       tabId: snap.activeTabId,
       tabStreams: coordinator.tabStreams,
       streams: coordinator.streams,
@@ -1086,6 +1095,7 @@ export default class StreamsMod extends View {
       frames: coordinator.frames,
       visibleTerminals: snap.visibleTerminals,
       focusedTerminal: snap.focusedTerminal,
+      spaceStreamKey,
       previewStreamKey: coordinator.previewStreamKey,
       previewSessionKey: coordinator.previewSessionKey,
       inFlight: coordinator.inFlightKey !== null,
@@ -1094,25 +1104,32 @@ export default class StreamsMod extends View {
     const activeSegment =
       view.view === "session" || view.view === "stream" || view.view === "all"
         ? view.view
-        : view.isEnrolled
+        : view.hasSessionAccess
           ? "session"
-          : "all";
-    const sessionMuted = !view.isEnrolled && !coordinator.previewSessionKey;
+          : view.hasStreamAccess
+            ? "stream"
+            : "all";
+    const sessionDisabled = !view.hasSessionAccess;
+    const streamDisabled = !view.hasStreamAccess;
 
-    const navButton = (id, label, targetView, muted = false) => {
+    const navButton = (id, label, targetView, disabled = false, disabledTooltip = null) => {
       const selected = activeSegment === targetView;
-      return div()
+      const btn = div()
         .id(id)
         .px(7)
         .py(3)
         .rounded(4)
         .text_size(11.5)
         .when(selected, (el) => el.bg(t.raised).font_medium().text_color(t.foreground))
-        .when(!selected, (el) =>
-          el
-            .text_color(muted ? t.dim : t.muted)
-            .hover((s) => s.bg(t.hover).text_color(t.foreground))
-        )
+        .when(!selected && disabled, (el) => el.text_color(t.dim))
+        .when(!selected && !disabled, (el) =>
+          el.text_color(t.muted).hover((s) => s.bg(t.hover).text_color(t.foreground))
+        );
+      if (disabled) {
+        if (disabledTooltip) btn.tooltip(disabledTooltip);
+        return btn.child(label);
+      }
+      return btn
         .on_click((_e, clickCx) => {
           clickCx.stop_propagation();
           clickCx.spawn(async () => {
@@ -1134,8 +1151,24 @@ export default class StreamsMod extends View {
         h_flex()
           .gap(2)
           .items_center()
-          .child(navButton("streams-nav-session", "Session", "session", sessionMuted))
-          .child(navButton("streams-nav-stream", "Stream", "stream", false))
+          .child(
+            navButton(
+              "streams-nav-session",
+              "Session",
+              "session",
+              sessionDisabled,
+              "Tab not enrolled"
+            )
+          )
+          .child(
+            navButton(
+              "streams-nav-stream",
+              "Stream",
+              "stream",
+              streamDisabled,
+              "No stream in space"
+            )
+          )
           .child(navButton("streams-nav-all", "All", "all", false))
       )
       .child(
@@ -1867,7 +1900,7 @@ export default class StreamsMod extends View {
                         .hover((s) => s.bg(t.hover))
                         .on_click((_e, clickCx) => {
                           clickCx.stop_propagation();
-                          coordinator.returnToCurrent();
+                          coordinator.returnToCurrent({ isEnrolled: view.isEnrolled });
                         })
                         .child("Back to current")
                     )
@@ -2346,7 +2379,7 @@ export default class StreamsMod extends View {
                           .hover((s) => s.bg(t.hover))
                           .on_click((_e, clickCx) => {
                             clickCx.stop_propagation();
-                            coordinator.returnToCurrent();
+                            coordinator.returnToCurrent({ isEnrolled: view.isEnrolled });
                           })
                           .child("Back to current")
                       )

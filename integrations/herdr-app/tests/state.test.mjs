@@ -11,6 +11,7 @@ import {
   observeNoticeToken,
   activeTabSession,
   tabSidebarView,
+  resolveSpaceStreamKey,
   resolveSidebarView,
   resolveTabRenameTarget,
   effectiveSessionStatus,
@@ -964,7 +965,7 @@ test("All -> Stream and Stream -> Session navigation separates activeView from p
   assert.equal(resUnopened.focused, false);
   assert.equal(runCmds.length, 0);
   const streamPreview = resolveSidebarView({
-    activeView: coord.activeView,
+    preferredView: coord.preferredView,
     tabId: "tab1",
     tabStreams: coord.tabStreams,
     streams: coord.streams,
@@ -990,7 +991,7 @@ test("All -> Stream and Stream -> Session navigation separates activeView from p
   assert.equal(resSess.focused, false);
   assert.equal(runCmds.length, 0);
   const sessPreview = resolveSidebarView({
-    activeView: coord.activeView,
+    preferredView: coord.preferredView,
     tabId: "tab1",
     tabStreams: coord.tabStreams,
     streams: coord.streams,
@@ -1024,10 +1025,10 @@ test("All -> Stream and Stream -> Session navigation separates activeView from p
     panes,
     agents,
   });
-  assert.equal(coord.activeView, "stream");
+  assert.equal(coord.preferredView, "stream");
   assert.equal(coord.previewStreamKey, null);
 
-  // An external Space/Tab change clears detached preview and returns to default view.
+  // An external Space/Tab change clears detached preview while keeping preferredView sticky.
   await coord.inspectStream(st3.key);
   assert.equal(coord.previewStreamKey, st3.key);
   await coord.observe({
@@ -1041,7 +1042,193 @@ test("All -> Stream and Stream -> Session navigation separates activeView from p
   });
   assert.equal(coord.previewStreamKey, null);
   assert.equal(coord.previewSessionKey, null);
-  assert.equal(coord.activeView, null);
+  assert.equal(coord.preferredView, "stream");
+});
+
+test("sticky preferredView falls back Session -> Space Stream -> All and restores automatically", async () => {
+  const sA = makeSessionJson({ id: "sA", stream_id: "stA", title: "Session A" });
+  const sB = makeSessionJson({ id: "sB", stream_id: "stB", title: "Session B" });
+  const stA = makeStreamJson({ id: "stA", title: "Stream A", sessions: [sA] });
+  const stB = makeStreamJson({ id: "stB", title: "Stream B", sessions: [sB] });
+
+  const runner = createFakeRunner({
+    sessions: { [sA.key]: sA, [sB.key]: sB },
+    streams: { [stA.key]: stA, [stB.key]: stB },
+    streamList: [stA, stB],
+  });
+  const coord = new StreamsCoordinator({ exec: runner.exec });
+
+  // Space 1 holds two enrolled tabs (Stream A and Stream B) plus a new unenrolled tab (tabNew).
+  // Space 2 is a brand-new empty workspace with only an unenrolled tab (tabEmpty).
+  const spaces = [
+    {
+      id: "sp1",
+      machine: null,
+      tabs: [
+        { id: "tabA", active: false },
+        { id: "tabB", active: true },
+        { id: "tabNew", active: false },
+      ],
+    },
+    { id: "sp2", machine: null, tabs: [{ id: "tabEmpty", active: true }] },
+  ];
+  const panes = [
+    { pane: "pA", tab: "tabA", terminal: "tA", program: { agent: "pi" } },
+    { pane: "pB", tab: "tabB", terminal: "tB", program: { agent: "pi" } },
+    { pane: "pNew", tab: "tabNew", terminal: "tNew", program: { shell: "zsh" } },
+    { pane: "pEmpty", tab: "tabEmpty", terminal: "tEmpty", program: { shell: "zsh" } },
+  ];
+  const terminalList = [
+    { address: "tA", state: "live", labels: { [LABEL_SESSION]: sA.key, [LABEL_STREAM]: stA.key } },
+    { address: "tB", state: "live", labels: { [LABEL_SESSION]: sB.key, [LABEL_STREAM]: stB.key } },
+    { address: "tNew", state: "live", labels: {} },
+    { address: "tEmpty", state: "live", labels: {} },
+  ];
+  const agents = [
+    { address: "tA", agent: "pi" },
+    { address: "tB", agent: "pi" },
+  ];
+
+  // Focus tabB (Stream B) with default preferredView === "session".
+  await coord.observe({
+    activeSpace: spaces[0],
+    activeTabId: "tabB",
+    visibleTerminals: ["tB"],
+    focusedTerminal: "tB",
+    terminalList,
+    panes,
+    agents,
+  });
+  assert.equal(coord.preferredView, "session");
+  assert.equal(coord.lastFocusedStreamBySpace.get("sp1"), stB.key);
+
+  // Open new unenrolled tab in sp1: falls back to last-focused Space Stream (Stream B), keeping preferredView === "session".
+  await coord.observe({
+    activeSpace: spaces[0],
+    activeTabId: "tabNew",
+    visibleTerminals: ["tNew"],
+    focusedTerminal: "tNew",
+    terminalList,
+    panes,
+    agents,
+  });
+  const sp1StreamKey = resolveSpaceStreamKey({
+    space: spaces[0],
+    panes,
+    terminalList,
+    agents,
+    frames: coord.frames,
+    lastFocusedStreamBySpace: coord.lastFocusedStreamBySpace,
+  });
+  assert.equal(sp1StreamKey, stB.key);
+  const onNewTab = resolveSidebarView({
+    preferredView: coord.preferredView,
+    tabId: "tabNew",
+    tabStreams: coord.tabStreams,
+    streams: coord.streams,
+    previewSessions: coord.previewSessions,
+    frames: coord.frames,
+    visibleTerminals: ["tNew"],
+    focusedTerminal: "tNew",
+    spaceStreamKey: sp1StreamKey,
+  });
+  assert.equal(onNewTab.view, "stream");
+  assert.equal(onNewTab.stream.key, stB.key);
+  assert.equal(onNewTab.isPreview, false);
+  assert.equal(onNewTab.hasSessionAccess, false);
+  assert.equal(onNewTab.hasStreamAccess, true);
+  assert.equal(coord.preferredView, "session");
+
+  // Switch back to tabA: snaps back to Session automatically because preferredView is still "session".
+  await coord.observe({
+    activeSpace: spaces[0],
+    activeTabId: "tabA",
+    visibleTerminals: ["tA"],
+    focusedTerminal: "tA",
+    terminalList,
+    panes,
+    agents,
+  });
+  const backOnTabA = resolveSidebarView({
+    preferredView: coord.preferredView,
+    tabId: "tabA",
+    tabStreams: coord.tabStreams,
+    streams: coord.streams,
+    previewSessions: coord.previewSessions,
+    frames: coord.frames,
+    visibleTerminals: ["tA"],
+    focusedTerminal: "tA",
+    spaceStreamKey: resolveSpaceStreamKey({
+      space: spaces[0],
+      panes,
+      terminalList,
+      agents,
+      frames: coord.frames,
+      lastFocusedStreamBySpace: coord.lastFocusedStreamBySpace,
+    }),
+  });
+  assert.equal(backOnTabA.view, "session");
+  assert.equal(backOnTabA.session.key, sA.key);
+
+  // Switch to brand-new empty Space sp2: both Session and Stream are inaccessible -> falls back to All.
+  await coord.observe({
+    activeSpace: spaces[1],
+    activeTabId: "tabEmpty",
+    visibleTerminals: ["tEmpty"],
+    focusedTerminal: "tEmpty",
+    terminalList,
+    panes,
+    agents,
+  });
+  const sp2StreamKey = resolveSpaceStreamKey({
+    space: spaces[1],
+    panes,
+    terminalList,
+    agents,
+    frames: coord.frames,
+    lastFocusedStreamBySpace: coord.lastFocusedStreamBySpace,
+  });
+  assert.equal(sp2StreamKey, null);
+  const onEmptySpace = resolveSidebarView({
+    preferredView: coord.preferredView,
+    tabId: "tabEmpty",
+    tabStreams: coord.tabStreams,
+    streams: coord.streams,
+    previewSessions: coord.previewSessions,
+    frames: coord.frames,
+    visibleTerminals: ["tEmpty"],
+    focusedTerminal: "tEmpty",
+    spaceStreamKey: sp2StreamKey,
+  });
+  assert.equal(onEmptySpace.view, "all");
+  assert.equal(onEmptySpace.hasSessionAccess, false);
+  assert.equal(onEmptySpace.hasStreamAccess, false);
+  assert.equal(coord.preferredView, "session");
+
+  // Manually switching to Stream or All stays put across tab switches.
+  await coord.setView("all");
+  await coord.observe({
+    activeSpace: spaces[0],
+    activeTabId: "tabA",
+    visibleTerminals: ["tA"],
+    focusedTerminal: "tA",
+    terminalList,
+    panes,
+    agents,
+  });
+  const stayAll = resolveSidebarView({
+    preferredView: coord.preferredView,
+    tabId: "tabA",
+    tabStreams: coord.tabStreams,
+    streams: coord.streams,
+    previewSessions: coord.previewSessions,
+    frames: coord.frames,
+    visibleTerminals: ["tA"],
+    focusedTerminal: "tA",
+  });
+  assert.equal(stayAll.view, "all");
+  assert.equal(stayAll.hasSessionAccess, true);
+  assert.equal(stayAll.hasStreamAccess, true);
 });
 
 test("dropReference, setSessionStatus, convention-gated bulk actions, and only_active openWork", async () => {
@@ -1129,13 +1316,13 @@ test("dropReference, setSessionStatus, convention-gated bulk actions, and only_a
   emptyCoord.streams.set("h1/empty", { key: "h1/empty", id: "empty", title: "Empty", sessions: [] });
   emptyCoord.hostStreams = [{ key: "h1/empty", id: "empty", title: "Empty", status: "active" }];
   emptyCoord.previewStreamKey = "h1/empty";
-  emptyCoord.activeView = "stream";
+  emptyCoord.preferredView = "stream";
   const delRes = await emptyCoord.deleteStream("h1/empty");
   assert.equal(delRes.ok, true);
   assert.equal(emptyCoord.streams.has("h1/empty"), false);
   assert.equal(emptyCoord.hostStreams.length, 0);
   assert.equal(emptyCoord.previewStreamKey, null);
-  assert.equal(emptyCoord.activeView, "all");
+  assert.equal(emptyCoord.preferredView, "all");
 });
 
 test("runningSessionTerminals matches real herdr-app AgentInfo and PaneInfo Program shapes", async () => {

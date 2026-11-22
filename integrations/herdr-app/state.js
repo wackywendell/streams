@@ -818,10 +818,63 @@ export function tabSidebarView({
 }
 
 /**
+ * Resolve the Stream associated with a Space when the active tab itself is not enrolled.
+ * Prefers the last-focused Stream in that Space if it still has a live enrolled terminal there,
+ * falling back to the first live enrolled Stream in Space tab/pane layout order.
+ */
+export function resolveSpaceStreamKey({
+  space,
+  panes = [],
+  terminalList = [],
+  agents = [],
+  frames,
+  lastFocusedStreamBySpace,
+} = {}) {
+  if (!space || !Array.isArray(space.tabs) || space.tabs.length === 0) return null;
+  const running = runningSessionTerminals({ terminalList, panes, agents });
+  if (running.size === 0) return null;
+
+  const termByAddr = new Map();
+  for (const t of terminalList) {
+    const addr = localTerminalAddress(t);
+    if (addr) termByAddr.set(addr, t);
+  }
+
+  const panesByTab = new Map();
+  for (const pane of panes) {
+    const list = panesByTab.get(pane.tab) ?? [];
+    list.push(pane);
+    panesByTab.set(pane.tab, list);
+  }
+
+  const liveStreams = new Set();
+  for (const tab of space.tabs) {
+    const tabId = typeof tab === "string" ? tab : tab?.id;
+    if (!tabId) continue;
+    for (const pane of panesByTab.get(tabId) ?? []) {
+      const rawTerm = pane.terminal ?? pane.content?.terminal;
+      const addr = typeof rawTerm === "string" ? rawTerm : localTerminalAddress(rawTerm);
+      if (!addr || !running.has(addr)) continue;
+      const fromFrame = frames?.get?.(addr)?.session?.stream ?? null;
+      const fromLabel = termByAddr.get(addr)?.labels?.[LABEL_STREAM] ?? null;
+      const streamKey = fromFrame || fromLabel;
+      if (streamKey) liveStreams.add(streamKey);
+    }
+  }
+
+  if (liveStreams.size === 0) return null;
+  const lastFocused = lastFocusedStreamBySpace?.get?.(space.id) ?? null;
+  if (lastFocused && liveStreams.has(lastFocused)) return lastFocused;
+  return liveStreams.values().next().value ?? null;
+}
+
+/**
  * Resolve the three-view right panel state (`session`, `stream`, `all`, or `loading`),
- * keeping the active view tab separate from detached preview overrides.
+ * applying sticky user intent (`preferredView`) with graceful fallback (`session -> stream -> all`)
+ * while keeping detached preview overrides separate.
  */
 export function resolveSidebarView({
+  preferredView = "session",
   activeView = null,
   tabId,
   tabStreams,
@@ -830,52 +883,86 @@ export function resolveSidebarView({
   frames,
   visibleTerminals = [],
   focusedTerminal = null,
+  spaceStreamKey = null,
   previewStreamKey = null,
   previewSessionKey = null,
   inFlight = false,
 }) {
+  const desired = activeView ?? preferredView ?? "session";
   const currentStreamKey = tabStreams?.get?.(tabId) ?? "";
-  const currentStream = currentStreamKey ? streams?.get?.(currentStreamKey) ?? null : null;
-  const currentViewing = currentStream
+  const currentTabStream = currentStreamKey ? streams?.get?.(currentStreamKey) ?? null : null;
+  const currentViewing = currentTabStream
     ? activeTabSession({
         visibleTerminals,
         focusedTerminal,
         frames,
-        stream: currentStream.key,
+        stream: currentTabStream.key,
       })
     : null;
-  const isEnrolled = Boolean(currentStream && currentViewing);
+  const isEnrolled = Boolean(currentTabStream && currentViewing);
+  const spaceStream = !currentTabStream && spaceStreamKey ? streams?.get?.(spaceStreamKey) ?? null : null;
+  const contextStream = currentTabStream ?? spaceStream;
 
-  if (!tabStreams?.has?.(tabId) && inFlight && !previewStreamKey && !previewSessionKey) {
+  const hasSessionAccess = isEnrolled || Boolean(previewSessionKey);
+  const hasStreamAccess = Boolean(contextStream) || Boolean(spaceStreamKey) || Boolean(previewStreamKey);
+
+  if (
+    !tabStreams?.has?.(tabId) &&
+    inFlight &&
+    !previewStreamKey &&
+    !previewSessionKey &&
+    desired !== "all"
+  ) {
     return {
       view: "loading",
+      preferredView: desired,
+      hasSessionAccess: false,
+      hasStreamAccess,
       isEnrolled: false,
-      currentStream: null,
+      currentStream: contextStream,
       currentSession: null,
     };
   }
 
-  const effectiveView = activeView ?? (isEnrolled ? "session" : "all");
+  let effectiveView = "all";
+  if (desired === "session") {
+    if (hasSessionAccess) effectiveView = "session";
+    else if (hasStreamAccess) effectiveView = "stream";
+    else effectiveView = "all";
+  } else if (desired === "stream") {
+    if (hasStreamAccess) effectiveView = "stream";
+    else effectiveView = "all";
+  } else {
+    effectiveView = "all";
+  }
 
   if (effectiveView === "all") {
     return {
       view: "all",
+      preferredView: desired,
+      hasSessionAccess,
+      hasStreamAccess,
       isEnrolled,
-      currentStream,
+      currentStream: contextStream,
       currentSession: currentViewing?.session ?? null,
     };
   }
 
   if (effectiveView === "stream") {
-    const stream = (previewStreamKey ? streams?.get?.(previewStreamKey) : null) ?? currentStream;
-    const isPreview = Boolean(stream && (!currentStream || stream.key !== currentStream.key));
+    const stream = (previewStreamKey ? streams?.get?.(previewStreamKey) : null) ?? contextStream;
+    const isPreview = Boolean(
+      previewStreamKey && (!contextStream || previewStreamKey !== contextStream.key)
+    );
     return {
       view: "stream",
+      preferredView: desired,
+      hasSessionAccess,
+      hasStreamAccess,
       stream,
       isPreview,
-      canReturnToCurrent: isPreview && isEnrolled,
+      canReturnToCurrent: isPreview && Boolean(contextStream),
       isEnrolled,
-      currentStream,
+      currentStream: contextStream,
       currentSession: currentViewing?.session ?? null,
     };
   }
@@ -887,14 +974,17 @@ export function resolveSidebarView({
     const stream = parentStreamKey ? streams?.get?.(parentStreamKey) ?? null : null;
     return {
       view: "session",
+      preferredView: desired,
+      hasSessionAccess,
+      hasStreamAccess,
       session,
       stream,
       terminal: null,
       isPreview: true,
       isUnopened: true,
-      canReturnToCurrent: isEnrolled,
+      canReturnToCurrent: Boolean(contextStream),
       isEnrolled,
-      currentStream,
+      currentStream: contextStream,
       currentSession: currentViewing?.session ?? null,
     };
   }
@@ -902,28 +992,28 @@ export function resolveSidebarView({
   if (currentViewing) {
     return {
       view: "session",
+      preferredView: desired,
+      hasSessionAccess: true,
+      hasStreamAccess: true,
       session: currentViewing.session,
-      stream: currentStream,
+      stream: currentTabStream,
       terminal: currentViewing.terminal,
       isPreview: false,
       isUnopened: false,
       canReturnToCurrent: false,
       isEnrolled: true,
-      currentStream,
+      currentStream: contextStream,
       currentSession: currentViewing.session,
     };
   }
 
   return {
-    view: "session",
-    session: null,
-    stream: null,
-    terminal: null,
-    isPreview: false,
-    isUnopened: false,
-    canReturnToCurrent: false,
+    view: "all",
+    preferredView: desired,
+    hasSessionAccess: false,
+    hasStreamAccess,
     isEnrolled: false,
-    currentStream: null,
+    currentStream: contextStream,
     currentSession: null,
   };
 }
@@ -1300,11 +1390,12 @@ export class StreamsCoordinator {
 
     this.streams = new Map(); // streamKey -> normalized Stream
     this.tabStreams = new Map(); // tabId -> streamKey | null
+    this.lastFocusedStreamBySpace = new Map(); // spaceId -> streamKey
     this.hostStreams = []; // normalized Stream summaries
     this.hostUnreadable = [];
     this.hostStreamsError = null;
     this.hostStreamsLoaded = false;
-    this.activeView = null; // "session" | "stream" | "all" | null
+    this.preferredView = "session"; // "session" | "stream" | "all"
     this.inspectedStreamId = null; // alias for previewStreamKey
     this.previewStreamKey = null; // streamKey
     this.previewSessionKey = null; // sessionKey
@@ -1317,7 +1408,6 @@ export class StreamsCoordinator {
 
     this.lastNoticeToken = "";
     this.lastSpaceTabKey = null;
-    this._pendingProgrammaticView = null;
     this._lastPublishedSharedJson = null;
     this._lastRunning = new Map();
   }
@@ -1448,7 +1538,7 @@ export class StreamsCoordinator {
   }
 
   setView(view) {
-    this.activeView = view;
+    this.preferredView = view;
     if (view === "all") {
       this.previewStreamKey = null;
       this.inspectedStreamId = null;
@@ -1467,17 +1557,17 @@ export class StreamsCoordinator {
     return Promise.resolve(null);
   }
 
-  returnToCurrent() {
+  returnToCurrent({ isEnrolled = true } = {}) {
     this.previewStreamKey = null;
     this.inspectedStreamId = null;
     this.previewSessionKey = null;
-    this.activeView = null;
+    this.preferredView = isEnrolled ? "session" : "stream";
     this.notifyViews();
   }
 
   backToStream() {
     this.previewSessionKey = null;
-    this.activeView = "stream";
+    this.preferredView = "stream";
     this.notifyViews();
   }
 
@@ -1486,14 +1576,14 @@ export class StreamsCoordinator {
       this.inspectedStreamId = null;
       this.previewStreamKey = null;
       this.previewSessionKey = null;
-      this.activeView = "all";
+      this.preferredView = "all";
       this.notifyViews();
       return null;
     }
     this.inspectedStreamId = streamKey;
     this.previewStreamKey = streamKey;
     this.previewSessionKey = null;
-    this.activeView = "stream";
+    this.preferredView = "stream";
     this.notifyViews();
     const out = await this.exec(this.streamsBin, ["stream", "show", streamKey, "--json"]);
     if (out.code !== 0) {
@@ -1524,7 +1614,7 @@ export class StreamsCoordinator {
       this.previewStreamKey = streamKey;
       this.inspectedStreamId = streamKey;
     }
-    this.activeView = "session";
+    this.preferredView = "session";
     this.notifyViews();
     const out = await this.exec(this.streamsBin, ["session", "show", sessionKey, "--json"]);
     if (out.code !== 0) {
@@ -1562,11 +1652,10 @@ export class StreamsCoordinator {
       frames: this.frames,
     });
     if (live) {
-      this.activeView = "stream";
+      this.preferredView = "stream";
       this.previewStreamKey = null;
       this.inspectedStreamId = null;
       this.previewSessionKey = null;
-      this._pendingProgrammaticView = { view: "stream", expiresAt: Date.now() + 5000 };
       run?.("pane.focus", { pane: live.pane });
       this.notifyViews();
       return { focused: true, pane: live.pane, terminal: live.terminal };
@@ -1589,11 +1678,10 @@ export class StreamsCoordinator {
       agents,
     });
     if (live) {
-      this.activeView = "session";
+      this.preferredView = "session";
       this.previewStreamKey = null;
       this.inspectedStreamId = null;
       this.previewSessionKey = null;
-      this._pendingProgrammaticView = { view: "session", expiresAt: Date.now() + 5000 };
       run?.("pane.focus", { pane: live.pane });
       this.notifyViews();
       return { focused: true, pane: live.pane, terminal: live.terminal };
@@ -1814,7 +1902,7 @@ export class StreamsCoordinator {
     if (this.previewStreamKey === streamKey) {
       this.previewStreamKey = null;
       this.previewSessionKey = null;
-      this.activeView = "all";
+      this.preferredView = "all";
     }
     this.lastCompletedKey = null;
     this.notifyViews();
@@ -1885,14 +1973,15 @@ export class StreamsCoordinator {
       this.previewStreamKey = null;
       this.inspectedStreamId = null;
       this.previewSessionKey = null;
-      if (this._pendingProgrammaticView && now <= this._pendingProgrammaticView.expiresAt) {
-        this.activeView = this._pendingProgrammaticView.view;
-      } else {
-        this.activeView = null;
-      }
-      this._pendingProgrammaticView = null;
     }
     this.lastSpaceTabKey = spaceTabKey;
+
+    if (activeSpace?.id && activeTabId) {
+      const knownTabStream = this.tabStreams.get(activeTabId);
+      if (knownTabStream) {
+        this.lastFocusedStreamBySpace.set(activeSpace.id, knownTabStream);
+      }
+    }
 
     const running = runningSessionTerminals({ terminalList, panes, agents });
     this._lastRunning = running;
@@ -1933,6 +2022,8 @@ export class StreamsCoordinator {
       observation,
       running,
       terminalList,
+      panes,
+      agents,
       tabIds,
       key,
       force,
@@ -1943,12 +2034,14 @@ export class StreamsCoordinator {
   /**
    * Read records for the active tab and off-tab live Sessions through the public `streams` CLI,
    * reconcile `streams.stream` labels on visible running-Session terminals, and publish
-   * `streams.terminals` to herdr-app shared state.
+   * `terminal.marks` to herdr-app shared state.
    */
   async refresh({
     observation,
     running,
     terminalList = [],
+    panes = [],
+    agents = [],
     tabIds,
     key,
     force = false,
@@ -2044,6 +2137,9 @@ export class StreamsCoordinator {
           activeStream = stream;
           this.streams.set(stream.key, stream);
           this.tabStreams.set(activeTabId, stream.key);
+          if (observation.activeSpace?.id) {
+            this.lastFocusedStreamBySpace.set(observation.activeSpace.id, stream.key);
+          }
 
           // Index the Stream's member Sessions by key for pane headers and off-tab frames.
           byKey.set(primarySession.key, primarySession);
@@ -2091,6 +2187,34 @@ export class StreamsCoordinator {
           }
         }
 
+        // 3b. When the active tab is unenrolled, ensure the Space's fallback Stream (if any)
+        //     is loaded in `this.streams` so `Stream` fallback renders complete Sessions & goal.
+        if (!primarySession && observation.activeSpace) {
+          const spaceStreamKey = resolveSpaceStreamKey({
+            space: observation.activeSpace,
+            panes,
+            terminalList,
+            agents,
+            frames: this.frames,
+            lastFocusedStreamBySpace: this.lastFocusedStreamBySpace,
+          });
+          if (spaceStreamKey && (!this.streams.has(spaceStreamKey) || force || noticeChanged)) {
+            const spaceStreamOut = await this.exec(this.streamsBin, [
+              "stream",
+              "show",
+              spaceStreamKey,
+              "--json",
+            ]);
+            if (gen !== this.readGeneration) return null;
+            if (spaceStreamOut.code === 0) {
+              const spaceStream = normalizeStream(parseJsonSafe(spaceStreamOut.stdout));
+              if (spaceStream) {
+                this.streams.set(spaceStream.key, spaceStream);
+              }
+            }
+          }
+        }
+
         // 4. Reconcile `streams.stream` hc labels on visible terminals running known Sessions.
         if (primarySession) {
           const termByAddr = new Map();
@@ -2132,7 +2256,7 @@ export class StreamsCoordinator {
 
         const shouldFetchHostStreams =
           !primarySession ||
-          this.activeView === "all" ||
+          this.preferredView === "all" ||
           hasUnknownOffTabStream ||
           (this.hostStreamsLoaded && (force || noticeChanged));
 
