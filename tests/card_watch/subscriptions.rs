@@ -37,6 +37,8 @@ struct NativeFixture {
     fail_next_snapshot: Arc<AtomicBool>,
     snapshot_gate: Arc<Mutex<Option<PendingSnapshot>>>,
     viewers: Arc<Mutex<Vec<crate::support::pty::Pty>>>,
+    stream: Value,
+    /// `null` until the fixture enrolls the conversation.
     session: Value,
     id: String,
     _socket_directory: tempfile::TempDir,
@@ -66,7 +68,7 @@ impl NativeFixture {
                 None,
             )
         } else {
-            json!({"stream_id": stream["id"]})
+            Value::Null
         };
         let directory = tempfile::tempdir_in("/tmp").unwrap();
         let socket = directory.path().join("herdr.sock");
@@ -317,6 +319,7 @@ impl NativeFixture {
             fail_next_snapshot,
             snapshot_gate,
             viewers,
+            stream,
             session,
             id,
             _socket_directory: directory,
@@ -340,6 +343,14 @@ impl NativeFixture {
 
     fn watch(&self) -> Watcher {
         Watcher::start(self.command(), &self.id)
+    }
+
+    fn calls(&self, method: &str) -> usize {
+        self.server
+            .requests()
+            .iter()
+            .filter(|(m, _)| m == method)
+            .count()
     }
 
     fn wait_for(&self, predicate: impl Fn(&[(String, Value)]) -> bool, message: &str) {
@@ -370,12 +381,10 @@ impl NativeFixture {
 }
 
 #[test]
-fn card_open_reports_failure() {
-    // Outside Herdr: fails without saving mode.
-    let outside = Fixture::new();
-    let id = uuid::Uuid::new_v4().to_string();
-    let target = format!("pi/{id}");
-    let (code, value) = outside.cli(&["card", "open", &target], None);
+fn card_open_outside_herdr_fails() {
+    let fixture = Fixture::new();
+    let target = format!("pi/{}", uuid::Uuid::new_v4());
+    let (code, value) = fixture.cli(&["card", "open", &target], None);
     assert_ne!(code, 0, "{value}");
     assert!(
         value["error"]["message"]
@@ -384,8 +393,10 @@ fn card_open_reports_failure() {
             .contains("require Herdr"),
         "{value}"
     );
+}
 
-    // Inside Herdr, unenrolled Session: saves automatic mode and reports failure.
+#[test]
+fn card_open_for_an_unenrolled_session_fails_and_saves_automatic_mode() {
     let f = NativeFixture::with_enrollment(false);
     let target = f.target();
     let (code, value) = f
@@ -413,14 +424,6 @@ fn card_close_keeps_watch_from_reopening() {
         |requests| requests.iter().any(|(m, _)| m == "plugin.pane.open"),
         "card watch should auto-open on startup",
     );
-    assert_eq!(
-        f.server
-            .requests()
-            .iter()
-            .filter(|(m, _)| m == "plugin.pane.open")
-            .count(),
-        1
-    );
 
     // Close via `card close`: closes the pane and saves manual mode.
     let target = f.target();
@@ -433,13 +436,8 @@ fn card_close_keeps_watch_from_reopening() {
     assert_eq!(mode["session"], "manual");
     assert_eq!(mode["effective"], "manual");
 
-    // Trigger a refresh via a Session update; watch must NOT reopen the card.
-    let snapshots_before = f
-        .server
-        .requests()
-        .iter()
-        .filter(|(m, _)| m == "session.snapshot")
-        .count();
+    // A Session save starts a refresh pass, which asks Herdr for a snapshot.
+    let snapshots_before = f.calls("session.snapshot");
     f.fixture.ok(
         &[
             "session",
@@ -451,27 +449,18 @@ fn card_close_keeps_watch_from_reopening() {
         None,
     );
     f.wait_for(
-        |requests| {
-            requests
-                .iter()
-                .filter(|(m, _)| m == "session.snapshot")
-                .count()
-                > snapshots_before
-        },
+        |_| f.calls("session.snapshot") > snapshots_before,
         "card watch should observe the Session save",
     );
+    // The watch handles one wake at a time, so it finishes that pass before the end of
+    // stdin; only then is the count of opens final.
+    let (code, stderr) = watcher.finish();
+    assert_eq!(code, 0, "{stderr}");
     assert_eq!(
-        f.server
-            .requests()
-            .iter()
-            .filter(|(m, _)| m == "plugin.pane.open")
-            .count(),
+        f.calls("plugin.pane.open"),
         1,
         "card watch must not reopen a card after card close saved manual mode"
     );
-
-    let (code, stderr) = watcher.finish();
-    assert_eq!(code, 0, "{stderr}");
 }
 
 #[test]
@@ -509,40 +498,35 @@ fn watch_closes_card_when_stdin_ends() {
 }
 
 #[test]
-fn card_watch_opens_when_conversation_enrolls_externally() {
+fn card_watch_opens_the_card_when_the_session_is_enrolled_after_it_starts() {
     let f = NativeFixture::with_enrollment(false);
     f.fixture.ok(
         &["config", "set", "herdr.cards.auto_open", "automatic"],
         None,
     );
     let watcher = f.watch();
+    // The first snapshot follows the file watch's baseline, so the enrollment below is
+    // seen as a file event, not at startup.
     f.wait_for(
-        |requests| requests.iter().any(|(m, _)| m == "events.subscribe"),
-        "card watch should subscribe even before enrollment",
-    );
-    assert!(
-        !f.server
-            .requests()
-            .iter()
-            .any(|(m, _)| m == "plugin.pane.open")
+        |_| f.calls("session.snapshot") > 0,
+        "card watch should observe Herdr after watching its files",
     );
 
-    // Enroll the conversation externally; file watch notices and opens the card.
     f.fixture.ok(
         &[
             "session",
             "create",
-            &format!("pi/{}", f.id),
+            &f.target(),
             "--stream",
-            f.session["stream_id"].as_str().unwrap(),
+            f.stream["key"].as_str().unwrap(),
             "--title",
             "Enrolled later",
         ],
         None,
     );
     f.wait_for(
-        |requests| requests.iter().any(|(m, _)| m == "plugin.pane.open"),
-        "card watch should open the card once the Session file appears",
+        |_| f.calls("plugin.pane.open") > 0,
+        "card watch should open the card once the Session is enrolled",
     );
     let (code, stderr) = watcher.finish();
     assert_eq!(code, 0, "{stderr}");

@@ -42,49 +42,18 @@ impl FileWatch {
         })
     }
 
-    /// Watch the parent of each file and each directory, registering new watches before
-    /// releasing old ones so a replacement never leaves a gap.
+    /// Watch the parent of each file and each directory; see [`subscribe`].
     pub fn watch<'a>(
         &mut self,
         files: impl IntoIterator<Item = &'a Path>,
         directories: impl IntoIterator<Item = &'a Path>,
     ) -> Result<(), String> {
-        let mut parents = BTreeSet::new();
         let requested = files
             .into_iter()
             .map(|path| path.parent().ok_or("watched file has no parent"))
-            .chain(directories.into_iter().map(Ok));
-        for requested in requested {
-            let mut parent = requested?;
-            loop {
-                match fs::metadata(parent) {
-                    Ok(metadata) if metadata.is_dir() => break,
-                    Ok(_) => {
-                        return Err(format!(
-                            "required watch parent is not a directory: {}",
-                            parent.display()
-                        ));
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                        parent = parent.parent().ok_or("no existing watch parent")?;
-                    }
-                    Err(error) => return Err(format!("{}: {error}", parent.display())),
-                }
-            }
-            parents.insert(parent.to_path_buf());
-        }
-        for path in parents.difference(&self.parents) {
-            self.watcher
-                .watch(path, RecursiveMode::NonRecursive)
-                .map_err(|e| format!("required file subscription at {}: {e}", path.display()))?;
-        }
-        for path in self.parents.difference(&parents) {
-            self.watcher
-                .unwatch(path)
-                .map_err(|e| format!("required file unsubscribe: {e}"))?;
-        }
-        self.parents = parents;
-        Ok(())
+            .chain(directories.into_iter().map(Ok))
+            .collect::<Result<Vec<_>, _>>()?;
+        subscribe(&mut self.watcher, &mut self.parents, &requested)
     }
 
     #[cfg(test)]
@@ -107,6 +76,76 @@ impl FileWatch {
         self.parents.clear();
         Ok(())
     }
+}
+
+/// Directory watch registration, separate from `notify` so tests can change the filesystem
+/// while a watch is being registered.
+trait Subscriptions {
+    fn watch(&mut self, path: &Path) -> notify::Result<()>;
+    fn unwatch(&mut self, path: &Path) -> notify::Result<()>;
+}
+
+impl Subscriptions for RecommendedWatcher {
+    fn watch(&mut self, path: &Path) -> notify::Result<()> {
+        Watcher::watch(self, path, RecursiveMode::NonRecursive)
+    }
+
+    fn unwatch(&mut self, path: &Path) -> notify::Result<()> {
+        Watcher::unwatch(self, path)
+    }
+}
+
+/// Watch the nearest existing directory for each of `requested`, registering new watches
+/// before releasing old ones. A missing directory can appear after its ancestor is resolved
+/// but before that watch exists, so its creation event is lost: resolve again until the
+/// watched set no longer changes.
+fn subscribe(
+    subscriptions: &mut impl Subscriptions,
+    watched: &mut BTreeSet<PathBuf>,
+    requested: &[&Path],
+) -> Result<(), String> {
+    loop {
+        let parents = existing_parents(requested)?;
+        if parents == *watched {
+            return Ok(());
+        }
+        for path in parents.difference(watched) {
+            subscriptions
+                .watch(path)
+                .map_err(|e| format!("required file subscription at {}: {e}", path.display()))?;
+        }
+        for path in watched.difference(&parents) {
+            subscriptions
+                .unwatch(path)
+                .map_err(|e| format!("required file unsubscribe: {e}"))?;
+        }
+        *watched = parents;
+    }
+}
+
+/// The nearest existing directory at or above each requested directory.
+fn existing_parents(requested: &[&Path]) -> Result<BTreeSet<PathBuf>, String> {
+    let mut parents = BTreeSet::new();
+    for &requested in requested {
+        let mut parent = requested;
+        loop {
+            match fs::metadata(parent) {
+                Ok(metadata) if metadata.is_dir() => break,
+                Ok(_) => {
+                    return Err(format!(
+                        "required watch parent is not a directory: {}",
+                        parent.display()
+                    ));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    parent = parent.parent().ok_or("no existing watch parent")?;
+                }
+                Err(error) => return Err(format!("{}: {error}", parent.display())),
+            }
+        }
+        parents.insert(parent.to_path_buf());
+    }
+    Ok(parents)
 }
 
 /// Whether `event` may change one of `paths`: it names the file, or it creates, removes or
@@ -149,4 +188,61 @@ pub(super) fn version(path: &Path) -> Result<Option<Vec<u8>>, String> {
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes).map_err(|e| e.to_string())?;
     Ok(Some(bytes))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Debug, PartialEq)]
+    enum Call {
+        Watch(PathBuf),
+        Unwatch(PathBuf),
+    }
+
+    /// Records registrations; registering `race.0` creates directory `race.1`, as a
+    /// concurrent writer can between resolving a parent and its watch taking effect.
+    struct Racing {
+        calls: Vec<Call>,
+        race: Option<(PathBuf, PathBuf)>,
+    }
+
+    impl Subscriptions for Racing {
+        fn watch(&mut self, path: &Path) -> notify::Result<()> {
+            self.calls.push(Call::Watch(path.to_path_buf()));
+            if let Some((_, created)) = self.race.take_if(|(at, _)| at == path) {
+                fs::create_dir_all(created).unwrap();
+            }
+            Ok(())
+        }
+
+        fn unwatch(&mut self, path: &Path) -> notify::Result<()> {
+            self.calls.push(Call::Unwatch(path.to_path_buf()));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_parent_created_while_its_ancestor_watch_registers_is_watched_before_returning() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().to_path_buf();
+        let parent = root.join("sessions/pi");
+        let mut subscriptions = Racing {
+            calls: Vec::new(),
+            race: Some((root.clone(), parent.clone())),
+        };
+        let mut watched = BTreeSet::new();
+
+        subscribe(&mut subscriptions, &mut watched, &[&parent]).unwrap();
+
+        assert_eq!(watched, BTreeSet::from([parent.clone()]));
+        assert_eq!(
+            subscriptions.calls,
+            [
+                Call::Watch(root.clone()),
+                Call::Watch(parent),
+                Call::Unwatch(root)
+            ]
+        );
+    }
 }
