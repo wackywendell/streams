@@ -31,7 +31,11 @@ export const loadRustNative: NativeFactory = async ({
       assertCurrent();
       if (env.HC_TERMINAL_ID) {
         try {
-          await cli.writeSessionLabel(session ? sessionKeyOf(session) : null, signal);
+          await cli.writeSessionLabel(
+            session ? sessionKeyOf(session) : null,
+            signal,
+            session ? `${session.host_id}/${session.stream_id}` : undefined
+          );
         } catch (error) {
           warning(error instanceof Error ? error.message : String(error));
         }

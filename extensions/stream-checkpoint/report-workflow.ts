@@ -11,8 +11,10 @@ import {
   type EditBody,
   type EditResult,
   type LocalContext,
+  type StreamWire,
 } from "./streams.ts";
 import type {
+  EnrollmentCandidateStream,
   EnrollmentInference,
   InferenceResult,
   ReportInference,
@@ -43,6 +45,10 @@ export type ReportEnvironment = {
   signal: AbortSignal;
   automaticEnrollment: boolean;
   capture(): Promise<ReportSnapshot>;
+  enrollmentCandidates?(): Promise<{
+    attachedStream?: StreamWire | null;
+    candidates?: EnrollmentCandidateStream[];
+  }>;
   generate: ReportGenerator;
   createStream(input: {
     title: string;
@@ -86,24 +92,51 @@ export async function runReport(
     }
     if (!force && !environment.automaticEnrollment) return false;
 
+    let preboundStream: StreamWire | null = null;
+    let candidates: EnrollmentCandidateStream[] = [];
+    if (!capture.catalog.stream && environment.enrollmentCandidates) {
+      const hint = await environment.enrollmentCandidates();
+      if (signal.aborted || !(await capture.attached())) return false;
+      preboundStream = hint?.attachedStream ?? null;
+      candidates = preboundStream ? [] : (hint?.candidates ?? []);
+    }
+
+    const effectiveStream = capture.catalog.stream ?? preboundStream;
+    const enrollCatalog: LocalContext = effectiveStream
+      ? { ...capture.catalog, stream: effectiveStream }
+      : capture.catalog;
+    const candidateKeys = new Set(candidates.map((c) => c.key));
+
     const enrolled = await generate({
       type: "enroll",
-      catalog: capture.catalog,
+      catalog: enrollCatalog,
       messages: capture.evidence.messages,
       instructions,
+      ...(candidates.length > 0 ? { candidate_streams: candidates } : {}),
     });
     if (signal.aborted || !(await capture.attached()) || (!enrolled.meaningful && !force)) {
       return false;
     }
     const sessionTitle = enrolled.session?.title?.trim();
     const streamTitle = enrolled.stream?.title?.trim();
-    if (!sessionTitle || (!capture.catalog.stream && !streamTitle)) {
+    const chosenStreamKey = enrolled.stream_key?.trim() || "";
+    const matchedCandidateKey =
+      chosenStreamKey && candidateKeys.has(chosenStreamKey) ? chosenStreamKey : null;
+    if (!sessionTitle) {
+      throw new Error("Enrollment requires meaningful Stream and Session titles");
+    }
+    if (!effectiveStream && !matchedCandidateKey && !streamTitle) {
+      if (chosenStreamKey) {
+        throw new Error(`Enrollment returned unknown Stream key: ${chosenStreamKey}`);
+      }
       throw new Error("Enrollment requires meaningful Stream and Session titles");
     }
 
     let streamKey: string;
-    if (capture.catalog.stream) {
-      streamKey = streamKeyOf(capture.catalog.stream);
+    if (effectiveStream) {
+      streamKey = streamKeyOf(effectiveStream);
+    } else if (matchedCandidateKey) {
+      streamKey = matchedCandidateKey;
     } else {
       const created = await environment.createStream({
         title: streamTitle!,

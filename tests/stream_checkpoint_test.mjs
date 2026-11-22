@@ -342,6 +342,154 @@ test('runReport executes enroll -> session -> stream and logs partial not_writte
   assert.equal(state.stream.goal.text, 'Simplify Streams CLI');
 });
 
+test('runReport enroll attaches to an existing candidate Stream via stream_key without creating a new Stream', async () => {
+  const existingStream = makeStream({
+    id: 'existing-effort',
+    title: { text: 'Streams', manual: false },
+    goal: { text: 'Build Streams UI', short: 'Streams UI', manual: false },
+  });
+  const state = {
+    session: null,
+    stream: null,
+    sessions: [],
+    references: [],
+    artifacts: [],
+    naming: { stream: 'automatic', session: 'automatic' },
+  };
+  const calls = [];
+  let createdStreamCount = 0;
+  let capturedEnrollRequest = null;
+
+  const saved = await runReport(
+    { kind: 'report', force: false },
+    {
+      signal: new AbortController().signal,
+      automaticEnrollment: true,
+      capture: async () => ({
+        native: 'sess-attach',
+        cwd: '/work',
+        evidence: { messages: [{ role: 'user', content: 'Update dotfiles tab marks' }], leafId: 'm1' },
+        catalog: structuredClone(state),
+        valid: () => true,
+        attached: async () => true,
+      }),
+      enrollmentCandidates: async () => ({
+        attachedStream: null,
+        candidates: [
+          {
+            key: 'host/existing-effort',
+            title: 'Streams',
+            goal: 'Build Streams UI',
+            status: 'active',
+            in_current_space: true,
+          },
+        ],
+      }),
+      generate: async (req) => {
+        calls.push(req.type);
+        if (req.type === 'enroll') {
+          capturedEnrollRequest = req;
+          const payload = buildInferencePayload(req);
+          assert.ok(payload.tools[0].parameters.properties.stream_key);
+          const parsed = parseInferenceResponse(
+            req,
+            {
+              role: 'assistant',
+              stopReason: 'toolUse',
+              content: [
+                {
+                  type: 'toolCall',
+                  id: 'tc1',
+                  name: 'record_card',
+                  arguments: {
+                    meaningful: true,
+                    stream_key: 'host/existing-effort',
+                    session: { title: 'Marks Migration' },
+                  },
+                },
+              ],
+            },
+            payload
+          );
+          return parsed;
+        }
+        if (req.type === 'session') {
+          return { changes: { state: 'Migrating tab marks' }, reference_proposals: [] };
+        }
+        return { changes: {} };
+      },
+      createStream: async () => {
+        createdStreamCount += 1;
+        return { key: 'host/should-not-happen' };
+      },
+      createSession: async (id, input) => {
+        assert.equal(input.stream, 'host/existing-effort');
+        state.stream = existingStream;
+        state.session = makeSession({
+          id,
+          stream_id: 'existing-effort',
+          title: { text: input.title, manual: false },
+        });
+        return { key: `host/pi/${id}` };
+      },
+      editSession: async (key, body) => {
+        calls.push(['editSession', key]);
+        const applied = applyEditLocally(state.session, body);
+        state.session = applied.after;
+        return applied.result;
+      },
+      editStream: async () => ({ key: 'host/existing-effort', not_written: {}, partial: false }),
+      notice: () => {},
+    }
+  );
+
+  assert.equal(saved, true);
+  assert.equal(createdStreamCount, 0);
+  assert.equal(capturedEnrollRequest?.candidate_streams?.length, 1);
+  assert.equal(state.session.stream_id, 'existing-effort');
+  assert.deepEqual(calls, ['enroll', 'session', ['editSession', 'host/pi/sess-attach'], 'stream']);
+});
+
+test('runReport enroll rejects an unknown stream_key when no fallback stream is proposed', async () => {
+  const state = { session: null, stream: null, sessions: [], references: [], artifacts: [] };
+  await assert.rejects(
+    runReport(
+      { kind: 'report', force: false },
+      {
+        signal: new AbortController().signal,
+        automaticEnrollment: true,
+        capture: async () => ({
+          native: 'sess-bad-key',
+          cwd: '/work',
+          evidence: { messages: [{ role: 'user', content: 'Work on something' }], leafId: 'm1' },
+          catalog: structuredClone(state),
+          valid: () => true,
+          attached: async () => true,
+        }),
+        enrollmentCandidates: async () => ({
+          attachedStream: null,
+          candidates: [{ key: 'host/real-stream', title: 'Real', status: 'active' }],
+        }),
+        generate: async () => ({
+          meaningful: true,
+          stream_key: 'host/hallucinated-stream',
+          session: { title: 'Lane' },
+        }),
+        createStream: async () => {
+          throw new Error('should not create');
+        },
+        createSession: async () => {
+          throw new Error('should not create session');
+        },
+        editSession: async () => ({ key: '', not_written: {}, partial: false }),
+        editStream: async () => ({ key: '', not_written: {}, partial: false }),
+        notice: () => {},
+      }
+    ),
+    /unknown Stream key/i
+  );
+});
+
 test('Reporter cadence triggers every N responses and respects exclusive lock', async () => {
   const ran = [];
   const manager = SessionManager.inMemory('/repo/work', { id: 'sess-r' });

@@ -93,7 +93,7 @@ export async function chooseInitial(
   );
 
   try {
-    await cli.writeSessionLabel(createdSession.key, signal);
+    await cli.writeSessionLabel(createdSession.key, signal, streamKey);
   } catch {
     // Label write failure is non-fatal
   }

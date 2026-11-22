@@ -166,6 +166,7 @@ export class Reporter {
           await this.options.prepare?.();
           return captureInputs(ctx, cli, this.options.settings().context, fence, "report");
         },
+        enrollmentCandidates: () => cli.enrollmentCandidates(fence.signal),
         generate: (request) =>
           generate(
             ctx,

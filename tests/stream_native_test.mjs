@@ -72,7 +72,10 @@ test('loadRustNative writes streams.session label and projects Pi session name u
   await adapter.start(new AbortController().signal);
   assert.deepEqual(cliCalls, [
     { program: 'streams', args: ['session', 'show', `pi/${uuid}`, '--json'] },
-    { program: 'hc', args: ['label', 'term-9', `streams.session=host/pi/${uuid}`] },
+    {
+      program: 'hc',
+      args: ['label', 'term-9', `streams.session=host/pi/${uuid}`, 'streams.stream=host/effort'],
+    },
   ]);
   assert.deepEqual(setNames, ['Catalog']);
   await adapter.dispose();

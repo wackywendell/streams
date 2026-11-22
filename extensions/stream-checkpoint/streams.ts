@@ -668,23 +668,180 @@ export class StreamCli {
   }
 
   /**
-   * Write `streams.session=<sessionKey>` (or empty string to clear) on `HC_TERMINAL_ID` via `hc label`.
-   * No-op when `HC_TERMINAL_ID` is unset.
+   * Write `streams.session=<sessionKey>` (and optionally `streams.stream=<streamKey>`) on
+   * `HC_TERMINAL_ID` via `hc label`. No-op when `HC_TERMINAL_ID` is unset.
    */
-  async writeSessionLabel(sessionKey: string | null, signal?: AbortSignal): Promise<void> {
+  async writeSessionLabel(
+    sessionKey: string | null,
+    signal?: AbortSignal,
+    streamKey?: string | null
+  ): Promise<void> {
     const terminalId = this.env.HC_TERMINAL_ID;
     if (!terminalId) return;
-    const out = await this.runner(
-      "hc",
-      ["label", terminalId, `streams.session=${sessionKey ?? ""}`],
-      { cwd: this.cwd, timeout: 5_000, signal }
-    );
+    const pairs = [`streams.session=${sessionKey ?? ""}`];
+    if (streamKey !== undefined) {
+      pairs.push(`streams.stream=${streamKey ?? ""}`);
+    }
+    const out = await this.runner("hc", ["label", terminalId, ...pairs], {
+      cwd: this.cwd,
+      timeout: 5_000,
+      signal,
+    });
     if (out.code !== 0) {
       throw new StreamsCliError(
         out.stderr.trim() || `hc label ${terminalId} streams.session failed`,
         "error"
       );
     }
+  }
+
+  private async readHcTerminal(
+    address: string,
+    signal?: AbortSignal
+  ): Promise<{ labels?: Record<string, string>; parent?: string | null } | null> {
+    try {
+      const out = await this.runner("hc", ["get", address, "--json"], {
+        cwd: this.cwd,
+        timeout: 3_000,
+        signal,
+      });
+      if (out.code !== 0) return null;
+      const parsed = parseJson(out.stdout);
+      return object(parsed) ? (parsed as { labels?: Record<string, string>; parent?: string | null }) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Discover an explicit pre-bound Stream (from `streams.stream` on `HC_TERMINAL_ID`) or candidate
+   * local Streams for automatic enrollment, annotated with whether each Stream is open in the
+   * current Herdr space or owned by this terminal's parent.
+   */
+  async enrollmentCandidates(signal?: AbortSignal): Promise<{
+    attachedStream: StreamWire | null;
+    candidates: {
+      key: string;
+      title: string;
+      goal?: string;
+      status: string;
+      in_current_space?: boolean;
+      from_parent_terminal?: boolean;
+    }[];
+  }> {
+    const spaceStreamKeys = new Set<string>();
+    const parentStreamKeys = new Set<string>();
+    const terminalId = this.env.HC_TERMINAL_ID;
+
+    if (terminalId) {
+      const self = await this.readHcTerminal(terminalId, signal);
+      const selfStream = self?.labels?.["streams.stream"]?.trim();
+      if (selfStream) {
+        try {
+          const attachedStream = await this.showStream(selfStream, signal);
+          return { attachedStream, candidates: [] };
+        } catch {
+          // Stale label; continue with candidate discovery.
+        }
+      }
+
+      const parentAddr = typeof self?.parent === "string" && self.parent.trim() ? self.parent.trim() : null;
+      const spaceId = self?.labels?.["herdr.space"]?.trim() || null;
+
+      if (parentAddr) {
+        const parentInfo = await this.readHcTerminal(parentAddr, signal);
+        const parentStream = parentInfo?.labels?.["streams.stream"]?.trim();
+        if (parentStream) {
+          parentStreamKeys.add(parentStream);
+          if (spaceId && parentInfo?.labels?.["herdr.space"]?.trim() === spaceId) {
+            spaceStreamKeys.add(parentStream);
+          }
+        }
+      }
+
+      if (spaceId) {
+        try {
+          const lsOut = await this.runner(
+            "hc",
+            ["ls", "--label", `herdr.space=${spaceId}`, "--json"],
+            { cwd: this.cwd, timeout: 3_000, signal }
+          );
+          if (lsOut.code === 0) {
+            const parsed = parseJson(lsOut.stdout);
+            const rawItems = Array.isArray(parsed)
+              ? parsed
+              : object(parsed) && Array.isArray(parsed.terminals)
+                ? parsed.terminals
+                : [];
+            const siblingAddresses = rawItems
+              .map((entry) => (object(entry) && typeof entry.address === "string" ? entry.address : null))
+              .filter((addr): addr is string => Boolean(addr && addr !== terminalId))
+              .slice(0, 16);
+            const siblings = await Promise.all(
+              siblingAddresses.map((addr) => this.readHcTerminal(addr, signal))
+            );
+            for (const sib of siblings) {
+              const sibStream = sib?.labels?.["streams.stream"]?.trim();
+              if (sibStream) spaceStreamKeys.add(sibStream);
+            }
+          }
+        } catch {
+          // Non-fatal: fall back to catalog listing only.
+        }
+      }
+    }
+
+    const byKey = new Map<string, StreamWire>();
+    try {
+      const listed = await this.listStreams({ signal });
+      for (const stream of listed.items) {
+        byKey.set(streamKeyOf(stream), stream);
+      }
+    } catch {
+      // Non-fatal: still include any Stream explicitly found via hc labels.
+    }
+
+    // Ensure Streams referenced by current-space siblings or parent are present even if marked done.
+    const extraKeys = [...new Set([...parentStreamKeys, ...spaceStreamKeys])].filter(
+      (key) => !byKey.has(key)
+    );
+    if (extraKeys.length > 0) {
+      const fetched = await Promise.all(
+        extraKeys.map(async (key) => {
+          try {
+            return await this.showStream(key, signal);
+          } catch {
+            return null;
+          }
+        })
+      );
+      for (const stream of fetched) {
+        if (stream) byKey.set(streamKeyOf(stream), stream);
+      }
+    }
+
+    const ranked = [...byKey.entries()]
+      .sort(([keyA, a], [keyB, b]) => {
+        const parentDiff = Number(parentStreamKeys.has(keyB)) - Number(parentStreamKeys.has(keyA));
+        if (parentDiff !== 0) return parentDiff;
+        const spaceDiff = Number(spaceStreamKeys.has(keyB)) - Number(spaceStreamKeys.has(keyA));
+        if (spaceDiff !== 0) return spaceDiff;
+        const aTime = (a as { updated_at_ms?: number }).updated_at_ms ?? 0;
+        const bTime = (b as { updated_at_ms?: number }).updated_at_ms ?? 0;
+        if (bTime !== aTime) return bTime - aTime;
+        return a.title.text.localeCompare(b.title.text);
+      })
+      .slice(0, 25)
+      .map(([key, stream]) => ({
+        key,
+        title: stream.title.text,
+        ...(stream.goal?.text ? { goal: stream.goal.text } : {}),
+        status: stream.status,
+        ...(spaceStreamKeys.has(key) ? { in_current_space: true } : {}),
+        ...(parentStreamKeys.has(key) ? { from_parent_terminal: true } : {}),
+      }));
+
+    return { attachedStream: null, candidates: ranked };
   }
 }
 

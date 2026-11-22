@@ -133,7 +133,7 @@ export function createStreamExtension(options: ExtensionOptions = {}) {
       info: { streamKey: string; sessionKey: string; sessionTitle: string }
     ) => {
       try {
-        await client(ctx).writeSessionLabel(info.sessionKey);
+        await client(ctx).writeSessionLabel(info.sessionKey, undefined, info.streamKey);
       } catch {
         // Non-fatal label write
       }
