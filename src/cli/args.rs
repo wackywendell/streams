@@ -582,7 +582,7 @@ pub(super) enum CatalogCommand {
         #[arg(long, value_parser = parse_strategy)]
         sync: Strategy,
 
-        /// Git remote URL (required when --sync git)
+        /// Git remote URL (optional when --sync git; omit for local-only commits)
         #[arg(long)]
         remote: Option<String>,
 
@@ -591,8 +591,31 @@ pub(super) enum CatalogCommand {
         branch: String,
     },
 
-    /// Synchronize the catalog with its configured Git remote
-    Sync,
+    /// Configure sync transport on an existing catalog (none -> git, or update git remote)
+    Configure {
+        /// Sync backend: none or git
+        #[arg(long, value_parser = parse_strategy)]
+        sync: Strategy,
+
+        /// Set or update the Git remote URL
+        #[arg(long, conflicts_with = "clear_remote")]
+        remote: Option<String>,
+
+        /// Remove the configured Git remote (keep local-only Git commits)
+        #[arg(long, conflicts_with = "remote")]
+        clear_remote: bool,
+
+        /// Git branch name (defaults to main when enabling git)
+        #[arg(long)]
+        branch: Option<String>,
+    },
+
+    /// Synchronize the catalog with its configured sync backend
+    Sync {
+        /// Non-blocking background sync invoked by automatic post-write trigger
+        #[arg(long, hide = true)]
+        background: bool,
+    },
 
     /// Check catalog records and sync state
     Check {

@@ -17,8 +17,10 @@ use std::{
     collections::BTreeMap,
     env, fs,
     io::{self, Read, Write},
+    os::unix::process::CommandExt,
     path::{Path, PathBuf},
-    process::ExitCode,
+    process::{Command as ProcessCommand, ExitCode, Stdio},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use clap::Parser;
@@ -198,6 +200,7 @@ pub(super) struct Output {
     pub notices: Vec<String>,
     pub accepted_save: bool,
     pub wrote: bool,
+    pub trigger_auto_sync: bool,
 }
 
 impl Output {
@@ -211,6 +214,7 @@ impl Output {
             notices: Vec::new(),
             accepted_save: false,
             wrote: false,
+            trigger_auto_sync: true,
         }
     }
 
@@ -224,6 +228,7 @@ impl Output {
             notices: Vec::new(),
             accepted_save: false,
             wrote: false,
+            trigger_auto_sync: true,
         }
     }
 
@@ -237,6 +242,7 @@ impl Output {
             notices: Vec::new(),
             accepted_save: false,
             wrote: false,
+            trigger_auto_sync: true,
         }
     }
 
@@ -250,6 +256,7 @@ impl Output {
             notices: Vec::new(),
             accepted_save: false,
             wrote: false,
+            trigger_auto_sync: true,
         }
     }
 }
@@ -288,11 +295,15 @@ fn run_code() -> i32 {
 
     match app.dispatch(cli.command, json_mode) {
         Ok(mut output) => {
-            if output.accepted_save
-                && output.wrote
-                && let Some(warning) = app.notify_saved()
-            {
-                output.notices.push(warning);
+            if output.accepted_save && output.wrote {
+                if let Some(warning) = app.notify_saved() {
+                    output.notices.push(warning);
+                }
+                if output.trigger_auto_sync
+                    && let Some(warning) = app.maybe_trigger_auto_sync()
+                {
+                    output.notices.push(warning);
+                }
             }
             if let Some(bytes) = output.raw_bytes {
                 if let Err(error) = io::stdout().write_all(&bytes) {
@@ -373,6 +384,84 @@ impl App {
             Ok(()) => None,
             Err(error) => Some(format!("warning: could not update hc saved label: {error}")),
         }
+    }
+
+    fn maybe_trigger_auto_sync(&self) -> Option<String> {
+        let settings = self.config.load().ok()?;
+        let root = &settings.catalog_root;
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let prior_attention = streams::sync::read_last_sync(root)
+            .ok()
+            .flatten()
+            .filter(|state| state.needs_attention)
+            .map(|state| {
+                if state.detail.is_empty() {
+                    format!("local: {}, sharing: {}", state.local, state.sharing)
+                } else {
+                    format!(
+                        "local: {}, sharing: {}: {}",
+                        state.local, state.sharing, state.detail
+                    )
+                }
+            });
+        let due = match streams::sync::is_auto_sync_due(
+            root,
+            settings.sync.auto_interval_minutes,
+            now_ms,
+        ) {
+            Ok(due) => due,
+            Err(error) => {
+                return Some(format!(
+                    "warning: could not check catalog sync schedule: {error}"
+                ));
+            }
+        };
+        if !due {
+            return prior_attention.map(|detail| {
+                format!(
+                    "warning: last catalog sync needs attention ({detail}); run `streams catalog sync` to inspect"
+                )
+            });
+        }
+        let exe = match env::current_exe() {
+            Ok(exe) => exe,
+            Err(error) => {
+                return Some(format!(
+                    "warning: could not locate streams binary for background sync: {error}"
+                ));
+            }
+        };
+        let mut command = ProcessCommand::new(exe);
+        command
+            .args(["catalog", "sync", "--background"])
+            .current_dir(&self.cwd)
+            .env_clear()
+            .envs(&self.environment)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        // Detach into its own session so callers waiting on pipes or process groups never block.
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        if let Err(error) = command.spawn() {
+            return Some(format!(
+                "warning: could not start background catalog sync: {error}"
+            ));
+        }
+        prior_attention.map(|detail| {
+            format!(
+                "warning: previous catalog sync needed attention ({detail}); retrying in background"
+            )
+        })
     }
 
     fn dispatch(&self, command: Command, json_mode: bool) -> Result<Output> {

@@ -1,7 +1,7 @@
 //! Transport-only publication of host-partitioned records. No operation/history replay.
 
 use super::{
-    COMMAND_TIMEOUT_SECONDS,
+    COMMAND_TIMEOUT_SECONDS, LastSyncState, RemoteUpdate, SyncBackend,
     git_io::{Git, GitError},
     outcomes::{LocalStatus, Result as SyncResult, SharingStatus},
 };
@@ -9,7 +9,7 @@ use crate::{
     codec::RESET_HINT,
     config::Strategy,
     file_io::{
-        atomic_write, decode_json, ensure_directory, existing_write_lock, read_bytes,
+        atomic_write, decode_json, ensure_directory, existing_write_lock, read_bytes, read_json,
         sync_directory, write_json,
     },
     file_store::records::{FileRecordStore, catalog_path_host, decode_record_tree},
@@ -24,9 +24,11 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 const CONFIG: &str = ".catalog-local/transport.json";
+const LAST_SYNC: &str = ".catalog-local/last-sync.json";
 type Tree = BTreeMap<PathBuf, Vec<u8>>;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "strategy", rename_all = "lowercase", deny_unknown_fields)]
@@ -128,73 +130,188 @@ impl RecordSync {
                 }
                 Mode::None
             }
-            Strategy::Git => {
-                check_text(branch, "branch", false).map_err(invalid)?;
-                git.run(
-                    &["check-ref-format", &format!("refs/heads/{branch}")],
-                    None,
-                    None,
-                    &[0],
-                )
-                .map_err(git_error)?;
-                ensure_directory(&root.join(".catalog-staging"), true)?;
-                git.run(
-                    &["init", "--quiet", "--initial-branch", branch],
-                    None,
-                    None,
-                    &[0],
-                )
-                .map_err(git_error)?;
-                for (key, value) in [
-                    ("user.name", "Streams"),
-                    ("user.email", "streams@localhost"),
-                    ("commit.gpgsign", "false"),
-                    ("core.hooksPath", "/dev/null"),
-                    ("core.autocrlf", "false"),
-                    ("core.attributesFile", "/dev/null"),
-                    ("core.excludesFile", "/dev/null"),
-                    ("core.fsync", "committed"),
-                ] {
-                    git.run(&["config", "--local", key, value], None, None, &[0])
-                        .map_err(git_error)?;
-                }
-                if let Some(remote) = &remote {
-                    check_text(remote, "remote", false).map_err(invalid)?;
-                    git.run(&["remote", "add", "origin", remote], None, None, &[0])
-                        .map_err(git_error)?;
-                }
-                git.run(&["read-tree", "--empty"], None, None, &[0])
-                    .map_err(git_error)?;
-                if root.join("hosts").exists() {
-                    git.run(&["add", "--force", "-A", "--", "hosts"], None, None, &[0])
-                        .map_err(git_error)?;
-                }
-                let tree = git
-                    .text(&["write-tree"], None, None, &[0])
-                    .map_err(git_error)?;
-                Self::tree(&git, &tree)?;
-                git.run(
-                    &[
-                        "commit",
-                        "--quiet",
-                        "--allow-empty",
-                        "-m",
-                        "Start record catalog v2",
-                    ],
-                    None,
-                    None,
-                    &[0],
-                )
-                .map_err(git_error)?;
-                Mode::Git {
-                    remote,
-                    branch: branch.into(),
-                }
-            }
+            Strategy::Git => Self::init_git_repo(root, &git, remote, branch)?,
         };
         write_json(&root.join(CONFIG), &Selection { version: 2, mode })?;
         drop(_lock);
         Self::open(root, host)
+    }
+
+    /// Reconfigure an already-initialized catalog's sync transport.
+    ///
+    /// Supports transitioning `none -> git` (preserving existing single-host records in
+    /// the initial commit) and updating a `git` catalog's remote. Switching `git -> none`
+    /// is intentionally unimplemented.
+    pub fn configure(
+        root: &Path,
+        host: &str,
+        strategy: Strategy,
+        remote: RemoteUpdate,
+        branch: Option<&str>,
+    ) -> Result<Self, StorageError> {
+        let existing = Self::open(root, host)?;
+        match (existing.strategy(), strategy) {
+            (Strategy::None, Strategy::None) => {
+                if matches!(remote, RemoteUpdate::Set(_)) {
+                    return Err(invalid("local-only catalog cannot have a remote"));
+                }
+                if branch.is_some() {
+                    return Err(invalid("local-only catalog cannot set a branch"));
+                }
+                Ok(existing)
+            }
+            (Strategy::Git, Strategy::None) => {
+                Err(invalid("switching from git to none is not implemented"))
+            }
+            (Strategy::None, Strategy::Git) => {
+                let branch = branch.unwrap_or("main");
+                let remote_url = match remote {
+                    RemoteUpdate::Set(url) => Some(url),
+                    RemoteUpdate::Keep | RemoteUpdate::Clear => None,
+                };
+                let records = FileRecordStore::new(root, host)?.inventory()?;
+                for record in &records {
+                    if crate::storage::records::RecordAddress::for_record(record).host() != host {
+                        return Err(invalid(
+                            "a fresh baseline may contain only this producer's records",
+                        ));
+                    }
+                }
+                let _transport = crate::file_io::lock(&root.join(".catalog-local/transport.lock"))?;
+                let _lock = existing_write_lock(&root.join(".catalog.lock"))?;
+                if root.join(".git").exists() {
+                    return Err(invalid(
+                        "fresh record transport cannot adopt an existing Git repository",
+                    ));
+                }
+                let git = Git::new(root, COMMAND_TIMEOUT_SECONDS);
+                let mode = Self::init_git_repo(root, &git, remote_url, branch)?;
+                write_json(&root.join(CONFIG), &Selection { version: 2, mode })?;
+                drop(_lock);
+                drop(_transport);
+                Self::open(root, host)
+            }
+            (Strategy::Git, Strategy::Git) => {
+                let _transport = crate::file_io::lock(&root.join(".catalog-local/transport.lock"))?;
+                let _lock = existing_write_lock(&root.join(".catalog.lock"))?;
+                let current_branch = existing.branch().expect("Git transport has branch");
+                if let Some(requested_branch) = branch
+                    && requested_branch != current_branch
+                {
+                    return Err(invalid(format!(
+                        "changing catalog branch from {current_branch:?} to {requested_branch:?} is not supported"
+                    )));
+                }
+                // Verify existing repository health before modifying remote configuration.
+                existing.local_head()?;
+                let next_remote = match remote {
+                    RemoteUpdate::Keep => existing.remote().map(str::to_owned),
+                    RemoteUpdate::Clear => None,
+                    RemoteUpdate::Set(url) => {
+                        check_text(&url, "remote", false).map_err(invalid)?;
+                        Some(url)
+                    }
+                };
+                match (existing.remote(), next_remote.as_deref()) {
+                    (None, Some(url)) => {
+                        existing
+                            .git
+                            .run(&["remote", "add", "origin", url], None, None, &[0])
+                            .map_err(git_error)?;
+                    }
+                    (Some(old), Some(url)) if old != url => {
+                        existing
+                            .git
+                            .run(&["remote", "set-url", "origin", url], None, None, &[0])
+                            .map_err(git_error)?;
+                    }
+                    (Some(_), None) => {
+                        existing
+                            .git
+                            .run(&["remote", "remove", "origin"], None, None, &[0])
+                            .map_err(git_error)?;
+                    }
+                    _ => {}
+                }
+                let mode = Mode::Git {
+                    remote: next_remote,
+                    branch: current_branch.to_owned(),
+                };
+                write_json(&root.join(CONFIG), &Selection { version: 2, mode })?;
+                drop(_lock);
+                drop(_transport);
+                Self::open(root, host)
+            }
+        }
+    }
+
+    fn init_git_repo(
+        root: &Path,
+        git: &Git,
+        remote: Option<String>,
+        branch: &str,
+    ) -> Result<Mode, StorageError> {
+        check_text(branch, "branch", false).map_err(invalid)?;
+        git.run(
+            &["check-ref-format", &format!("refs/heads/{branch}")],
+            None,
+            None,
+            &[0],
+        )
+        .map_err(git_error)?;
+        ensure_directory(&root.join(".catalog-staging"), true)?;
+        git.run(
+            &["init", "--quiet", "--initial-branch", branch],
+            None,
+            None,
+            &[0],
+        )
+        .map_err(git_error)?;
+        for (key, value) in [
+            ("user.name", "Streams"),
+            ("user.email", "streams@localhost"),
+            ("commit.gpgsign", "false"),
+            ("core.hooksPath", "/dev/null"),
+            ("core.autocrlf", "false"),
+            ("core.attributesFile", "/dev/null"),
+            ("core.excludesFile", "/dev/null"),
+            ("core.fsync", "committed"),
+        ] {
+            git.run(&["config", "--local", key, value], None, None, &[0])
+                .map_err(git_error)?;
+        }
+        if let Some(remote) = &remote {
+            check_text(remote, "remote", false).map_err(invalid)?;
+            git.run(&["remote", "add", "origin", remote], None, None, &[0])
+                .map_err(git_error)?;
+        }
+        git.run(&["read-tree", "--empty"], None, None, &[0])
+            .map_err(git_error)?;
+        if root.join("hosts").exists() {
+            git.run(&["add", "--force", "-A", "--", "hosts"], None, None, &[0])
+                .map_err(git_error)?;
+        }
+        let tree = git
+            .text(&["write-tree"], None, None, &[0])
+            .map_err(git_error)?;
+        Self::tree(git, &tree)?;
+        git.run(
+            &[
+                "commit",
+                "--quiet",
+                "--allow-empty",
+                "-m",
+                "Start record catalog v2",
+            ],
+            None,
+            None,
+            &[0],
+        )
+        .map_err(git_error)?;
+        Ok(Mode::Git {
+            remote,
+            branch: branch.into(),
+        })
     }
     pub fn strategy(&self) -> Strategy {
         match self.selection.mode {
@@ -426,20 +543,54 @@ impl RecordSync {
     }
 
     pub fn sync(&self) -> SyncResult {
+        self.sync_impl(true)
+            .expect("blocking sync always produces a result")
+    }
+
+    pub fn try_sync(&self) -> Option<SyncResult> {
+        self.sync_impl(false)
+    }
+
+    fn sync_impl(&self, blocking: bool) -> Option<SyncResult> {
         if self.strategy() == Strategy::None {
-            return match FileRecordStore::new(&self.root, &self.host)
-                .and_then(|store| store.inventory())
-            {
-                Ok(_) => SyncResult::new(SharingStatus::LocalOnly, LocalStatus::Unchanged),
-                Err(error) => SyncResult::new(SharingStatus::Blocked, LocalStatus::RepairRequired)
-                    .with_detail(error.to_string()),
-            };
+            return Some(
+                match FileRecordStore::new(&self.root, &self.host)
+                    .and_then(|store| store.inventory())
+                {
+                    Ok(_) => SyncResult::new(SharingStatus::LocalOnly, LocalStatus::Unchanged),
+                    Err(error) => {
+                        SyncResult::new(SharingStatus::Blocked, LocalStatus::RepairRequired)
+                            .with_detail(error.to_string())
+                    }
+                },
+            );
         }
+        let lock_path = self.root.join(".catalog-local/transport.lock");
+        let _transport = if blocking {
+            match crate::file_io::lock(&lock_path) {
+                Ok(guard) => guard,
+                Err(error) => {
+                    return Some(
+                        SyncResult::new(SharingStatus::Blocked, LocalStatus::Unchanged)
+                            .with_detail(error.to_string()),
+                    );
+                }
+            }
+        } else {
+            match crate::file_io::try_lock(&lock_path) {
+                Ok(Some(guard)) => guard,
+                Ok(None) => return None,
+                Err(error) => {
+                    return Some(
+                        SyncResult::new(SharingStatus::Blocked, LocalStatus::Unchanged)
+                            .with_detail(error.to_string()),
+                    );
+                }
+            }
+        };
         let mut local_status = LocalStatus::Unchanged;
         let mut failure = SharingStatus::Blocked;
         let result = (|| -> Result<SharingStatus, StorageError> {
-            let _transport =
-                crate::file_io::lock(&self.root.join(".catalog-local/transport.lock"))?;
             let local = {
                 let _catalog = existing_write_lock(&self.root.join(".catalog.lock"))?;
                 let head = self.local_head()?;
@@ -522,7 +673,7 @@ impl RecordSync {
                 .map_err(git_error)?;
             Ok(SharingStatus::Confirmed)
         })();
-        match result {
+        let outcome = match result {
             Ok(sharing) => SyncResult::new(sharing, local_status),
             Err(error) => SyncResult::new(
                 if error.is_uncertain() {
@@ -533,8 +684,78 @@ impl RecordSync {
                 local_status,
             )
             .with_detail(error.to_string()),
-        }
+        };
+        let _ = record_last_sync(&self.root, &outcome, now_ms());
+        Some(outcome)
     }
+}
+
+impl SyncBackend for RecordSync {
+    fn strategy(&self) -> Strategy {
+        RecordSync::strategy(self)
+    }
+
+    fn sync(&self) -> SyncResult {
+        RecordSync::sync(self)
+    }
+
+    fn try_sync(&self) -> Option<SyncResult> {
+        RecordSync::try_sync(self)
+    }
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+pub(crate) fn read_last_sync(root: &Path) -> Result<Option<LastSyncState>, StorageError> {
+    read_json(&root.join(LAST_SYNC))
+}
+
+fn record_last_sync(root: &Path, outcome: &SyncResult, at_ms: u64) -> Result<(), StorageError> {
+    let previous_succeeded = read_last_sync(root)
+        .ok()
+        .flatten()
+        .and_then(|state| state.succeeded_at_ms);
+    let needs_attention = outcome.needs_attention();
+    let state = LastSyncState {
+        attempted_at_ms: at_ms,
+        succeeded_at_ms: if needs_attention {
+            previous_succeeded
+        } else {
+            Some(at_ms)
+        },
+        local: outcome.local,
+        sharing: outcome.sharing,
+        needs_attention,
+        detail: outcome.detail.clone(),
+    };
+    write_json(&root.join(LAST_SYNC), &state)
+}
+
+pub(crate) fn is_auto_sync_due(
+    root: &Path,
+    interval_minutes: u32,
+    now_ms: u64,
+) -> Result<bool, StorageError> {
+    if interval_minutes == 0 {
+        return Ok(false);
+    }
+    let Some(bytes) = read_bytes(&root.join(CONFIG))? else {
+        return Ok(false);
+    };
+    let selection: Selection = decode_json(&bytes)?;
+    if selection.version != 2 || matches!(selection.mode, Mode::None) {
+        return Ok(false);
+    }
+    let Some(last) = read_last_sync(root)? else {
+        return Ok(true);
+    };
+    let interval_ms = u64::from(interval_minutes).saturating_mul(60_000);
+    Ok(now_ms.saturating_sub(last.attempted_at_ms) >= interval_ms)
 }
 fn changed(before: &Tree, after: &Tree) -> BTreeSet<PathBuf> {
     before

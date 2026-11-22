@@ -8,9 +8,8 @@ use std::{
 use serde_json::json;
 use streams::{
     application::{self, OpenedRecords},
-    config::Strategy,
     model::{Record, ValidationError},
-    sync::records::RecordSync,
+    sync::{self, RemoteUpdate, outcomes::LocalStatus},
 };
 
 use super::{App, Output, Result, args::CatalogCommand, result_data, select};
@@ -30,11 +29,6 @@ impl App {
                 remote,
                 branch,
             } => {
-                if sync == Strategy::Git && remote.is_none() {
-                    return Err(super::CliError::Usage(
-                        "--remote is required when --sync git".into(),
-                    ));
-                }
                 let opened = application::initialize_records(
                     &self.config,
                     sync,
@@ -52,11 +46,58 @@ impl App {
                     opened.host().as_str(),
                     sync
                 );
-                Ok(Output::plain(value, plain))
+                let mut output = Output::plain(value, plain);
+                output.trigger_auto_sync = false;
+                Ok(output)
             }
-            CatalogCommand::Sync => {
+            CatalogCommand::Configure {
+                sync,
+                remote,
+                clear_remote,
+                branch,
+            } => {
+                let remote_update = if clear_remote {
+                    RemoteUpdate::Clear
+                } else if let Some(url) = remote {
+                    RemoteUpdate::Set(url)
+                } else {
+                    RemoteUpdate::Keep
+                };
+                let (opened, strategy, configured_remote, configured_branch) =
+                    application::configure_records(
+                        &self.config,
+                        sync,
+                        remote_update,
+                        branch.as_deref(),
+                    )?;
+                let value = json!({
+                    "catalog": opened.root(),
+                    "host_id": opened.host().as_str(),
+                    "sync": strategy,
+                    "remote": configured_remote,
+                    "branch": configured_branch,
+                });
+                let plain = match (&configured_remote, &configured_branch) {
+                    (Some(remote), Some(branch)) => format!(
+                        "configured catalog at {} (sync {strategy}, remote {remote}, branch {branch})",
+                        opened.root().display()
+                    ),
+                    (None, Some(branch)) => format!(
+                        "configured catalog at {} (sync {strategy}, local-only, branch {branch})",
+                        opened.root().display()
+                    ),
+                    _ => format!(
+                        "configured catalog at {} (sync {strategy})",
+                        opened.root().display()
+                    ),
+                };
+                let mut output = Output::plain(value, plain);
+                output.trigger_auto_sync = false;
+                Ok(output)
+            }
+            CatalogCommand::Sync { background } => {
                 let opened = application::open_records(&self.config)?;
-                sync(&opened)
+                sync_catalog(&opened, background)
             }
             CatalogCommand::Check { stream } => {
                 let opened = application::open_records(&self.config)?;
@@ -92,21 +133,37 @@ impl App {
     }
 }
 
-pub(super) fn sync(opened: &OpenedRecords) -> Result<Output> {
-    let transport = RecordSync::open(opened.root(), opened.host().as_str())
+pub(super) fn sync_catalog(opened: &OpenedRecords, background: bool) -> Result<Output> {
+    let backend = sync::open_backend(opened.root(), opened.host().as_str())
         .map_err(application::ApplicationError::from)?;
-    let result = transport.sync();
+    let result = if background {
+        match backend.try_sync() {
+            Some(result) => result,
+            None => {
+                let mut output = Output::silent();
+                output.trigger_auto_sync = false;
+                return Ok(output);
+            }
+        }
+    } else {
+        backend.sync()
+    };
     let ok = !result.needs_attention();
     let value = result_data(&result)?;
     let plain = if ok {
         format!(
-            "sync complete (local: {:?}, sharing: {:?})",
+            "sync complete (local: {}, sharing: {})",
+            result.local, result.sharing
+        )
+    } else if result.detail.is_empty() {
+        format!(
+            "sync needs attention (local: {}, sharing: {})",
             result.local, result.sharing
         )
     } else {
         format!(
-            "sync needs attention (local: {:?}, sharing: {:?})",
-            result.local, result.sharing
+            "sync needs attention (local: {}, sharing: {}): {}",
+            result.local, result.sharing, result.detail
         )
     };
     let mut output = Output::plain(value, plain);
@@ -114,7 +171,8 @@ pub(super) fn sync(opened: &OpenedRecords) -> Result<Output> {
         output.code = 3;
     }
     output.accepted_save = true;
-    output.wrote = result.local == streams::sync::outcomes::LocalStatus::Committed;
+    output.wrote = result.local == LocalStatus::Committed;
+    output.trigger_auto_sync = false;
     Ok(output)
 }
 
@@ -150,14 +208,36 @@ pub(super) fn check(opened: &OpenedRecords, selector: Option<&str>) -> Result<Ou
         }
     }
     let stream_count = if selected.is_some() { 1 } else { streams.len() };
+    let last_sync =
+        sync::read_last_sync(opened.root()).map_err(application::ApplicationError::from)?;
     let value = json!({
         "valid": true,
         "streams": stream_count,
         "sessions": sessions.len(),
+        "last_sync": last_sync,
     });
-    let plain = format!(
+    let mut plain = format!(
         "catalog valid ({stream_count} stream(s), {} session(s))",
         sessions.len()
     );
-    Ok(Output::plain(value, plain))
+    let mut output = Output::plain(value, plain.clone());
+    if let Some(state) = &last_sync
+        && state.needs_attention
+    {
+        let detail = if state.detail.is_empty() {
+            format!("local: {}, sharing: {}", state.local, state.sharing)
+        } else {
+            format!(
+                "local: {}, sharing: {}: {}",
+                state.local, state.sharing, state.detail
+            )
+        };
+        plain.push_str(&format!("\nlast sync needs attention ({detail})"));
+        output.plain = Some(plain);
+        output.code = 3;
+        output.notices.push(format!(
+            "warning: last catalog sync needs attention ({detail}); run `streams catalog sync` to inspect"
+        ));
+    }
+    Ok(output)
 }

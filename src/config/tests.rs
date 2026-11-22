@@ -17,6 +17,10 @@ fn config_keys_roundtrip_exact_wire_names() {
         (ConfigKey::StreamNaming, "naming.stream"),
         (ConfigKey::SessionNaming, "naming.session"),
         (ConfigKey::LifecycleDecayDays, "lifecycle.decay_days"),
+        (
+            ConfigKey::SyncAutoIntervalMinutes,
+            "sync.auto_interval_minutes",
+        ),
         (ConfigKey::HerdrViewerMode, "herdr.viewer.mode"),
         (ConfigKey::HerdrViewerPlacement, "herdr.viewer.placement"),
         (ConfigKey::HerdrNamingTab, "herdr.naming.tab"),
@@ -64,6 +68,7 @@ fn config_keys_roundtrip_exact_wire_names() {
         "frontend",
         "naming",
         "lifecycle",
+        "sync",
         "herdr",
         "herdr.viewer",
         "herdr.naming",
@@ -100,7 +105,10 @@ fn unknown_toml_keys_preserve_diagnostics() {
             "[catalog]\nunknown = \"x\"\n",
             "unknown streams config key: catalog.unknown",
         ),
-        ("[sync]\nattempts = 1\n", "invalid config section: sync"),
+        (
+            "[sync]\nattempts = 1\n",
+            "unknown streams config key: sync.attempts",
+        ),
         (
             "[frontend]\nMode = \"none\"\n",
             "unknown streams config key: frontend.Mode",

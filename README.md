@@ -29,6 +29,13 @@ streams catalog init --sync git --remote git@github.com:you/work-catalog.git --b
 
 Git without `--remote` records local commits without fetching or pushing. If you select a remote, it must already exist and its branch must be empty or contain a supported format-5 Streams catalog. Setup records the sync strategy and a persistent local host identity. Ordinary commands never initialise a catalog or fall back to another storage mode.
 
+To enable Git sync on an existing `none` catalog (preserving existing local records) or update the configured remote on a `git` catalog:
+
+```sh
+streams catalog configure --sync git --remote git@github.com:you/work-catalog.git --branch main
+streams catalog configure --sync git --clear-remote
+```
+
 Inspect or change host-local settings:
 
 ```sh
@@ -36,10 +43,11 @@ streams config get
 streams config get catalog.root
 streams config set catalog.root ~/work-catalog
 streams config set frontend.mode auto
+streams config set sync.auto_interval_minutes 10
 streams config path
 ```
 
-Core settings live in `$XDG_CONFIG_HOME/streams/config.toml` and include `catalog.root`, `frontend.mode`, `naming.stream`, `naming.session`, and `lifecycle.decay_days` (default `14`, `0` disables), alongside `herdr.*` and `pi.*` namespaces. `naming.stream` and `naming.session` are two-value settings (`automatic` or `manual`) controlling whether automatic reports may propose titles for Streams and Sessions. Defaults are `$XDG_DATA_HOME/streams/catalog`, `auto`, `automatic` for both naming settings, and 14-day inactivity decay.
+Core settings live in `$XDG_CONFIG_HOME/streams/config.toml` and include `catalog.root`, `frontend.mode`, `naming.stream`, `naming.session`, `lifecycle.decay_days` (default `14`, `0` disables), and `sync.auto_interval_minutes` (default `10`, `0` disables background sync after writes), alongside `herdr.*` and `pi.*` namespaces. `naming.stream` and `naming.session` are two-value settings (`automatic` or `manual`) controlling whether automatic reports may propose titles for Streams and Sessions. Defaults are `$XDG_DATA_HOME/streams/catalog`, `auto`, `automatic` for both naming settings, 14-day inactivity decay, and 10-minute automatic write-triggered sync.
 
 Format-5 catalog records use host-partitioned JSON files:
 
@@ -209,11 +217,12 @@ Classic Herdr support lives under [`integrations/herdr-work-cards`](integrations
 streams catalog check
 streams catalog tidy
 streams catalog sync --json
-streams stream list --refresh
-streams stream show STREAM --refresh --json
+streams catalog configure --sync git --remote git@github.com:you/work-catalog.git
 ```
 
-A save succeeds when its target record is persisted locally. With `none`, sync validates records without Git or network access. With `git`, sync commits local changes and, when a remote is configured, combines disjoint host-partitioned files and publishes. Ordinary reads are local; `--refresh` runs sync before reading.
+A save succeeds when its target record is persisted locally. With `none`, sync validates records without Git or network access. With `git`, sync commits local changes and, when a remote is configured, combines disjoint host-partitioned files and publishes. Ordinary reads are always local.
+
+When a non-`none` sync backend is configured, writes trigger a detached background sync if at least `sync.auto_interval_minutes` (default `10`; set `0` to disable) have elapsed since the previous sync attempt. Sync outcomes are recorded in `.catalog-local/last-sync.json`, and failures are surfaced on subsequent writes and by `streams catalog check`. Pi also runs sync asynchronously on session start and with a bounded 10-second timeout after parking on session shutdown.
 
 ## Develop
 

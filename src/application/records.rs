@@ -8,7 +8,7 @@ use crate::{
     model::{Record, Stream, Title},
     runtime::state::RuntimeState,
     storage::records::{RecordAddress, RecordInventory, RecordListing, RecordStore},
-    sync::records::RecordSync,
+    sync::{RemoteUpdate, records::RecordSync},
 };
 
 use super::Result;
@@ -161,6 +161,32 @@ pub fn initialize_records(
         settings,
         runtime_state_dir,
     })
+}
+
+/// Reconfigure the sync transport on an already-initialized catalog.
+pub fn configure_records(
+    config: &Config,
+    strategy: Strategy,
+    remote: RemoteUpdate,
+    branch: Option<&str>,
+) -> Result<(OpenedRecords, Strategy, Option<String>, Option<String>)> {
+    let opened = open_records(config)?;
+    let transport = RecordSync::configure(
+        opened.root(),
+        opened.host().as_str(),
+        strategy,
+        remote,
+        branch,
+    )?;
+    let configured_strategy = transport.strategy();
+    let configured_remote = transport.remote().map(str::to_owned);
+    let configured_branch = transport.branch().map(str::to_owned);
+    Ok((
+        opened,
+        configured_strategy,
+        configured_remote,
+        configured_branch,
+    ))
 }
 
 /// Legacy or incomplete roots refuse here; no operation probes or adopts their layout.

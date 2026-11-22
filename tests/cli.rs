@@ -648,3 +648,221 @@ fn stream_delete_only_removes_empty_local_streams() {
     assert_eq!(check["streams"], 1);
     assert_eq!(check["sessions"], 1);
 }
+
+#[test]
+fn git_sync_cli_end_to_end_configure_and_background_auto_sync() {
+    let shared = tempfile::tempdir().unwrap();
+    let remote = shared.path().join("remote.git");
+    fs::create_dir_all(&remote).unwrap();
+    assert!(
+        Command::new("git")
+            .args(["init", "--quiet", "--bare"])
+            .arg(&remote)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let remote_str = remote.to_str().unwrap();
+
+    // Helper for uninitialized isolated host fixtures.
+    let make_host = || Fixture {
+        directory: tempfile::tempdir().unwrap(),
+    };
+
+    // 1. Local-only `--sync git` without `--remote` works.
+    let local_only = make_host();
+    local_only.ok_json(&["config", "set", "frontend.mode", "none"], None);
+    local_only.ok_json(&["config", "set", "sync.auto_interval_minutes", "0"], None);
+    let init_local = local_only.ok_json(&["catalog", "init", "--sync", "git"], None);
+    assert_eq!(init_local["sync"], "git");
+    local_only.ok_json(&["stream", "create", "--title", "Local Git"], None);
+    let local_sync = local_only.ok_json(&["catalog", "sync"], None);
+    assert_eq!(local_sync["local"], "committed");
+    assert_eq!(local_sync["sharing"], "local-only");
+
+    // 2. Host A initializes with `--sync none`, creates records + artifact, then transitions via
+    //    `catalog configure --sync git --remote ...` and syncs to the bare remote.
+    let host_a = make_host();
+    host_a.ok_json(&["config", "set", "frontend.mode", "none"], None);
+    host_a.ok_json(&["config", "set", "sync.auto_interval_minutes", "0"], None);
+    host_a.ok_json(&["catalog", "init", "--sync", "none"], None);
+    let s_a = host_a.ok_json(&["stream", "create", "--title", "Alpha Effort"], None);
+    let s_a_key = s_a["key"].as_str().unwrap();
+    let sess_a = host_a.ok_json(
+        &[
+            "session",
+            "create",
+            "pi/01aa0001",
+            "--stream",
+            s_a_key,
+            "--title",
+            "Alpha Lane",
+        ],
+        None,
+    );
+    let sess_a_key = sess_a["key"].as_str().unwrap();
+    let art_a = host_a.ok_json(
+        &[
+            "artifact",
+            "write",
+            "report.md",
+            "--session",
+            sess_a_key,
+            "--description",
+            "Initial report",
+        ],
+        Some("synced artifact body"),
+    );
+    let art_a_key = art_a["key"].as_str().unwrap();
+
+    let configured = host_a.ok_json(
+        &[
+            "catalog",
+            "configure",
+            "--sync",
+            "git",
+            "--remote",
+            remote_str,
+        ],
+        None,
+    );
+    assert_eq!(configured["sync"], "git");
+    assert_eq!(configured["remote"], remote_str);
+    assert_eq!(configured["branch"], "main");
+
+    // `git -> none` is refused as not implemented.
+    let (code, err, _) = host_a.run_json(&["catalog", "configure", "--sync", "none"], None);
+    assert_eq!(code, 1);
+    assert!(
+        err["error"]["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("not implemented"),
+        "{err}"
+    );
+
+    let sync_a = host_a.ok_json(&["catalog", "sync"], None);
+    assert_eq!(sync_a["sharing"], "confirmed");
+    let check_a = host_a.ok_json(&["catalog", "check"], None);
+    assert_eq!(check_a["valid"], true);
+    assert_eq!(check_a["last_sync"]["needs_attention"], false);
+    assert_eq!(check_a["last_sync"]["sharing"], "confirmed");
+
+    // 3. Host B initializes directly with `--sync git --remote ...`, syncs, and observes Host A's
+    //    Stream, Session, and artifact read-only.
+    let host_b = make_host();
+    host_b.ok_json(&["config", "set", "frontend.mode", "none"], None);
+    host_b.ok_json(&["config", "set", "sync.auto_interval_minutes", "0"], None);
+    host_b.ok_json(
+        &["catalog", "init", "--sync", "git", "--remote", remote_str],
+        None,
+    );
+    let sync_b = host_b.ok_json(&["catalog", "sync"], None);
+    assert_eq!(sync_b["sharing"], "confirmed");
+    assert_eq!(sync_b["local"], "committed");
+
+    let listed_b = host_b.ok_json(&["stream", "list", "--all"], None);
+    let keys_b: Vec<&str> = listed_b["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["key"].as_str().unwrap())
+        .collect();
+    assert_eq!(keys_b, vec![s_a_key]);
+
+    let (code, art_bytes, _) = host_b.run_raw(&["artifact", "read", art_a_key], None);
+    assert_eq!(code, 0);
+    assert_eq!(art_bytes, b"synced artifact body");
+
+    // Foreign writes remain refused.
+    let (code, _, _) = host_b.run_json(&["stream", "edit", s_a_key, "--title", "Stolen"], None);
+    assert_eq!(code, 1);
+
+    // 4. Failure logging + surfacing via `catalog check` and next write stderr warning.
+    let broken_remote = shared.path().join("does-not-exist.git");
+    host_a.ok_json(
+        &[
+            "catalog",
+            "configure",
+            "--sync",
+            "git",
+            "--remote",
+            broken_remote.to_str().unwrap(),
+        ],
+        None,
+    );
+    let (code, sync_fail, _) = host_a.run_json(&["catalog", "sync"], None);
+    assert_eq!(code, 3);
+    assert_eq!(sync_fail["sharing"], "failed");
+
+    let (code, check_fail, check_stderr) = host_a.run_json(&["catalog", "check"], None);
+    assert_eq!(code, 3);
+    assert_eq!(check_fail["valid"], true);
+    assert_eq!(check_fail["last_sync"]["needs_attention"], true);
+    assert!(
+        check_stderr.contains("last catalog sync needs attention"),
+        "{check_stderr}"
+    );
+
+    // With auto_interval_minutes=10 (within cooldown), the next write succeeds and surfaces the warning.
+    host_a.ok_json(&["config", "set", "sync.auto_interval_minutes", "10"], None);
+    let (code, _, write_stderr) =
+        host_a.run_json(&["stream", "create", "--title", "During Outage"], None);
+    assert_eq!(code, 0);
+    assert!(
+        write_stderr.contains("last catalog sync needs attention"),
+        "{write_stderr}"
+    );
+
+    // 5. Detached background auto-sync on write when due, and cooldown skips immediate second write.
+    let host_c = make_host();
+    host_c.ok_json(&["config", "set", "frontend.mode", "none"], None);
+    let default_interval = host_c.ok_json(&["config", "get", "sync.auto_interval_minutes"], None);
+    assert_eq!(default_interval, 10);
+    host_c.ok_json(
+        &["catalog", "init", "--sync", "git", "--remote", remote_str],
+        None,
+    );
+    let last_sync_path = host_c.root().join(".catalog-local/last-sync.json");
+    assert!(!last_sync_path.exists());
+
+    let s_c = host_c.ok_json(&["stream", "create", "--title", "Auto Synced"], None);
+    let s_c_key = s_c["key"].as_str().unwrap();
+
+    // Poll briefly for the detached background sync to finish and write last-sync.json.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut first_attempt = None;
+    while std::time::Instant::now() < deadline {
+        if let Ok(text) = fs::read_to_string(&last_sync_path)
+            && let Ok(val) = serde_json::from_str::<Value>(&text)
+        {
+            first_attempt = Some(val);
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let first_sync = first_attempt.expect("background auto-sync should write last-sync.json");
+    assert_eq!(first_sync["needs_attention"], false);
+    assert_eq!(first_sync["sharing"], "confirmed");
+
+    // Host B syncs and sees Host C's automatically published Stream!
+    host_b.ok_json(&["catalog", "sync"], None);
+    let listed_b2 = host_b.ok_json(&["stream", "list", "--all"], None);
+    let keys_b2: Vec<&str> = listed_b2["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["key"].as_str().unwrap())
+        .collect();
+    assert!(keys_b2.contains(&s_c_key), "{keys_b2:?}");
+
+    // An immediate second write stays within the 10-minute cooldown and does not re-trigger sync.
+    host_c.ok_json(&["stream", "create", "--title", "Within Cooldown"], None);
+    std::thread::sleep(std::time::Duration::from_millis(250));
+    let second_sync: Value =
+        serde_json::from_str(&fs::read_to_string(&last_sync_path).unwrap()).unwrap();
+    assert_eq!(
+        second_sync["attempted_at_ms"],
+        first_sync["attempted_at_ms"]
+    );
+}

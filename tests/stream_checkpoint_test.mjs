@@ -675,3 +675,148 @@ test('createStreamExtension registers tools and /streams command and reads real 
 
   await handlers.get('session_shutdown')({}, ctx);
 });
+
+test('/streams sync formats outcome and lifecycle hooks run async start sync and shutdown sync after park', async () => {
+  const calls = [];
+  const notices = [];
+  const entries = [];
+  let syncMode = 'fail-start';
+
+  const runner = async (program, args, options) => {
+    calls.push({ program, args, stdin: options?.stdin ?? '' });
+    if (args[0] === 'config' && args[1] === 'get') {
+      return {
+        code: 0,
+        stdout: JSON.stringify({
+          naming: { stream: 'automatic', session: 'automatic' },
+          sync: { auto_interval_minutes: 10 },
+          herdr: {
+            viewer: { mode: 'editor', placement: 'pane-right' },
+            naming: { tab: true, workspace: true },
+            cards: { auto_open: 'automatic' },
+            timeout_ms: 3000,
+            pane_height_fraction: 0.2,
+          },
+          pi: {
+            naming: { session: true, import_edits: true },
+            reporting: {
+              mode: 'automatic',
+              enrollment: 'automatic',
+              frequency: 1,
+              context: 'trimmed',
+              model: null,
+              session_logging: false,
+              debug_commands: false,
+            },
+          },
+        }),
+        stderr: '',
+      };
+    }
+    if (args[0] === 'session' && args[1] === 'show') {
+      return {
+        code: 0,
+        stdout: JSON.stringify(makeSession({ id: 's1', status: 'active' })),
+        stderr: '',
+      };
+    }
+    if (args[0] === 'stream' && args[1] === 'show') {
+      return {
+        code: 0,
+        stdout: JSON.stringify(makeStream()),
+        stderr: '',
+      };
+    }
+    if (args[0] === 'session' && args[1] === 'edit') {
+      return { code: 0, stdout: JSON.stringify({ key: 'host-a/pi/s1', not_written: {}, partial: false }), stderr: '' };
+    }
+    if (args[0] === 'catalog' && args[1] === 'sync') {
+      if (syncMode === 'fail-start') {
+        return {
+          code: 3,
+          stdout: JSON.stringify({
+            local: 'unchanged',
+            sharing: 'failed',
+            detail: 'remote unreachable',
+          }),
+          stderr: '',
+        };
+      }
+      return {
+        code: 0,
+        stdout: JSON.stringify({
+          local: 'committed',
+          sharing: 'confirmed',
+          detail: '',
+        }),
+        stderr: '',
+      };
+    }
+    return { code: 0, stdout: '{}', stderr: '' };
+  };
+
+  const commands = new Map();
+  const handlers = new Map();
+  const pi = {
+    on: (ev, fn) => handlers.set(ev, fn),
+    registerTool: () => {},
+    registerCommand: (name, cmd) => commands.set(name, cmd),
+    appendEntry: (type, value) => entries.push([type, value]),
+    getSessionName: () => '',
+    setSessionName: () => {},
+  };
+
+  const ext = createStreamExtension({ runner, native: false });
+  ext(pi);
+
+  const ctx = {
+    cwd: '/tmp/work',
+    hasUI: true,
+    sessionManager: {
+      getSessionId: () => 's1',
+      buildSessionProjection: () => ({ messages: [] }),
+    },
+    ui: {
+      notify: (text, level) => notices.push({ text, level }),
+      setStatus: () => {},
+    },
+  };
+
+  // session_start triggers async sync; wait a tick for it to settle and log/warn.
+  await handlers.get('session_start')({}, ctx);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0][0], 'stream-catalog-sync');
+  assert.equal(entries[0][1].event, 'start');
+  assert.equal(entries[0][1].sharing, 'failed');
+  assert.ok(
+    notices.some(
+      (n) => n.level === 'warning' && n.text.includes('failed (local: unchanged)') && n.text.includes('remote unreachable')
+    ),
+    JSON.stringify(notices)
+  );
+
+  // Manual `/streams sync` shows warning on needs_attention, then info on confirmed.
+  notices.length = 0;
+  await commands.get('streams').handler('sync', ctx);
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0].level, 'warning');
+  assert.equal(notices[0].text, 'Catalog sync: failed (local: unchanged) — remote unreachable');
+
+  syncMode = 'ok';
+  notices.length = 0;
+  await commands.get('streams').handler('sync', ctx);
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0].level, 'info');
+  assert.equal(notices[0].text, 'Catalog sync: confirmed (local: committed)');
+
+  // session_shutdown awaits catalog sync AFTER marking park.
+  calls.length = 0;
+  await handlers.get('session_shutdown')({}, ctx);
+  const parkIdx = calls.findIndex(
+    (c) => c.args[0] === 'session' && c.args[1] === 'edit' && c.stdin.includes('"parked"')
+  );
+  const syncIdx = calls.findIndex((c) => c.args[0] === 'catalog' && c.args[1] === 'sync');
+  assert.ok(parkIdx !== -1, `expected park call in ${JSON.stringify(calls)}`);
+  assert.ok(syncIdx > parkIdx, `expected shutdown sync after park: ${JSON.stringify(calls)}`);
+});

@@ -122,13 +122,43 @@ pub(crate) fn existing_write_lock(path: &Path) -> Result<FileLock, StorageError>
     open_lock(path, false, false, false)
 }
 
+/// Non-blocking exclusive lock; returns `Ok(None)` if another process holds it.
+pub(crate) fn try_lock(path: &Path) -> Result<Option<FileLock>, StorageError> {
+    match open_lock_raw(path, false, true, true) {
+        Ok(lock) => Ok(Some(lock)),
+        Err(LockError::WouldBlock) => Ok(None),
+        Err(LockError::Storage(error)) => Err(error),
+    }
+}
+
+enum LockError {
+    WouldBlock,
+    Storage(StorageError),
+}
+
 fn open_lock(
     path: &Path,
     read_only: bool,
     create: bool,
     nonblocking: bool,
 ) -> Result<FileLock, StorageError> {
-    ensure_directory(path.parent().expect("lock parent"), create)?;
+    match open_lock_raw(path, read_only, create, nonblocking) {
+        Ok(lock) => Ok(lock),
+        Err(LockError::WouldBlock) => Err(StorageError::new(format!(
+            "cannot lock {}: would block",
+            path.display()
+        ))),
+        Err(LockError::Storage(error)) => Err(error),
+    }
+}
+
+fn open_lock_raw(
+    path: &Path,
+    read_only: bool,
+    create: bool,
+    nonblocking: bool,
+) -> Result<FileLock, LockError> {
+    ensure_directory(path.parent().expect("lock parent"), create).map_err(LockError::Storage)?;
     let file = OpenOptions::new()
         .create(create)
         .truncate(false)
@@ -137,16 +167,21 @@ fn open_lock(
         .mode(0o600)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(path)
-        .map_err(|e| StorageError::new(format!("cannot open lock {}: {e}", path.display())))?;
+        .map_err(|e| {
+            LockError::Storage(StorageError::new(format!(
+                "cannot open lock {}: {e}",
+                path.display()
+            )))
+        })?;
     if !file
         .metadata()
-        .map_err(|e| StorageError::new(e.to_string()))?
+        .map_err(|e| LockError::Storage(StorageError::new(e.to_string())))?
         .is_file()
     {
-        return Err(StorageError::new(format!(
+        return Err(LockError::Storage(StorageError::new(format!(
             "lock must be a regular file: {}",
             path.display()
-        )));
+        ))));
     }
     // Never unlink the lock: other writers must keep locking this same inode.
     let operation = if read_only {
@@ -155,11 +190,14 @@ fn open_lock(
         libc::LOCK_EX
     } | if nonblocking { libc::LOCK_NB } else { 0 };
     if unsafe { libc::flock(file.as_raw_fd(), operation) } != 0 {
-        return Err(StorageError::new(format!(
-            "cannot lock {}: {}",
-            path.display(),
-            std::io::Error::last_os_error()
-        )));
+        let error = std::io::Error::last_os_error();
+        if nonblocking && error.kind() == std::io::ErrorKind::WouldBlock {
+            return Err(LockError::WouldBlock);
+        }
+        return Err(LockError::Storage(StorageError::new(format!(
+            "cannot lock {}: {error}",
+            path.display()
+        ))));
     }
     Ok(FileLock::from_locked(file))
 }

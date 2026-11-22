@@ -241,3 +241,141 @@ fn same_record_divergence_refuses_even_when_text_fields_do_not_overlap() {
     assert!(stream(&b_records, "owner").goal.is_none());
     assert!(!b.join(".git/MERGE_HEAD").exists());
 }
+
+#[test]
+fn sync_backend_trait_dispatches_none_and_git_backends() {
+    let dir = tempfile::tempdir().unwrap();
+    let none_root = dir.path().join("none");
+    setup(&none_root, "host");
+    RecordSync::initialize(&none_root, "host", Strategy::None, None, "main").unwrap();
+    let none_backend = crate::sync::open_backend(&none_root, "host").unwrap();
+    assert_eq!(none_backend.strategy(), Strategy::None);
+    assert_eq!(none_backend.sync().sharing, SharingStatus::LocalOnly);
+    assert!(crate::sync::read_last_sync(&none_root).unwrap().is_none());
+
+    let git_root = dir.path().join("git");
+    setup(&git_root, "host");
+    RecordSync::initialize(&git_root, "host", Strategy::Git, None, "main").unwrap();
+    let git_backend = crate::sync::open_backend(&git_root, "host").unwrap();
+    assert_eq!(git_backend.strategy(), Strategy::Git);
+    assert_eq!(git_backend.sync().sharing, SharingStatus::LocalOnly);
+    let last = crate::sync::read_last_sync(&git_root).unwrap().unwrap();
+    assert!(!last.needs_attention);
+    assert_eq!(last.sharing, SharingStatus::LocalOnly);
+    assert_eq!(last.succeeded_at_ms, Some(last.attempted_at_ms));
+}
+
+#[test]
+fn configure_transitions_none_to_git_updates_remote_and_refuses_git_to_none() {
+    let dir = tempfile::tempdir().unwrap();
+    let remote1 = dir.path().join("remote1");
+    let remote2 = dir.path().join("remote2");
+    bare(&remote1);
+    bare(&remote2);
+    let root = dir.path().join("catalog");
+    let records = setup(&root, "host");
+    RecordSync::initialize(&root, "host", Strategy::None, None, "main").unwrap();
+
+    // none -> git (local-only first) preserves existing records in initial commit.
+    let configured = RecordSync::configure(
+        &root,
+        "host",
+        Strategy::Git,
+        RemoteUpdate::Keep,
+        Some("main"),
+    )
+    .unwrap();
+    assert_eq!(configured.strategy(), Strategy::Git);
+    assert_eq!(configured.remote(), None);
+    assert_eq!(configured.branch(), Some("main"));
+    assert_eq!(records.inventory().unwrap().len(), 2);
+    assert_eq!(configured.sync().sharing, SharingStatus::LocalOnly);
+
+    // git -> git: add remote1 and sync.
+    let with_remote = RecordSync::configure(
+        &root,
+        "host",
+        Strategy::Git,
+        RemoteUpdate::Set(remote1.to_str().unwrap().into()),
+        None,
+    )
+    .unwrap();
+    assert_eq!(with_remote.remote(), Some(remote1.to_str().unwrap()));
+    assert_eq!(with_remote.sync().sharing, SharingStatus::Confirmed);
+
+    // git -> git: switch remote1 -> remote2 and sync.
+    let updated = RecordSync::configure(
+        &root,
+        "host",
+        Strategy::Git,
+        RemoteUpdate::Set(remote2.to_str().unwrap().into()),
+        None,
+    )
+    .unwrap();
+    assert_eq!(updated.remote(), Some(remote2.to_str().unwrap()));
+    assert_eq!(updated.sync().sharing, SharingStatus::Confirmed);
+
+    // git -> git: clear remote back to local-only.
+    let cleared =
+        RecordSync::configure(&root, "host", Strategy::Git, RemoteUpdate::Clear, None).unwrap();
+    assert_eq!(cleared.remote(), None);
+    assert_eq!(cleared.sync().sharing, SharingStatus::LocalOnly);
+
+    // git -> none is explicitly unimplemented.
+    let err = RecordSync::configure(&root, "host", Strategy::None, RemoteUpdate::Keep, None)
+        .err()
+        .expect("git -> none must fail");
+    assert!(err.to_string().contains("not implemented"), "{err}");
+}
+
+#[test]
+fn try_sync_skips_when_transport_lock_is_held() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("catalog");
+    setup(&root, "host");
+    let sync = transport(&root, "host", None);
+    let _held = crate::file_io::lock(&root.join(".catalog-local/transport.lock")).unwrap();
+    assert!(sync.try_sync().is_none());
+    drop(_held);
+    assert_eq!(sync.try_sync().unwrap().sharing, SharingStatus::LocalOnly);
+}
+
+#[test]
+fn last_sync_state_preserves_succeeded_timestamp_on_failure_and_drives_schedule() {
+    let dir = tempfile::tempdir().unwrap();
+    let remote = dir.path().join("remote");
+    bare(&remote);
+    let root = dir.path().join("catalog");
+    setup(&root, "host");
+    let sync = transport(&root, "host", Some(&remote));
+
+    // Before first sync, auto-sync is due when interval > 0 and disabled when interval == 0.
+    assert!(is_auto_sync_due(&root, 10, 1_000_000).unwrap());
+    assert!(!is_auto_sync_due(&root, 0, 1_000_000).unwrap());
+
+    // First sync succeeds and records last-sync.json.
+    assert_eq!(sync.sync().sharing, SharingStatus::Confirmed);
+    let first = read_last_sync(&root).unwrap().unwrap();
+    assert!(!first.needs_attention);
+    assert!(first.succeeded_at_ms.is_some());
+
+    // Not due within 10 minutes, due at >= 10 minutes.
+    assert!(!is_auto_sync_due(&root, 10, first.attempted_at_ms + 599_999).unwrap());
+    assert!(is_auto_sync_due(&root, 10, first.attempted_at_ms + 600_000).unwrap());
+
+    // Break remote, run sync, verify error is logged and previous succeeded_at_ms is preserved.
+    let broken = RecordSync::configure(
+        &root,
+        "host",
+        Strategy::Git,
+        RemoteUpdate::Set(dir.path().join("missing.git").to_str().unwrap().into()),
+        None,
+    )
+    .unwrap();
+    let failed = broken.sync();
+    assert!(failed.needs_attention());
+    let second = read_last_sync(&root).unwrap().unwrap();
+    assert!(second.needs_attention);
+    assert_eq!(second.succeeded_at_ms, first.succeeded_at_ms);
+    assert!(!second.detail.is_empty());
+}

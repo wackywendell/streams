@@ -27,6 +27,7 @@ import {
 import {
   StreamCli,
   formatNotWritten,
+  formatSyncOutcome,
   sessionKeyOf,
   streamKeyOf,
   type ConfigSnapshot,
@@ -34,6 +35,8 @@ import {
   type EditResult,
   type ProcessRunner,
 } from "./streams.ts";
+
+const LIFECYCLE_SYNC_TIMEOUT_MS = 10_000;
 
 export type ExtensionOptions = {
   runner?: ProcessRunner;
@@ -82,6 +85,56 @@ export function createStreamExtension(options: ExtensionOptions = {}) {
     let cardState: CardState = emptyCardState();
     let currentCtx: ExtensionContext | undefined;
     let native: NativeController | undefined;
+    let startupSyncController: AbortController | undefined;
+
+    const cancelStartupSync = () => {
+      startupSyncController?.abort();
+      startupSyncController = undefined;
+    };
+
+    const runLifecycleSync = async (
+      ctx: ExtensionContext,
+      event: "start" | "shutdown",
+      signal?: AbortSignal
+    ): Promise<void> => {
+      try {
+        const outcome = await client(ctx).sync(signal, LIFECYCLE_SYNC_TIMEOUT_MS);
+        if (signal?.aborted) return;
+        if (outcome.needs_attention) {
+          const entry = {
+            event,
+            local: outcome.local,
+            sharing: outcome.sharing,
+            detail: outcome.detail ?? "",
+          };
+          try {
+            pi.appendEntry("stream-catalog-sync", entry);
+          } catch {
+            // Best-effort durable log
+          }
+          if (ctx.hasUI) {
+            ctx.ui.notify(
+              `Streams — Catalog sync (${event}): ${formatSyncOutcome(outcome)}. Inspect with /streams sync or streams catalog sync.`,
+              "warning"
+            );
+          }
+        }
+      } catch (error) {
+        if (signal?.aborted) return;
+        const message = error instanceof Error ? error.message : String(error);
+        try {
+          pi.appendEntry("stream-catalog-sync", { event, error: message });
+        } catch {
+          // Best-effort durable log
+        }
+        if (ctx.hasUI) {
+          ctx.ui.notify(
+            `Streams — Catalog sync (${event}): ${message}. Inspect with /streams sync or streams catalog sync.`,
+            "warning"
+          );
+        }
+      }
+    };
 
     const startNative = (ctx: ExtensionContext): NativeController | undefined => {
       if (options.native === false) return undefined;
@@ -202,14 +255,24 @@ export function createStreamExtension(options: ExtensionOptions = {}) {
 
     pi.on("session_start", async (_event, ctx) => {
       await syncAttachedSession(ctx, true);
+      cancelStartupSync();
+      const controller = new AbortController();
+      startupSyncController = controller;
+      void runLifecycleSync(ctx, "start", controller.signal).finally(() => {
+        if (startupSyncController === controller) {
+          startupSyncController = undefined;
+        }
+      });
     });
 
     pi.on("session_switch", async (_event, ctx) => {
+      cancelStartupSync();
       reporter.invalidate();
       await syncAttachedSession(ctx, true);
     });
 
     pi.on("session_shutdown", async (_event, ctx) => {
+      cancelStartupSync();
       reporter.scope.stop();
       const nativeId = ctx.sessionManager.getSessionId();
       native?.stop();
@@ -219,6 +282,7 @@ export function createStreamExtension(options: ExtensionOptions = {}) {
       } catch {
         // Best-effort park on shutdown
       }
+      await runLifecycleSync(ctx, "shutdown");
     });
 
     pi.on("agent_end", (_event, ctx) => {
@@ -544,8 +608,8 @@ export function createStreamExtension(options: ExtensionOptions = {}) {
           } else if (command === "sync") {
             const outcome = await client(ctx).sync();
             ctx.ui.notify(
-              `Catalog sync: ${JSON.stringify(outcome.summary ?? outcome.status ?? "done")}`,
-              "info"
+              `Catalog sync: ${formatSyncOutcome(outcome)}`,
+              outcome.needs_attention ? "warning" : "info"
             );
           } else if (command === "open") {
             await (native ?? startNative(ctx))?.open();

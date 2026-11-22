@@ -37,6 +37,8 @@ pub enum ConfigKey {
     SessionNaming,
     #[strum(serialize = "lifecycle.decay_days")]
     LifecycleDecayDays,
+    #[strum(serialize = "sync.auto_interval_minutes")]
+    SyncAutoIntervalMinutes,
     #[strum(serialize = "herdr.viewer.mode")]
     HerdrViewerMode,
     #[strum(serialize = "herdr.viewer.placement")]
@@ -86,6 +88,8 @@ pub enum ConfigSection {
     Naming,
     #[strum(serialize = "lifecycle")]
     Lifecycle,
+    #[strum(serialize = "sync")]
+    Sync,
     #[strum(serialize = "herdr")]
     Herdr,
     #[strum(serialize = "herdr.viewer")]
@@ -289,6 +293,19 @@ impl Default for LifecycleSettings {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyncSettings {
+    pub auto_interval_minutes: u32,
+}
+
+impl Default for SyncSettings {
+    fn default() -> Self {
+        Self {
+            auto_interval_minutes: 10,
+        }
+    }
+}
+
 /// Naming defaults (`naming.stream` and `naming.session`).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NamingSettings {
@@ -303,6 +320,7 @@ pub struct Settings {
     pub frontend: FrontendMode,
     pub naming: NamingSettings,
     pub lifecycle: LifecycleSettings,
+    pub sync: SyncSettings,
     pub herdr: HerdrSettings,
     pub pi: PiSettings,
 }
@@ -485,6 +503,14 @@ impl Config {
                         *v = self.validate_toml_value(key, v.clone())?;
                     }
                 }
+                "sync" => {
+                    for (name, v) in subtable.iter_mut() {
+                        let key = format!("sync.{name}").parse::<ConfigKey>().map_err(|_| {
+                            invalid(format!("unknown streams config key: sync.{name}"))
+                        })?;
+                        *v = self.validate_toml_value(key, v.clone())?;
+                    }
+                }
                 "herdr" => self.validate_herdr_table(subtable)?,
                 "pi" => self.validate_pi_table(subtable)?,
                 _ => return Err(invalid(format!("invalid config section: {section}"))),
@@ -606,6 +632,14 @@ impl Config {
                 .unwrap_or(lifecycle_defaults.decay_days),
         };
 
+        let sync_defaults = SyncSettings::default();
+        let sync = SyncSettings {
+            auto_interval_minutes: lookup_toml(&data, "sync.auto_interval_minutes")
+                .and_then(toml::Value::as_integer)
+                .map(|v| v as u32)
+                .unwrap_or(sync_defaults.auto_interval_minutes),
+        };
+
         let herdr_defaults = HerdrSettings::default();
         let herdr = HerdrSettings {
             viewer_mode: lookup_toml(&data, "herdr.viewer.mode")
@@ -698,6 +732,7 @@ impl Config {
                 session: session_naming,
             },
             lifecycle,
+            sync,
             herdr,
             pi,
         })
@@ -741,6 +776,13 @@ impl Config {
             toml::Value::Integer(i64::from(settings.lifecycle.decay_days)),
         );
         root.insert("lifecycle".into(), toml::Value::Table(lifecycle));
+
+        let mut sync = toml::Table::new();
+        sync.insert(
+            "auto_interval_minutes".into(),
+            toml::Value::Integer(i64::from(settings.sync.auto_interval_minutes)),
+        );
+        root.insert("sync".into(), toml::Value::Table(sync));
 
         let mut herdr = toml::Table::new();
         let mut viewer = toml::Table::new();
@@ -975,6 +1017,12 @@ impl Config {
                     .map_err(|_| invalid("lifecycle.decay_days must be an integer >= 0"))?;
                 toml::Value::Integer(parsed)
             }
+            ConfigKey::SyncAutoIntervalMinutes => {
+                let parsed: i64 = text
+                    .parse()
+                    .map_err(|_| invalid("sync.auto_interval_minutes must be an integer >= 0"))?;
+                toml::Value::Integer(parsed)
+            }
             ConfigKey::HerdrTimeoutMs => {
                 let parsed: i64 = text
                     .parse()
@@ -1082,6 +1130,17 @@ impl Config {
                 };
                 if n < 0 || u32::try_from(n).is_err() {
                     return Err(invalid("lifecycle.decay_days must be an integer >= 0"));
+                }
+                Ok(value)
+            }
+            ConfigKey::SyncAutoIntervalMinutes => {
+                let Some(n) = value.as_integer() else {
+                    return Err(invalid("sync.auto_interval_minutes must be an integer"));
+                };
+                if n < 0 || u32::try_from(n).is_err() {
+                    return Err(invalid(
+                        "sync.auto_interval_minutes must be an integer >= 0",
+                    ));
                 }
                 Ok(value)
             }

@@ -45,6 +45,7 @@ export type CardMode = "automatic" | "manual";
 
 export type ConfigSnapshot = {
   naming: NamingSettings;
+  sync?: { auto_interval_minutes: number };
   herdr: {
     viewer: { mode: "editor" | "less" | "hunk" | "native"; placement: "tab" | "pane-right" | "pane-down" | "floating" };
     naming: { tab: boolean; workspace: boolean };
@@ -143,6 +144,14 @@ export function syncNeedsAttention(result: SyncResult): boolean {
     result.sharing !== undefined &&
     ["failed", "blocked", "uncertain"].includes(result.sharing)
   );
+}
+
+export function formatSyncOutcome(result: SyncResult): string {
+  const summary = result.sharing
+    ? `${result.sharing} (local: ${result.local})`
+    : result.local;
+  const detail = typeof result.detail === "string" ? result.detail.trim() : "";
+  return detail ? `${summary} — ${detail}` : summary;
 }
 
 /** Default process runner: invokes `streams` (via `resolveStreamsBin`) or `hc` directly, one process per call. */
@@ -556,9 +565,9 @@ export class StreamCli {
     return this.getConfig(signal);
   }
 
-  async sync(signal?: AbortSignal): Promise<SyncResult> {
+  async sync(signal?: AbortSignal, timeoutMs = 30_000): Promise<SyncResult> {
     const { value, code } = await this.runJson(["catalog", "sync", "--json"], {
-      timeout: 30_000,
+      timeout: timeoutMs,
       signal,
       allowExit3: true,
     });
