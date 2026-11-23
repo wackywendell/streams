@@ -406,6 +406,26 @@ export function findSpaceForStream(terminalList, streamKey, machine = null) {
 }
 
 /**
+ * Build a Map from qualified Tab ID to `{ space, tab }` from Herdr `spaces()`.
+ * Optional `machine` filters spaces to `(sp.machine ?? null) === (machine ?? null)`.
+ */
+export function buildTabSpaceMap(spaces = [], machine = undefined) {
+  const byTab = new Map();
+  const filterMachine = machine !== undefined;
+  const targetMachine = machine ?? null;
+  for (const sp of spaces ?? []) {
+    if (!sp?.id) continue;
+    if (filterMachine && (sp.machine ?? null) !== targetMachine) continue;
+    for (const tab of sp.tabs ?? []) {
+      if (tab?.id) {
+        byTab.set(tab.id, { space: sp, tab });
+      }
+    }
+  }
+  return byTab;
+}
+
+/**
  * Determine whether moving `sessionKey` to `targetStreamKey` can also move its live tab
  * to an open Space belonging to `targetStreamKey` on the same machine.
  */
@@ -429,6 +449,7 @@ export function resolveMoveSpaceTarget({
       spaceById.set(sp.id, sp);
     }
   }
+  const tabSpaceMap = buildTabSpaceMap(spaces, targetMachine);
 
   let liveTerm = null;
   let livePane = null;
@@ -453,14 +474,15 @@ export function resolveMoveSpaceTarget({
     }
   }
 
-  const currentSpaceId = livePane?.space ?? null;
+  const currentLoc = livePane?.tab ? tabSpaceMap.get(livePane.tab) ?? null : null;
+  const currentSpaceId = currentLoc?.space?.id ?? null;
   let currentTabName = null;
-  if (currentSpaceId && livePane?.tab) {
-    const sp = spaceById.get(currentSpaceId);
-    const tb = sp?.tabs?.find((t) => t.id === livePane.tab);
-    if (tb?.named && typeof tb.name === "string" && tb.name.trim()) {
-      currentTabName = tb.name.trim();
-    }
+  if (
+    currentLoc?.tab?.named &&
+    typeof currentLoc.tab.name === "string" &&
+    currentLoc.tab.name.trim()
+  ) {
+    currentTabName = currentLoc.tab.name.trim();
   }
 
   let targetSpace = null;
@@ -470,9 +492,9 @@ export function resolveMoveSpaceTarget({
       const entry = termByAddr.get(pane?.terminal);
       if (!entry || entry.parsed.machine !== targetMachine) continue;
       if (entry.term.labels?.[LABEL_STREAM] !== targetStreamKey) continue;
-      const sp = spaceById.get(pane.space);
-      if (sp) {
-        targetSpace = sp;
+      const loc = pane?.tab ? tabSpaceMap.get(pane.tab) ?? null : null;
+      if (loc?.space) {
+        targetSpace = loc.space;
         break;
       }
     }
@@ -1709,6 +1731,72 @@ export class StreamsCoordinator {
     this.pendingDropReferences = new Set();
     this.pendingRenames = new Set();
     this.pendingMoves = new Set();
+    this._layoutWaiters = new Set();
+  }
+
+  /**
+   * Deliver a reactive Herdr layout snapshot (`panes`, `spaces`, `terminalList`)
+   * to any active layout waiters. O(1) no-op when no waiters are registered.
+   */
+  notifyLayoutSnapshot(snapshot = {}) {
+    if (!this._layoutWaiters || this._layoutWaiters.size === 0) return;
+    for (const waiter of [...this._layoutWaiters]) {
+      let matched = null;
+      try {
+        matched = waiter.predicate(snapshot);
+      } catch {
+        matched = null;
+      }
+      if (matched) {
+        this._layoutWaiters.delete(waiter);
+        waiter.resolve(matched);
+      }
+    }
+  }
+
+  /**
+   * Event-driven wait for a Herdr layout transition driven by `notifyLayoutSnapshot`
+   * (called from `View.render()` / `observe()`), bounded by a single timeout fuse.
+   */
+  async waitForLayout(predicate, { timeoutMs = 5000, sleep, readLayout } = {}) {
+    const readCurrent = () => (typeof readLayout === "function" ? readLayout() ?? {} : null);
+    const initial = readCurrent();
+    if (initial) {
+      const hit = predicate(initial);
+      if (hit) return hit;
+    }
+
+    let settled = false;
+    let resolveWaiter;
+    const waiter = {
+      predicate,
+      resolve: (value) => {
+        if (settled) return;
+        settled = true;
+        resolveWaiter(value);
+      },
+    };
+    const eventPromise = new Promise((resolve) => {
+      resolveWaiter = resolve;
+    });
+    this._layoutWaiters.add(waiter);
+
+    try {
+      if (typeof sleep !== "function") {
+        return await eventPromise;
+      }
+      const result = await Promise.race([
+        eventPromise,
+        Promise.resolve(sleep(timeoutMs)).then(() => null),
+      ]);
+      if (result) return result;
+      // Final check in case the sidebar View was hidden and missed render callbacks.
+      const finalSnap = readCurrent();
+      return finalSnap ? predicate(finalSnap) || null : null;
+    } finally {
+      settled = true;
+      this._layoutWaiters.delete(waiter);
+    }
   }
 
   _machineKey(machine = this.activeMachine) {
@@ -1897,7 +1985,9 @@ export class StreamsCoordinator {
   foreignHostBadge(recordOrKey, activeMachine = this.activeMachine) {
     const hostId =
       typeof recordOrKey === "string"
-        ? recordHostId(recordOrKey)
+        ? recordOrKey.includes("/")
+          ? recordHostId(recordOrKey)
+          : recordOrKey.trim() || null
         : recordOrKey?.host_id || recordHostId(recordOrKey?.key);
     if (!hostId) return null;
     const targetMachine = activeMachine ?? null;
@@ -2728,11 +2818,15 @@ export class StreamsCoordinator {
 
         const liveTermAddress = moveInfo.liveTerm?.address ?? null;
         if (moveTab && moveInfo.canMoveTab && liveTermAddress && typeof run === "function") {
-          if (typeof sleep !== "function" || typeof readPanes !== "function") {
+          if (
+            typeof sleep !== "function" ||
+            typeof readPanes !== "function" ||
+            typeof readSpaces !== "function"
+          ) {
             tabMoveFailed = true;
             this.reportActionError(
               "Moved Session, skipped tab transfer",
-              "Tab transfer requires Herdr async sleep and pane polling."
+              "Tab transfer requires Herdr layout readers and an async timeout fuse."
             );
             await this.runExec(this.hcBin, [
               "label",
@@ -2740,19 +2834,18 @@ export class StreamsCoordinator {
               `${LABEL_STREAM}=${targetStreamKey}`,
             ]);
           } else {
+            const readLayout = () => ({
+              panes: readPanes() ?? [],
+              spaces: readSpaces() ?? [],
+            });
             const unqualSpace = unqualifyForMachine(moveInfo.targetSpace.id, target.machine);
             const freshTabId = `tb_mv_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
-            const qualifiedTabId = qualifyForMachine(freshTabId, target.machine);
             run("terminal.park", { terminal: liveTermAddress });
-            let detached = false;
-            for (let attempt = 0; attempt < 30; attempt++) {
-              await sleep(50);
-              const currentPanes = readPanes() ?? [];
-              if (!currentPanes.some((p) => p?.terminal === liveTermAddress)) {
-                detached = true;
-                break;
-              }
-            }
+            const detached = await this.waitForLayout(
+              ({ panes: currentPanes = [] }) =>
+                !(currentPanes ?? []).some((p) => p?.terminal === liveTermAddress),
+              { timeoutMs: 5000, sleep, readLayout }
+            );
             if (!detached) {
               tabMoveFailed = true;
               this.reportActionError(
@@ -2780,25 +2873,24 @@ export class StreamsCoordinator {
                   `Could not place tab in ${moveInfo.targetSpace.name} (${err.message}). Re-keep it from the Agents list.`
                 );
               } else {
-                let adopted = false;
-                for (let attempt = 0; attempt < 30; attempt++) {
-                  await sleep(50);
-                  const currentPanes = readPanes() ?? [];
-                  if (
-                    currentPanes.some(
-                      (p) =>
-                        p?.terminal === liveTermAddress &&
-                        p?.space === moveInfo.targetSpace.id
-                    )
-                  ) {
-                    adopted = true;
-                    break;
-                  }
-                }
+                const adopted = await this.waitForLayout(
+                  ({ panes: currentPanes = [], spaces: currentSpaces = [] }) => {
+                    const tabMap = buildTabSpaceMap(currentSpaces, target.machine);
+                    for (const p of currentPanes ?? []) {
+                      if (p?.terminal !== liveTermAddress || !p?.tab) continue;
+                      const loc = tabMap.get(p.tab);
+                      if (loc?.space?.id === moveInfo.targetSpace.id) {
+                        return { pane: p.pane, tab: p.tab };
+                      }
+                    }
+                    return null;
+                  },
+                  { timeoutMs: 5000, sleep, readLayout }
+                );
                 if (adopted) {
                   movedTab = true;
-                  if (moveInfo.currentTabName) {
-                    run("tab.rename", { id: qualifiedTabId, name: moveInfo.currentTabName });
+                  if (moveInfo.currentTabName && adopted.tab) {
+                    run("tab.rename", { id: adopted.tab, name: moveInfo.currentTabName });
                   }
                 } else {
                   tabMoveFailed = true;
@@ -3074,12 +3166,19 @@ export class StreamsCoordinator {
     focusedTerminal = null,
     terminalList = [],
     panes = [],
+    allSpaces = null,
+    spaces = null,
     agents = [],
     machineList,
     tabIds,
     force = false,
     now = Date.now(),
   }) {
+    this.notifyLayoutSnapshot({
+      panes,
+      spaces: Array.isArray(allSpaces) ? allSpaces : Array.isArray(spaces) ? spaces : [],
+      terminalList,
+    });
     if (Array.isArray(machineList)) {
       this._hasMachineSnapshot = true;
       this.machineLayouts.clear();
@@ -3423,7 +3522,6 @@ export class StreamsCoordinator {
           hasUnknownOffTabStream ||
           (activeBucket.loaded && (force || noticeChanged));
 
-        let listStale = false;
         if (shouldFetchHostStreams) {
           const listRes = await this._fetchHostStreams({
             machine: activeMachine,
@@ -3432,9 +3530,8 @@ export class StreamsCoordinator {
             forceProbe: force,
           });
           if (gen !== this.readGeneration) return null;
-          if (listRes.stale) {
-            listStale = true;
-          } else if (!listRes.ok && !primarySession) {
+          if (listRes.stale) return null;
+          if (!listRes.ok && !primarySession) {
             this.lastFailedKey = key ?? null;
             this.publishSharedTerminals(running);
             return null;
@@ -3476,12 +3573,9 @@ export class StreamsCoordinator {
         this.lastNoticeToken = observation.noticeToken ?? "";
         this.readError = null;
         this.lastFailedKey = null;
-        this.publishSharedTerminals(running);
-        if (listStale && !primarySession) {
-          return null;
-        }
         this.lastCompletedAt = now;
         this.lastCompletedKey = key ?? null;
+        this.publishSharedTerminals(running);
         return primarySession
           ? { kind: "stream", stream: activeStream, session: primarySession }
           : { kind: "listing", streams: activeBucket.items };

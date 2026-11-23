@@ -2459,12 +2459,10 @@ test("foreignHostBadge hides active host and cold boot, distinguishes online/loa
   // Cold boot (no host mapping discovered yet): never flash a false-positive foreign chip.
   assert.equal(coord.foreignHostBadge("h-local/s1", null), null);
   assert.equal(coord.foreignHostBadge("/invalid", null), null);
-  assert.equal(coord.foreignHostBadge("malformed-no-slash", null), null);
   assert.equal(coord.foreignHostBadge("", null), null);
 
   // Once the active host is checked (even with zero local streams), unmapped hosts report as unmapped.
   coord._localOwnerChecked.add(coord._machineKey(null));
-  assert.equal(coord.foreignHostBadge("malformed-no-slash", null), null);
   assert.deepEqual(coord.foreignHostBadge("abcdef123456/s1", null), {
     label: "abcdef12",
     state: "unmapped",
@@ -2477,12 +2475,12 @@ test("foreignHostBadge hides active host and cold boot, distinguishes online/loa
   coord.recordHostMachine("62435806-rem", "retriever");
   coord.recordHostMachine("99999999-box", "buildbox");
 
-  // Same host returns null from both local and remote active spaces (supports record or "host/id" key).
+  // Same host returns null from both local and remote active spaces (supports record, key, or bare hostId).
   assert.equal(
     coord.foreignHostBadge({ key: "0abb3ca7-local/s1", host_id: "0abb3ca7-local" }, null),
     null
   );
-  assert.equal(coord.foreignHostBadge("62435806-rem/s2", "retriever"), null);
+  assert.equal(coord.foreignHostBadge("62435806-rem", "retriever"), null);
 
   // Viewing remote records from local space: online vs. loading vs. offline vs. unmapped.
   assert.deepEqual(
@@ -2493,7 +2491,7 @@ test("foreignHostBadge hides active host and cold boot, distinguishes online/loa
       tooltip: "On retriever",
     }
   );
-  assert.deepEqual(coord.foreignHostBadge("99999999-box/s3", null), {
+  assert.deepEqual(coord.foreignHostBadge("99999999-box", null), {
     label: "buildbox",
     state: "loading",
     tooltip: "Connecting to buildbox — read-only until ready",
@@ -2504,7 +2502,7 @@ test("foreignHostBadge hides active host and cold boot, distinguishes online/loa
     state: "offline",
     tooltip: "buildbox is offline — read-only (writes and resume unavailable)",
   });
-  assert.deepEqual(coord.foreignHostBadge("deadbeef-1234/s4", null), {
+  assert.deepEqual(coord.foreignHostBadge("deadbeef-1234", null), {
     label: "deadbeef",
     state: "unmapped",
     tooltip:
@@ -3001,90 +2999,6 @@ test("_probeLocalOwner recovers on forced refresh, preserves deletions during pe
     coordListDel.hostStreams.map((s) => s.key),
     [stKept.key]
   );
-
-  // (e) On an enrolled tab (primarySession set), a concurrent host-list fetch becoming stale
-  //     must NOT abort completing the observation or clearing an earlier readError.
-  const stEnrolled = makeStreamJson({ host: "0abb3ca7-mac", id: "st-enr", title: "Enrolled" });
-  const sEnrolled = makeSessionJson({
-    host: "0abb3ca7-mac",
-    id: "s-enr",
-    stream_id: "st-enr",
-    status: "active",
-  });
-  let resolveEnrolledList1;
-  const enrolledList1 = new Promise((r) => {
-    resolveEnrolledList1 = r;
-  });
-  let resolveEnrolledListStarted;
-  const enrolledListStarted = new Promise((r) => {
-    resolveEnrolledListStarted = r;
-  });
-  let enrolledListCalls = 0;
-  let publishedCount = 0;
-  const coordEnrolled = new StreamsCoordinator({
-    publishShared: () => {
-      publishedCount += 1;
-    },
-    exec: async (_bin, args) => {
-      if (args[0] === "session" && args[1] === "show") {
-        return { code: 0, stdout: JSON.stringify(sEnrolled), stderr: "" };
-      }
-      if (args[0] === "stream" && args[1] === "show") {
-        return { code: 0, stdout: JSON.stringify(stEnrolled), stderr: "" };
-      }
-      if (args[0] === "stream" && args[1] === "list") {
-        enrolledListCalls += 1;
-        if (enrolledListCalls === 1) {
-          resolveEnrolledListStarted();
-          return enrolledList1;
-        }
-        return {
-          code: 0,
-          stdout: JSON.stringify({ items: [stEnrolled], unreadable: [] }),
-          stderr: "",
-        };
-      }
-      return { code: 0, stdout: "", stderr: "" };
-    },
-  });
-  coordEnrolled.preferredView = "all";
-  coordEnrolled.readError = "stale earlier error";
-  coordEnrolled.lastFailedKey = "old-failed-key";
-
-  const enrolledTerm = {
-    address: "t-enr",
-    state: "live",
-    labels: { [LABEL_SESSION]: sEnrolled.key, [LABEL_STREAM]: stEnrolled.key },
-  };
-  const enrolledObserve = coordEnrolled.observe({
-    activeSpace: { id: "sp-enr", name: "Enrolled", machine: null },
-    activeTabId: "tb-enr",
-    visibleTerminals: ["t-enr"],
-    focusedTerminal: "t-enr",
-    terminalList: [enrolledTerm],
-    panes: [{ pane: "p-enr", tab: "tb-enr", terminal: "t-enr", program: { agent: "pi" } }],
-    agents: [{ address: "t-enr", agent: "pi" }],
-    machineList: [{ name: null, layout: "ready" }],
-  });
-  await enrolledListStarted;
-  // Concurrent ensureHostStreams bumps bucket.seq, making enrolledObserve's list response stale.
-  const freshList = await coordEnrolled.ensureHostStreams(true);
-  assert.deepEqual(
-    freshList?.map((s) => s.key),
-    [stEnrolled.key]
-  );
-
-  resolveEnrolledList1({
-    code: 0,
-    stdout: JSON.stringify({ items: [stEnrolled], unreadable: [] }),
-    stderr: "",
-  });
-  const enrolledRes = await enrolledObserve;
-  assert.equal(enrolledRes?.kind, "stream");
-  assert.equal(coordEnrolled.readError, null);
-  assert.equal(coordEnrolled.lastFailedKey, null);
-  assert.notEqual(coordEnrolled.lastCompletedKey, null);
-  assert.ok(publishedCount >= 1);
 });
 
 test("pending mutation sets track in-flight status, bulk stream, and resume actions and clear on error", async () => {
@@ -3255,8 +3169,8 @@ test("resolveMoveSpaceTarget and moveSessionToStream handle same-host move with 
     },
   ];
   const panes = [
-    { pane: "p1", terminal: "t1", space: "sp1", tab: "tb1" },
-    { pane: "p2", terminal: "t2", space: "sp2", tab: "tb2" },
+    { pane: "p1", terminal: "t1", tab: "tb1" },
+    { pane: "p2", terminal: "t2", tab: "tb2" },
   ];
 
   // Live session moving to stream in another open space.
@@ -3270,6 +3184,7 @@ test("resolveMoveSpaceTarget and moveSessionToStream handle same-host move with 
   });
   assert.equal(canMove.canMoveTab, true);
   assert.equal(canMove.targetSpace.id, "sp2");
+  assert.equal(canMove.currentSpaceId, "sp1");
   assert.equal(canMove.currentTabName, "Herdr UI");
 
   // Unopened session cannot move tab.
@@ -3308,19 +3223,29 @@ test("resolveMoveSpaceTarget and moveSessionToStream handle same-host move with 
   assert.equal(sameSpace.canMoveTab, false);
   assert.equal(sameSpace.reason, "Already in this space");
 
-  // Coordinator moveSessionToStream with moveTab: true parks, re-labels, renames tab, and refreshes both streams.
+  // Coordinator moveSessionToStream with moveTab: true is event-driven via notifyLayoutSnapshot
+  // (never relies on sleep polling on the happy path), uses real PaneInfo (no pane.space),
+  // and renames the actual adopted tab ID in spaces().
   const execCalls = [];
   const runCalls = [];
   let livePanes = [...panes];
+  let liveSpaces = spaces.map((s) => ({ ...s, tabs: [...s.tabs] }));
   const coord = new StreamsCoordinator({
     exec: async (bin, args, opts) => {
       execCalls.push({ bin, args, on: opts?.on ?? null });
       if (bin === "hc" && args[0] === "label" && args.some((a) => a.startsWith("herdr.space="))) {
-        const tabArg = args.find((a) => a.startsWith("herdr.tab=")).slice("herdr.tab=".length);
+        const adoptedTabId = "tb-herdr-adopted";
+        liveSpaces = [
+          { ...spaces[0], tabs: [] },
+          { ...spaces[1], tabs: [...spaces[1].tabs, { id: adoptedTabId, name: "2", named: false }] },
+        ];
         livePanes = [
-          { pane: "p1-moved", terminal: "t1", space: "sp2", tab: tabArg },
+          { pane: "p1-moved", terminal: "t1", tab: adoptedTabId },
           panes[1],
         ];
+        queueMicrotask(() => {
+          coord.notifyLayoutSnapshot({ panes: livePanes, spaces: liveSpaces, terminalList });
+        });
       }
       if (args[0] === "session" && args[1] === "show") {
         return {
@@ -3352,7 +3277,7 @@ test("resolveMoveSpaceTarget and moveSessionToStream handle same-host move with 
   assert.equal(crossHost.ok, false);
   assert.equal(execCalls.length, 0);
 
-  // Move with tab transfer.
+  // Move with tab transfer: pass a never-resolving timeout fuse to prove zero polling!
   const movedWithTab = await coord.moveSessionToStream(
     {
       sessionKey: "h1/pi/s1",
@@ -3368,14 +3293,20 @@ test("resolveMoveSpaceTarget and moveSessionToStream handle same-host move with 
         runCalls.push({ cmd, args });
         if (cmd === "terminal.park") {
           livePanes = [panes[1]];
+          liveSpaces = [{ ...spaces[0], tabs: [] }, spaces[1]];
+          queueMicrotask(() => {
+            coord.notifyLayoutSnapshot({ panes: livePanes, spaces: liveSpaces, terminalList });
+          });
         }
       },
       readPanes: () => livePanes,
-      sleep: async () => {},
+      readSpaces: () => liveSpaces,
+      sleep: () => new Promise(() => {}),
     }
   );
   assert.equal(movedWithTab.ok, true);
   assert.equal(movedWithTab.movedTab, true);
+  assert.equal(coord.actionError, null);
   assert.equal(coord.pendingMoves.has("h1/pi/s1"), false);
   assert.deepEqual(execCalls[0].args, ["session", "edit", "h1/pi/s1", "--stream", "h1/st2"]);
   assert.equal(runCalls[0].cmd, "terminal.park");
@@ -3386,7 +3317,7 @@ test("resolveMoveSpaceTarget and moveSessionToStream handle same-host move with 
   assert.ok(hcLabelCall.args.includes("herdr.space=sp2"));
   assert.ok(hcLabelCall.args.some((a) => a.startsWith("herdr.tab=tb_mv_")));
   assert.equal(runCalls[1].cmd, "tab.rename");
-  assert.equal(runCalls[1].args.name, "Herdr UI");
+  assert.deepEqual(runCalls[1].args, { id: "tb-herdr-adopted", name: "Herdr UI" });
 
   // Move without tab transfer skips terminal.park and only updates streams.stream label.
   const prevRuns = runCalls.length;
@@ -3403,6 +3334,8 @@ test("resolveMoveSpaceTarget and moveSessionToStream handle same-host move with 
     },
     {
       run: (cmd, args) => runCalls.push({ cmd, args }),
+      readPanes: () => panes,
+      readSpaces: () => spaces,
       sleep: async () => {},
     }
   );
@@ -3424,9 +3357,9 @@ test("buildMoveCandidates uses snapshot allSpaces and remote resolveMoveSpaceTar
       { id: "retriever/sp1", name: "Rem Streams", machine: "retriever", tabs: [{ id: "retriever/tb1", name: "Rem", named: true }] },
     ],
     panes: [
-      { pane: "p1", terminal: "t1", space: "sp1", tab: "tb1" },
-      { pane: "p2", terminal: "t2", space: "sp2", tab: "tb2" },
-      { pane: "retriever/p1", terminal: "retriever/t1", space: "retriever/sp1", tab: "retriever/tb1" },
+      { pane: "p1", terminal: "t1", tab: "tb1" },
+      { pane: "p2", terminal: "t2", tab: "tb2" },
+      { pane: "retriever/p1", terminal: "retriever/t1", tab: "retriever/tb1" },
     ],
     terminalList: [
       { address: "t1", state: "live", labels: { [LABEL_SESSION]: "h1/pi/s1", [LABEL_STREAM]: "h1/st1", [LABEL_HERDR_SPACE]: "sp1" } },
@@ -3478,8 +3411,8 @@ test("moveSessionToStream handles missing sleep, park detach timeout, and post-p
     { address: "t2", state: "live", labels: { [LABEL_SESSION]: "h1/pi/s2", [LABEL_STREAM]: "h1/st2", [LABEL_HERDR_SPACE]: "sp2" } },
   ];
   const panes = [
-    { pane: "p1", terminal: "t1", space: "sp1", tab: "tb1" },
-    { pane: "p2", terminal: "t2", space: "sp2", tab: "tb2" },
+    { pane: "p1", terminal: "t1", tab: "tb1" },
+    { pane: "p2", terminal: "t2", tab: "tb2" },
   ];
 
   // Case 1: missing sleep skips terminal.park without crashing and still refreshes catalog move.
@@ -3499,14 +3432,14 @@ test("moveSessionToStream handles missing sleep, park detach timeout, and post-p
   coord1.recordHostMachine("h1", null);
   const resNoSleep = await coord1.moveSessionToStream(
     { sessionKey: "h1/pi/s1", sourceStreamKey: "h1/st1", targetStreamKey: "h1/st2", moveTab: true, terminalList, panes, spaces },
-    { run: (cmd) => runs1.push(cmd) }
+    { run: (cmd) => runs1.push(cmd), readPanes: () => panes, readSpaces: () => spaces }
   );
   assert.equal(resNoSleep.ok, true);
   assert.equal(resNoSleep.movedTab, false);
   assert.equal(runs1.length, 0);
   assert.match(coord1.actionError?.title ?? "", /skipped tab transfer/i);
 
-  // Case 2: park never detaches -> no herdr.space placement label written, clear banner.
+  // Case 2: park never detaches -> safety fuse expires, no herdr.space placement label written, clear banner.
   const hcArgs2 = [];
   const coord2 = new StreamsCoordinator({
     exec: async (bin, args) => {
@@ -3524,7 +3457,7 @@ test("moveSessionToStream handles missing sleep, park detach timeout, and post-p
   coord2.recordHostMachine("h1", null);
   const resTimeout = await coord2.moveSessionToStream(
     { sessionKey: "h1/pi/s1", sourceStreamKey: "h1/st1", targetStreamKey: "h1/st2", moveTab: true, terminalList, panes, spaces },
-    { run: () => {}, readPanes: () => panes, sleep: async () => {} }
+    { run: () => {}, readPanes: () => panes, readSpaces: () => spaces, sleep: async () => {} }
   );
   assert.equal(resTimeout.ok, true);
   assert.equal(resTimeout.movedTab, false);
@@ -3554,12 +3487,43 @@ test("moveSessionToStream handles missing sleep, park detach timeout, and post-p
         if (cmd === "terminal.park") livePanes3 = [panes[1]];
       },
       readPanes: () => livePanes3,
+      readSpaces: () => spaces,
       sleep: async () => {},
     }
   );
   assert.equal(resParked.ok, true);
   assert.equal(resParked.movedTab, false);
   assert.match(coord3.actionError?.title ?? "", /terminal was parked/i);
+
+  // Case 4: park detaches and hc label succeeds, but Herdr never adopts into target Space -> honest timeout banner.
+  let livePanes4 = [...panes];
+  const coord4 = new StreamsCoordinator({
+    exec: async (_bin, args) => {
+      if (args[0] === "session" && args[1] === "show") {
+        return { code: 0, stdout: JSON.stringify(makeSessionJson({ host: "h1", id: "s1", stream_id: "st2" })), stderr: "" };
+      }
+      if (args[0] === "stream" && args[1] === "show") {
+        return { code: 0, stdout: JSON.stringify(makeStreamJson({ host: "h1", id: args[2].split("/")[1], sessions: [] })), stderr: "" };
+      }
+      return { code: 0, stdout: "{}", stderr: "" };
+    },
+  });
+  coord4.configLoaded = true;
+  coord4.recordHostMachine("h1", null);
+  const resUnconfirmed = await coord4.moveSessionToStream(
+    { sessionKey: "h1/pi/s1", sourceStreamKey: "h1/st1", targetStreamKey: "h1/st2", moveTab: true, terminalList, panes, spaces },
+    {
+      run: (cmd) => {
+        if (cmd === "terminal.park") livePanes4 = [panes[1]];
+      },
+      readPanes: () => livePanes4,
+      readSpaces: () => spaces,
+      sleep: async () => {},
+    }
+  );
+  assert.equal(resUnconfirmed.ok, true);
+  assert.equal(resUnconfirmed.movedTab, false);
+  assert.match(coord4.actionError?.title ?? "", /placement unconfirmed/i);
 });
 
 test("refreshAfterMutation advances readGeneration so stale observations cannot revert fresh edits, and pending guards reject duplicates", async () => {

@@ -1037,6 +1037,11 @@ export default class StreamsMod extends View {
   scheduleObserve(cx, snap, force = false) {
     if (checking()) return;
     this.syncConfiguredBin();
+    coordinator.notifyLayoutSnapshot({
+      panes: snap.panes,
+      spaces: snap.allSpaces,
+      terminalList: snap.terminalList,
+    });
     const isWinActive = Boolean(herdrWindow()?.active);
     const windowActivated = isWinActive && !lastWindowActive;
     lastWindowActive = isWinActive;
