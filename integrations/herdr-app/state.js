@@ -436,6 +436,7 @@ export function resolveMoveSpaceTarget({
   terminalList = [],
   panes = [],
   spaces = [],
+  agents = [],
 } = {}) {
   const targetMachine = machine ?? null;
   const termByAddr = new Map();
@@ -450,26 +451,27 @@ export function resolveMoveSpaceTarget({
     }
   }
   const tabSpaceMap = buildTabSpaceMap(spaces, targetMachine);
+  const running = runningSessionTerminals({ terminalList, panes, agents });
 
   let liveTerm = null;
   let livePane = null;
   if (sessionKey) {
     for (const pane of panes ?? []) {
-      const entry = termByAddr.get(pane?.terminal);
+      const addr = pane?.terminal;
+      if (!addr || running.get(addr) !== sessionKey) continue;
+      const entry = termByAddr.get(addr);
       if (!entry || entry.parsed.machine !== targetMachine) continue;
-      if (entry.term.labels?.[LABEL_SESSION] === sessionKey) {
-        liveTerm = entry.term;
-        livePane = pane;
-        break;
-      }
+      liveTerm = entry.term;
+      livePane = pane;
+      break;
     }
     if (!liveTerm) {
-      for (const { term, parsed } of termByAddr.values()) {
-        if (parsed.machine !== targetMachine) continue;
-        if (term.labels?.[LABEL_SESSION] === sessionKey && term.state === "live") {
-          liveTerm = term;
-          break;
-        }
+      for (const [addr, runningKey] of running) {
+        if (runningKey !== sessionKey) continue;
+        const entry = termByAddr.get(addr);
+        if (!entry || entry.parsed.machine !== targetMachine) continue;
+        liveTerm = entry.term;
+        break;
       }
     }
   }
@@ -487,9 +489,11 @@ export function resolveMoveSpaceTarget({
 
   let targetSpace = null;
   if (targetStreamKey) {
-    // Prefer an open pane currently enrolled in targetStreamKey.
+    // Prefer an open pane running an enrolled agent in targetStreamKey.
     for (const pane of panes ?? []) {
-      const entry = termByAddr.get(pane?.terminal);
+      const addr = pane?.terminal;
+      if (!addr || !running.has(addr)) continue;
+      const entry = termByAddr.get(addr);
       if (!entry || entry.parsed.machine !== targetMachine) continue;
       if (entry.term.labels?.[LABEL_STREAM] !== targetStreamKey) continue;
       const loc = pane?.tab ? tabSpaceMap.get(pane.tab) ?? null : null;
@@ -499,8 +503,14 @@ export function resolveMoveSpaceTarget({
       }
     }
     if (!targetSpace) {
-      const liveTerms = (terminalList ?? []).filter((t) => t?.state === "live");
-      const rawSpaceId = findSpaceForStream(liveTerms, targetStreamKey, targetMachine);
+      const runningTerms = [];
+      for (const [addr] of running) {
+        const entry = termByAddr.get(addr);
+        if (entry && entry.parsed.machine === targetMachine) {
+          runningTerms.push(entry.term);
+        }
+      }
+      const rawSpaceId = findSpaceForStream(runningTerms, targetStreamKey, targetMachine);
       if (rawSpaceId) {
         const lookupId =
           targetMachine !== null ? qualifyForMachine(rawSpaceId, targetMachine) : rawSpaceId;
@@ -570,6 +580,7 @@ export function buildMoveCandidates({
   const spaces = snapshot.allSpaces ?? snapshot.spaces ?? [];
   const panes = snapshot.panes ?? [];
   const terminalList = snapshot.terminalList ?? [];
+  const agents = snapshot.agents ?? [];
 
   const q = (query ?? "").trim().toLowerCase();
   const list = [];
@@ -587,6 +598,7 @@ export function buildMoveCandidates({
       terminalList,
       panes,
       spaces,
+      agents,
     });
     list.push({
       stream: item,
@@ -2765,8 +2777,9 @@ export class StreamsCoordinator {
       terminalList = [],
       panes = [],
       spaces = [],
+      agents = [],
     } = {},
-    { run, readPanes, readSpaces, sleep } = {}
+    { run, readPanes, readSpaces, readAgents, sleep } = {}
   ) {
     if (!sessionKey || !targetStreamKey) {
       const msg = "missing Session or target Stream key";
@@ -2807,6 +2820,7 @@ export class StreamsCoordinator {
       try {
         const latestPanes = typeof readPanes === "function" ? readPanes() ?? panes : panes;
         const latestSpaces = typeof readSpaces === "function" ? readSpaces() ?? spaces : spaces;
+        const latestAgents = typeof readAgents === "function" ? readAgents() ?? agents : agents;
         const moveInfo = resolveMoveSpaceTarget({
           sessionKey,
           targetStreamKey,
@@ -2814,6 +2828,7 @@ export class StreamsCoordinator {
           terminalList,
           panes: latestPanes,
           spaces: latestSpaces,
+          agents: latestAgents,
         });
 
         const liveTermAddress = moveInfo.liveTerm?.address ?? null;

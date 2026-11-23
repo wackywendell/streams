@@ -534,11 +534,13 @@ export default class StreamsMod extends View {
             terminalList: snap.terminalList,
             panes: snap.panes,
             spaces: snap.allSpaces,
+            agents: snap.agents,
           },
           {
             run,
             readPanes: () => panes(),
             readSpaces: () => spaces(),
+            readAgents: () => agents(),
             sleep: (ms) => asyncCx.sleep(ms),
           }
         );

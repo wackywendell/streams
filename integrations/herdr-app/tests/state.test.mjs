@@ -3169,8 +3169,12 @@ test("resolveMoveSpaceTarget and moveSessionToStream handle same-host move with 
     },
   ];
   const panes = [
-    { pane: "p1", terminal: "t1", tab: "tb1" },
-    { pane: "p2", terminal: "t2", tab: "tb2" },
+    { pane: "p1", terminal: "t1", tab: "tb1", program: { key: "pi", agent: true } },
+    { pane: "p2", terminal: "t2", tab: "tb2", program: { key: "pi", agent: true } },
+  ];
+  const agents = [
+    { address: "t1", app: "pi", program: { key: "pi", agent: true } },
+    { address: "t2", app: "pi", program: { key: "pi", agent: true } },
   ];
 
   // Live session moving to stream in another open space.
@@ -3181,11 +3185,53 @@ test("resolveMoveSpaceTarget and moveSessionToStream handle same-host move with 
     terminalList,
     panes,
     spaces,
+    agents,
   });
   assert.equal(canMove.canMoveTab, true);
   assert.equal(canMove.targetSpace.id, "sp2");
   assert.equal(canMove.currentSpaceId, "sp1");
   assert.equal(canMove.currentTabName, "Herdr UI");
+
+  // Bare shell pane with stale streams.session label (pi exited) is ignored,
+  // and if both a stale shell pane and a live pi pane share the label, the live pi pane wins.
+  const staleShellOnly = resolveMoveSpaceTarget({
+    sessionKey: "h1/pi/s1",
+    targetStreamKey: "h1/st2",
+    machine: null,
+    terminalList,
+    panes: [
+      { pane: "p1-shell", terminal: "t1", tab: "tb1", program: { key: "zsh", agent: false } },
+      panes[1],
+    ],
+    spaces,
+    agents: [agents[1]],
+  });
+  assert.equal(staleShellOnly.canMoveTab, false);
+  assert.equal(staleShellOnly.liveTerm, null);
+  assert.equal(staleShellOnly.reason, "Session is not open");
+
+  const staleAndLive = resolveMoveSpaceTarget({
+    sessionKey: "h1/pi/s1",
+    targetStreamKey: "h1/st2",
+    machine: null,
+    terminalList: [
+      {
+        address: "t-stale",
+        state: "live",
+        labels: { [LABEL_SESSION]: "h1/pi/s1", [LABEL_STREAM]: "h1/st1" },
+      },
+      ...terminalList,
+    ],
+    panes: [
+      { pane: "p-stale", terminal: "t-stale", tab: "tb1", program: { key: "zsh", agent: false } },
+      ...panes,
+    ],
+    spaces,
+    agents,
+  });
+  assert.equal(staleAndLive.canMoveTab, true);
+  assert.equal(staleAndLive.liveTerm?.address, "t1");
+  assert.equal(staleAndLive.livePane?.pane, "p1");
 
   // Unopened session cannot move tab.
   const unopened = resolveMoveSpaceTarget({
@@ -3357,9 +3403,14 @@ test("buildMoveCandidates uses snapshot allSpaces and remote resolveMoveSpaceTar
       { id: "retriever/sp1", name: "Rem Streams", machine: "retriever", tabs: [{ id: "retriever/tb1", name: "Rem", named: true }] },
     ],
     panes: [
-      { pane: "p1", terminal: "t1", tab: "tb1" },
-      { pane: "p2", terminal: "t2", tab: "tb2" },
-      { pane: "retriever/p1", terminal: "retriever/t1", tab: "retriever/tb1" },
+      { pane: "p1", terminal: "t1", tab: "tb1", program: { key: "pi", agent: true } },
+      { pane: "p2", terminal: "t2", tab: "tb2", program: { key: "pi", agent: true } },
+      { pane: "retriever/p1", terminal: "retriever/t1", tab: "retriever/tb1", program: { key: "pi", agent: true } },
+    ],
+    agents: [
+      { address: "t1", app: "pi", program: { key: "pi", agent: true } },
+      { address: "t2", app: "pi", program: { key: "pi", agent: true } },
+      { address: "retriever/t1", app: "pi", program: { key: "pi", agent: true } },
     ],
     terminalList: [
       { address: "t1", state: "live", labels: { [LABEL_SESSION]: "h1/pi/s1", [LABEL_STREAM]: "h1/st1", [LABEL_HERDR_SPACE]: "sp1" } },
@@ -3411,8 +3462,8 @@ test("moveSessionToStream handles missing sleep, park detach timeout, and post-p
     { address: "t2", state: "live", labels: { [LABEL_SESSION]: "h1/pi/s2", [LABEL_STREAM]: "h1/st2", [LABEL_HERDR_SPACE]: "sp2" } },
   ];
   const panes = [
-    { pane: "p1", terminal: "t1", tab: "tb1" },
-    { pane: "p2", terminal: "t2", tab: "tb2" },
+    { pane: "p1", terminal: "t1", tab: "tb1", program: { key: "pi", agent: true } },
+    { pane: "p2", terminal: "t2", tab: "tb2", program: { key: "pi", agent: true } },
   ];
 
   // Case 1: missing sleep skips terminal.park without crashing and still refreshes catalog move.
