@@ -11,7 +11,6 @@ use strum::{AsRefStr, Display, EnumString, VariantNames};
 #[strum(serialize_all = "kebab-case")]
 pub enum LocalStatus {
     Unchanged,
-    Persisted,
     Committed,
     RepairRequired,
 }
@@ -24,7 +23,6 @@ pub enum LocalStatus {
 #[strum(serialize_all = "kebab-case")]
 pub enum SharingStatus {
     LocalOnly,
-    Pending,
     Confirmed,
     Blocked,
     Failed,
@@ -38,11 +36,7 @@ crate::codec::deserialize_string_enum!(LocalStatus, SharingStatus);
 pub struct Result {
     pub sharing: SharingStatus,
     pub local: LocalStatus,
-    pub domain: Option<()>,
-    pub local_revision: Option<String>,
-    pub remote_revision: Option<String>,
     pub detail: String,
-    pub conflicts: Vec<String>,
 }
 
 impl Result {
@@ -50,11 +44,7 @@ impl Result {
         Self {
             sharing,
             local,
-            domain: None,
-            local_revision: None,
-            remote_revision: None,
             detail: String::new(),
-            conflicts: Vec::new(),
         }
     }
 

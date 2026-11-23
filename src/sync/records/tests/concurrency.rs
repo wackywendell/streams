@@ -139,6 +139,9 @@ fn a_save_during_fetch_is_checkpointed_before_same_file_divergence_is_decided() 
     }
     fs::write(b.join(".catalog.lock"), "").unwrap();
     let peer = RecordSync::open(&b, "owner").unwrap();
+    peer.git
+        .run(&["remote", "remove", "origin"], None, None, &[0])
+        .unwrap();
     for (key, value) in [
         ("user.name", "Streams"),
         ("user.email", "streams@localhost"),

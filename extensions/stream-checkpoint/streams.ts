@@ -45,7 +45,6 @@ export type CardMode = "automatic" | "manual";
 
 export type ConfigSnapshot = {
   naming: NamingSettings;
-  sync?: { auto_interval_minutes: number };
   herdr: {
     viewer: { mode: "editor" | "less" | "hunk" | "native"; placement: "tab" | "pane-right" | "pane-down" | "floating" };
     naming: { tab: boolean; workspace: boolean };
@@ -68,8 +67,8 @@ export type ConfigSnapshot = {
 };
 
 export type SyncResult = {
-  local: "unchanged" | "persisted" | "committed" | "repair-required";
-  sharing?: "local-only" | "pending" | "confirmed" | "blocked" | "failed" | "uncertain";
+  local: "unchanged" | "committed" | "repair-required";
+  sharing?: "local-only" | "confirmed" | "blocked" | "failed" | "uncertain";
   detail?: string;
   needs_attention?: boolean;
   [key: string]: unknown;

@@ -212,10 +212,17 @@ fn incoming_broken_membership_is_rejected_before_install_or_ref_advance() {
     record["stream_id"] = json!("missing");
     fs::write(b.join(&relative), serde_json::to_vec(&record).unwrap()).unwrap();
     // Simulate an invalid remote producer; do not pass through the validating save/sync API.
+    let remote_str = remote.to_str().unwrap();
     for args in [
         vec!["add", "-A", "--", "hosts"],
         vec!["commit", "--quiet", "-m", "Invalid incoming membership"],
-        vec!["push", "--quiet", "origin", "HEAD:refs/heads/records-v2"],
+        vec![
+            "push",
+            "--quiet",
+            "--",
+            remote_str,
+            "HEAD:refs/heads/records-v2",
+        ],
     ] {
         b_sync.git.run(&args, None, None, &[0]).unwrap();
     }

@@ -271,8 +271,7 @@ fn fresh_initialization_creates_the_saved_producer_and_selected_transport_withou
         let opened = application::initialize_records(&config, strategy, None, "main").unwrap();
         assert_eq!(opened.host(), &config.host_identity().unwrap());
         assert!(opened.inventory().unwrap().is_empty());
-        let sync = streams::sync::records::RecordSync::open(opened.root(), opened.host().as_str())
-            .unwrap();
+        let sync = streams::sync::open_backend(opened.root(), opened.host().as_str()).unwrap();
         assert_eq!(sync.strategy(), strategy);
         assert_eq!(
             opened.root().join(".git").exists(),

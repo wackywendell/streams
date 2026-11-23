@@ -39,109 +39,42 @@ fn scripted(steps: Vec<Expected>) -> (Git, Arc<Mutex<VecDeque<Expected>>>) {
 }
 
 #[test]
-fn ancestry_compares_merge_base_and_preserves_failures() {
-    let before = "a".repeat(40);
-    let after = "b".repeat(40);
-    for (output, expected) in [
-        (format!("{before}\n"), true),
-        ("other-base\n".into(), false),
-        (String::new(), false),
-    ] {
-        let (git, pending) = scripted(vec![reply(
-            &["merge-base", &before, &after],
-            output.as_bytes(),
-        )]);
-        assert_eq!(git.ancestor(&before, &after).unwrap(), expected);
-        assert!(pending.lock().unwrap().is_empty());
-    }
-    let error = GitError::new("merge-base failed", Some(2));
-    let (git, pending) = scripted(vec![Expected {
-        result: Err(error.clone()),
-        ..reply(&["merge-base", &before, &after], b"")
-    }]);
-    assert_eq!(git.ancestor(&before, &after).unwrap_err(), error);
-    assert!(pending.lock().unwrap().is_empty());
-}
-
-#[test]
-fn target_checks_both_urls_and_rejects_mirror_pushes() {
-    for (fetch, push, mirror, valid) in [
-        ("expected", "expected", "", true),
-        ("expected", "expected", "false", true),
-        ("other", "expected", "", false),
-        ("expected", "other", "", false),
-        ("expected", "expected", "true", false),
-        ("expected\nother", "expected", "", false),
-    ] {
-        let (git, pending) = scripted(vec![
-            reply(&["symbolic-ref", "--quiet", "HEAD"], b"refs/heads/main\n"),
-            reply(&["remote", "get-url", "--all", "origin"], fetch.as_bytes()),
-            reply(
-                &["remote", "get-url", "--push", "--all", "origin"],
-                push.as_bytes(),
-            ),
-            reply(
-                &["config", "--get", "remote.origin.mirror"],
-                mirror.as_bytes(),
-            ),
-        ]);
-        assert_eq!(git.check_target(Some("expected"), "main").is_ok(), valid);
-        assert!(pending.lock().unwrap().is_empty());
-    }
-}
-
-#[test]
-fn target_rejects_changed_branch_and_unexpected_local_remote() {
+fn target_rejects_changed_branch_and_any_git_remote() {
     let (git, pending) = scripted(vec![reply(
         &["symbolic-ref", "--quiet", "HEAD"],
         b"refs/heads/other\n",
     )]);
     assert!(
-        git.check_target(None, "main")
+        git.check_target("main")
             .unwrap_err()
             .to_string()
             .contains("branch was changed")
     );
     assert!(pending.lock().unwrap().is_empty());
-    for (remote, valid) in [("", true), ("origin\n", false)] {
+    for (remote, valid) in [("", true), ("origin\n", false), ("upstream\n", false)] {
         let (git, pending) = scripted(vec![
             reply(&["symbolic-ref", "--quiet", "HEAD"], b"refs/heads/main\n"),
             reply(&["remote"], remote.as_bytes()),
         ]);
-        assert_eq!(git.check_target(None, "main").is_ok(), valid);
+        assert_eq!(git.check_target("main").is_ok(), valid);
         assert!(pending.lock().unwrap().is_empty());
     }
 }
 
 #[test]
-fn commit_reads_signing_policy_each_time_and_never_falls_back_unsigned() {
-    let tree = "a".repeat(40);
-    let parent = "b".repeat(40);
-    let error = GitError::new("signer failed", Some(1));
-    let mut signed = reply(&["commit-tree", &tree, "-p", &parent, "-S"], b"");
-    signed.input = Some(b"original message\n".to_vec());
-    signed.result = Err(error.clone());
-    let mut unsigned = reply(&["commit-tree", &tree], b"created\n");
-    unsigned.input = Some(b"second message\n".to_vec());
-    let (git, pending) = scripted(vec![
-        reply(&["config", "--bool", "--get", "commit.gpgsign"], b"true\n"),
-        signed,
-        reply(&["config", "--bool", "--get", "commit.gpgsign"], b"false\n"),
-        unsigned,
-    ]);
+fn effective_remote_uses_offline_ls_remote_get_url() {
+    let (git, pending) = scripted(vec![reply(
+        &[
+            "ls-remote",
+            "--get-url",
+            "--",
+            "git@github.com:org/repo.git",
+        ],
+        b"git@alias.github.com:org/repo.git\n",
+    )]);
     assert_eq!(
-        git.commit(&tree, "original message\n", Some(&parent))
-            .unwrap_err(),
-        error
-    );
-    assert_eq!(
-        pending.lock().unwrap().len(),
-        2,
-        "no unsigned retry after signer failure"
-    );
-    assert_eq!(
-        git.commit(&tree, "second message\n", None).unwrap(),
-        "created"
+        git.effective_remote("git@github.com:org/repo.git").unwrap(),
+        "git@alias.github.com:org/repo.git"
     );
     assert!(pending.lock().unwrap().is_empty());
 }

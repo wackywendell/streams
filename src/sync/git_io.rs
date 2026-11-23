@@ -194,55 +194,28 @@ impl Git {
         Ok(String::from_utf8_lossy(&out).trim().to_string())
     }
 
-    pub(super) fn check_target(
-        &self,
-        remote: Option<&str>,
-        branch: &str,
-    ) -> Result<(), RepairRequired> {
+    pub(super) fn check_target(&self, branch: &str) -> Result<(), RepairRequired> {
         let head = self
             .text(&["symbolic-ref", "--quiet", "HEAD"], None, None, &[0])
             .map_err(repair)?;
         if head != format!("refs/heads/{branch}") {
             return Err(repair("managed catalog branch was changed"));
         }
-        match remote {
-            None => {
-                if !self
-                    .text(&["remote"], None, None, &[0])
-                    .map_err(repair)?
-                    .is_empty()
-                {
-                    return Err(repair(
-                        "local Git catalog has an unexpected remote; inspect before continuing",
-                    ));
-                }
-            }
-            Some(remote) => {
-                let fetch = self
-                    .text(&["remote", "get-url", "--all", "origin"], None, None, &[0])
-                    .map_err(repair)?;
-                let push = self
-                    .text(
-                        &["remote", "get-url", "--push", "--all", "origin"],
-                        None,
-                        None,
-                        &[0],
-                    )
-                    .map_err(repair)?;
-                let mirror = self
-                    .text(
-                        &["config", "--get", "remote.origin.mirror"],
-                        None,
-                        None,
-                        &[0, 1],
-                    )
-                    .map_err(repair)?;
-                if fetch != remote || push != remote || (!mirror.is_empty() && mirror != "false") {
-                    return Err(repair("managed catalog remote was changed"));
-                }
-            }
+        if !self
+            .text(&["remote"], None, None, &[0])
+            .map_err(repair)?
+            .is_empty()
+        {
+            return Err(repair(
+                "managed catalog has an unexpected Git remote; inspect before continuing",
+            ));
         }
         Ok(())
+    }
+
+    /// Expands global `url.<base>.insteadOf` rules for `remote` offline without touching `.git/config`.
+    pub(super) fn effective_remote(&self, remote: &str) -> Result<String, GitError> {
+        self.text(&["ls-remote", "--get-url", "--", remote], None, None, &[0])
     }
 
     /// Resolves `HEAD`; an unborn branch is an error.
@@ -250,17 +223,10 @@ impl Git {
         self.text(&["rev-parse", "--verify", "HEAD"], None, None, &[0])
     }
 
-    /// Tests ancestry by comparing the merge base to `before` (a full object ID).
-    pub fn ancestor(&self, before: &str, after: &str) -> Result<bool, GitError> {
-        let out = self.text(&["merge-base", before, after], None, None, &[0, 1])?;
-        Ok(out == before)
-    }
-
-    /// Reads a revision's UTF-8 paths and blob bytes, caching blobs by object ID.
+    /// Lists a revision's UTF-8 paths and blob OIDs without reading blob bytes.
     ///
-    /// Rejects non-regular entries, including symlinks, executable files and submodules;
-    /// decoding catalog records is the caller's responsibility.
-    pub fn files(&self, revision: &str) -> Result<BTreeMap<String, Vec<u8>>, StorageError> {
+    /// Rejects non-regular entries, including symlinks, executable files and submodules.
+    pub fn tree_oids(&self, revision: &str) -> Result<BTreeMap<PathBuf, String>, StorageError> {
         let raw = self
             .run(
                 &["ls-tree", "-rz", "--full-tree", revision],
@@ -293,8 +259,17 @@ impl Git {
                     "catalog history contains a non-regular record",
                 ));
             }
-            paths.insert(path.to_string(), parts[2].to_string());
+            paths.insert(PathBuf::from(path), parts[2].to_string());
         }
+        Ok(paths)
+    }
+
+    /// Reads a revision's UTF-8 paths and blob bytes, caching blobs by object ID.
+    ///
+    /// Rejects non-regular entries, including symlinks, executable files and submodules;
+    /// decoding catalog records is the caller's responsibility.
+    pub fn files(&self, revision: &str) -> Result<BTreeMap<String, Vec<u8>>, StorageError> {
+        let paths = self.tree_oids(revision)?;
         let missing: Vec<String> = {
             let blobs = self.blobs.lock().unwrap();
             let unique_oids: BTreeSet<String> = paths.values().cloned().collect();
@@ -349,35 +324,8 @@ impl Git {
             let Some(bytes) = blobs.get(&oid) else {
                 return Err(StorageError::new("missing cached Git blob"));
             };
-            out.insert(path, bytes.clone());
+            out.insert(path.to_string_lossy().into_owned(), bytes.clone());
         }
         Ok(out)
-    }
-
-    /// Creates a commit object without moving a ref or changing the working tree.
-    ///
-    /// Reads `commit.gpgsign` for each call and requests signing when enabled; identity,
-    /// signing keys and other behavior come from the current Git configuration.
-    pub fn commit(
-        &self,
-        tree: &str,
-        message: &str,
-        parent: Option<&str>,
-    ) -> Result<String, GitError> {
-        let mut args = vec!["commit-tree", tree];
-        if let Some(p) = parent {
-            args.push("-p");
-            args.push(p);
-        }
-        let signed = self.text(
-            &["config", "--bool", "--get", "commit.gpgsign"],
-            None,
-            None,
-            &[0, 1],
-        )?;
-        if signed == "true" {
-            args.push("-S");
-        }
-        self.text(&args, Some(message.as_bytes()), None, &[0])
     }
 }

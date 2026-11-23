@@ -8,7 +8,7 @@ use crate::{
     model::{Record, Stream, Title},
     runtime::state::RuntimeState,
     storage::records::{RecordAddress, RecordInventory, RecordListing, RecordStore},
-    sync::{RemoteUpdate, records::RecordSync},
+    sync::{self, RemoteUpdate},
 };
 
 use super::Result;
@@ -144,7 +144,7 @@ pub fn initialize_records(
     let host = lock.host_identity_for_new_catalog()?;
     let records = FileRecordStore::new(&settings.catalog_root, host.as_str())?;
     records.initialize()?;
-    RecordSync::initialize(
+    sync::initialize(
         records.root(),
         host.as_str(),
         strategy,
@@ -171,21 +171,18 @@ pub fn configure_records(
     branch: Option<&str>,
 ) -> Result<(OpenedRecords, Strategy, Option<String>, Option<String>)> {
     let opened = open_records(config)?;
-    let transport = RecordSync::configure(
+    let transport = sync::configure(
         opened.root(),
         opened.host().as_str(),
         strategy,
         remote,
         branch,
     )?;
-    let configured_strategy = transport.strategy();
-    let configured_remote = transport.remote().map(str::to_owned);
-    let configured_branch = transport.branch().map(str::to_owned);
     Ok((
         opened,
-        configured_strategy,
-        configured_remote,
-        configured_branch,
+        transport.strategy,
+        transport.remote,
+        transport.branch,
     ))
 }
 

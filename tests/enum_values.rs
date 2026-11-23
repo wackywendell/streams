@@ -103,13 +103,11 @@ fn native_enums_require_string_wire_values() {
 fn sync_enums_preserve_hyphenated_wire_values() {
     roundtrip(&[
         (LocalStatus::Unchanged, "unchanged"),
-        (LocalStatus::Persisted, "persisted"),
         (LocalStatus::Committed, "committed"),
         (LocalStatus::RepairRequired, "repair-required"),
     ]);
     roundtrip(&[
         (SharingStatus::LocalOnly, "local-only"),
-        (SharingStatus::Pending, "pending"),
         (SharingStatus::Confirmed, "confirmed"),
         (SharingStatus::Blocked, "blocked"),
         (SharingStatus::Failed, "failed"),

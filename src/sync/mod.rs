@@ -26,6 +26,24 @@ pub enum RemoteUpdate {
     Clear,
 }
 
+/// Configured transport metadata stored in `.catalog-local/transport.json`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransportConfig {
+    pub strategy: Strategy,
+    pub remote: Option<String>,
+    pub branch: Option<String>,
+}
+
+/// Transport health and effective remote information reported by `streams catalog check`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BackendHealth {
+    pub strategy: Strategy,
+    pub remote: Option<String>,
+    pub effective_remote: Option<String>,
+    pub branch: Option<String>,
+    pub issues: Vec<String>,
+}
+
 /// Recorded outcome of the most recent sync attempt for a catalog.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -44,6 +62,8 @@ pub trait SyncBackend {
     fn sync(&self) -> outcomes::Result;
     /// Non-blocking sync for background triggers; returns `None` if a sync is already in flight.
     fn try_sync(&self) -> Option<outcomes::Result>;
+    /// Inspect backend configuration and repository health without contacting the network.
+    fn check(&self) -> BackendHealth;
 }
 
 /// Local-only backend that validates records without Git or network access.
@@ -83,14 +103,51 @@ impl SyncBackend for NoneBackend {
     fn try_sync(&self) -> Option<outcomes::Result> {
         Some(self.sync())
     }
+
+    fn check(&self) -> BackendHealth {
+        BackendHealth {
+            strategy: Strategy::None,
+            remote: None,
+            effective_remote: None,
+            branch: None,
+            issues: Vec::new(),
+        }
+    }
+}
+
+/// Initialize the catalog's sync transport in `.catalog-local/transport.json`.
+pub fn initialize(
+    root: &Path,
+    host: &str,
+    strategy: Strategy,
+    remote: Option<String>,
+    branch: &str,
+) -> Result<TransportConfig, StorageError> {
+    records::initialize(root, host, strategy, remote, branch)
+}
+
+/// Reconfigure an already-initialized catalog's sync transport.
+pub fn configure(
+    root: &Path,
+    host: &str,
+    strategy: Strategy,
+    remote: RemoteUpdate,
+    branch: Option<&str>,
+) -> Result<TransportConfig, StorageError> {
+    records::configure(root, host, strategy, remote, branch)
 }
 
 /// Open the catalog's configured sync backend behind [`SyncBackend`].
 pub fn open_backend(root: &Path, host: &str) -> Result<Box<dyn SyncBackend>, StorageError> {
-    let transport = records::RecordSync::open(root, host)?;
-    Ok(match transport.strategy() {
+    let config = records::read_transport_config(root, host)?;
+    Ok(match config.strategy {
         Strategy::None => Box::new(NoneBackend::new(root, host)),
-        Strategy::Git => Box::new(transport),
+        Strategy::Git => Box::new(records::RecordSync::from_config(
+            root,
+            host,
+            config.remote,
+            config.branch.expect("Git transport has branch"),
+        )),
     })
 }
 

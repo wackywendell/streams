@@ -164,15 +164,8 @@ impl FileRecordStore {
         )
     }
 
-    fn scope(&self, write: bool) -> Result<Reader<'_>, StorageError> {
-        ensure_directory(&self.root, false)?;
-        let path = self.root.join(".catalog.lock");
-        self.observe(RecordIoEvent::Lock(path.clone()));
-        let lock = if write {
-            existing_write_lock(&path)?
-        } else {
-            inspection_lock(&path)?
-        };
+    /// Verifies format version and host ownership while the caller already holds `.catalog.lock`.
+    pub(crate) fn verify_locked_format(&self) -> Result<(), StorageError> {
         let bytes = self
             .read_named(Path::new(FORMAT))?
             .ok_or_else(|| StorageError::new(format!("catalog has no {FORMAT}; {RESET_HINT}")))?;
@@ -190,6 +183,19 @@ impl FileRecordStore {
                 format.host, self.host
             )));
         }
+        Ok(())
+    }
+
+    fn scope(&self, write: bool) -> Result<Reader<'_>, StorageError> {
+        ensure_directory(&self.root, false)?;
+        let path = self.root.join(".catalog.lock");
+        self.observe(RecordIoEvent::Lock(path.clone()));
+        let lock = if write {
+            existing_write_lock(&path)?
+        } else {
+            inspection_lock(&path)?
+        };
+        self.verify_locked_format()?;
         Ok(Reader {
             store: self,
             _lock: lock,

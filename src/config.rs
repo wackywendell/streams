@@ -883,50 +883,6 @@ impl Config {
         toml_table_to_json(&self.values_toml()?)
     }
 
-    /// Snapshot exposed to `extensions/stream-checkpoint` via `GetConfig`/`SetConfig`/`UnsetConfig`.
-    pub fn extension_snapshot(&self) -> Result<Value> {
-        let settings = self.load()?;
-        Ok(json!({
-            "naming": {
-                "stream": settings.naming.stream,
-                "session": settings.naming.session,
-            },
-            "herdr": {
-                "viewer": {
-                    "mode": settings.herdr.viewer_mode,
-                    "placement": settings.herdr.viewer_placement,
-                },
-                "naming": {
-                    "tab": settings.herdr.tab_naming,
-                    "workspace": settings.herdr.workspace_naming,
-                },
-                "cards": {
-                    "auto_open": match settings.herdr.cards_auto_open {
-                        CardMode::Automatic => "automatic",
-                        CardMode::Manual => "manual",
-                    },
-                },
-                "timeout_ms": settings.herdr.timeout_ms,
-                "pane_height_fraction": settings.herdr.pane_height_fraction,
-            },
-            "pi": {
-                "naming": {
-                    "session": settings.pi.session_naming,
-                    "import_edits": settings.pi.import_edits,
-                },
-                "reporting": {
-                    "mode": settings.pi.reporting_mode,
-                    "enrollment": settings.pi.enrollment,
-                    "frequency": settings.pi.frequency,
-                    "context": settings.pi.context,
-                    "model": settings.pi.model,
-                    "session_logging": settings.pi.session_logging,
-                    "debug_commands": settings.pi.debug_commands,
-                },
-            },
-        }))
-    }
-
     pub fn get(&self, key: ConfigKey) -> Result<Value> {
         self.get_path(ConfigPath::Key(key))
     }
@@ -1416,7 +1372,7 @@ crate::codec::deserialize_string_enum!(Strategy);
 
 fn missing_host() -> ConfigError {
     invalid(
-        "host identity is missing; run streams init for a new catalog; restore host.json for an existing catalog",
+        "host identity is missing; run streams catalog init for a new catalog; restore host.json for an existing catalog",
     )
 }
 fn read_json(path: &Path) -> Result<Option<Value>> {

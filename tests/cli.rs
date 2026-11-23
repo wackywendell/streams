@@ -745,6 +745,9 @@ fn git_sync_cli_end_to_end_configure_and_background_auto_sync() {
     assert_eq!(sync_a["sharing"], "confirmed");
     let check_a = host_a.ok_json(&["catalog", "check"], None);
     assert_eq!(check_a["valid"], true);
+    assert_eq!(check_a["sync"]["strategy"], "git");
+    assert_eq!(check_a["sync"]["remote"], remote_str);
+    assert_eq!(check_a["sync"]["effective_remote"], remote_str);
     assert_eq!(check_a["last_sync"]["needs_attention"], false);
     assert_eq!(check_a["last_sync"]["sharing"], "confirmed");
 

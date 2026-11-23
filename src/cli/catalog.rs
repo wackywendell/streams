@@ -208,19 +208,47 @@ pub(super) fn check(opened: &OpenedRecords, selector: Option<&str>) -> Result<Ou
         }
     }
     let stream_count = if selected.is_some() { 1 } else { streams.len() };
+    let backend = sync::open_backend(opened.root(), opened.host().as_str())
+        .map_err(application::ApplicationError::from)?;
+    let transport = backend.check();
     let last_sync =
         sync::read_last_sync(opened.root()).map_err(application::ApplicationError::from)?;
+    let valid = transport.issues.is_empty();
     let value = json!({
-        "valid": true,
+        "valid": valid,
         "streams": stream_count,
         "sessions": sessions.len(),
+        "sync": transport,
         "last_sync": last_sync,
     });
-    let mut plain = format!(
-        "catalog valid ({stream_count} stream(s), {} session(s))",
-        sessions.len()
-    );
+    let mut plain = if valid {
+        format!(
+            "catalog valid ({stream_count} stream(s), {} session(s))",
+            sessions.len()
+        )
+    } else {
+        format!(
+            "catalog transport needs attention ({stream_count} stream(s), {} session(s))",
+            sessions.len()
+        )
+    };
     let mut output = Output::plain(value, plain.clone());
+    if let (Some(remote), Some(effective)) = (&transport.remote, &transport.effective_remote)
+        && remote != effective
+    {
+        plain.push_str(&format!(
+            "\nnote: Git rewrites configured remote {remote} to {effective}"
+        ));
+        output.plain = Some(plain.clone());
+    }
+    if !transport.issues.is_empty() {
+        for issue in &transport.issues {
+            plain.push_str(&format!("\ntransport issue: {issue}"));
+            output.notices.push(format!("warning: {issue}"));
+        }
+        output.plain = Some(plain.clone());
+        output.code = 3;
+    }
     if let Some(state) = &last_sync
         && state.needs_attention
     {
