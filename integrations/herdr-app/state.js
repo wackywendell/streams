@@ -1396,8 +1396,11 @@ export class StreamsCoordinator {
     };
 
     this.readGeneration = 0;
-    this._lastActiveSig = null;
-    this._lastOffTabTokenByTerm = new Map();
+    this._globalEpoch = 0;
+    this._machineEpoch = new Map(); // machineKey -> int (bumped on mutation / machine transition)
+    this._savedBySession = new Map(); // sessionKey -> sorted "addr=saved" from running Pi terminals
+    this._shellSavedByMachine = new Map(); // machineKey -> sorted "addr=saved" from non-Pi terminals
+    this._liveStreamBySession = new Map(); // sessionKey -> streamKey from live terminal `streams.stream` label
     this._lastFrameSig = null;
     this.inFlightKey = null;
     this.inFlightPromise = null;
@@ -1405,9 +1408,9 @@ export class StreamsCoordinator {
     this.lastFailedKey = null;
     this.lastCompletedAt = 0;
 
-    this.sessions = new Map(); // sessionKey -> normalized Session & { detail: boolean }
-    this.streams = new Map(); // streamKey -> normalized Stream & { detail: boolean }
-    this.lists = new Map(); // `${machineKey}:${scope}` -> { keys: string[], unreadable, error, loaded, dirty, seq, inFlight }
+    this.sessions = new Map(); // sessionKey -> normalized Session & { detail, fetchedToken, detailToken }
+    this.streams = new Map(); // streamKey -> normalized Stream & { detail, detailToken }
+    this.lists = new Map(); // `${machineKey}:${scope}` -> { keys, unreadable, error, loaded, fetchedToken, seq, inFlight }
     this.staleSessionKeys = new Set(); // sessionKeys that returned CLI `not-found`
     this.lastFocusedStreamBySpace = new Map(); // spaceId -> streamKey
     this.activeMachine = null; // null for local desktop, or remote machine name
@@ -1427,7 +1430,6 @@ export class StreamsCoordinator {
     this.readError = null;
     this.actionError = null;
 
-    this.lastNoticeToken = "";
     this.lastSpaceTabKey = null;
     this._lastPublishedSharedJson = null;
     this._lastRunning = new Map();
@@ -1436,6 +1438,92 @@ export class StreamsCoordinator {
 
   _machineKey(machine = this.activeMachine) {
     return machine ?? "__local__";
+  }
+
+  _bumpMachineEpoch(machine) {
+    const mKey = this._machineKey(machine);
+    this._machineEpoch.set(mKey, (this._machineEpoch.get(mKey) ?? 0) + 1);
+  }
+
+  /**
+   * Snapshot live `streams.saved` and `streams.stream` labels into per-session and per-machine
+   * maps so every cached record (`sessions`, `streams`, `lists`) shares one uniform freshness check.
+   */
+  _recordLiveTokens(live) {
+    const bySession = new Map();
+    const shellByMachine = new Map();
+    this._liveStreamBySession.clear();
+    for (const [addr, sk] of live?.runningByTerm ?? []) {
+      const st = live.termByAddr?.get(addr)?.labels?.[LABEL_STREAM];
+      if (st) this._liveStreamBySession.set(sk, st);
+    }
+    for (const [addr, saved] of live?.savedTokensByTerm ?? []) {
+      const sk = live.runningByTerm.get(addr);
+      if (sk) {
+        const list = bySession.get(sk) ?? [];
+        list.push(`${addr}=${saved}`);
+        bySession.set(sk, list);
+      } else {
+        const mKey = this._machineKey(parseTerminalAddress(addr)?.machine ?? null);
+        const list = shellByMachine.get(mKey) ?? [];
+        list.push(`${addr}=${saved}`);
+        shellByMachine.set(mKey, list);
+      }
+    }
+    this._savedBySession.clear();
+    for (const [sk, list] of bySession) {
+      this._savedBySession.set(sk, list.sort().join("|"));
+    }
+    this._shellSavedByMachine.clear();
+    for (const [mKey, list] of shellByMachine) {
+      this._shellSavedByMachine.set(mKey, list.sort().join("|"));
+    }
+  }
+
+  _machineBaseToken(machine = this.activeMachine) {
+    const mKey = this._machineKey(machine);
+    return `${this._globalEpoch}:${this._machineEpoch.get(mKey) ?? 0}:${this._shellSavedByMachine.get(mKey) ?? ""}`;
+  }
+
+  _sessionToken(sessionKey, machine = this.activeMachine) {
+    return `${this._machineBaseToken(machine)}|${this._savedBySession.get(sessionKey) ?? ""}`;
+  }
+
+  _streamToken(streamKey, machine = this.activeMachine) {
+    const memberSaved = [];
+    for (const [sk, tok] of this._savedBySession) {
+      const st = this.sessions.get(sk)?.stream ?? this._liveStreamBySession.get(sk);
+      if (st === streamKey) memberSaved.push(`${sk}=${tok}`);
+    }
+    memberSaved.sort();
+    return `${this._machineBaseToken(machine)}|${memberSaved.join("|")}`;
+  }
+
+  _listToken(machine = this.activeMachine, scope = this.hostScope) {
+    if (scope === "all") {
+      const allKeys = new Set([
+        this._machineKey(machine),
+        ...this._machineEpoch.keys(),
+        ...this._shellSavedByMachine.keys(),
+      ]);
+      const machinesPart = [...allKeys]
+        .sort()
+        .map((k) => `${k}=${this._machineEpoch.get(k) ?? 0}:${this._shellSavedByMachine.get(k) ?? ""}`)
+        .join(";");
+      const sessPart = [...this._savedBySession.entries()]
+        .map(([k, v]) => `${k}=${v}`)
+        .sort()
+        .join("|");
+      return `${this._globalEpoch}|${machinesPart}|${sessPart}`;
+    }
+    const sessPart = [];
+    for (const [addr, sk] of this._lastRunning) {
+      if ((parseTerminalAddress(addr)?.machine ?? null) !== machine) continue;
+      const tok = this._savedBySession.get(sk);
+      if (tok) sessPart.push(`${sk}=${tok}`);
+    }
+    sessPart.sort();
+    return `${this._machineBaseToken(machine)}|${sessPart.join("|")}`;
   }
 
   _listBucketKey(machine = this.activeMachine, scope = this.hostScope) {
@@ -1452,7 +1540,7 @@ export class StreamsCoordinator {
         unreadable: [],
         error: null,
         loaded: false,
-        dirty: false,
+        fetchedToken: null,
         seq: 0,
         inFlight: 0,
       };
@@ -1486,17 +1574,22 @@ export class StreamsCoordinator {
       : [];
   }
 
-  _upsertSession(session, { detail = false } = {}) {
+  _upsertSession(session, { detail = false, token = null } = {}) {
     if (!session?.key) return null;
     this.staleSessionKeys.delete(session.key);
     const prev = this.sessions.get(session.key);
     if (detail || !prev?.detail) {
-      const stored = { ...session, detail: Boolean(detail) };
+      const stored = {
+        ...session,
+        detail: Boolean(detail),
+        fetchedToken: token ?? prev?.fetchedToken ?? null,
+        detailToken: detail ? token : prev?.detailToken ?? null,
+      };
       this.sessions.set(session.key, stored);
       return stored;
     }
-    // Preserve full detail fields (`recap`, `remaining`, `references`, `artifacts`, `directory`,
-    // `updated_at_ms`) when a summary from `session list` or `stream.sessions` arrives.
+    // Preserve full detail fields and `detailToken` when a summary arrives from `session list`
+    // or `stream.sessions` so switching to this Session later still refetches stale details.
     const merged = {
       ...prev,
       title: session.title || prev.title,
@@ -1519,12 +1612,14 @@ export class StreamsCoordinator {
       updated_at_ms: session.updated_at_ms > 0 ? session.updated_at_ms : prev.updated_at_ms,
       directory: session.directory ?? prev.directory,
       detail: true,
+      fetchedToken: token ?? prev.fetchedToken ?? null,
+      detailToken: prev.detailToken ?? null,
     };
     this.sessions.set(session.key, merged);
     return merged;
   }
 
-  _upsertStream(stream, { detail = false } = {}) {
+  _upsertStream(stream, { detail = false, token = null, machine = undefined } = {}) {
     if (!stream?.key) return null;
     const prev = this.streams.get(stream.key);
     let stored;
@@ -1532,7 +1627,12 @@ export class StreamsCoordinator {
       const sessionKeys = Array.isArray(stream.sessions)
         ? stream.sessions.map((s) => s?.key).filter(Boolean)
         : [];
-      stored = { ...stream, sessionKeys, detail: Boolean(detail) };
+      stored = {
+        ...stream,
+        sessionKeys,
+        detail: Boolean(detail),
+        detailToken: detail ? token : prev?.detailToken ?? null,
+      };
     } else {
       stored = {
         ...prev,
@@ -1550,15 +1650,57 @@ export class StreamsCoordinator {
           stream.last_activity_ms > 0 ? stream.last_activity_ms : prev.last_activity_ms,
         host_id: stream.host_id || prev.host_id,
         detail: true,
+        detailToken: prev.detailToken ?? null,
       };
     }
     this.streams.set(stream.key, stored);
     if (detail && Array.isArray(stream.sessions)) {
       for (const member of stream.sessions) {
-        this._upsertSession(member, { detail: false });
+        this._upsertSession(member, {
+          detail: false,
+          token: machine !== undefined ? this._sessionToken(member.key, machine) : null,
+        });
       }
     }
     return stored;
+  }
+
+  async _fetchSession(sessionKey, machine, { gen = null, fallbackError = "session show failed" } = {}) {
+    const token = this._sessionToken(sessionKey, machine);
+    const out = await this.runExec(
+      this.streamsBinFor(machine),
+      ["session", "show", sessionKey, "--json"],
+      { on: machine }
+    );
+    if (gen !== null && gen !== this.readGeneration) return { ok: false, stale: true };
+    if (out.code !== 0) {
+      const err = extractCliError(out, fallbackError);
+      return { ok: false, notFound: !out.transportError && err.kind === "not-found", error: err.message };
+    }
+    const session = normalizeSession(parseJsonSafe(out.stdout));
+    if (!session) return { ok: false, error: "invalid session show JSON" };
+    if (session.host_id) this.recordHostMachine(session.host_id, machine);
+    this._upsertSession(session, { detail: true, token });
+    return { ok: true, session };
+  }
+
+  async _fetchStream(streamKey, machine, { gen = null, fallbackError = "stream show failed" } = {}) {
+    const token = this._streamToken(streamKey, machine);
+    const out = await this.runExec(
+      this.streamsBinFor(machine),
+      ["stream", "show", streamKey, "--json"],
+      { on: machine }
+    );
+    if (gen !== null && gen !== this.readGeneration) return { ok: false, stale: true };
+    if (out.code !== 0) {
+      const err = extractCliError(out, fallbackError);
+      return { ok: false, error: err.message };
+    }
+    const stream = normalizeStream(parseJsonSafe(out.stdout));
+    if (!stream) return { ok: false, error: "invalid stream show JSON" };
+    if (stream.host_id) this.recordHostMachine(stream.host_id, machine);
+    this._upsertStream(stream, { detail: true, token, machine });
+    return { ok: true, stream };
   }
 
   /**
@@ -1962,7 +2104,8 @@ export class StreamsCoordinator {
     const targetMachine = machine ?? null;
     const targetScope = scope === "all" ? "all" : "local";
     const bucket = this._getListEntry(targetMachine, targetScope);
-    if (bucket.loaded && !bucket.dirty && !force) {
+    const token = this._listToken(targetMachine, targetScope);
+    if (!force && bucket.loaded && bucket.fetchedToken === token) {
       return { ok: true, items: this.getStreamList(targetMachine, targetScope).items, bucket };
     }
     const reqSeq = ++bucket.seq;
@@ -2023,7 +2166,7 @@ export class StreamsCoordinator {
     bucket.unreadable = Array.isArray(parsed.unreadable) ? parsed.unreadable : [];
     bucket.error = null;
     bucket.loaded = true;
-    bucket.dirty = false;
+    bucket.fetchedToken = token;
     this.publishSharedTerminals();
     if (notify) this.notifyViews("auto");
     return { ok: true, items: this.getStreamList(targetMachine, targetScope).items, bucket };
@@ -2090,32 +2233,19 @@ export class StreamsCoordinator {
     this.notifyViews();
     const target = this.resolveReadMachineForKey(streamKey);
     if (target.unavailable) {
-      this.reportActionError(
-        "Could not load Stream",
-        `${target.unavailable} is offline`
-      );
+      this.reportActionError("Could not load Stream", `${target.unavailable} is offline`);
       return null;
     }
-    const out = await this.runExec(
-      this.streamsBinFor(target.machine),
-      ["stream", "show", streamKey, "--json"],
-      { on: target.machine }
-    );
-    if (out.code !== 0) {
-      this.reportActionError(
-        "Could not load Stream",
-        extractCliError(out, "saved Stream view is unavailable").message
-      );
+    const res = await this._fetchStream(streamKey, target.machine, {
+      fallbackError: "saved Stream view is unavailable",
+    });
+    if (!res.ok) {
+      this.reportActionError("Could not load Stream", res.error);
       return null;
     }
-    const raw = parseJsonSafe(out.stdout);
-    const stream = normalizeStream(raw);
-    if (stream) {
-      this._upsertStream(stream, { detail: true });
-      this.actionError = null;
-    }
+    this.actionError = null;
     this.notifyViews("auto");
-    return stream;
+    return res.stream;
   }
 
   async previewSession(sessionKey, streamKey = null) {
@@ -2132,34 +2262,22 @@ export class StreamsCoordinator {
     this.notifyViews();
     const target = this.resolveReadMachineForKey(sessionKey);
     if (target.unavailable) {
-      this.reportActionError(
-        "Could not load Session",
-        `${target.unavailable} is offline`
-      );
+      this.reportActionError("Could not load Session", `${target.unavailable} is offline`);
       return null;
     }
-    const out = await this.runExec(
-      this.streamsBinFor(target.machine),
-      ["session", "show", sessionKey, "--json"],
-      { on: target.machine }
-    );
-    if (out.code !== 0) {
-      this.reportActionError(
-        "Could not load Session",
-        extractCliError(out, "saved Session view is unavailable").message
-      );
+    const res = await this._fetchSession(sessionKey, target.machine, {
+      fallbackError: "saved Session view is unavailable",
+    });
+    if (!res.ok) {
+      this.reportActionError("Could not load Session", res.error);
       return null;
     }
-    const session = normalizeSession(parseJsonSafe(out.stdout));
-    if (session) {
-      this._upsertSession(session, { detail: true });
-      if (!this.previewStreamKey && session.stream) {
-        this.previewStreamKey = session.stream;
-      }
-      this.actionError = null;
+    if (!this.previewStreamKey && res.session.stream) {
+      this.previewStreamKey = res.session.stream;
     }
+    this.actionError = null;
     this.notifyViews("auto");
-    return session;
+    return res.session;
   }
 
   async selectStreamFromAll(
@@ -2213,13 +2331,17 @@ export class StreamsCoordinator {
     return { focused: false, session };
   }
 
-  _invalidateListsForMutation({ refetchUnloadedActive = true } = {}) {
+  _invalidateForMutation(machine = undefined) {
     const activeBucket = this._getListEntry();
-    const shouldRefetchActive =
-      refetchUnloadedActive &&
-      this.inFlightKey === null &&
-      activeBucket.inFlight > 0 &&
-      !activeBucket.loaded;
+    const shouldRefetchActive = activeBucket.inFlight > 0 && !activeBucket.loaded;
+    this.readGeneration += 1;
+    if (machine !== undefined) {
+      this._bumpMachineEpoch(machine);
+    } else {
+      this._globalEpoch += 1;
+    }
+    this.inFlightKey = null;
+    this.inFlightPromise = null;
     for (const bucket of this.lists.values()) {
       bucket.seq += 1;
     }
@@ -2229,10 +2351,8 @@ export class StreamsCoordinator {
   }
 
   /**
-   * Targeted, authoritative post-mutation refresh: advances `readGeneration` so any slower
-   * pre-mutation background observation is discarded, re-reads only the affected Session and/or
-   * Stream(s) directly into the normalized `sessions`/`streams` maps, republishes
-   * `terminal.marks`, and notifies views.
+   * Targeted, authoritative post-mutation refresh: invalidates pre-mutation reads and epochs,
+   * re-reads the affected Session and Stream(s), republishes `terminal.marks`, and wakes views.
    */
   async refreshAfterMutation({
     sessionKey = null,
@@ -2240,34 +2360,18 @@ export class StreamsCoordinator {
     extraStreamKeys = [],
     machine = undefined,
   } = {}) {
-    this.readGeneration += 1;
-    this._lastActiveSig = null;
-    this._lastOffTabTokenByTerm.clear();
-    this.inFlightKey = null;
-    this.inFlightPromise = null;
-    this._invalidateListsForMutation();
-
-    let resolvedStreamKey = streamKey ?? null;
     const readTarget =
       machine !== undefined
         ? { machine, unavailable: this.isMachineReady(machine) ? null : machine }
         : this.resolveReadMachineForKey(sessionKey ?? streamKey);
     const targetMachine = readTarget.unavailable ? null : readTarget.machine;
+    this._invalidateForMutation(readTarget.unavailable ? undefined : targetMachine);
 
+    let resolvedStreamKey = streamKey ?? null;
     if (sessionKey && !readTarget.unavailable) {
-      const sessOut = await this.runExec(
-        this.streamsBinFor(targetMachine),
-        ["session", "show", sessionKey, "--json"],
-        { on: targetMachine }
-      );
-      if (sessOut.code === 0) {
-        const freshSession = normalizeSession(parseJsonSafe(sessOut.stdout));
-        if (freshSession) {
-          this._upsertSession(freshSession, { detail: true });
-          if (!resolvedStreamKey && freshSession.stream) {
-            resolvedStreamKey = freshSession.stream;
-          }
-        }
+      const res = await this._fetchSession(sessionKey, targetMachine);
+      if (res.ok && !resolvedStreamKey && res.session.stream) {
+        resolvedStreamKey = res.session.stream;
       }
     }
 
@@ -2280,18 +2384,8 @@ export class StreamsCoordinator {
     for (const stKey of streamKeysToRefresh) {
       const streamTarget =
         machine !== undefined ? readTarget : this.resolveReadMachineForKey(stKey);
-      const streamMachine = streamTarget.unavailable ? null : streamTarget.machine;
       if (streamTarget.unavailable) continue;
-      const stOut = await this.runExec(
-        this.streamsBinFor(streamMachine),
-        ["stream", "show", stKey, "--json"],
-        { on: streamMachine }
-      );
-      if (stOut.code !== 0) continue;
-      const freshStream = normalizeStream(parseJsonSafe(stOut.stdout));
-      if (freshStream) {
-        this._upsertStream(freshStream, { detail: true });
-      }
+      await this._fetchStream(stKey, streamTarget.machine);
     }
 
     this.publishSharedTerminals();
@@ -2576,16 +2670,11 @@ export class StreamsCoordinator {
         return { ok: false, error: err.message };
       }
       this.actionError = null;
-      this.readGeneration += 1;
-      this._lastActiveSig = null;
-      this._lastOffTabTokenByTerm.clear();
-      this.inFlightKey = null;
-      this.inFlightPromise = null;
       this.streams.delete(streamKey);
       for (const bucket of this.lists.values()) {
         bucket.keys = bucket.keys.filter((k) => k !== streamKey);
       }
-      this._invalidateListsForMutation();
+      this._invalidateForMutation(target.machine);
       if (this.previewStreamKey === streamKey) {
         this.previewStreamKey = null;
         this.previewSessionKey = null;
@@ -2619,29 +2708,6 @@ export class StreamsCoordinator {
   }
 
   /**
-   * Build a per-machine signature of `streams.saved` tokens coming from non-Pi (e.g. shell)
-   * terminals so CLI edits and `streams catalog sync` run from a shell refresh active and
-   * off-tab caches instead of being skipped.
-   */
-  _nonRunningNoticesByMachine(live) {
-    const byMachine = new Map();
-    for (const [addr, saved] of live.savedTokensByTerm) {
-      if (live.runningByTerm.has(addr)) continue;
-      const machine = parseTerminalAddress(addr)?.machine ?? null;
-      const mKey = this._machineKey(machine);
-      const list = byMachine.get(mKey) ?? [];
-      list.push(`${addr}=${saved}`);
-      byMachine.set(mKey, list);
-    }
-    const result = new Map();
-    for (const [mKey, list] of byMachine) {
-      list.sort();
-      result.set(mKey, list.join("|"));
-    }
-    return result;
-  }
-
-  /**
    * Wake mounted views. Defaults to `"sidebar"` so sidebar-only UI updates (menus, pending
    * states, previews, errors) never redraw pane headers; `"auto"` checks whether any live
    * terminal's Session/Stream header info actually changed and wakes `"all"` only when it did.
@@ -2662,26 +2728,14 @@ export class StreamsCoordinator {
   }
 
   /**
-   * Scoped fetcher 1: read the active tab's focused enrolled Session + Stream and reconcile
-   * `streams.stream` labels on visible enrolled terminals. Skips CLI calls when the active
-   * target signature (including sibling sessions in the same Stream and shell saves on the
-   * active machine) is unchanged and detail is already cached.
+   * Scoped fetcher 1: ensure the active tab's focused enrolled Session and its Stream have fresh
+   * detail for the current cache tokens.
    */
-  async _syncActiveTarget({
-    live,
-    activeMachine,
-    nonRunningNotices,
-    force = false,
-    gen,
-  }) {
+  async _syncActiveTarget({ live, activeMachine, gen }) {
     const running = live.runningByTerm;
     const visibleTerminals = live.visibleTerminals;
     const focusedTerminal = live.focusedTerminal;
-    const activeBin = this.streamsBinFor(activeMachine);
-    const activeMachineKey = this._machineKey(activeMachine);
-    const activeShellNotice = nonRunningNotices.get(activeMachineKey) ?? "";
 
-    // Candidate running-Session terminals in priority order: focused first, then pane order.
     const candidates = [];
     if (
       focusedTerminal &&
@@ -2696,177 +2750,70 @@ export class StreamsCoordinator {
       }
     }
 
-    const makeActiveSig = (streamKeyForSig) =>
-      JSON.stringify({
-        machine: activeMachine,
-        candidates: candidates.map((t) => `${t}=${running.get(t)}:${live.savedTokensByTerm.get(t) ?? ""}`),
-        watchedStreamKey: streamKeyForSig ?? null,
-        streamSiblingSaved: streamKeyForSig
-          ? [...live.runningByTerm.entries()]
-              .filter(([, sk]) => {
-                const s = this.sessions.get(sk);
-                return s?.stream === streamKeyForSig;
-              })
-              .map(([t, sk]) => `${t}=${sk}:${live.savedTokensByTerm.get(t) ?? ""}`)
-              .sort()
-          : [],
-        shellNotice: activeShellNotice,
-      });
-
-    const primaryCand = candidates[0] ?? null;
-    const primaryCandKey = primaryCand ? running.get(primaryCand) : null;
-    const cachedPrimarySess = primaryCandKey ? this.sessions.get(primaryCandKey) : null;
-    const cachedPrimaryStream = cachedPrimarySess?.stream
-      ? this.streams.get(cachedPrimarySess.stream)
-      : null;
-    const watchedStreamKey =
-      cachedPrimarySess?.stream ?? (candidates.length === 0 ? live.spaceStreamKey ?? null : null);
-    const activeSig = makeActiveSig(watchedStreamKey);
-
-    const alreadyDetailed = primaryCand
-      ? Boolean(cachedPrimarySess?.detail && cachedPrimaryStream?.detail)
-      : true;
-
-    if (!force && activeSig === this._lastActiveSig && alreadyDetailed) {
-      return {
-        ok: true,
-        skipped: true,
-        primaryTerm: primaryCand,
-        primarySession: cachedPrimarySess,
-        activeStream: cachedPrimaryStream,
-        byKey: new Map(),
-      };
-    }
-
-    const byKey = new Map();
     let primaryTerm = null;
     let primarySession = null;
     for (const term of candidates) {
       const sessionKey = running.get(term);
-      const out = await this.runExec(activeBin, ["session", "show", sessionKey, "--json"], {
-        on: activeMachine,
-      });
-      if (gen !== this.readGeneration) return { ok: false, stale: true, byKey };
-      if (out.code === 0) {
-        const parsed = parseJsonSafe(out.stdout);
-        const session = normalizeSession(parsed);
-        if (session) {
-          primaryTerm = term;
-          primarySession = session;
-          if (session.host_id) this.recordHostMachine(session.host_id, activeMachine);
-          break;
-        }
-        return { ok: false, error: "invalid session show JSON", skipTerm: null, byKey };
-      } else {
-        const err = extractCliError(out, "session show failed");
-        if (!out.transportError && err.kind === "not-found") {
-          this.staleSessionKeys.add(sessionKey);
-          continue;
-        }
-        return { ok: false, error: err.message, skipTerm: null, byKey };
+      const cached = this.sessions.get(sessionKey);
+      if (cached?.detail && cached.detailToken === this._sessionToken(sessionKey, activeMachine)) {
+        primaryTerm = term;
+        primarySession = cached;
+        break;
       }
+      const res = await this._fetchSession(sessionKey, activeMachine, { gen });
+      if (res.stale) return { ok: false, stale: true };
+      if (res.ok) {
+        primaryTerm = term;
+        primarySession = res.session;
+        break;
+      }
+      if (res.notFound) {
+        this.staleSessionKeys.add(sessionKey);
+        continue;
+      }
+      return { ok: false, error: res.error, skipTerm: null };
     }
 
     let activeStream = null;
     if (primarySession) {
-      this._upsertSession(primarySession, { detail: true });
-      const streamKey = `${primarySession.host_id}/${primarySession.stream_id}`;
-      const streamOut = await this.runExec(activeBin, ["stream", "show", streamKey, "--json"], {
-        on: activeMachine,
-      });
-      if (gen !== this.readGeneration) return { ok: false, stale: true, byKey };
-      if (streamOut.code !== 0) {
-        const err = extractCliError(streamOut, "stream show failed");
-        return { ok: false, error: err.message, skipTerm: primaryTerm, byKey };
+      const streamKey = primarySession.stream || `${primarySession.host_id}/${primarySession.stream_id}`;
+      const cachedStream = this.streams.get(streamKey);
+      if (cachedStream?.detail && cachedStream.detailToken === this._streamToken(streamKey, activeMachine)) {
+        activeStream = cachedStream;
+      } else {
+        const res = await this._fetchStream(streamKey, activeMachine, { gen });
+        if (res.stale) return { ok: false, stale: true };
+        if (!res.ok) return { ok: false, error: res.error, skipTerm: primaryTerm };
+        activeStream = res.stream;
       }
-      const stream = normalizeStream(parseJsonSafe(streamOut.stdout));
-      if (!stream) {
-        return { ok: false, error: "invalid stream show JSON", skipTerm: primaryTerm, byKey };
-      }
-      activeStream = stream;
-      if (stream.host_id) this.recordHostMachine(stream.host_id, activeMachine);
-      this._upsertStream(stream, { detail: true });
-      if (live.activeSpace?.id) {
-        this.lastFocusedStreamBySpace.set(live.activeSpace.id, stream.key);
-      }
-
-      byKey.set(primarySession.key, primarySession);
-      for (const member of stream.sessions) {
-        if (!byKey.has(member.key)) byKey.set(member.key, member);
-      }
-      if (primaryTerm) {
-        this._lastOffTabTokenByTerm.set(
-          primaryTerm,
-          `${primarySession.key}:${live.savedTokensByTerm.get(primaryTerm) ?? ""}:${activeShellNotice}`
-        );
-      }
-
-      // Reconcile `streams.stream` hc labels on visible terminals running known Sessions.
-      for (const term of visibleTerminals) {
-        const sk = running.get(term);
-        const sess = sk ? this.sessions.get(sk) : null;
-        if (!sess?.stream) continue;
-        const desiredStream = sess.stream;
-        const currentLabel = live.termByAddr.get(term)?.labels?.[LABEL_STREAM] ?? null;
-        if (currentLabel !== desiredStream) {
-          await this.runExec(this.hcBin, ["label", term, `${LABEL_STREAM}=${desiredStream}`]);
-          if (gen !== this.readGeneration) return { ok: false, stale: true, byKey };
-        }
+      if (live.activeSpace?.id && activeStream?.key) {
+        this.lastFocusedStreamBySpace.set(live.activeSpace.id, activeStream.key);
       }
     }
 
-    if (gen !== this.readGeneration) return { ok: false, stale: true, byKey };
-    this._lastActiveSig = makeActiveSig(activeStream?.key ?? watchedStreamKey);
-    return {
-      ok: true,
-      skipped: false,
-      primaryTerm,
-      primarySession,
-      activeStream,
-      byKey,
-    };
+    return { ok: true, primaryTerm, primarySession, activeStream };
   }
 
   /**
-   * Scoped fetcher 2: batch-refresh off-tab live enrolled terminals grouped by machine, skipping
-   * offline/loading machines, any machine in `skipMachines`, and individual terminals whose
-   * `(sessionKey, savedToken, machineShellNotice)` token is unchanged since the last fetch.
+   * Scoped fetcher 2: batch-refresh off-tab live enrolled terminals grouped by machine,
+   * skipping offline/loading machines and any session whose `fetchedToken` is already current.
    */
-  async _syncOffTabMarks({
-    live,
-    byKey,
-    nonRunningNotices,
-    skipTerm = null,
-    skipMachines = new Set(),
-    force = false,
-    gen,
-  }) {
-    const running = live.runningByTerm;
+  async _syncOffTabMarks({ live, skipTerm = null, skipMachines = new Set(), gen }) {
     const missingByMachine = new Map();
-    for (const [term, sk] of running) {
+    for (const [term, sk] of live.runningByTerm) {
       if (term === skipTerm || this.staleSessionKeys.has(sk)) continue;
       const termMachine = parseTerminalAddress(term)?.machine ?? null;
-      const mKey = this._machineKey(termMachine);
-      const shellNotice = nonRunningNotices.get(mKey) ?? "";
-      const token = `${sk}:${live.savedTokensByTerm.get(term) ?? ""}:${shellNotice}`;
-      if (byKey.has(sk)) {
-        this._upsertSession(byKey.get(sk), { detail: false });
-        this._lastOffTabTokenByTerm.set(term, token);
-        continue;
-      }
       if (skipMachines.has(termMachine) || !this.isMachineReady(termMachine)) continue;
-      if (!force && this.sessions.has(sk) && this._lastOffTabTokenByTerm.get(term) === token) {
-        continue;
-      }
-      const list = missingByMachine.get(termMachine) ?? [];
-      list.push({ term, key: sk, token });
-      missingByMachine.set(termMachine, list);
+      const token = this._sessionToken(sk, termMachine);
+      if (this.sessions.get(sk)?.fetchedToken === token) continue;
+      const byKey = missingByMachine.get(termMachine) ?? new Map();
+      byKey.set(sk, token);
+      missingByMachine.set(termMachine, byKey);
     }
 
-    for (const [termMachine, items] of missingByMachine) {
-      const uniqueKeys = [...new Set(items.map((m) => m.key))];
+    for (const [termMachine, keyTokens] of missingByMachine) {
       const listArgs = ["session", "list"];
-      for (const sk of uniqueKeys) {
+      for (const sk of keyTokens.keys()) {
         listArgs.push("--key", sk);
       }
       listArgs.push("--all", "--fields", "key,stream_id,title,status,state", "--json");
@@ -2879,13 +2826,7 @@ export class StreamsCoordinator {
         for (const raw of parsed?.items ?? []) {
           const sess = normalizeSession(raw);
           if (sess) {
-            byKey.set(sess.key, sess);
-            this._upsertSession(sess, { detail: false });
-          }
-        }
-        for (const item of items) {
-          if (this.sessions.has(item.key)) {
-            this._lastOffTabTokenByTerm.set(item.term, item.token);
+            this._upsertSession(sess, { detail: false, token: keyTokens.get(sess.key) ?? null });
           }
         }
       }
@@ -2894,37 +2835,25 @@ export class StreamsCoordinator {
   }
 
   /**
-   * Scoped helper: refresh detached preview Stream/Session when a save notice or manual force
-   * refresh occurred.
+   * Scoped fetcher 3: refresh detached preview Stream/Session when their cache token changed.
    */
   async _syncPreviews({ activeStreamKey, gen }) {
     if (this.previewStreamKey && this.previewStreamKey !== activeStreamKey) {
       const pTarget = this.resolveReadMachineForKey(this.previewStreamKey);
       if (!pTarget.unavailable) {
-        const pOut = await this.runExec(
-          this.streamsBinFor(pTarget.machine),
-          ["stream", "show", this.previewStreamKey, "--json"],
-          { on: pTarget.machine }
-        );
-        if (gen !== this.readGeneration) return;
-        if (pOut.code === 0) {
-          const refreshed = normalizeStream(parseJsonSafe(pOut.stdout));
-          if (refreshed) this._upsertStream(refreshed, { detail: true });
+        const cached = this.streams.get(this.previewStreamKey);
+        if (!(cached?.detail && cached.detailToken === this._streamToken(this.previewStreamKey, pTarget.machine))) {
+          const res = await this._fetchStream(this.previewStreamKey, pTarget.machine, { gen });
+          if (res.stale) return;
         }
       }
     }
     if (this.previewSessionKey) {
       const sTarget = this.resolveReadMachineForKey(this.previewSessionKey);
       if (!sTarget.unavailable) {
-        const sOut = await this.runExec(
-          this.streamsBinFor(sTarget.machine),
-          ["session", "show", this.previewSessionKey, "--json"],
-          { on: sTarget.machine }
-        );
-        if (gen !== this.readGeneration) return;
-        if (sOut.code === 0) {
-          const refreshed = normalizeSession(parseJsonSafe(sOut.stdout));
-          if (refreshed) this._upsertSession(refreshed, { detail: true });
+        const cached = this.sessions.get(this.previewSessionKey);
+        if (!(cached?.detail && cached.detailToken === this._sessionToken(this.previewSessionKey, sTarget.machine))) {
+          await this._fetchSession(this.previewSessionKey, sTarget.machine, { gen });
         }
       }
     }
@@ -3031,20 +2960,22 @@ export class StreamsCoordinator {
     now = Date.now(),
   }) {
     if (Array.isArray(machineList)) {
+      const prevLayouts = new Map(this.machineLayouts);
       this._hasMachineSnapshot = true;
       this.machineLayouts.clear();
       for (const m of machineList) {
         if (m && typeof m.name === "string" && m.name.length > 0) {
           const layout = m.layout ?? "ready";
           this.machineLayouts.set(m.name, layout);
-          if (layout !== "ready") {
-            // Clear per-terminal off-tab tokens for disconnected machines so reconnecting refetches.
-            for (const term of [...this._lastOffTabTokenByTerm.keys()]) {
-              if (parseTerminalAddress(term)?.machine === m.name) {
-                this._lastOffTabTokenByTerm.delete(term);
-              }
-            }
+          const prev = prevLayouts.get(m.name);
+          if (prev !== undefined && prev !== layout) {
+            this._bumpMachineEpoch(m.name);
           }
+        }
+      }
+      for (const name of prevLayouts.keys()) {
+        if (!this.machineLayouts.has(name)) {
+          this._bumpMachineEpoch(name);
         }
       }
     }
@@ -3073,6 +3004,7 @@ export class StreamsCoordinator {
 
     const running = live.runningByTerm;
     this._lastRunning = running;
+    this._recordLiveTokens(live);
 
     // Passively learn hostId -> machine from live running terminals and stream labels.
     this._learnHostsFromTerminals(terminalList, running);
@@ -3098,7 +3030,7 @@ export class StreamsCoordinator {
       panes,
       agents,
       key,
-      force,
+      force: force || stale,
       now,
     });
   }
@@ -3122,29 +3054,27 @@ export class StreamsCoordinator {
     const running = live.runningByTerm;
     const gen = ++this.readGeneration;
     this.inFlightKey = key ?? null;
-    const noticeChanged = observation.noticeToken !== this.lastNoticeToken;
-    const nonRunningNotices = this._nonRunningNoticesByMachine(live);
+    this._lastRunning = running;
+    this._recordLiveTokens(live);
+    if (force) {
+      this._globalEpoch += 1;
+    }
 
     const promise = (async () => {
       try {
         await this.ensureConfig();
         if (gen !== this.readGeneration) return null;
 
-        // If the active remote machine is offline or still loading, clear `_lastActiveSig` so
-        // reconnecting refetches, and keep healthy machines' off-tab marks up to date.
+        // If the active remote machine is offline or still loading, record list error and keep
+        // healthy machines' off-tab marks up to date.
         if (!this.isMachineReady(activeMachine)) {
-          this._lastActiveSig = null;
           this._getListEntry(activeMachine, activeScope).error = `${activeMachine} is unavailable`;
           const ok = await this._syncOffTabMarks({
             live,
-            byKey: new Map(),
-            nonRunningNotices,
             skipMachines: new Set([activeMachine]),
-            force,
             gen,
           });
           if (!ok || gen !== this.readGeneration) return null;
-          this.lastNoticeToken = observation.noticeToken ?? "";
           this.readError = null;
           this.lastFailedKey = null;
           this.lastCompletedAt = now;
@@ -3153,26 +3083,16 @@ export class StreamsCoordinator {
           return null;
         }
 
-        const activeRes = await this._syncActiveTarget({
-          live,
-          activeMachine,
-          nonRunningNotices,
-          force,
-          gen,
-        });
+        const activeRes = await this._syncActiveTarget({ live, activeMachine, gen });
         if (activeRes.stale || gen !== this.readGeneration) return null;
 
         if (!activeRes.ok) {
-          this._lastActiveSig = null;
           this.readError = activeRes.error;
           this.lastFailedKey = key ?? null;
           const ok = await this._syncOffTabMarks({
             live,
-            byKey: activeRes.byKey,
-            nonRunningNotices,
             skipTerm: activeRes.skipTerm ?? null,
             skipMachines: new Set([activeMachine]),
-            force,
             gen,
           });
           if (!ok || gen !== this.readGeneration) return null;
@@ -3180,20 +3100,29 @@ export class StreamsCoordinator {
           return null;
         }
 
-        const { primaryTerm, primarySession, activeStream, byKey } = activeRes;
+        const { primaryTerm, primarySession, activeStream } = activeRes;
 
         const offTabOk = await this._syncOffTabMarks({
           live,
-          byKey,
-          nonRunningNotices,
           skipTerm: primaryTerm,
-          force,
           gen,
         });
         if (!offTabOk || gen !== this.readGeneration) return null;
 
+        // Reconcile `streams.stream` hc labels on visible enrolled terminals in one pass.
+        for (const term of live.visibleTerminals) {
+          const sk = running.get(term);
+          const sess = sk ? this.sessions.get(sk) : null;
+          if (!sess?.stream) continue;
+          const currentLabel = live.termByAddr.get(term)?.labels?.[LABEL_STREAM] ?? null;
+          if (currentLabel !== sess.stream) {
+            await this.runExec(this.hcBin, ["label", term, `${LABEL_STREAM}=${sess.stream}`]);
+            if (gen !== this.readGeneration) return null;
+          }
+        }
+
         // After off-tab sessions are populated, ensure an unenrolled tab's Space fallback Stream
-        // (even on cold boot without a `streams.stream` label) has `detail: true` in `this.streams`.
+        // (even on cold boot without a `streams.stream` label) has fresh detail in `this.streams`.
         if (!primarySession && observation.activeSpace) {
           const liveNow = indexLive(
             { activeSpace: observation.activeSpace, panes, terminalList, agents },
@@ -3205,40 +3134,24 @@ export class StreamsCoordinator {
           );
           const spaceStreamKey = liveNow.spaceStreamKey;
           const cachedSpaceStream = spaceStreamKey ? this.streams.get(spaceStreamKey) : null;
-          if (spaceStreamKey && (!cachedSpaceStream?.detail || force || noticeChanged)) {
-            const spaceStreamOut = await this.runExec(
-              this.streamsBinFor(activeMachine),
-              ["stream", "show", spaceStreamKey, "--json"],
-              { on: activeMachine }
-            );
-            if (gen !== this.readGeneration) return null;
-            if (spaceStreamOut.code === 0) {
-              const spaceStream = normalizeStream(parseJsonSafe(spaceStreamOut.stdout));
-              if (spaceStream) {
-                this._upsertStream(spaceStream, { detail: true });
-              }
-            }
+          if (
+            spaceStreamKey &&
+            !(
+              cachedSpaceStream?.detail &&
+              cachedSpaceStream.detailToken === this._streamToken(spaceStreamKey, activeMachine)
+            )
+          ) {
+            const res = await this._fetchStream(spaceStreamKey, activeMachine, { gen });
+            if (res.stale || gen !== this.readGeneration) return null;
           }
         }
 
-        // Reconcile `streams.stream` labels on any visible secondary terminals populated by off-tab sync.
-        if (primarySession && !activeRes.skipped && live.visibleTerminals.length > 1) {
-          for (const term of live.visibleTerminals) {
-            if (term === primaryTerm) continue;
-            const sk = running.get(term);
-            const sess = sk ? this.sessions.get(sk) : null;
-            if (!sess?.stream) continue;
-            const currentLabel = live.termByAddr.get(term)?.labels?.[LABEL_STREAM] ?? null;
-            if (currentLabel !== sess.stream) {
-              await this.runExec(this.hcBin, ["label", term, `${LABEL_STREAM}=${sess.stream}`]);
-              if (gen !== this.readGeneration) return null;
-            }
-          }
-        }
-
-        // Refresh the active `(activeMachine, activeScope)` Streams bucket when needed.
-        // Scope unknown-stream detection to terminals on `activeMachine` when in `"local"` scope.
+        // Refresh the active `(activeMachine, activeScope)` Streams bucket when stale and visible,
+        // or when an off-tab session on the active scope references an unknown Stream title.
         const activeBucket = this._getListEntry(activeMachine, activeScope);
+        const listStale =
+          !activeBucket.loaded ||
+          activeBucket.fetchedToken !== this._listToken(activeMachine, activeScope);
         let hasUnknownOffTabStream = false;
         for (const [term, sk] of running) {
           const termMachine = parseTerminalAddress(term)?.machine ?? null;
@@ -3251,8 +3164,8 @@ export class StreamsCoordinator {
         }
 
         const shouldFetchHostStreams =
-          (!primarySession && (!activeBucket.loaded || activeBucket.dirty || force || noticeChanged)) ||
-          (this.preferredView === "all" && (!activeBucket.loaded || activeBucket.dirty || force || noticeChanged)) ||
+          (!primarySession && listStale) ||
+          (this.preferredView === "all" && listStale) ||
           hasUnknownOffTabStream ||
           (activeBucket.loaded && force);
 
@@ -3260,30 +3173,23 @@ export class StreamsCoordinator {
           const listRes = await this._fetchHostStreams({
             machine: activeMachine,
             scope: activeScope,
-            force: true,
+            force: hasUnknownOffTabStream || force,
             notify: false,
           });
-          if (gen !== this.readGeneration) return null;
-          if (listRes.stale) return null;
+          if (gen !== this.readGeneration || listRes.stale) return null;
           if (!listRes.ok && !primarySession) {
             this.lastFailedKey = key ?? null;
             this.publishSharedTerminals(running);
             return null;
           }
-        } else if (noticeChanged && activeBucket.loaded) {
-          // Lazily mark loaded bucket dirty so switching to All refreshes without eager CLI calls on enrolled tabs.
-          activeBucket.dirty = true;
         }
 
-        if (force || noticeChanged) {
-          await this._syncPreviews({
-            activeStreamKey: activeStream?.key ?? null,
-            gen,
-          });
-          if (gen !== this.readGeneration) return null;
-        }
+        await this._syncPreviews({
+          activeStreamKey: activeStream?.key ?? null,
+          gen,
+        });
+        if (gen !== this.readGeneration) return null;
 
-        this.lastNoticeToken = observation.noticeToken ?? "";
         this.readError = null;
         this.lastFailedKey = null;
         this.lastCompletedAt = now;

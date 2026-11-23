@@ -4056,3 +4056,81 @@ test("Stage 2 review fixes: sibling save, non-Pi shell save, cold Space fallback
   assert.equal(remShowCalls, 2);
   assert.equal(coordRem.sessions.get(sRem.key)?.title, "After Reconnect");
 });
+
+test("Unified token cache: zero CLI calls on visited tab switch, sibling detail invalidation, and stale fallback refetch", async () => {
+  const s1 = makeSessionJson({ host: "h1", id: "s1", stream_id: "st1", title: "Tab 1", recap: "r1" });
+  const s2 = makeSessionJson({ host: "h1", id: "s2", stream_id: "st1", title: "Tab 2", recap: "r2-old" });
+  const st1 = makeStreamJson({ host: "h1", id: "st1", title: "Shared", sessions: [s1, s2] });
+  const cmds = [];
+
+  const coord = new StreamsCoordinator({
+    staleFallbackMs: 1000,
+    exec: async (_bin, args) => {
+      cmds.push(args.slice(0, 3).join(" "));
+      if (args[0] === "config") return { code: 0, stdout: JSON.stringify({ herdr: {} }), stderr: "" };
+      if (args[0] === "session" && args[1] === "show") {
+        return { code: 0, stdout: JSON.stringify(args[2] === s1.key ? s1 : s2), stderr: "" };
+      }
+      if (args[0] === "stream" && args[1] === "show") {
+        return { code: 0, stdout: JSON.stringify({ ...st1, sessions: [s1, s2] }), stderr: "" };
+      }
+      return { code: 0, stdout: JSON.stringify({ items: [], unreadable: [] }), stderr: "" };
+    },
+  });
+
+  const snap = ({ tab = "tab1", t1s = "1", t2s = "1", now = 100 } = {}) => ({
+    activeSpace: { id: "sp1", machine: null, tabs: [{ id: "tab1" }, { id: "tab2" }] },
+    activeTabId: tab,
+    visibleTerminals: [tab === "tab1" ? "t1" : "t2"],
+    focusedTerminal: tab === "tab1" ? "t1" : "t2",
+    terminalList: [
+      { address: "t1", state: "live", labels: { [LABEL_SESSION]: s1.key, [LABEL_STREAM]: st1.key, [LABEL_SAVED]: t1s } },
+      { address: "t2", state: "live", labels: { [LABEL_SESSION]: s2.key, [LABEL_STREAM]: st1.key, [LABEL_SAVED]: t2s } },
+    ],
+    panes: [
+      { pane: "p1", tab: "tab1", terminal: "t1", program: { key: "pi", agent: true } },
+      { pane: "p2", tab: "tab2", terminal: "t2", program: { key: "pi", agent: true } },
+    ],
+    agents: [
+      { address: "t1", app: "pi", program: { key: "pi", agent: true } },
+      { address: "t2", app: "pi", program: { key: "pi", agent: true } },
+    ],
+    now,
+  });
+
+  // Visit Tab 1, then Tab 2 (only needs `session show s2`; `stream show st1` hits cache).
+  await coord.observe(snap({ tab: "tab1", now: 100 }));
+  cmds.length = 0;
+  await coord.observe(snap({ tab: "tab2", now: 200 }));
+  assert.deepEqual(cmds, [`session show ${s2.key}`]);
+
+  // Switch Tab 2 -> Tab 1 -> Tab 2 with no saves: ZERO CLI calls!
+  cmds.length = 0;
+  await coord.observe(snap({ tab: "tab1", now: 300 }));
+  await coord.observe(snap({ tab: "tab2", now: 400 }));
+  assert.deepEqual(cmds, []);
+
+  // While on Tab 1, sibling Tab 2 saves new status + recap:
+  // `stream show st1` updates s2 summary (0 session list, 0 session show s1),
+  // AND switching to Tab 2 afterwards still runs `session show s2` for fresh recap!
+  await coord.observe(snap({ tab: "tab1", now: 450 }));
+  s2.status = "waiting";
+  s2.recap = "r2-fresh";
+  cmds.length = 0;
+  await coord.observe(snap({ tab: "tab1", t2s: "2", now: 500 }));
+  assert.deepEqual(cmds, [`stream show ${st1.key}`]);
+  assert.equal(coord.sessions.get(s2.key)?.status, "waiting");
+
+  cmds.length = 0;
+  await coord.observe(snap({ tab: "tab2", t2s: "2", now: 600 }));
+  assert.deepEqual(cmds, [`session show ${s2.key}`]);
+  assert.equal(coord.sessions.get(s2.key)?.recap, "r2-fresh");
+
+  // Stale fallback timer elapses (now - 600 >= 1000): bumps global epoch and refetches!
+  s2.title = "Tab 2 Refreshed";
+  cmds.length = 0;
+  await coord.observe(snap({ tab: "tab2", t2s: "2", now: 2000 }));
+  assert.equal(cmds.includes(`session show ${s2.key}`), true);
+  assert.equal(cmds.includes(`stream show ${st1.key}`), true);
+  assert.equal(coord.sessions.get(s2.key)?.title, "Tab 2 Refreshed");
+});
