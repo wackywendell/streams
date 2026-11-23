@@ -86,7 +86,9 @@ Domain decisions, local persistence and sharing have different meanings:
 - `failed` or `uncertain` sharing leaves accepted local records intact.
 - `blocked` or `repair-required` needs inspection, not a blind overwrite or retry.
 
-Exit code 2 can include accepted saves and a later warning or failure. A timeout does not prove whether a push succeeded. Lifecycle
+Exit code 2 is a CLI usage error. Exit code 3 means attention is needed: a sync,
+check, or tidy warning or failure, or an accepted save with a later failure. A timeout
+does not prove whether a push succeeded. Lifecycle
 failures produce a warning and a durable `stream-catalog-sync` Pi entry.
 A later explicit sync observes the current state; it does not resume a saved
 publication phase or retry a captured native effect.

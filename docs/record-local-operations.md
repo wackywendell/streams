@@ -16,7 +16,7 @@ domain records.
 
 The domain and pure apply function must not depend on the file format, Git or a frontend. Storage reads and writes typed records; sync transports the files. Herdr, cmux and future frontends supply observations and execute their own action types behind interfaces. Frontend and sync choices do not change local operation semantics.
 
-This is a data and interaction model change, not a response-time target. Supplied measurements put `streams --json check` at 0.19–0.24 seconds wall time, about 0.1 seconds CPU, on the current live catalog. Event-driven cards and the long-lived Pi child remove repeated idle reads and process starts. The reason to change storage is that an operation should depend only on its own records as the catalog grows, not that these measurements justify a cache.
+This is a data and interaction model change, not a response-time target. Supplied measurements put `streams --json check` at 0.19–0.24 seconds wall time, about 0.1 seconds CPU, on the current live catalog. Event-driven cards avoid repeated idle reads, and Pi invokes the CLI directly per command. The reason to change storage is that an operation should depend only on its own records as the catalog grows, not that these measurements justify a cache.
 
 ## One host writes each file
 
@@ -43,9 +43,7 @@ Apply assesses conversation-local and Stream-shared proposals separately. A Sess
 
 Strict decoding includes supported schema versions, unique object keys, regular files, safe paths, record-address identity and relationships among the named records. A malformed record is not absence. Creation distinguishes a missing key from unreadable or conflicting state. Whole-catalog validation belongs to explicit inspection and reset, not opening a backend handle. `list` and `check` may enumerate current records; neither replays history. A listing (`streams list`, the Pi chooser's `list_streams` and the herdr-app tab read of a tab with no Stream) shows every record it can decode and names each record file it cannot, as an `UnreadableRecord` with its kind, host, catalog path, cause and a repair chosen by kind. A Stream view shows its readable members and names this host's unreadable Sessions the same way, because any of them may be a member it cannot show; its status and recency reflect the readable members only. An action that needs every Session of the host, such as `streams tidy`, still fails on the first unreadable one.
 
-A positional CLI `REF` requests explicit human discovery by exact ID, title or title substring. UUID prefixes are not supported. It must resolve to exactly one host-qualified ID or fail on ambiguity before invoking the operation. Resolution reads the strict inventory, not the partial listing `list` shows: it fails on any unreadable record, so it never selects from a partial set in which an unreadable record might also have matched. UUID-looking strings are not reserved, and there is no new `--id` flag. Automation, the Pi child, cards and Pi keep their existing exact-key paths, including `--stream-id`, `--session-id` and `--current`. Those paths use point reads, never catalog enumeration. Discovery of a foreign Stream does not grant permission to modify it.
-
-`open` and `resume` also accept `--session-key HOST/ID` for one exact saved Session record, not a harness-native conversation ID. The key must name a member of the selected local Stream. Combined with `--current`, this reads only the selected Stream and Session; it never enumerates the catalog. `--session REF` keeps its existing ID, title and substring discovery, and cannot be combined with `--session-key`.
+The entity CLI (`stream`, `session`, `artifact`, `config`, `catalog`, plus root aliases `list` and `resume`) resolves an explicit selector by full key (`HOST/ID` or `HOST/HARNESS/ID`), `HARNESS/ID`, exact ID, or unique ID prefix. It never reads Pi environment variables, `hc` labels, or frontend state to select records. When resolution must enumerate records, it reads the strict inventory rather than the partial listing `list` shows: it fails on any unreadable record, so it never selects from a partial set in which an unreadable record might also have matched. Automation, cards, and the Pi extension pass exact keys and use point reads rather than catalog enumeration. Discovery of a foreign Stream does not grant permission to modify it.
 
 ### Record selection is not native permission
 
@@ -65,7 +63,7 @@ The catalog layer owns this function and persistence (`application::move_session
 
 ### Durability without history as a journal
 
-Local saves acknowledge durable record changes, not publication. They do not create or verify Git commits or run inline sync. Explicit and lifecycle sync are separate; a publication request cannot hide a catalog scan inside a report response. Sync failure cannot turn an accepted local save into a clean failure inviting a duplicate action.
+Local saves acknowledge durable record changes, not publication. They do not create or verify Git commits or run inline sync. Explicit, lifecycle, and write-triggered background sync are separate from local durability: when a non-`none` sync backend is configured, a CLI write may check `.catalog-local/last-sync.json` and spawn a detached `streams catalog sync --background` once `sync.auto_interval_minutes` has elapsed. Sync failure cannot turn an accepted local save into a clean failure inviting a duplicate action.
 
 Each record carries `revision: u64` and `updated_at_ms: u64`. The single save path sets them, and only when the record changes; a save that changes nothing writes nothing. The revision is the only optimistic-concurrency token. User edits, CLI edits, enrollment and lifecycle compare and swap on it. Automatic reports keep their field-level rule: manual text is protected, and fields changed since the captured revision are not overwritten.
 
@@ -77,22 +75,9 @@ Enrollment creates a missing local Stream first, then its Session as separate si
 
 ## Direct identities and paths
 
-Session identity remains `(host, harness, native session ID)`. Derive its deterministic ID using the existing `agent::session_id_for` identity preimage. Membership is not part of its path. A concrete layout is `hosts/<encoded host>/streams/<stream ID>.json`, `hosts/<encoded host>/conversations/<derived Session ID>.json` and `hosts/<encoded host>/host.json`. Each file holds the record itself as JSON, with no envelope. Encode path components and verify each decoded identity against its location. A host plus an explicit or native-derived Session ID locates that Session directly. Host-qualified keys also locate read-only replicas without searching for their owner.
+Session identity is `(host, harness, native session ID)`. Membership is not part of its path. The format-5 layout is `hosts/<host>/streams/<stream ID>.json`, `hosts/<host>/sessions/<harness>/<id>/session.json`, `hosts/<host>/sessions/<harness>/<id>/artifacts/<name>`, and the reserved `hosts/<host>/host.json` path. Each record file holds the record itself as JSON, with no envelope. Encode path components and verify each decoded identity against its location. A host plus a harness and native Session ID locates that Session directly. Host-qualified keys also locate read-only replicas without searching for their owner.
 
-After the explicit reset, re-enrollment creates Sessions under their native-identity keys. Do not keep old-ID aliases or a native-ID index. Captured requests carry full identity and schema version. A missing Session means unenrolled only in the completed new format; an incomplete reset means repair. No stale key or child startup falls back to discovery.
-
-`catalog_source` identifies the logical catalog by saved host UUID and canonical catalog path. Do not include device numbers, inodes or another UUID. Replacing contents at the same path does not create a different logical catalog. Ordinary updates retain their captured revision and field guards; explicit offline reset stops writers and retires obsolete runtime references instead of asking normal actions to detect directory replacement.
-
-Keep portable Stream/Session records, the host-wide checkout registry and host-local per-Session directory bindings separate. Read the registry once and pass its decoded value through directory and document resolution. Stream-only directory defaults remain separately Stream-keyed. A portable Session checkout always carries its repository URL; automatic enrollment may leave the checkout absent. Host-local directory selection does not invent a portable ref. A Stream-local alias is only a label, so repository edits cannot orphan unread Sessions and moves cannot reinterpret aliases through the destination.
-
-Session construction derives its ID from immutable native identity. Portable
-checkout admission requires an explicit URL, not a Stream alias fallback. The
-archived catalog stays opaque; there is no legacy decoder, alias lookup or
-parallel runtime domain model.
-
-A host-local checkout is the registry's saved checkout ID and canonical directory path, not a filesystem object. Device numbers can change across reboots; a directory recreated at the same path remains the same registered checkout. Do not persist device/inode identity or reject a root because those numbers changed. Explicit moves change the saved path while preserving the ID. Repository URL bindings, explicit defaults, directory existence and path-containment checks remain. The offline reset removed obsolete stamps from the retained registry; normal reads never migrate it.
-
-Native addresses are not saved records. The [native enrollment boundary](native-enrollment-boundary.md) uses ordinary catalog, host and Stream markers observed on workspaces. Explicit reopening finds a matching workspace in its snapshot, or creates one. There are no saved placements, nonces or pending-attempt records to maintain as another authority or reverse index. Current observations drive best-effort reuse; conflicting markers do not permit adoption.
+Each Session owns its `stream_id`, `directory`, `references`, and `artifacts` directly; there is no separate checkout registry or `DirectoryBindings` store. Native addresses are not saved records. The [native enrollment boundary](native-enrollment-boundary.md) uses ordinary catalog, host and Stream markers observed on workspaces. Explicit reopening finds a matching workspace in its snapshot, or creates one. There are no saved placements, nonces or pending-attempt records to maintain as another authority or reverse index. Current observations drive best-effort reuse; conflicting markers do not permit adoption.
 
 ## Native actions
 
