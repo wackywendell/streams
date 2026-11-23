@@ -767,6 +767,7 @@ export function resolveRole(rawProps) {
     rawProps?.kind === "session-popup" ||
     rawProps?.kind === "stream-menu" ||
     rawProps?.kind === "session-menu" ||
+    rawProps?.kind === "status-menu" ||
     rawProps?.kind === "reference-menu"
   ) {
     return "popup";
@@ -1596,6 +1597,45 @@ export class StreamsCoordinator {
       return this.hostToMachine.get(hostId) ?? "local";
     }
     return hostId.slice(0, 8);
+  }
+
+  /**
+   * Return a compact foreign-host badge (`{ label, online, tooltip }`) when a record belongs
+   * to a different host than `activeMachine`, or `null` when it is local to `activeMachine`
+   * (or the active machine's host ID has not yet been discovered).
+   */
+  foreignHostBadge(recordOrKey, activeMachine = this.activeMachine) {
+    const hostId =
+      typeof recordOrKey === "string"
+        ? recordHostId(recordOrKey)
+        : recordOrKey?.host_id || recordHostId(recordOrKey?.key);
+    if (!hostId) return null;
+    const targetMachine = activeMachine ?? null;
+    const mKey = this._machineKey(targetMachine);
+    const activeHostId = this.machineToHost.get(mKey) ?? null;
+
+    if (this.hostToMachine.has(hostId)) {
+      const owner = this.hostToMachine.get(hostId);
+      if (owner === targetMachine) return null;
+      const label = owner ?? "local";
+      const online = this.isMachineReady(owner);
+      return {
+        label,
+        online,
+        tooltip: online ? `On ${label}` : `${label} is offline — read-only`,
+      };
+    }
+
+    if (activeHostId || this._localOwnerChecked.has(mKey)) {
+      const short = hostId.slice(0, 8);
+      return {
+        label: short,
+        online: false,
+        tooltip: `On host ${short} (offline or unlinked)`,
+      };
+    }
+
+    return null;
   }
 
   resolveReadMachineForKey(key) {

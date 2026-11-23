@@ -216,6 +216,7 @@ test("resolveRole selects popup, frame, viewer, and sidebar roles deterministica
   assert.equal(resolveRole({ kind: "reference-viewer", filename: "a.md" }), "viewer");
   assert.equal(resolveRole({ kind: "session-popup" }), "popup");
   assert.equal(resolveRole({ kind: "stream-menu" }), "popup");
+  assert.equal(resolveRole({ kind: "status-menu" }), "popup");
   assert.equal(resolveRole({ pane: "p1", terminal: "t1" }), "frame");
   assert.equal(resolveRole({ terminal: "t1" }), "frame");
   assert.equal(resolveRole({}), "sidebar");
@@ -2441,5 +2442,53 @@ test("parkAllSessions and closeAllSessions surface errors when prerequisite remo
   assert.equal(coord.actionError?.title, "Could not close all sessions");
   assert.match(coord.actionError?.message ?? "", /ssh connection timed out/);
 });
+
+test("foreignHostBadge returns null on same host or cold boot and reports online, offline, and unlinked foreign hosts", () => {
+  const coord = new StreamsCoordinator({ exec: async () => ({ code: 0, stdout: "", stderr: "" }) });
+  coord._hasMachineSnapshot = true;
+  coord.machineLayouts = new Map([["retriever", "ready"]]);
+
+  // Cold boot (no host mapping discovered yet): never flash a false-positive foreign chip.
+  assert.equal(coord.foreignHostBadge("h-local/s1", null), null);
+
+  // Once the local host is checked (even with zero local streams), unmapped hosts report as unlinked.
+  coord._localOwnerChecked.add(coord._machineKey(null));
+  assert.deepEqual(coord.foreignHostBadge("abcdef123456/s1", null), {
+    label: "abcdef12",
+    online: false,
+    tooltip: "On host abcdef12 (offline or unlinked)",
+  });
+
+  // Map local and remote hosts.
+  coord.recordHostMachine("h-local", null);
+  coord.recordHostMachine("h-rem", "retriever");
+
+  // Same host returns null from both local and remote active spaces.
+  assert.equal(coord.foreignHostBadge({ key: "h-local/s1", host_id: "h-local" }, null), null);
+  assert.equal(coord.foreignHostBadge({ key: "h-rem/s2", host_id: "h-rem" }, "retriever"), null);
+
+  // Viewing remote record from local space while remote is online.
+  assert.deepEqual(coord.foreignHostBadge({ key: "h-rem/s2", host_id: "h-rem" }, null), {
+    label: "retriever",
+    online: true,
+    tooltip: "On retriever",
+  });
+
+  // Viewing local record from remote space.
+  assert.deepEqual(coord.foreignHostBadge({ key: "h-local/s1", host_id: "h-local" }, "retriever"), {
+    label: "local",
+    online: true,
+    tooltip: "On local",
+  });
+
+  // Viewing remote record from local space when remote goes offline.
+  coord.machineLayouts.set("retriever", "unavailable");
+  assert.deepEqual(coord.foreignHostBadge({ key: "h-rem/s2", host_id: "h-rem" }, null), {
+    label: "retriever",
+    online: false,
+    tooltip: "retriever is offline — read-only",
+  });
+});
+
 
 

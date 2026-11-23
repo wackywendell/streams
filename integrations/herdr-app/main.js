@@ -171,6 +171,44 @@ function statusBadge(status, t) {
     .child(s.label);
 }
 
+function statusDropdownBadge(status, t) {
+  const s = statusStyle(status, t);
+  return h_flex()
+    .flex_none()
+    .gap(4)
+    .px(7)
+    .py(2)
+    .items_center()
+    .rounded(5)
+    .bg(t.raised)
+    .border(1)
+    .border_color(t.border)
+    .text_size(11)
+    .font_medium()
+    .text_color(s.color)
+    .hover((st) => st.bg(t.hover))
+    .child(div().text_size(9).child(s.symbol))
+    .child(s.label)
+    .child(div().text_size(9).text_color(t.dim).child("▾"));
+}
+
+function foreignHostChip(badge, t, id) {
+  if (!badge) return null;
+  return div()
+    .id(id)
+    .flex_none()
+    .px(5)
+    .py(1)
+    .rounded(4)
+    .border(1)
+    .border_color(t.border)
+    .bg(badge.online ? t.background : t.chrome)
+    .text_size(10.5)
+    .text_color(badge.online ? t.muted : t.dim)
+    .tooltip(badge.tooltip)
+    .child(`@${badge.label}`);
+}
+
 function referenceStyle(kind, t) {
   switch (kind) {
     case "pr":
@@ -746,7 +784,15 @@ export default class StreamsMod extends View {
     const closeSelf = () => {
       if (rawProps.overlay) closeOverlay(rawProps.overlay);
     };
-    const menuRow = ({ id, label, disabled = false, danger = false, checked = false, onClick }) =>
+    const menuRow = ({
+      id,
+      label,
+      icon = null,
+      disabled = false,
+      danger = false,
+      checked = false,
+      onClick,
+    }) =>
       h_flex()
         .id(id)
         .h(28)
@@ -769,6 +815,16 @@ export default class StreamsMod extends View {
                 closeSelf();
               }
             })
+        )
+        .when(Boolean(icon), (el) =>
+          el.child(
+            div()
+              .flex_none()
+              .w(10)
+              .text_size(9)
+              .text_color(disabled ? t.dim : icon.color)
+              .child(icon.symbol)
+          )
         )
         .child(div().flex_1().min_w(0).truncate().child(label))
         .when(checked, (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child("✓")));
@@ -840,6 +896,17 @@ export default class StreamsMod extends View {
         .child(menuDivider())
         .child(
           menuRow({
+            id: "stream-menu-copy-id",
+            label: "Copy stream ID",
+            disabled: !stream?.id,
+            onClick: (_e, clickCx) => {
+              if (stream?.id) clickCx.write_to_clipboard(stream.id);
+            },
+          })
+        )
+        .child(menuDivider())
+        .child(
+          menuRow({
             id: "stream-menu-delete",
             label: "Delete empty stream",
             disabled: !bulk.canDelete,
@@ -854,20 +921,49 @@ export default class StreamsMod extends View {
         );
     }
 
-    if (rawProps.kind === "session-menu") {
+    if (rawProps.kind === "status-menu") {
       const sessionKey = rawProps.session_key;
       const streamKey = rawProps.stream_key ?? null;
       const currentStatus = rawProps.status ?? null;
-      const livePane = rawProps.live_pane ?? null;
-      const isOpen = Boolean(livePane);
-      const fromHeader = Boolean(rawProps.from_header);
       const statusLabel = (s) => s.charAt(0).toUpperCase() + s.slice(1);
       return v_flex()
         .w_full()
         .p(5)
         .bg(t.popover)
         .text_color(t.foreground)
-        .when(isOpen && !fromHeader, (el) =>
+        .children(
+          SESSION_STATUSES.map((st) => {
+            const style = statusStyle(st, t);
+            return menuRow({
+              id: `status-menu-${st}`,
+              label: statusLabel(st),
+              icon: { symbol: style.symbol, color: style.color },
+              disabled: currentStatus === st,
+              checked: currentStatus === st,
+              onClick: () => {
+                if (!sessionKey) return;
+                dispatchSidebarAction(async () => {
+                  await coordinator.setSessionStatus(sessionKey, st, streamKey);
+                });
+              },
+            });
+          })
+        );
+    }
+
+    if (rawProps.kind === "session-menu") {
+      const sessionKey = rawProps.session_key;
+      const streamKey = rawProps.stream_key ?? null;
+      const currentStatus = rawProps.status ?? null;
+      const livePane = rawProps.live_pane ?? null;
+      const isOpen = Boolean(livePane);
+      const statusLabel = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+      return v_flex()
+        .w_full()
+        .p(5)
+        .bg(t.popover)
+        .text_color(t.foreground)
+        .when(isOpen, (el) =>
           el
             .child(
               menuRow({
@@ -916,27 +1012,27 @@ export default class StreamsMod extends View {
                 },
               })
             )
-            .when(!fromHeader, (m) =>
-              m.child(
-                menuRow({
-                  id: "session-menu-inspect",
-                  label: "Inspect",
-                  onClick: () => {
-                    dispatchSidebarAction(async () => {
-                      await coordinator.previewSession(sessionKey, streamKey);
-                    });
-                  },
-                })
-              )
+            .child(
+              menuRow({
+                id: "session-menu-inspect",
+                label: "Inspect",
+                onClick: () => {
+                  dispatchSidebarAction(async () => {
+                    await coordinator.previewSession(sessionKey, streamKey);
+                  });
+                },
+              })
             )
             .child(menuDivider())
         )
         .child(menuLabel("Set status"))
         .children(
-          SESSION_STATUSES.map((st) =>
-            menuRow({
+          SESSION_STATUSES.map((st) => {
+            const style = statusStyle(st, t);
+            return menuRow({
               id: `session-menu-status-${st}`,
               label: statusLabel(st),
+              icon: { symbol: style.symbol, color: style.color },
               disabled: currentStatus === st,
               checked: currentStatus === st,
               onClick: () => {
@@ -945,8 +1041,8 @@ export default class StreamsMod extends View {
                   await coordinator.setSessionStatus(sessionKey, st, streamKey);
                 });
               },
-            })
-          )
+            });
+          })
         );
     }
 
@@ -1193,16 +1289,18 @@ export default class StreamsMod extends View {
         div()
           .id("streams-refresh")
           .flex_none()
-          .px(6)
-          .py(2)
+          .flex()
+          .items_center()
+          .justify_center()
+          .p(5)
           .rounded(4)
-          .text_size(11.5)
           .text_color(t.muted)
           .hover((s) => s.bg(t.hover).text_color(t.foreground))
+          .tooltip("Refresh")
           .on_click((_e, clickCx) => {
             this.scheduleObserve(clickCx, collectSnapshot(), true);
           })
-          .child("Refresh")
+          .child(svg("mods/streams/icons/refresh-cw.svg").size(13))
       );
 
     if (!activeSpace || !snap.activeTabId) {
@@ -1394,9 +1492,24 @@ export default class StreamsMod extends View {
       });
     };
 
-    const openSessionMenu = ({ sessionKey, streamKey, status, livePane = null, fromHeader = false }) => {
-      const topRows = livePane ? (fromHeader ? 0 : 2) : fromHeader ? 1 : 2;
-      const height = 10 + (topRows > 0 ? topRows * 28 + 7 : 0) + 22 + SESSION_STATUSES.length * 28;
+    const openStatusMenu = ({ sessionKey, streamKey, status }) => {
+      openOverlay({
+        mod: "streams",
+        kind: "popup",
+        at: "pointer",
+        width: 155,
+        height: 12 + SESSION_STATUSES.length * 28,
+        props: {
+          kind: "status-menu",
+          session_key: sessionKey,
+          stream_key: streamKey,
+          status,
+        },
+      });
+    };
+
+    const openSessionMenu = ({ sessionKey, streamKey, status, livePane = null }) => {
+      const height = 12 + 2 * 28 + 7 + 22 + SESSION_STATUSES.length * 28;
       openOverlay({
         mod: "streams",
         kind: "popup",
@@ -1409,7 +1522,6 @@ export default class StreamsMod extends View {
           stream_key: streamKey,
           status,
           live_pane: livePane,
-          from_header: fromHeader,
         },
       });
     };
@@ -1420,7 +1532,7 @@ export default class StreamsMod extends View {
         kind: "popup",
         at: "pointer",
         width: 215,
-        height: 138,
+        height: 174,
         props: {
           kind: "stream-menu",
           stream_id: streamKey,
@@ -1554,6 +1666,21 @@ export default class StreamsMod extends View {
                             div().flex_none().text_size(11).text_color(t.dim).child("↗")
                           )
                         )
+                        .when(Boolean(item.unavailableReason), (warnEl) =>
+                          warnEl.child(
+                            div()
+                              .id(`ref-unavailable-${idx}`)
+                              .flex_none()
+                              .flex()
+                              .items_center()
+                              .tooltip(item.unavailableReason)
+                              .child(
+                                svg("mods/streams/icons/triangle-alert.svg")
+                                  .size(12)
+                                  .text_color(t.working)
+                              )
+                          )
+                        )
                         .child(
                           div()
                             .id(`ref-menu-btn-${idx}`)
@@ -1579,11 +1706,6 @@ export default class StreamsMod extends View {
                           .text_color(t.dim)
                           .truncate()
                           .child(item.location)
-                      )
-                    )
-                    .when(Boolean(item.unavailableReason), (row) =>
-                      row.child(
-                        div().text_size(11).text_color(t.dim).child(item.unavailableReason)
                       )
                     )
                     .when(Boolean(item.description), (row) =>
@@ -1910,6 +2032,7 @@ export default class StreamsMod extends View {
       const streamSessions = stream.sessions ?? [];
       const streamUnreadable = unreadableNotice(stream.unreadable);
       const currentSessKey = view.currentSession?.key ?? null;
+      const streamForeignHost = coordinator.foreignHostBadge(stream, activeSpace?.machine);
 
       return renderPinnedErrorBanner(
         v_flex()
@@ -1941,25 +2064,36 @@ export default class StreamsMod extends View {
                   .border_color(t.border)
                   .text_size(11.5)
                   .child(
-                    div()
-                      .id("streams-preview-back-all")
-                      .px(5)
-                      .py(2)
-                      .rounded(4)
-                      .text_color(t.muted)
-                      .hover((s) => s.bg(t.hover).text_color(t.foreground))
-                      .on_click((_e, clickCx) => {
-                        clickCx.stop_propagation();
-                        clickCx.spawn(async () => {
-                          await coordinator.setView("all");
-                        });
-                      })
-                      .child("← All")
+                    h_flex()
+                      .gap(6)
+                      .items_center()
+                      .min_w(0)
+                      .child(
+                        div()
+                          .id("streams-preview-back-all")
+                          .flex_none()
+                          .px(5)
+                          .py(2)
+                          .rounded(4)
+                          .text_color(t.muted)
+                          .hover((s) => s.bg(t.hover).text_color(t.foreground))
+                          .on_click((_e, clickCx) => {
+                            clickCx.stop_propagation();
+                            clickCx.spawn(async () => {
+                              await coordinator.setView("all");
+                            });
+                          })
+                          .child("← All")
+                      )
+                      .when(Boolean(streamForeignHost), (left) =>
+                        left.child(foreignHostChip(streamForeignHost, t, "stream-preview-host"))
+                      )
                   )
                   .when(view.canReturnToCurrent, (bar) =>
                     bar.child(
                       div()
                         .id("streams-preview-back-current")
+                        .flex_none()
                         .px(6)
                         .py(2)
                         .rounded(4)
@@ -1994,7 +2128,14 @@ export default class StreamsMod extends View {
                         .text_size(13.5)
                         .child(stream.title)
                     )
-                    .child(statusBadge(stream.status, t))
+                    .when(!view.isPreview && Boolean(streamForeignHost), (row) =>
+                      row.child(foreignHostChip(streamForeignHost, t, "stream-header-host"))
+                    )
+                    .child(
+                      statusBadge(stream.status, t)
+                        .id("streams-header-status")
+                        .tooltip("Derived from sessions")
+                    )
                     .child(
                       div()
                         .id("streams-menu-btn")
@@ -2010,16 +2151,6 @@ export default class StreamsMod extends View {
                         })
                         .child("⋮")
                     )
-                )
-                .when(Boolean(stream.id), (el) =>
-                  el.child(
-                    div()
-                      .font_family(monoFont)
-                      .text_size(10.5)
-                      .text_color(t.dim)
-                      .truncate()
-                      .child(stream.id)
-                  )
                 )
                 .when(Boolean(stream.goal), (el) =>
                   el.child(div().text_size(11.5).text_color(t.muted).child(stream.goal))
@@ -2149,7 +2280,6 @@ export default class StreamsMod extends View {
                           streamKey: stream.key,
                           status: sess.status,
                           livePane: liveMatch?.pane ?? null,
-                          fromHeader: false,
                         });
                       })
                       .on_click((_e, clickCx) => {
@@ -2181,7 +2311,30 @@ export default class StreamsMod extends View {
                               .text_color(isOpen ? t.foreground : t.muted)
                               .child(sess.title)
                           )
-                          .child(statusBadge(sess.status, t))
+                          .child(
+                            streamForeignHost && !streamForeignHost.online
+                              ? statusBadge(sess.status, t)
+                                  .id(`stream-session-status-ro-${sess.id}`)
+                                  .tooltip(streamForeignHost.tooltip)
+                              : div()
+                                  .id(`stream-session-status-${sess.id}`)
+                                  .flex_none()
+                                  .px(5)
+                                  .py(1)
+                                  .rounded(4)
+                                  .hover((s) => s.bg(t.raised))
+                                  .tooltip("Change status")
+                                  .on_mouse_down("left", (_e, downCx) => downCx.stop_propagation())
+                                  .on_click((_e, clickCx) => {
+                                    clickCx.stop_propagation();
+                                    openStatusMenu({
+                                      sessionKey: sess.key,
+                                      streamKey: stream.key,
+                                      status: sess.status,
+                                    });
+                                  })
+                                  .child(statusBadge(sess.status, t))
+                          )
                           .when(isOpen && isRowHovered && Boolean(liveMatch?.pane), (row) =>
                             row.child(
                               div()
@@ -2239,7 +2392,6 @@ export default class StreamsMod extends View {
                                   streamKey: stream.key,
                                   status: sess.status,
                                   livePane: liveMatch?.pane ?? null,
-                                  fromHeader: false,
                                 });
                               })
                               .child("⋮")
@@ -2454,31 +2606,44 @@ export default class StreamsMod extends View {
                 )
             )
           )
-          .when(Boolean(streamLabel), (el) =>
-            el.child(
+          .when(Boolean(streamLabel) || Boolean(coordinator.foreignHostBadge(session, activeSpace?.machine)), (el) => {
+            const sessionForeignHost = coordinator.foreignHostBadge(session, activeSpace?.machine);
+            return el.child(
               h_flex()
-                .id("session-stream-breadcrumb")
-                .self_start()
-                .px(5)
-                .py(2)
-                .gap(5)
+                .gap(6)
                 .items_center()
-                .rounded(4)
-                .text_size(11.5)
-                .text_color(t.muted)
-                .hover((s) => s.bg(t.hover).text_color(t.foreground))
-                .on_click((_e, clickCx) => {
-                  clickCx.stop_propagation();
-                  if (view.isPreview) {
-                    coordinator.backToStream();
-                  } else {
-                    coordinator.setView("stream");
-                  }
-                })
-                .child(div().flex_none().text_color(t.accent).child("≋"))
-                .child(div().truncate().child(streamLabel))
-            )
-          )
+                .justify_between()
+                .when(Boolean(streamLabel), (row) =>
+                  row.child(
+                    h_flex()
+                      .id("session-stream-breadcrumb")
+                      .min_w(0)
+                      .px(5)
+                      .py(2)
+                      .gap(5)
+                      .items_center()
+                      .rounded(4)
+                      .text_size(11.5)
+                      .text_color(t.muted)
+                      .hover((s) => s.bg(t.hover).text_color(t.foreground))
+                      .on_click((_e, clickCx) => {
+                        clickCx.stop_propagation();
+                        if (view.isPreview) {
+                          coordinator.backToStream();
+                        } else {
+                          coordinator.setView("stream");
+                        }
+                      })
+                      .child(div().flex_none().text_color(t.accent).child("≋"))
+                      .child(div().truncate().child(streamLabel))
+                  )
+                )
+                .when(!streamLabel, (row) => row.child(div().flex_1()))
+                .when(Boolean(sessionForeignHost), (row) =>
+                  row.child(foreignHostChip(sessionForeignHost, t, "session-header-host"))
+                )
+            );
+          })
           .child(
             v_flex()
               .gap(8)
@@ -2497,44 +2662,28 @@ export default class StreamsMod extends View {
                       .child(session.title)
                   )
                   .child(
-                    div()
-                      .id("session-header-status-btn")
-                      .flex_none()
-                      .rounded(10)
-                      .hover((s) => s.bg(t.hover))
-                      .tooltip("Change Session status")
-                      .on_click((_e, clickCx) => {
-                        clickCx.stop_propagation();
-                        openSessionMenu({
-                          sessionKey: session.key,
-                          streamKey,
-                          status: session.status,
-                          livePane: tabPane?.pane ?? null,
-                          fromHeader: true,
+                    (() => {
+                      const sessionForeignHost = coordinator.foreignHostBadge(
+                        session,
+                        activeSpace?.machine
+                      );
+                      if (sessionForeignHost && !sessionForeignHost.online) {
+                        return statusBadge(effectiveStatus, t)
+                          .id("session-header-status-ro")
+                          .tooltip(sessionForeignHost.tooltip);
+                      }
+                      return statusDropdownBadge(effectiveStatus, t)
+                        .id("session-header-status-btn")
+                        .tooltip("Change status")
+                        .on_click((_e, clickCx) => {
+                          clickCx.stop_propagation();
+                          openStatusMenu({
+                            sessionKey: session.key,
+                            streamKey,
+                            status: session.status,
+                          });
                         });
-                      })
-                      .child(statusBadge(effectiveStatus, t))
-                  )
-                  .child(
-                    div()
-                      .id("session-header-menu-btn")
-                      .flex_none()
-                      .px(5)
-                      .py(2)
-                      .rounded(4)
-                      .text_color(t.muted)
-                      .hover((s) => s.bg(t.hover).text_color(t.foreground))
-                      .on_click((_e, clickCx) => {
-                        clickCx.stop_propagation();
-                        openSessionMenu({
-                          sessionKey: session.key,
-                          streamKey,
-                          status: session.status,
-                          livePane: tabPane?.pane ?? null,
-                          fromHeader: true,
-                        });
-                      })
-                      .child("⋮")
+                    })()
                   )
               )
               .when(Boolean(session.state), (el) =>
