@@ -1526,6 +1526,10 @@ export class StreamsCoordinator {
     this.lastSpaceTabKey = null;
     this._lastPublishedSharedJson = null;
     this._lastRunning = new Map();
+    this.pendingStatusSessions = new Set();
+    this.pendingResumeSessions = new Set();
+    this.pendingStreamActions = new Map();
+    this.pendingDropReferences = new Set();
   }
 
   _machineKey(machine = this.activeMachine) {
@@ -2321,20 +2325,28 @@ export class StreamsCoordinator {
       this.reportActionError("Could not drop reference", target.error);
       return { ok: false, error: target.error };
     }
-    const out = await this.runExec(
-      this.streamsBinFor(target.machine),
-      ["session", "edit", sessionKey, "--drop-reference", refKey],
-      { on: target.machine }
-    );
-    if (out.code !== 0) {
-      const err = extractCliError(out, "could not drop reference");
-      this.reportActionError("Could not drop reference", err.message);
-      return { ok: false, error: err.message };
+    const pendingKey = `${sessionKey}\0${refKey}`;
+    this.pendingDropReferences.add(pendingKey);
+    this.notifyViews();
+    try {
+      const out = await this.runExec(
+        this.streamsBinFor(target.machine),
+        ["session", "edit", sessionKey, "--drop-reference", refKey],
+        { on: target.machine }
+      );
+      if (out.code !== 0) {
+        const err = extractCliError(out, "could not drop reference");
+        this.reportActionError("Could not drop reference", err.message);
+        return { ok: false, error: err.message };
+      }
+      this.actionError = null;
+      this.lastCompletedKey = null;
+      await this.refreshAfterMutation({ sessionKey, streamKey, machine: target.machine });
+      return { ok: true };
+    } finally {
+      this.pendingDropReferences.delete(pendingKey);
+      this.notifyViews();
     }
-    this.actionError = null;
-    this.lastCompletedKey = null;
-    await this.refreshAfterMutation({ sessionKey, streamKey, machine: target.machine });
-    return { ok: true };
   }
 
   async setSessionStatus(sessionKey, status, streamKey = null) {
@@ -2348,20 +2360,27 @@ export class StreamsCoordinator {
       this.reportActionError("Could not update status", target.error);
       return { ok: false, error: target.error };
     }
-    const out = await this.runExec(
-      this.streamsBinFor(target.machine),
-      ["session", "edit", sessionKey, "--status", status],
-      { on: target.machine }
-    );
-    if (out.code !== 0) {
-      const err = extractCliError(out, "could not update Session status");
-      this.reportActionError("Could not update status", err.message);
-      return { ok: false, error: err.message };
+    this.pendingStatusSessions.add(sessionKey);
+    this.notifyViews();
+    try {
+      const out = await this.runExec(
+        this.streamsBinFor(target.machine),
+        ["session", "edit", sessionKey, "--status", status],
+        { on: target.machine }
+      );
+      if (out.code !== 0) {
+        const err = extractCliError(out, "could not update Session status");
+        this.reportActionError("Could not update status", err.message);
+        return { ok: false, error: err.message };
+      }
+      this.actionError = null;
+      this.lastCompletedKey = null;
+      await this.refreshAfterMutation({ sessionKey, streamKey, machine: target.machine });
+      return { ok: true };
+    } finally {
+      this.pendingStatusSessions.delete(sessionKey);
+      this.notifyViews();
     }
-    this.actionError = null;
-    this.lastCompletedKey = null;
-    await this.refreshAfterMutation({ sessionKey, streamKey, machine: target.machine });
-    return { ok: true };
   }
 
   async _bulkSetStreamSessionsStatus(streamKey, targetStatus, predicate) {
@@ -2373,50 +2392,58 @@ export class StreamsCoordinator {
       this.reportActionError(errorTitle, target.error);
       return { ok: false, error: target.error, updated: [] };
     }
-    const targetMachine = target.machine;
-    const bin = this.streamsBinFor(targetMachine);
-    let stream = this.streams.get(streamKey) ?? null;
-    if (!stream || !Array.isArray(stream.sessions) || stream.sessions.length === 0) {
-      const showOut = await this.runExec(bin, ["stream", "show", streamKey, "--json"], {
-        on: targetMachine,
-      });
-      if (showOut.code !== 0) {
-        const err = extractCliError(showOut, `could not load ${streamKey}`);
-        this.reportActionError(errorTitle, err.message);
-        return { ok: false, error: err.message, updated: [] };
-      }
-      stream = normalizeStream(parseJsonSafe(showOut.stdout));
-      if (!stream) {
-        const msg = "invalid stream show JSON";
-        this.reportActionError(errorTitle, msg);
-        return { ok: false, error: msg, updated: [] };
-      }
-      this.streams.set(stream.key, stream);
-    }
-    const targets = (stream?.sessions ?? []).filter(predicate);
-    const updated = [];
-    for (const sess of targets) {
-      const out = await this.runExec(
-        bin,
-        ["session", "edit", sess.key, "--status", targetStatus],
-        { on: targetMachine }
-      );
-      if (out.code !== 0) {
-        const err = extractCliError(out, `could not update ${sess.key}`);
-        const msg = `Failed on ${sess.title || sess.key}: ${err.message}`;
-        this.lastCompletedKey = null;
-        if (updated.length > 0) {
-          await this.refreshAfterMutation({ streamKey, machine: targetMachine });
+    const pendingLabel = targetStatus === "parked" ? "Parking…" : "Closing…";
+    this.pendingStreamActions.set(streamKey, pendingLabel);
+    this.notifyViews();
+    try {
+      const targetMachine = target.machine;
+      const bin = this.streamsBinFor(targetMachine);
+      let stream = this.streams.get(streamKey) ?? null;
+      if (!stream || !Array.isArray(stream.sessions) || stream.sessions.length === 0) {
+        const showOut = await this.runExec(bin, ["stream", "show", streamKey, "--json"], {
+          on: targetMachine,
+        });
+        if (showOut.code !== 0) {
+          const err = extractCliError(showOut, `could not load ${streamKey}`);
+          this.reportActionError(errorTitle, err.message);
+          return { ok: false, error: err.message, updated: [] };
         }
-        this.reportActionError(errorTitle, msg);
-        return { ok: false, error: msg, updated, failed: sess.key };
+        stream = normalizeStream(parseJsonSafe(showOut.stdout));
+        if (!stream) {
+          const msg = "invalid stream show JSON";
+          this.reportActionError(errorTitle, msg);
+          return { ok: false, error: msg, updated: [] };
+        }
+        this.streams.set(stream.key, stream);
       }
-      updated.push(sess.key);
+      const targets = (stream?.sessions ?? []).filter(predicate);
+      const updated = [];
+      for (const sess of targets) {
+        const out = await this.runExec(
+          bin,
+          ["session", "edit", sess.key, "--status", targetStatus],
+          { on: targetMachine }
+        );
+        if (out.code !== 0) {
+          const err = extractCliError(out, `could not update ${sess.key}`);
+          const msg = `Failed on ${sess.title || sess.key}: ${err.message}`;
+          this.lastCompletedKey = null;
+          if (updated.length > 0) {
+            await this.refreshAfterMutation({ streamKey, machine: targetMachine });
+          }
+          this.reportActionError(errorTitle, msg);
+          return { ok: false, error: msg, updated, failed: sess.key };
+        }
+        updated.push(sess.key);
+      }
+      this.actionError = null;
+      this.lastCompletedKey = null;
+      await this.refreshAfterMutation({ streamKey, machine: targetMachine });
+      return { ok: true, updated };
+    } finally {
+      this.pendingStreamActions.delete(streamKey);
+      this.notifyViews();
     }
-    this.actionError = null;
-    this.lastCompletedKey = null;
-    await this.refreshAfterMutation({ streamKey, machine: targetMachine });
-    return { ok: true, updated };
   }
 
   async parkAllSessions(streamKey) {
@@ -2442,32 +2469,38 @@ export class StreamsCoordinator {
       this.reportActionError("Could not delete Stream", target.error);
       return { ok: false, error: target.error };
     }
-    const out = await this.runExec(
-      this.streamsBinFor(target.machine),
-      ["stream", "delete", streamKey, "--json"],
-      { on: target.machine }
-    );
-    if (out.code !== 0) {
-      const err = extractCliError(out, `could not delete ${streamKey}`);
-      this.reportActionError("Could not delete Stream", err.message);
-      return { ok: false, error: err.message };
-    }
-    this.actionError = null;
-    this.streams.delete(streamKey);
-    for (const bucket of this.hostStreamsByScope.values()) {
-      bucket.seq += 1;
-      if (Array.isArray(bucket.items)) {
-        bucket.items = bucket.items.filter((s) => s.key !== streamKey);
-      }
-    }
-    if (this.previewStreamKey === streamKey) {
-      this.previewStreamKey = null;
-      this.previewSessionKey = null;
-      this.preferredView = "all";
-    }
-    this.lastCompletedKey = null;
+    this.pendingStreamActions.set(streamKey, "Deleting…");
     this.notifyViews();
-    return { ok: true, key: streamKey };
+    try {
+      const out = await this.runExec(
+        this.streamsBinFor(target.machine),
+        ["stream", "delete", streamKey, "--json"],
+        { on: target.machine }
+      );
+      if (out.code !== 0) {
+        const err = extractCliError(out, `could not delete ${streamKey}`);
+        this.reportActionError("Could not delete Stream", err.message);
+        return { ok: false, error: err.message };
+      }
+      this.actionError = null;
+      this.streams.delete(streamKey);
+      for (const bucket of this.hostStreamsByScope.values()) {
+        bucket.seq += 1;
+        if (Array.isArray(bucket.items)) {
+          bucket.items = bucket.items.filter((s) => s.key !== streamKey);
+        }
+      }
+      if (this.previewStreamKey === streamKey) {
+        this.previewStreamKey = null;
+        this.previewSessionKey = null;
+        this.preferredView = "all";
+      }
+      this.lastCompletedKey = null;
+      return { ok: true, key: streamKey };
+    } finally {
+      this.pendingStreamActions.delete(streamKey);
+      this.notifyViews();
+    }
   }
 
   recordPendingViewer(entry) {
@@ -3188,6 +3221,30 @@ export class StreamsCoordinator {
     { run, focusTerminal } = {}
   ) {
     if (!stream) return null;
+    const selectedIds =
+      sessions?.kind === "selected" && Array.isArray(sessions.session_ids)
+        ? sessions.session_ids
+        : [];
+    const isBulkOpen = selectedIds.length === 0;
+    for (const id of selectedIds) this.pendingResumeSessions.add(id);
+    if (isBulkOpen) this.pendingStreamActions.set(stream, "Opening…");
+    this.notifyViews();
+    try {
+      return await this._openWorkInner(
+        { stream, sessions, terminalList, panes, agents },
+        { run, focusTerminal }
+      );
+    } finally {
+      for (const id of selectedIds) this.pendingResumeSessions.delete(id);
+      if (isBulkOpen) this.pendingStreamActions.delete(stream);
+      this.notifyViews();
+    }
+  }
+
+  async _openWorkInner(
+    { stream, sessions = { kind: "all_eligible" }, terminalList = [], panes = [], agents = [] },
+    { run, focusTerminal } = {}
+  ) {
     await this.ensureConfig();
     this._learnHostsFromTerminals(terminalList);
 

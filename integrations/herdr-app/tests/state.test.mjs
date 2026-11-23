@@ -3034,3 +3034,40 @@ test("_probeLocalOwner recovers on forced refresh, preserves deletions during pe
   assert.ok(publishedCount >= 1);
 });
 
+test("pending mutation sets track in-flight status, bulk stream, and resume actions and clear on error", async () => {
+  let resolveEdit;
+  const editPromise = new Promise((r) => {
+    resolveEdit = r;
+  });
+  let notifyCount = 0;
+  const coord = new StreamsCoordinator({
+    exec: async (_bin, args) => {
+      if (args[0] === "session" && args[1] === "edit") {
+        return editPromise;
+      }
+      if (args[0] === "stream" && args[1] === "delete") {
+        return { code: 1, stdout: "", stderr: "cannot delete" };
+      }
+      return { code: 0, stdout: "{}", stderr: "" };
+    },
+    notify: () => {
+      notifyCount += 1;
+    },
+  });
+  coord.configLoaded = true;
+  coord.recordHostMachine("h1", null);
+
+  const pendingCall = coord.setSessionStatus("h1/pi/sess1", "parked", "h1/st1");
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(coord.pendingStatusSessions.has("h1/pi/sess1"), true);
+  assert.ok(notifyCount >= 1);
+
+  resolveEdit({ code: 1, stdout: "", stderr: "boom" });
+  const res = await pendingCall;
+  assert.equal(res.ok, false);
+  assert.equal(coord.pendingStatusSessions.has("h1/pi/sess1"), false);
+
+  const delRes = await coord.deleteStream("h1/st1");
+  assert.equal(delRes.ok, false);
+  assert.equal(coord.pendingStreamActions.has("h1/st1"), false);
+});
