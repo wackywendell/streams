@@ -5,9 +5,14 @@ import {
   LABEL_STREAM,
   LABEL_SAVED,
   LABEL_HERDR_SPACE,
+  LABEL_HERDR_TAB,
   SHARED_TERMINAL_MARKS_KEY,
   SESSION_STATUSES,
   resolveRole,
+  parseTerminalAddress,
+  recordHostId,
+  qualifyForMachine,
+  unqualifyForMachine,
   observeNoticeToken,
   activeTabSession,
   tabSidebarView,
@@ -99,10 +104,14 @@ function makeStreamJson({
 
 function createFakeRunner(handlers = {}) {
   const calls = [];
-  const exec = async (bin, args) => {
-    calls.push({ bin, args });
+  const exec = async (bin, args, opts = undefined) => {
+    calls.push(opts?.on ? { bin, args, on: opts.on } : { bin, args });
+    if (handlers.onExec) {
+      const custom = await handlers.onExec(bin, args, opts);
+      if (custom !== undefined) return custom;
+    }
     if (bin === "hc") {
-      if (handlers.hc) return handlers.hc(args);
+      if (handlers.hc) return handlers.hc(args, opts);
       return { code: 0, stdout: "", stderr: "" };
     }
     if (args[0] === "config" && args[1] === "get" && args[2] === "herdr") {
@@ -212,7 +221,7 @@ test("resolveRole selects popup, frame, viewer, and sidebar roles deterministica
   assert.equal(resolveRole({}), "sidebar");
 });
 
-test("observeNoticeToken combines only local terminal streams.saved tokens", () => {
+test("observeNoticeToken combines local and remote terminal streams.saved tokens", () => {
   const token = observeNoticeToken(
     [
       { address: "t2", labels: { [LABEL_SAVED]: "u2" } },
@@ -220,10 +229,11 @@ test("observeNoticeToken combines only local terminal streams.saved tokens", () 
       { address: "remote/t3", labels: { [LABEL_SAVED]: "u3" } },
       { id: "t4", machine: null, labels: { [LABEL_SAVED]: "u4" } },
       { id: "remote/t5", machine: "remote", labels: { [LABEL_SAVED]: "u5" } },
+      { id: "t6", machine: "remote", labels: { [LABEL_SAVED]: "u6" } },
     ],
     LABEL_SAVED
   );
-  assert.equal(token, "t1:u1|t2:u2|t4:u4");
+  assert.equal(token, "remote/t3:u3|remote/t5:u5|remote/t6:u6|t1:u1|t2:u2|t4:u4");
 });
 
 test("refresh_reads_the_focused_session", async () => {
@@ -537,6 +547,7 @@ test("opening_keeps_parked_sessions", async () => {
   });
   let seq = 0;
   const coord = new StreamsCoordinator({ exec: runner.exec, newId: () => `k${++seq}` });
+  coord.recordHostMachine("h1", null);
 
   const result = await coord.openWork({ stream: "h1/st1", terminalList: [], panes: [], agents: [] }, {});
   assert.equal(result.ok, true);
@@ -657,6 +668,7 @@ test("references cover pr, issue, link, document, and artifact kinds and hide dr
     artifactRead: (key) => (key === `${session.key}/assessment.md` ? "# Findings\n" : undefined),
   });
   const coord = new StreamsCoordinator({ exec: runner.exec });
+  coord.recordHostMachine("h1", null);
   const openedUrls = [];
   const overlays = [];
   const windowRuns = [];
@@ -1268,6 +1280,7 @@ test("dropReference, setSessionStatus, convention-gated bulk actions, and only_a
     },
   });
   const coord = new StreamsCoordinator({ exec: runner.exec, newId: () => "id1" });
+  coord.recordHostMachine("h1", null);
   coord.streams.set(st.key, st);
 
   // Drop reference
@@ -1313,6 +1326,7 @@ test("dropReference, setSessionStatus, convention-gated bulk actions, and only_a
       return { code: 0, stdout: "{}", stderr: "" };
     },
   });
+  emptyCoord.recordHostMachine("h1", null);
   emptyCoord.streams.set("h1/empty", { key: "h1/empty", id: "empty", title: "Empty", sessions: [] });
   emptyCoord.hostStreams = [{ key: "h1/empty", id: "empty", title: "Empty", status: "active" }];
   emptyCoord.previewStreamKey = "h1/empty";
@@ -1634,3 +1648,798 @@ test("setSessionStatus performs targeted authoritative refresh across frames, st
   assert.deepEqual(published.at(-1)?.v?.t1, statusToTerminalMark("waiting"));
   assert.ok(notifyCount > 0);
 });
+
+test("parseTerminalAddress, qualify/unqualify, recordHostId, and machine-scoped findSpaceForStream", () => {
+  assert.deepEqual(parseTerminalAddress("t1"), { address: "t1", machine: null, localId: "t1" });
+  assert.deepEqual(parseTerminalAddress("retriever/t8p"), {
+    address: "retriever/t8p",
+    machine: "retriever",
+    localId: "t8p",
+  });
+  assert.deepEqual(parseTerminalAddress({ id: "t8p", machine: "retriever" }), {
+    address: "retriever/t8p",
+    machine: "retriever",
+    localId: "t8p",
+  });
+  assert.equal(recordHostId("host-rem/pi/s1"), "host-rem");
+  assert.equal(recordHostId("host-rem/st-1"), "host-rem");
+  assert.equal(qualifyForMachine("sp1", null), "sp1");
+  assert.equal(qualifyForMachine("sp1", "retriever"), "retriever/sp1");
+  assert.equal(qualifyForMachine("retriever/sp1", "retriever"), "retriever/sp1");
+  assert.equal(unqualifyForMachine("retriever/sp1", "retriever"), "sp1");
+  assert.equal(unqualifyForMachine("sp1", "retriever"), "sp1");
+
+  const terms = [
+    {
+      address: "t1",
+      labels: { [LABEL_STREAM]: "h-local/st-1", [LABEL_HERDR_SPACE]: "sp-local" },
+    },
+    {
+      address: "retriever/t8p",
+      machine: "retriever",
+      labels: { [LABEL_STREAM]: "h-rem/st-9", [LABEL_HERDR_SPACE]: "sp-rem" },
+    },
+  ];
+  assert.equal(findSpaceForStream(terms, "h-local/st-1", null), "sp-local");
+  assert.equal(findSpaceForStream(terms, "h-rem/st-9", null), null);
+  assert.equal(findSpaceForStream(terms, "h-rem/st-9", "retriever"), "sp-rem");
+});
+
+test("remote space observation routes CLI calls with { on }, keeps config local, and uses portable remote bin", async () => {
+  const sRem = makeSessionJson({
+    host: "h-rem",
+    id: "s-rem",
+    stream_id: "st-rem",
+    title: "Remote Worker",
+    status: "active",
+  });
+  const stRem = makeStreamJson({
+    host: "h-rem",
+    id: "st-rem",
+    title: "Remote Stream",
+    sessions: [sRem],
+  });
+  const published = [];
+  const runner = createFakeRunner({
+    sessions: { [sRem.key]: sRem },
+    streams: { [stRem.key]: stRem },
+    onExec: (bin, args, opts) => {
+      if (bin === "sh") {
+        assert.equal(opts?.on, "retriever");
+        return { code: 0, stdout: "/home/bits", stderr: "" };
+      }
+      return undefined;
+    },
+  });
+
+  const coord = new StreamsCoordinator({
+    exec: runner.exec,
+    streamsBin: "/Users/wendell/.local/bin/streams",
+    publishShared: (k, v) => published.push({ k, v }),
+  });
+
+  const res = await coord.observe({
+    activeSpace: { id: "retriever/sp1", machine: "retriever" },
+    activeTabId: "retriever/tab1",
+    visibleTerminals: ["retriever/t8p"],
+    focusedTerminal: "retriever/t8p",
+    terminalList: [
+      {
+        address: "retriever/t8p",
+        machine: "retriever",
+        state: "live",
+        labels: { [LABEL_SESSION]: sRem.key, [LABEL_SAVED]: "rev-1" },
+      },
+    ],
+    panes: [
+      {
+        pane: "retriever/p1",
+        tab: "retriever/tab1",
+        terminal: "retriever/t8p",
+        program: { key: "pi", agent: true },
+      },
+    ],
+    agents: [{ address: "retriever/t8p", program: { key: "pi", agent: true } }],
+    machineList: [
+      { name: null, layout: "ready" },
+      { name: "retriever", layout: "ready" },
+    ],
+  });
+
+  assert.equal(res?.kind, "stream");
+  assert.equal(coord.frames.get("retriever/t8p")?.session?.key, sRem.key);
+  assert.equal(coord.tabStreams.get("retriever/tab1"), stRem.key);
+  assert.equal(coord.machineForHost("h-rem"), "retriever");
+  assert.deepEqual(published.at(-1)?.v?.["retriever/t8p"], statusToTerminalMark("active"));
+
+  // Config is read once locally with Mac path; remote CLI calls use bare "streams" with { on: "retriever" }.
+  const cfgCall = runner.calls.find((c) => c.args[0] === "config");
+  assert.equal(cfgCall?.on ?? null, null);
+  assert.equal(cfgCall?.bin, "/Users/wendell/.local/bin/streams");
+
+  const showCall = runner.calls.find((c) => c.args[0] === "session" && c.args[1] === "show");
+  assert.equal(showCall?.on, "retriever");
+  assert.equal(showCall?.bin, "streams");
+
+  // Label reconciliation uses local hc with full <machine>/<id> address.
+  const hcLabel = runner.calls.find((c) => c.bin === "hc" && c.args[0] === "label");
+  assert.equal(hcLabel?.on ?? null, null);
+  assert.deepEqual(hcLabel?.args, ["label", "retriever/t8p", `${LABEL_STREAM}=${stRem.key}`]);
+
+  // Remote $HOME was lazily fetched and cached.
+  assert.equal(await coord.ensureHomeDir("retriever"), "/home/bits");
+  assert.equal(coord.homeDirFor("retriever"), "/home/bits");
+});
+
+test("cross-machine terminal.marks skip offline machines and survive active remote read rejection", async () => {
+  const sLocal = makeSessionJson({
+    host: "h-loc",
+    id: "s-loc",
+    stream_id: "st-loc",
+    title: "Local Agent",
+    status: "waiting",
+  });
+  const sRem = makeSessionJson({
+    host: "h-rem",
+    id: "s-rem",
+    stream_id: "st-rem",
+    title: "Remote Agent",
+    status: "active",
+  });
+  const published = [];
+  const calls = [];
+  const coord = new StreamsCoordinator({
+    exec: async (bin, args, opts) => {
+      const on = opts?.on ?? null;
+      calls.push({ bin, args, on });
+      if (args[0] === "config") {
+        return { code: 0, stdout: JSON.stringify({ herdr: {} }), stderr: "" };
+      }
+      if (on === "retriever") {
+        throw new Error("ssh transport reset");
+      }
+      if (on === "offline-box") {
+        throw new Error("should not call offline machine");
+      }
+      if (on === null && args[0] === "session" && args[1] === "list") {
+        return { code: 0, stdout: JSON.stringify({ items: [sLocal] }), stderr: "" };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    },
+    publishShared: (k, v) => published.push({ k, v }),
+  });
+
+  await coord.observe({
+    activeSpace: { id: "retriever/sp1", machine: "retriever" },
+    activeTabId: "retriever/tab1",
+    visibleTerminals: ["retriever/t8p"],
+    focusedTerminal: "retriever/t8p",
+    terminalList: [
+      {
+        address: "retriever/t8p",
+        machine: "retriever",
+        state: "live",
+        labels: { [LABEL_SESSION]: sRem.key },
+      },
+      {
+        address: "t1",
+        state: "live",
+        labels: { [LABEL_SESSION]: sLocal.key },
+      },
+      {
+        address: "offline-box/t9",
+        machine: "offline-box",
+        state: "live",
+        labels: { [LABEL_SESSION]: "h-off/pi/s-off" },
+      },
+    ],
+    panes: [
+      { pane: "retriever/p1", tab: "retriever/tab1", terminal: "retriever/t8p", program: { key: "pi", agent: true } },
+      { pane: "p1", tab: "tab-loc", terminal: "t1", program: { key: "pi", agent: true } },
+      { pane: "offline-box/p9", tab: "offline-box/tab9", terminal: "offline-box/t9", program: { key: "pi", agent: true } },
+    ],
+    agents: [
+      { address: "retriever/t8p", program: { key: "pi", agent: true } },
+      { address: "t1", program: { key: "pi", agent: true } },
+      { address: "offline-box/t9", program: { key: "pi", agent: true } },
+    ],
+    machineList: [
+      { name: null, layout: "ready" },
+      { name: "retriever", layout: "ready" },
+      { name: "offline-box", layout: "unavailable" },
+    ],
+  });
+
+  // Active remote failure surfaced in readError without throwing...
+  assert.match(coord.readError ?? "", /ssh transport reset/);
+  // ...while offline-box was never called...
+  assert.equal(calls.some((c) => c.on === "offline-box"), false);
+  // ...and the healthy local agent STILL acquired its frame and terminal.marks entry!
+  assert.equal(coord.frames.get("t1")?.session?.key, sLocal.key);
+  assert.deepEqual(published.at(-1)?.v?.t1, statusToTerminalMark("waiting"));
+});
+
+test("hostScope toggle, per-machine cache isolation, and out-of-order deferred responses do not cross-contaminate", async () => {
+  const stLocalOnly = makeStreamJson({ host: "h-loc", id: "st-loc", title: "Local Only" });
+  const stRemOnly = makeStreamJson({ host: "h-rem", id: "st-rem", title: "Remote Only" });
+
+  let resolveLocalList;
+  const localListDeferred = new Promise((r) => {
+    resolveLocalList = r;
+  });
+
+  const listCalls = [];
+  const coord = new StreamsCoordinator({
+    exec: async (bin, args, opts) => {
+      const on = opts?.on ?? null;
+      if (args[0] === "config") {
+        return { code: 0, stdout: JSON.stringify({ herdr: {} }), stderr: "" };
+      }
+      if (args[0] === "stream" && args[1] === "list") {
+        const isLocalFlag = args.includes("--local");
+        listCalls.push({ on, isLocalFlag });
+        if (on === null && isLocalFlag) {
+          return localListDeferred;
+        }
+        if (on === "retriever" && isLocalFlag) {
+          return {
+            code: 0,
+            stdout: JSON.stringify({ items: [stRemOnly], unreadable: [] }),
+            stderr: "",
+          };
+        }
+        if (on === "retriever" && !isLocalFlag) {
+          return {
+            code: 0,
+            stdout: JSON.stringify({ items: [stRemOnly, stLocalOnly], unreadable: [] }),
+            stderr: "",
+          };
+        }
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    },
+  });
+
+  // 1. Start slow local/This-host listing.
+  coord.activeMachine = null;
+  coord.hostScope = "local";
+  const pendingLocal = coord.ensureHostStreams(true);
+
+  // 2. Before local resolves, switch to retriever + All hosts and fetch immediately.
+  coord.activeMachine = "retriever";
+  await coord.setHostScope("all");
+  assert.deepEqual(
+    coord.hostStreams.map((s) => s.key),
+    [stRemOnly.key, stLocalOnly.key]
+  );
+
+  // 3. Now resolve the delayed local/This-host response — it must NOT overwrite retriever/All-hosts!
+  resolveLocalList({
+    code: 0,
+    stdout: JSON.stringify({ items: [stLocalOnly], unreadable: [] }),
+    stderr: "",
+  });
+  await pendingLocal;
+
+  assert.equal(coord.activeMachine, "retriever");
+  assert.equal(coord.hostScope, "all");
+  assert.deepEqual(
+    coord.hostStreams.map((s) => s.key),
+    [stRemOnly.key, stLocalOnly.key]
+  );
+
+  // 4. Switching back to local/This-host sees the cached local bucket immediately.
+  coord.activeMachine = null;
+  coord.hostScope = "local";
+  assert.deepEqual(
+    coord.hostStreams.map((s) => s.key),
+    [stLocalOnly.key]
+  );
+  assert.equal(coord.machineForHost("h-loc"), null);
+
+  // 5. Verify --local flag was passed for local scope and omitted for all scope.
+  assert.deepEqual(listCalls, [
+    { on: null, isLocalFlag: true },
+    { on: "retriever", isLocalFlag: false },
+  ]);
+});
+
+test("initial inspectStream and previewSession route to remote owner for unsynced remote-only records", async () => {
+  const sRem = makeSessionJson({
+    host: "h-rem",
+    id: "s-rem-new",
+    stream_id: "st-rem-new",
+    title: "Fresh Remote Session",
+  });
+  const stRem = makeStreamJson({
+    host: "h-rem",
+    id: "st-rem-new",
+    title: "Fresh Remote Stream",
+    sessions: [sRem],
+  });
+
+  const calls = [];
+  const coord = new StreamsCoordinator({
+    exec: async (bin, args, opts) => {
+      const on = opts?.on ?? null;
+      calls.push({ bin, args, on });
+      if (args[0] === "stream" && args[1] === "show") {
+        // Exists ONLY on retriever, not yet synced to local Mac!
+        if (on === "retriever" && args[2] === stRem.key) {
+          return { code: 0, stdout: JSON.stringify(stRem), stderr: "" };
+        }
+        return {
+          code: 1,
+          stdout: JSON.stringify({ error: { kind: "not-found", message: "not found locally" } }),
+          stderr: "",
+        };
+      }
+      if (args[0] === "session" && args[1] === "show") {
+        if (on === "retriever" && args[2] === sRem.key) {
+          return { code: 0, stdout: JSON.stringify(sRem), stderr: "" };
+        }
+        return {
+          code: 1,
+          stdout: JSON.stringify({ error: { kind: "not-found", message: "not found locally" } }),
+          stderr: "",
+        };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    },
+  });
+
+  // Currently focused on local Mac space, but retriever's hostId was learned passively.
+  coord.activeMachine = null;
+  coord.recordHostMachine("h-rem", "retriever");
+
+  const loadedStream = await coord.inspectStream(stRem.key);
+  assert.equal(loadedStream?.key, stRem.key);
+  const loadedSession = await coord.previewSession(sRem.key, stRem.key);
+  assert.equal(loadedSession?.key, sRem.key);
+
+  assert.deepEqual(
+    calls.map((c) => ({ cmd: `${c.args[0]} ${c.args[1]}`, on: c.on })),
+    [
+      { cmd: "stream show", on: "retriever" },
+      { cmd: "session show", on: "retriever" },
+    ]
+  );
+});
+
+test("mutations route to owning remote machine, fail fast for unmapped/offline hosts, and handle rejections", async () => {
+  const sRem = makeSessionJson({ host: "h-rem", id: "s1", stream_id: "st1", status: "active" });
+  const stRem = makeStreamJson({ host: "h-rem", id: "st1", sessions: [sRem] });
+
+  const calls = [];
+  let rejectRemote = false;
+  const coord = new StreamsCoordinator({
+    exec: async (bin, args, opts) => {
+      const on = opts?.on ?? null;
+      calls.push({ bin, args, on });
+      if (on === "retriever" && rejectRemote) {
+        throw new Error("remote unreachable");
+      }
+      if (args[0] === "session" && args[1] === "edit") {
+        sRem.status = "parked";
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      if (args[0] === "session" && args[1] === "show") {
+        return { code: 0, stdout: JSON.stringify(sRem), stderr: "" };
+      }
+      if (args[0] === "stream" && args[1] === "show") {
+        return { code: 0, stdout: JSON.stringify(stRem), stderr: "" };
+      }
+      if (args[0] === "stream" && args[1] === "delete") {
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    },
+  });
+
+  coord.activeMachine = null;
+  coord.recordHostMachine("h-loc", null);
+  coord.recordHostMachine("h-rem", "retriever");
+  coord._hasMachineSnapshot = true;
+  coord.machineLayouts.set("retriever", "ready");
+
+  // 1. Cross-host edit from Mac space routes to retriever.
+  const okRes = await coord.setSessionStatus(sRem.key, "parked", stRem.key);
+  assert.equal(okRes.ok, true);
+  assert.equal(calls[0].on, "retriever");
+
+  // 2. Unmapped host fails fast with clear boundary error (zero CLI calls).
+  calls.length = 0;
+  const unmappedRes = await coord.setSessionStatus("h-unknown/pi/s9", "parked");
+  assert.equal(unmappedRes.ok, false);
+  assert.match(unmappedRes.error, /not linked to an online machine/);
+  assert.equal(calls.length, 0);
+
+  // 3. Offline mapped host fails fast without calling exec.
+  coord.machineLayouts.set("retriever", "unavailable");
+  const offlineRes = await coord.deleteStream(stRem.key);
+  assert.equal(offlineRes.ok, false);
+  assert.match(offlineRes.error, /retriever is offline/);
+  assert.equal(calls.length, 0);
+
+  // 4. Transport rejection during mutation returns structured error instead of rejecting.
+  coord.machineLayouts.set("retriever", "ready");
+  rejectRemote = true;
+  const rejRes = await coord.dropReference(sRem.key, "https://example.com", stRem.key);
+  assert.equal(rejRes.ok, false);
+  assert.match(rejRes.error, /remote unreachable/);
+  assert.match(coord.actionError?.message ?? "", /remote unreachable/);
+});
+
+test("openWork routes remote resume via hc --on, qualifies space.select, and distinguishes remote test -d rejection from missing dir", async () => {
+  const sRem = makeSessionJson({
+    host: "h-rem",
+    id: "s-rem",
+    stream_id: "st-rem",
+    title: "Remote Task",
+    status: "parked",
+    directory: { path: "/home/bits/code/streams", repository: null },
+  });
+  const stKey = "h-rem/st-rem";
+
+  // Case 1: Successful remote resume into an existing remote space.
+  {
+    const calls = [];
+    const ran = [];
+    const coord = new StreamsCoordinator({
+      exec: async (bin, args, opts) => {
+        const on = opts?.on ?? null;
+        calls.push({ bin, args, on });
+        if (args[0] === "config") return { code: 0, stdout: JSON.stringify({ herdr: {} }), stderr: "" };
+        if (args[0] === "session" && args[1] === "list") {
+          return { code: 0, stdout: JSON.stringify({ items: [sRem] }), stderr: "" };
+        }
+        return { code: 0, stdout: "", stderr: "" };
+      },
+      streamsBin: "/Users/wendell/.local/bin/streams",
+      newId: () => "id1",
+    });
+    coord.activeMachine = "retriever";
+    coord.recordHostMachine("h-rem", "retriever");
+
+    const res = await coord.openWork(
+      {
+        stream: stKey,
+        terminalList: [
+          {
+            address: "retriever/t8a",
+            machine: "retriever",
+            state: "live",
+            labels: { [LABEL_STREAM]: stKey, [LABEL_HERDR_SPACE]: "sp-rem-1" },
+          },
+        ],
+      },
+      { run: (cmd, arg) => ran.push({ cmd, arg }) }
+    );
+
+    assert.equal(res.ok, true);
+    const listCall = calls.find((c) => c.args[0] === "session" && c.args[1] === "list");
+    assert.equal(listCall?.on, "retriever");
+    assert.equal(listCall?.bin, "streams");
+
+    const hcCall = calls.find((c) => c.bin === "hc");
+    assert.equal(hcCall?.on, null);
+    assert.ok(hcCall.args.includes("--on"));
+    assert.equal(hcCall.args[hcCall.args.indexOf("--on") + 1], "retriever");
+    assert.ok(hcCall.args.includes(`${LABEL_HERDR_SPACE}=sp-rem-1`));
+    assert.ok(hcCall.args.includes(`${LABEL_HERDR_TAB}=streams-tab-id1`));
+    assert.equal(hcCall.args.at(-4), "streams");
+    assert.deepEqual(ran, [{ cmd: "space.select", arg: { id: "retriever/sp-rem-1" } }]);
+  }
+
+  // Case 2: Launch fails + remote `test -d` rejects (transport failure) -> must NOT claim folder is missing!
+  {
+    const coord = new StreamsCoordinator({
+      exec: async (bin, args, opts) => {
+        if (args[0] === "config") return { code: 0, stdout: JSON.stringify({ herdr: {} }), stderr: "" };
+        if (args[0] === "session" && args[1] === "list") {
+          return { code: 0, stdout: JSON.stringify({ items: [sRem] }), stderr: "" };
+        }
+        if (bin === "hc") {
+          return {
+            code: 1,
+            stdout: "",
+            stderr: JSON.stringify({ error: { kind: "spawn_failed", message: "No such file or directory" } }),
+          };
+        }
+        if (bin === "test") {
+          assert.equal(opts?.on, "retriever");
+          throw new Error("connection timed out");
+        }
+        return { code: 0, stdout: "", stderr: "" };
+      },
+    });
+    coord.activeMachine = "retriever";
+    coord.recordHostMachine("h-rem", "retriever");
+
+    const res = await coord.openWork({ stream: stKey });
+    assert.equal(res.ok, false);
+    assert.doesNotMatch(coord.actionError?.title ?? "", /Folder missing/);
+    assert.doesNotMatch(res.error ?? "", /no longer exists/);
+  }
+
+  // Case 3: Launch fails + remote `test -d` returns exit code 1 -> formats missing folder with cached remote $HOME (~).
+  {
+    const coord = new StreamsCoordinator({
+      exec: async (bin, args, opts) => {
+        if (args[0] === "config") return { code: 0, stdout: JSON.stringify({ herdr: {} }), stderr: "" };
+        if (args[0] === "session" && args[1] === "list") {
+          return { code: 0, stdout: JSON.stringify({ items: [sRem] }), stderr: "" };
+        }
+        if (bin === "hc") {
+          return {
+            code: 1,
+            stdout: "",
+            stderr: JSON.stringify({ error: { kind: "spawn_failed", message: "No such file or directory" } }),
+          };
+        }
+        if (bin === "test") {
+          assert.equal(opts?.on, "retriever");
+          return { code: 1, stdout: "", stderr: "" };
+        }
+        if (bin === "sh") {
+          assert.equal(opts?.on, "retriever");
+          return { code: 0, stdout: "/home/bits\n", stderr: "" };
+        }
+        return { code: 0, stdout: "", stderr: "" };
+      },
+    });
+    coord.activeMachine = "retriever";
+    coord.recordHostMachine("h-rem", "retriever");
+
+    const res = await coord.openWork({ stream: stKey });
+    assert.equal(res.ok, false);
+    assert.match(coord.actionError?.title ?? "", /Folder missing/);
+    assert.match(res.error ?? "", /~\/code\/streams no longer exists/);
+  }
+});
+
+test("openReference routes document reads remotely, falls back to native cross-machine, and ensureHomeDir caches & recovers", async () => {
+  const calls = [];
+  const ran = [];
+  let homeAttempts = 0;
+  const coord = new StreamsCoordinator({
+    exec: async (bin, args, opts) => {
+      const on = opts?.on ?? null;
+      calls.push({ bin, args, on });
+      if (args[0] === "config") {
+        return {
+          code: 0,
+          stdout: JSON.stringify({ herdr: { viewer: { mode: "editor", placement: "pane-right" } } }),
+          stderr: "",
+        };
+      }
+      if (args[0] === "session" && args[1] === "document" && args[2] === "read") {
+        return { code: 0, stdout: "# Remote Design\nHello", stderr: "" };
+      }
+      if (bin === "sh") {
+        homeAttempts += 1;
+        if (homeAttempts === 1) throw new Error("temporary network blip");
+        return { code: 0, stdout: "/home/bits\n", stderr: "" };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    },
+    streamsBin: "/Users/wendell/.local/bin/streams",
+  });
+
+  coord.recordHostMachine("h-rem", "retriever");
+
+  // 1. Cross-machine preview (activeSpace is local Mac, document owned by retriever, viewer mode is "editor"):
+  //    automatically falls back to native viewer reading via { on: "retriever" }.
+  coord.activeMachine = null;
+  const crossRes = await coord.openReference(
+    {
+      kind: "document",
+      session: "h-rem/pi/s1",
+      path: "docs/plan.md",
+      title: "plan.md",
+      filename: "plan.md",
+    },
+    {
+      activeSpaceId: "sp-local",
+      activeTabId: "tab-local",
+      targetPaneId: "p-local",
+      run: (cmd, arg) => ran.push({ cmd, arg }),
+    }
+  );
+  assert.equal(crossRes.ok, true);
+  const readCall = calls.find((c) => c.args[0] === "session" && c.args[1] === "document");
+  assert.equal(readCall?.on, "retriever");
+  assert.equal(readCall?.bin, "streams");
+  assert.equal(ran[0]?.cmd, "pane.split");
+  assert.equal(ran[0]?.arg?.mod, "streams");
+  assert.match(ran[0]?.arg?.props?.content ?? "", /Remote Design/);
+
+  // 2. Same-machine remote preview uses launch_command with portable "streams" bin (not Mac path).
+  ran.length = 0;
+  coord.activeMachine = "retriever";
+  const sameRes = await coord.openReference(
+    {
+      kind: "document",
+      session: "h-rem/pi/s1",
+      path: "docs/plan.md",
+      title: "plan.md",
+      filename: "plan.md",
+    },
+    {
+      activeSpaceId: "retriever/sp1",
+      activeTabId: "retriever/tab1",
+      targetPaneId: "retriever/p1",
+      run: (cmd, arg) => ran.push({ cmd, arg }),
+    }
+  );
+  assert.equal(sameRes.ok, true);
+  assert.equal(ran[0]?.cmd, "pane.split");
+  assert.deepEqual(ran[0]?.arg?.argv, [
+    "streams",
+    "session",
+    "document",
+    "view",
+    "h-rem/pi/s1",
+    "docs/plan.md",
+  ]);
+
+  // 3. ensureHomeDir recovers after initial failure, then caches on subsequent calls.
+  assert.equal(await coord.ensureHomeDir("retriever"), null);
+  assert.equal(coord.homeDirFor("retriever"), null);
+  const [h1, h2] = await Promise.all([
+    coord.ensureHomeDir("retriever"),
+    coord.ensureHomeDir("retriever"),
+  ]);
+  assert.equal(h1, "/home/bits");
+  assert.equal(h2, "/home/bits");
+  assert.equal(await coord.ensureHomeDir("retriever"), "/home/bits");
+  assert.equal(homeAttempts, 2);
+});
+
+test("empty local host refuses owner-only actions on unmapped synced remote records without running locally", async () => {
+  const sRem = makeSessionJson({
+    host: "h-rem",
+    id: "s-rem",
+    stream_id: "st-rem",
+    status: "parked",
+    directory: { path: "/home/bits/code/streams", repository: null },
+  });
+  const stRem = makeStreamJson({
+    host: "h-rem",
+    id: "st-rem",
+    title: "Synced Remote Stream",
+    sessions: [sRem],
+  });
+
+  const calls = [];
+  const coord = new StreamsCoordinator({
+    exec: async (bin, args, opts) => {
+      const on = opts?.on ?? null;
+      calls.push({ bin, args, on });
+      if (args[0] === "config") {
+        return { code: 0, stdout: JSON.stringify({ herdr: {} }), stderr: "" };
+      }
+      if (args[0] === "stream" && args[1] === "list") {
+        // Local host has ZERO local Streams, while All hosts returns the synced remote Stream.
+        if (args.includes("--local")) {
+          return { code: 0, stdout: JSON.stringify({ items: [], unreadable: [] }), stderr: "" };
+        }
+        return { code: 0, stdout: JSON.stringify({ items: [stRem], unreadable: [] }), stderr: "" };
+      }
+      throw new Error(`unexpected local execution for unmapped foreign owner: ${bin} ${args.join(" ")}`);
+    },
+  });
+
+  // No pre-registered host IDs at all: local `--local` returns empty, then user toggles All hosts.
+  await coord.ensureHostStreams(true);
+  await coord.setHostScope("all");
+  assert.deepEqual(
+    coord.hostStreams.map((s) => s.key),
+    [stRem.key]
+  );
+  calls.length = 0;
+
+  // Every owner-only action must refuse cleanly with ZERO local hc run / mutation / document calls.
+  const openRes = await coord.openWork({ stream: stRem.key });
+  assert.equal(openRes.ok, false);
+  assert.match(openRes.error, /not linked to an online machine/);
+
+  const statusRes = await coord.setSessionStatus(sRem.key, "active", stRem.key);
+  assert.equal(statusRes.ok, false);
+  assert.match(statusRes.error, /not linked to an online machine/);
+
+  const dropRes = await coord.dropReference(sRem.key, "docs/a.md", stRem.key);
+  assert.equal(dropRes.ok, false);
+  assert.match(dropRes.error, /not linked to an online machine/);
+
+  const delRes = await coord.deleteStream(stRem.key);
+  assert.equal(delRes.ok, false);
+  assert.match(delRes.error, /not linked to an online machine/);
+
+  const docRes = await coord.openReference({
+    kind: "document",
+    session: sRem.key,
+    path: "docs/a.md",
+    title: "a.md",
+  });
+  assert.equal(docRes.ok, false);
+  assert.match(docRes.error, /not linked to an online machine/);
+
+  // Only config get ran during openWork/openReference; zero local stream/session/hc mutations.
+  assert.equal(
+    calls.some((c) => c.bin === "hc" || c.args[0] === "session" || c.args[1] === "delete"),
+    false
+  );
+
+  // Companion check: arriving on a local host in All hosts mode (before --local ever ran) lazily
+  // probes `stream list --local --limit 1` once, learns local host ID, and allows local actions.
+  const stLocal = makeStreamJson({ host: "h-loc", id: "st-loc", title: "Local Stream" });
+  const sLocal = makeSessionJson({ host: "h-loc", id: "s-loc", stream_id: "st-loc", status: "active" });
+  const probeCalls = [];
+  const coord2 = new StreamsCoordinator({
+    exec: async (bin, args, opts) => {
+      const on = opts?.on ?? null;
+      probeCalls.push({ bin, args, on });
+      if (args[0] === "stream" && args[1] === "list" && args.includes("--local")) {
+        return { code: 0, stdout: JSON.stringify({ items: [stLocal], unreadable: [] }), stderr: "" };
+      }
+      if (args[0] === "session" && args[1] === "edit") {
+        sLocal.status = "parked";
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      if (args[0] === "session" && args[1] === "show") {
+        return { code: 0, stdout: JSON.stringify(sLocal), stderr: "" };
+      }
+      if (args[0] === "stream" && args[1] === "show") {
+        return { code: 0, stdout: JSON.stringify(stLocal), stderr: "" };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    },
+  });
+  coord2.hostScope = "all";
+  const localEdit = await coord2.setSessionStatus(sLocal.key, "parked", stLocal.key);
+  assert.equal(localEdit.ok, true);
+  assert.equal(coord2.machineForHost("h-loc"), null);
+  assert.equal(
+    probeCalls.filter((c) => c.args[0] === "stream" && c.args[1] === "list").length,
+    1
+  );
+  // Foreign host on coord2 is still refused cleanly with zero additional probe calls.
+  const foreignEdit = await coord2.setSessionStatus(sRem.key, "parked", stRem.key);
+  assert.equal(foreignEdit.ok, false);
+  assert.match(foreignEdit.error, /not linked to an online machine/);
+  assert.equal(
+    probeCalls.filter((c) => c.args[0] === "stream" && c.args[1] === "list").length,
+    1
+  );
+});
+
+test("parkAllSessions and closeAllSessions surface errors when prerequisite remote stream show rejects", async () => {
+  const coord = new StreamsCoordinator({
+    exec: async (_bin, args, opts) => {
+      if (opts?.on === "retriever" && args[0] === "stream" && args[1] === "show") {
+        throw new Error("ssh connection timed out");
+      }
+      throw new Error(`unexpected call: ${args.join(" ")}`);
+    },
+  });
+  coord.recordHostMachine("h-rem", "retriever");
+
+  const parkRes = await coord.parkAllSessions("h-rem/st-1");
+  assert.equal(parkRes.ok, false);
+  assert.deepEqual(parkRes.updated, []);
+  assert.match(parkRes.error ?? "", /ssh connection timed out/);
+  assert.equal(coord.actionError?.title, "Could not park all sessions");
+  assert.match(coord.actionError?.message ?? "", /ssh connection timed out/);
+
+  coord.clearActionError();
+
+  const closeRes = await coord.closeAllSessions("h-rem/st-1");
+  assert.equal(closeRes.ok, false);
+  assert.deepEqual(closeRes.updated, []);
+  assert.match(closeRes.error ?? "", /ssh connection timed out/);
+  assert.equal(coord.actionError?.title, "Could not close all sessions");
+  assert.match(coord.actionError?.message ?? "", /ssh connection timed out/);
+});
+
+

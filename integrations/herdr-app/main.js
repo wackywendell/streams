@@ -29,6 +29,7 @@ import {
   STALE_FALLBACK_MS,
   SESSION_STATUSES,
   resolveRole,
+  parseTerminalAddress,
   observeNoticeToken,
   resolveSpaceStreamKey,
   resolveSidebarView,
@@ -72,7 +73,11 @@ function dispatchSidebarAction(fn) {
 }
 
 const coordinator = new StreamsCoordinator({
-  exec: (cmd, args) => exec(cmd, args, { timeout: 30000 }),
+  exec: (cmd, args, opts = {}) =>
+    exec(cmd, args, {
+      timeout: 30000,
+      ...(opts?.on ? { on: opts.on } : {}),
+    }),
   publishShared: (key, value) => setShared(key, value),
   notifyToast: (n) => herdrNotify(n),
   homeDir: (() => {
@@ -120,9 +125,13 @@ function icon(p, size, color) {
     : image(p.icon).w(size).h(size).flex_none();
 }
 
-function folder(cwd) {
+function folder(cwd, machine = null) {
   if (!cwd) return "";
-  const h = home();
+  if (machine && !checking()) {
+    void coordinator.ensureHomeDir(machine);
+  }
+  const h = coordinator.homeDirFor(machine);
+  if (!h) return cwd;
   return cwd === h ? "~" : cwd.startsWith(h + "/") ? "~" + cwd.slice(h.length) : cwd;
 }
 
@@ -193,7 +202,7 @@ function collectSnapshot() {
         .map((p) => p.terminal)
     : [];
   const liveTerminals = allPanes
-    .filter((p) => p.terminal && !p.terminal.includes("/") && p.program?.agent)
+    .filter((p) => p.terminal && p.program?.agent)
     .map((p) => p.terminal);
   const focus = focused();
   const focusedPane = focus?.pane ? allPanes.find((p) => p.pane === focus.pane) : null;
@@ -202,6 +211,7 @@ function collectSnapshot() {
       ? focusedPane.terminal
       : focus?.agent ?? null;
   const allAgents = agents();
+  const machineList = machines();
   return {
     allSpaces,
     activeSpace,
@@ -213,6 +223,7 @@ function collectSnapshot() {
     panes: allPanes,
     agents: allAgents,
     terminalList: terminals(),
+    machineList,
     focusedTerminal,
   };
 }
@@ -238,6 +249,9 @@ function snapshotSignature(snap) {
   const running = [...runningSessionTerminals(snap).entries()]
     .map(([t, s]) => `${t}=${s}`)
     .sort();
+  const machineStates = (snap.machineList ?? [])
+    .map((m) => `${m?.name ?? "__local__"}=${m?.layout ?? "ready"}`)
+    .sort();
   return JSON.stringify({
     space: snap.activeSpace?.id ?? null,
     machine: snap.activeSpace?.machine ?? null,
@@ -248,6 +262,8 @@ function snapshotSignature(snap) {
     running,
     focused: snap.focusedTerminal,
     notice: observeNoticeToken(snap.terminalList, LABEL_SAVED),
+    machines: machineStates,
+    hostScope: coordinator.hostScope,
   });
 }
 
@@ -578,6 +594,8 @@ export default class StreamsMod extends View {
     const pic = icon(p.program, 14, t.dim);
     const st = p.status;
     const tabPaneCount = snap.panes.filter((paneItem) => paneItem.tab === p.tab).length;
+    const paneMachine =
+      parseTerminalAddress(p.terminal)?.machine ?? snap.activeSpace?.machine ?? null;
 
     return h_flex()
       .id(`pane-head-${pane}`)
@@ -605,7 +623,7 @@ export default class StreamsMod extends View {
           .text_color(t.foreground)
           .child(nativeName)
       )
-      .child(div().min_w(0).truncate().text_color(t.dim).child(folder(p.cwd)))
+      .child(div().min_w(0).truncate().text_color(t.dim).child(folder(p.cwd, paneMachine)))
       .when(Boolean(enrolled) && tabPaneCount > 1, (el) =>
         el
           .child(div().flex_none().text_color(t.dim).child("·"))
@@ -1187,6 +1205,46 @@ export default class StreamsMod extends View {
           .child("Refresh")
       );
 
+    if (!activeSpace || !snap.activeTabId) {
+      return v_flex()
+        .size_full()
+        .bg(t.chrome)
+        .child(header)
+        .child(div().p(12).text_size(12).text_color(t.dim).child("No active tab."));
+    }
+
+    if (activeSpace.machine !== null) {
+      const machineInfo =
+        (snap.machineList ?? []).find((m) => m.name === activeSpace.machine) ?? null;
+      const layoutState = machineInfo?.layout ?? "unavailable";
+      if (layoutState === "unavailable") {
+        return v_flex()
+          .size_full()
+          .bg(t.chrome)
+          .child(header)
+          .child(
+            div()
+              .p(12)
+              .text_size(12)
+              .text_color(t.dim)
+              .child(`Streams sidebar is unavailable — ${activeSpace.machine} is offline.`)
+          );
+      }
+      if (layoutState === "loading") {
+        return v_flex()
+          .size_full()
+          .bg(t.chrome)
+          .child(header)
+          .child(
+            div()
+              .p(12)
+              .text_size(12)
+              .text_color(t.dim)
+              .child(`Connecting to ${activeSpace.machine}…`)
+          );
+      }
+    }
+
     if (coordinator.readError && !coordinator.actionError && coordinator.frames.size === 0 && coordinator.hostStreams.length === 0) {
       return v_flex()
         .size_full()
@@ -1198,34 +1256,6 @@ export default class StreamsMod extends View {
             .text_size(12)
             .text_color(t.dim)
             .child(`Unavailable: ${coordinator.readError}`)
-        );
-    }
-
-    if (!activeSpace || !snap.activeTabId) {
-      return v_flex()
-        .size_full()
-        .bg(t.chrome)
-        .child(header)
-        .child(div().p(12).text_size(12).text_color(t.dim).child("No active tab."));
-    }
-
-    if (activeSpace.machine !== null) {
-      const machineInfo = machines().find((m) => m.name === activeSpace.machine) ?? null;
-      const offline = machineInfo?.layout === "unavailable";
-      return v_flex()
-        .size_full()
-        .bg(t.chrome)
-        .child(header)
-        .child(
-          div()
-            .p(12)
-            .text_size(12)
-            .text_color(t.dim)
-            .child(
-              offline
-                ? `Streams sidebar is unavailable — ${activeSpace.machine} is offline.`
-                : "Streams sidebar is available on local tabs."
-            )
         );
     }
 
@@ -1588,11 +1618,14 @@ export default class StreamsMod extends View {
       const hasQuery = Boolean(this.streamQuery.trim());
       const onlyFinishedStreams =
         nonEmptyStreamGroups.length === 1 && nonEmptyStreamGroups[0].id === "done_closed";
+      const hostScope = coordinator.hostScope;
+      const localHostLabel = activeSpace.machine ?? "This host";
       const emptyMessage = hostStreamsEmptyMessage({
         error: coordinator.hostStreamsError,
         streams: streamList,
         shown: shownStreams,
         unreadable: coordinator.hostUnreadable,
+        scope: hostScope,
       });
       const toolbar = v_flex()
         .px(12)
@@ -1644,6 +1677,7 @@ export default class StreamsMod extends View {
           h_flex()
             .justify_between()
             .items_center()
+            .gap(6)
             .text_size(11)
             .child(
               div()
@@ -1651,24 +1685,53 @@ export default class StreamsMod extends View {
                 .child(`${shownStreams.length} stream${shownStreams.length === 1 ? "" : "s"}`)
             )
             .child(
-              div()
-                .id("streams-sort-toggle")
-                .px(6)
-                .py(2)
-                .rounded(4)
-                .text_color(t.muted)
-                .hover((s) => s.bg(t.hover).text_color(t.foreground))
-                .tooltip(
-                  this.streamSort === "recent"
-                    ? "Sorted by most recent — click for A–Z"
-                    : "Sorted A–Z — click for most recent"
+              h_flex()
+                .flex_none()
+                .gap(4)
+                .items_center()
+                .child(
+                  div()
+                    .id("streams-scope-toggle")
+                    .px(6)
+                    .py(2)
+                    .rounded(4)
+                    .text_color(hostScope === "all" ? t.foreground : t.muted)
+                    .when(hostScope === "all", (el) => el.bg(t.raised))
+                    .hover((s) => s.bg(t.hover).text_color(t.foreground))
+                    .tooltip(
+                      hostScope === "all"
+                        ? `Showing all synced hosts — click for ${localHostLabel} only`
+                        : `Showing Streams on ${localHostLabel} — click for all synced hosts`
+                    )
+                    .on_click((_e, clickCx) => {
+                      clickCx.stop_propagation();
+                      const nextScope = coordinator.hostScope === "all" ? "local" : "all";
+                      clickCx.spawn(async () => {
+                        await coordinator.setHostScope(nextScope);
+                      });
+                    })
+                    .child(hostScope === "all" ? "All hosts" : localHostLabel)
                 )
-                .on_click((_e, clickCx) => {
-                  clickCx.stop_propagation();
-                  this.streamSort = this.streamSort === "recent" ? "alpha" : "recent";
-                  clickCx.notify();
-                })
-                .child(this.streamSort === "recent" ? "↕ Recent" : "↕ A–Z")
+                .child(
+                  div()
+                    .id("streams-sort-toggle")
+                    .px(6)
+                    .py(2)
+                    .rounded(4)
+                    .text_color(t.muted)
+                    .hover((s) => s.bg(t.hover).text_color(t.foreground))
+                    .tooltip(
+                      this.streamSort === "recent"
+                        ? "Sorted by most recent — click for A–Z"
+                        : "Sorted A–Z — click for most recent"
+                    )
+                    .on_click((_e, clickCx) => {
+                      clickCx.stop_propagation();
+                      this.streamSort = this.streamSort === "recent" ? "alpha" : "recent";
+                      clickCx.notify();
+                    })
+                    .child(this.streamSort === "recent" ? "↕ Recent" : "↕ A–Z")
+                )
             )
         );
 
@@ -1676,9 +1739,13 @@ export default class StreamsMod extends View {
         const openCount = openCounts.get(summary.key) ?? 0;
         const age = formatRelativeAge(summary.last_activity_ms);
         const openText = openCount > 0 ? `${openCount} open` : "none open";
-        const metaLine = `${summary.active_sessions} active · ${openText}`;
+        const hostLabel =
+          hostScope === "all" ? coordinator.machineLabelForHost(summary.host_id) : "";
+        const metaLine = hostLabel
+          ? `${hostLabel} · ${summary.active_sessions} active · ${openText}`
+          : `${summary.active_sessions} active · ${openText}`;
         return v_flex()
-          .id(`host-stream-${summary.id}`)
+          .id(`host-stream-${summary.key}`)
           .px(9)
           .py(8)
           .gap(3)
@@ -2440,9 +2507,9 @@ export default class StreamsMod extends View {
                         clickCx.stop_propagation();
                         openSessionMenu({
                           sessionKey: session.key,
-                          streamKey: sessionStreamKey,
-                          status: effectiveStatus,
-                          livePane: sessionLivePane,
+                          streamKey,
+                          status: session.status,
+                          livePane: tabPane?.pane ?? null,
                           fromHeader: true,
                         });
                       })
