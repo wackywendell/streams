@@ -1530,6 +1530,7 @@ export class StreamsCoordinator {
     this.pendingResumeSessions = new Set();
     this.pendingStreamActions = new Map();
     this.pendingDropReferences = new Set();
+    this.pendingRenames = new Set();
   }
 
   _machineKey(machine = this.activeMachine) {
@@ -2379,6 +2380,76 @@ export class StreamsCoordinator {
       return { ok: true };
     } finally {
       this.pendingStatusSessions.delete(sessionKey);
+      this.notifyViews();
+    }
+  }
+
+  async renameSession(sessionKey, newTitle, streamKey = null) {
+    const trimmed = typeof newTitle === "string" ? newTitle.trim() : "";
+    if (!sessionKey || !trimmed) {
+      const msg = !sessionKey ? "missing Session key" : "Title cannot be empty.";
+      this.reportActionError("Could not rename Session", msg);
+      return { ok: false, error: msg };
+    }
+    const target = await this.ensureWriteMachineForKey(sessionKey);
+    if (!target.ok) {
+      this.reportActionError("Could not rename Session", target.error);
+      return { ok: false, error: target.error };
+    }
+    this.pendingRenames.add(sessionKey);
+    this.notifyViews();
+    try {
+      const out = await this.runExec(
+        this.streamsBinFor(target.machine),
+        ["session", "edit", sessionKey, "--title", trimmed],
+        { on: target.machine }
+      );
+      if (out.code !== 0) {
+        const err = extractCliError(out, "could not rename Session");
+        this.reportActionError("Could not rename Session", err.message);
+        return { ok: false, error: err.message };
+      }
+      this.actionError = null;
+      this.lastCompletedKey = null;
+      await this.refreshAfterMutation({ sessionKey, streamKey, machine: target.machine });
+      return { ok: true, title: trimmed };
+    } finally {
+      this.pendingRenames.delete(sessionKey);
+      this.notifyViews();
+    }
+  }
+
+  async renameStream(streamKey, newTitle) {
+    const trimmed = typeof newTitle === "string" ? newTitle.trim() : "";
+    if (!streamKey || !trimmed) {
+      const msg = !streamKey ? "missing Stream key" : "Title cannot be empty.";
+      this.reportActionError("Could not rename Stream", msg);
+      return { ok: false, error: msg };
+    }
+    const target = await this.ensureWriteMachineForKey(streamKey);
+    if (!target.ok) {
+      this.reportActionError("Could not rename Stream", target.error);
+      return { ok: false, error: target.error };
+    }
+    this.pendingRenames.add(streamKey);
+    this.notifyViews();
+    try {
+      const out = await this.runExec(
+        this.streamsBinFor(target.machine),
+        ["stream", "edit", streamKey, "--title", trimmed],
+        { on: target.machine }
+      );
+      if (out.code !== 0) {
+        const err = extractCliError(out, "could not rename Stream");
+        this.reportActionError("Could not rename Stream", err.message);
+        return { ok: false, error: err.message };
+      }
+      this.actionError = null;
+      this.lastCompletedKey = null;
+      await this.refreshAfterMutation({ streamKey, machine: target.machine });
+      return { ok: true, title: trimmed };
+    } finally {
+      this.pendingRenames.delete(streamKey);
       this.notifyViews();
     }
   }

@@ -378,6 +378,9 @@ export default class StreamsMod extends View {
     this._editorState = null;
     this._viewerKey = null;
     this.searchInput = null;
+    this.renameInput = null;
+    this.renaming = null;
+    this.renameValue = "";
     const rawProps = props() ?? initialProps ?? {};
     const role = resolveRole(rawProps);
     this._role = role;
@@ -387,6 +390,14 @@ export default class StreamsMod extends View {
       this.searchInput.on("change", (_e, changeCx) => {
         this.streamQuery = this.searchInput.value();
         changeCx.notify();
+      });
+      this.renameInput = InputState.new({ placeholder: "Title" });
+      this.renameInput.on("change", (_e, changeCx) => {
+        this.renameValue = this.renameInput.value();
+        changeCx.notify();
+      });
+      this.renameInput.on("submit", (_e, submitCx) => {
+        this.commitRename(submitCx);
       });
     }
     if (role === "viewer") {
@@ -412,9 +423,131 @@ export default class StreamsMod extends View {
     this._timerTask = null;
     this.searchInput?.release?.();
     this.searchInput = null;
+    this.renameInput?.release?.();
+    this.renameInput = null;
     this._editorState?.release?.();
     this._editorState = null;
     this._viewerKey = null;
+  }
+
+  startRename({ kind, key, streamKey = null, title = "" }, cx) {
+    if (!key || !this.renameInput) return;
+    this.openMenu = null;
+    this.menuIndex = -1;
+    this.renaming = { kind, key, streamKey, originalTitle: title };
+    this.renameValue = title;
+    this.renameInput.set_value(title);
+    if (title) {
+      this.renameInput.set_selected_range({ start: 0, end: title.length });
+    }
+    this.renameInput.focus();
+    cx?.notify?.();
+  }
+
+  cancelRename(cx) {
+    if (!this.renaming) return;
+    this.renaming = null;
+    this.renameValue = "";
+    cx?.notify?.();
+  }
+
+  commitRename(cx) {
+    const target = this.renaming;
+    if (!target) return;
+    const trimmed = (this.renameInput?.value?.() ?? this.renameValue ?? "").trim();
+    this.renaming = null;
+    this.renameValue = "";
+    cx?.notify?.();
+    if (!trimmed || trimmed === target.originalTitle) return;
+    if (!cx?.spawn) return;
+    cx.spawn(async (asyncCx) => {
+      try {
+        if (target.kind === "stream") {
+          await coordinator.renameStream(target.key, trimmed);
+        } else {
+          await coordinator.renameSession(target.key, trimmed, target.streamKey);
+        }
+      } finally {
+        asyncCx.notify();
+      }
+    });
+  }
+
+  renderInlineRename(t, { id, compact = false } = {}) {
+    const canSave = this.renameValue.trim().length > 0;
+    return h_flex()
+      .id(id)
+      .flex_1()
+      .min_w(0)
+      .gap(4)
+      .items_center()
+      .on_mouse_down("left", (_e, downCx) => downCx.stop_propagation())
+      .on_click((_e, clickCx) => clickCx.stop_propagation())
+      .on_key_down((e, keyCx) => {
+        if (String(e.key ?? "").toLowerCase() === "escape") {
+          keyCx.stop_propagation();
+          this.cancelRename(keyCx);
+        }
+      })
+      .child(
+        div()
+          .flex_1()
+          .min_w(0)
+          .h(compact ? 22 : 26)
+          .px(6)
+          .flex()
+          .items_center()
+          .rounded(4)
+          .border(1)
+          .border_color(t.accent)
+          .bg(t.background)
+          .child(
+            Input.new(this.renameInput)
+              .flex_1()
+              .h_full()
+              .text_size(compact ? 11.5 : 12.5)
+              .text_color(t.foreground)
+          )
+      )
+      .child(
+        div()
+          .id(`${id}-save`)
+          .flex_none()
+          .px(5)
+          .py(compact ? 1 : 2)
+          .rounded(4)
+          .text_size(11)
+          .text_color(canSave ? t.ansi2 : t.dim)
+          .when(canSave, (el) =>
+            el
+              .cursor_pointer()
+              .hover((s) => s.bg(t.hover))
+              .on_click((_e, clickCx) => {
+                clickCx.stop_propagation();
+                this.commitRename(clickCx);
+              })
+          )
+          .tooltip("Save (Enter)")
+          .child("✓")
+      )
+      .child(
+        div()
+          .id(`${id}-cancel`)
+          .flex_none()
+          .px(5)
+          .py(compact ? 1 : 2)
+          .rounded(4)
+          .cursor_pointer()
+          .text_size(11)
+          .text_color(t.dim)
+          .hover((s) => s.bg(t.hover).text_color(t.foreground))
+          .tooltip("Cancel (Esc)")
+          .on_click((_e, clickCx) => {
+            clickCx.stop_propagation();
+            this.cancelRename(clickCx);
+          })
+          .child("×")
+      );
   }
 
   syncViewerState(rawProps) {
@@ -1093,6 +1226,7 @@ export default class StreamsMod extends View {
           clickCx.stop_propagation();
           this.openMenu = null;
           this.menuIndex = -1;
+          this.renaming = null;
           clickCx.spawn(async () => {
             await coordinator.setView(targetView);
           });
@@ -1361,10 +1495,19 @@ export default class StreamsMod extends View {
         };
       });
 
-    const buildStreamMenuItems = (stream) => {
+    const buildStreamMenuItems = (stream, { writable = true } = {}) => {
       const streamKey = stream?.key ?? null;
       const bulk = streamBulkActionState(stream);
       return [
+        {
+          id: "rename",
+          label: "Rename…",
+          disabled: !streamKey || !writable,
+          onSelect: (actCx) => {
+            if (!streamKey || !writable) return;
+            this.startRename({ kind: "stream", key: streamKey, title: stream.title ?? "" }, actCx);
+          },
+        },
         {
           id: "open-active",
           label: "Open all active sessions",
@@ -1435,7 +1578,14 @@ export default class StreamsMod extends View {
       ];
     };
 
-    const buildSessionMenuItems = ({ sessionKey, streamKey, status, livePane = null }) => {
+    const buildSessionMenuItems = ({
+      sessionKey,
+      streamKey,
+      title = "",
+      status,
+      livePane = null,
+      writable = true,
+    }) => {
       const isOpen = Boolean(livePane);
       const items = isOpen
         ? [
@@ -1449,6 +1599,18 @@ export default class StreamsMod extends View {
                     run,
                   });
                 });
+              },
+            },
+            {
+              id: "rename",
+              label: "Rename…",
+              disabled: !writable,
+              onSelect: (actCx) => {
+                if (!writable) return;
+                this.startRename(
+                  { kind: "session", key: sessionKey, streamKey, title },
+                  actCx
+                );
               },
             },
             {
@@ -1475,6 +1637,18 @@ export default class StreamsMod extends View {
                 spawnSidebarWork(actCx, async () => {
                   await coordinator.previewSession(sessionKey, streamKey);
                 });
+              },
+            },
+            {
+              id: "rename",
+              label: "Rename…",
+              disabled: !writable,
+              onSelect: (actCx) => {
+                if (!writable) return;
+                this.startRename(
+                  { kind: "session", key: sessionKey, streamKey, title },
+                  actCx
+                );
               },
             },
             { type: "divider" },
@@ -2187,60 +2361,88 @@ export default class StreamsMod extends View {
               v_flex()
                 .gap(5)
                 .child(
-                  h_flex()
-                    .gap(6)
-                    .items_center()
-                    .child(div().flex_none().text_size(13).text_color(t.accent).child("≋"))
-                    .child(
-                      div()
-                        .flex_1()
-                        .min_w(0)
-                        .truncate()
-                        .font_semibold()
-                        .text_size(13.5)
-                        .child(stream.title)
-                    )
-                    .when(!view.isPreview && Boolean(streamForeignHost), (row) =>
-                      row.child(foreignHostChip(streamForeignHost, t, "stream-header-host"))
-                    )
-                    .when(coordinator.pendingStreamActions.has(stream.key), (row) =>
-                      row.child(
-                        div()
-                          .flex_none()
-                          .text_size(10.5)
-                          .text_color(t.dim)
-                          .child(coordinator.pendingStreamActions.get(stream.key))
+                  (() => {
+                    const streamWritable = !(streamForeignHost && streamForeignHost.state !== "online");
+                    const isRenamingStream =
+                      this.renaming?.kind === "stream" && this.renaming?.key === stream.key;
+                    const isStreamRenamePending = coordinator.pendingRenames.has(stream.key);
+                    return h_flex()
+                      .gap(6)
+                      .items_center()
+                      .child(div().flex_none().text_size(13).text_color(t.accent).child("≋"))
+                      .child(
+                        isRenamingStream
+                          ? this.renderInlineRename(t, { id: "stream-title-rename" })
+                          : div()
+                              .id("stream-header-title")
+                              .flex_1()
+                              .min_w(0)
+                              .truncate()
+                              .font_semibold()
+                              .text_size(13.5)
+                              .when(isStreamRenamePending, (el) => el.text_color(t.dim))
+                              .when(streamWritable && !isStreamRenamePending, (el) =>
+                                el
+                                  .tooltip("Double-click to rename")
+                                  .on_mouse_down("left", (ev, downCx) => {
+                                    if (ev.click_count === 2) {
+                                      downCx.stop_propagation();
+                                      this.startRename(
+                                        { kind: "stream", key: stream.key, title: stream.title },
+                                        downCx
+                                      );
+                                    }
+                                  })
+                              )
+                              .child(
+                                isStreamRenamePending ? `${stream.title}…` : stream.title
+                              )
                       )
-                    )
-                    .child(
-                      statusBadge(stream.status, t)
-                        .id("streams-header-status")
-                        .tooltip("Derived from sessions")
-                    )
-                    .child(
-                      (() => {
-                        const streamMenuId = `stream-actions-${stream.key}`;
-                        const streamMenuOpen = this.openMenu === streamMenuId;
-                        return this.renderMenuPopover({
-                          id: streamMenuId,
-                          width: 215,
-                          anchor: "top_right",
-                          t,
-                          items: buildStreamMenuItems(stream),
-                          trigger: div()
-                            .id("streams-menu-btn")
+                      .when(!isRenamingStream && !view.isPreview && Boolean(streamForeignHost), (row) =>
+                        row.child(foreignHostChip(streamForeignHost, t, "stream-header-host"))
+                      )
+                      .when(!isRenamingStream && coordinator.pendingStreamActions.has(stream.key), (row) =>
+                        row.child(
+                          div()
                             .flex_none()
-                            .px(5)
-                            .py(2)
-                            .rounded(4)
-                            .cursor_pointer()
-                            .text_color(streamMenuOpen ? t.foreground : t.muted)
-                            .when(streamMenuOpen, (el) => el.bg(t.hover))
-                            .hover((s) => s.bg(t.hover).text_color(t.foreground))
-                            .child("⋮"),
-                        });
-                      })()
-                    )
+                            .text_size(10.5)
+                            .text_color(t.dim)
+                            .child(coordinator.pendingStreamActions.get(stream.key))
+                        )
+                      )
+                      .when(!isRenamingStream, (row) =>
+                        row
+                          .child(
+                            statusBadge(stream.status, t)
+                              .id("streams-header-status")
+                              .tooltip("Derived from sessions")
+                          )
+                          .child(
+                            (() => {
+                              const streamMenuId = `stream-actions-${stream.key}`;
+                              const streamMenuOpen = this.openMenu === streamMenuId;
+                              return this.renderMenuPopover({
+                                id: streamMenuId,
+                                width: 215,
+                                anchor: "top_right",
+                                t,
+                                items: buildStreamMenuItems(stream, { writable: streamWritable }),
+                                trigger: div()
+                                  .id("streams-menu-btn")
+                                  .flex_none()
+                                  .px(5)
+                                  .py(2)
+                                  .rounded(4)
+                                  .cursor_pointer()
+                                  .text_color(streamMenuOpen ? t.foreground : t.muted)
+                                  .when(streamMenuOpen, (el) => el.bg(t.hover))
+                                  .hover((s) => s.bg(t.hover).text_color(t.foreground))
+                                  .child("⋮"),
+                              });
+                            })()
+                          )
+                      );
+                  })()
                 )
                 .when(Boolean(stream.goal), (el) =>
                   el.child(div().text_size(11.5).text_color(t.muted).child(stream.goal))
@@ -2351,12 +2553,18 @@ export default class StreamsMod extends View {
                     const rowActionOpen = this.openMenu === rowActionMenuId;
                     const isRowStatusPending = coordinator.pendingStatusSessions.has(sess.key);
                     const isRowResuming = coordinator.pendingResumeSessions.has(sess.key);
+                    const isRowRenaming =
+                      this.renaming?.kind === "session" && this.renaming?.key === sess.key;
+                    const isRowRenamePending = coordinator.pendingRenames.has(sess.key);
+                    const rowWritable = !(streamForeignHost && streamForeignHost.state !== "online");
                     const showRowActions = isRowHovered || rowActionOpen;
                     const rowMenuItems = buildSessionMenuItems({
                       sessionKey: sess.key,
                       streamKey: stream.key,
+                      title: sess.title,
                       status: sess.status,
                       livePane: liveMatch?.pane ?? null,
+                      writable: rowWritable,
                     });
                     const rowEl = v_flex()
                       .id(`stream-session-${sess.id}`)
@@ -2397,14 +2605,25 @@ export default class StreamsMod extends View {
                           .items_center()
                           .child(openIcon)
                           .child(
-                            div()
-                              .flex_1()
-                              .min_w(0)
-                              .truncate()
-                              .font_medium()
-                              .text_size(12)
-                              .text_color(isOpen ? t.foreground : t.muted)
-                              .child(sess.title)
+                            isRowRenaming
+                              ? this.renderInlineRename(t, {
+                                  id: `stream-session-rename-${sess.id}`,
+                                  compact: true,
+                                })
+                              : div()
+                                  .flex_1()
+                                  .min_w(0)
+                                  .truncate()
+                                  .font_medium()
+                                  .text_size(12)
+                                  .text_color(
+                                    isRowRenamePending
+                                      ? t.dim
+                                      : isOpen
+                                        ? t.foreground
+                                        : t.muted
+                                  )
+                                  .child(isRowRenamePending ? `${sess.title}…` : sess.title)
                           )
                           .child(
                             isRowStatusPending
@@ -2810,54 +3029,88 @@ export default class StreamsMod extends View {
             v_flex()
               .gap(8)
               .child(
-                h_flex()
-                  .gap(6)
-                  .items_center()
-                  .when(Boolean(sessionIcon), (el) => el.child(sessionIcon))
-                  .child(
-                    div()
-                      .flex_1()
-                      .min_w(0)
-                      .truncate()
-                      .font_semibold()
-                      .text_size(13.5)
-                      .child(session.title)
-                  )
-                  .child(
-                    (() => {
-                      const sessionForeignHost = coordinator.foreignHostBadge(
-                        session,
-                        activeSpace?.machine
-                      );
-                      if (sessionForeignHost && sessionForeignHost.state !== "online") {
-                        return statusBadge(effectiveStatus, t)
-                          .id("session-header-status-ro")
-                          .tooltip(sessionForeignHost.tooltip);
-                      }
-                      if (coordinator.pendingStatusSessions.has(session.key)) {
-                        return statusDropdownBadge(effectiveStatus, t, { pending: true })
-                          .id("session-header-status-pending")
-                          .tooltip("Updating status…");
-                      }
-                      const statusMenuId = `session-status-${session.key}`;
-                      return this.renderMenuPopover({
-                        id: statusMenuId,
-                        width: 155,
-                        anchor: "top_right",
-                        t,
-                        items: buildStatusMenuItems({
-                          sessionKey: session.key,
-                          streamKey,
-                          status: session.status,
-                        }),
-                        trigger: statusDropdownBadge(effectiveStatus, t, {
-                          open: this.openMenu === statusMenuId,
-                        })
-                          .id("session-header-status-btn")
-                          .tooltip("Change status"),
-                      });
-                    })()
-                  )
+                (() => {
+                  const sessionForeignHost = coordinator.foreignHostBadge(
+                    session,
+                    activeSpace?.machine
+                  );
+                  const sessionWritable = !(
+                    sessionForeignHost && sessionForeignHost.state !== "online"
+                  );
+                  const isRenamingSession =
+                    this.renaming?.kind === "session" && this.renaming?.key === session.key;
+                  const isSessionRenamePending = coordinator.pendingRenames.has(session.key);
+                  return h_flex()
+                    .gap(6)
+                    .items_center()
+                    .when(Boolean(sessionIcon), (el) => el.child(sessionIcon))
+                    .child(
+                      isRenamingSession
+                        ? this.renderInlineRename(t, { id: "session-title-rename" })
+                        : div()
+                            .id("session-header-title")
+                            .flex_1()
+                            .min_w(0)
+                            .truncate()
+                            .font_semibold()
+                            .text_size(13.5)
+                            .when(isSessionRenamePending, (el) => el.text_color(t.dim))
+                            .when(sessionWritable && !isSessionRenamePending, (el) =>
+                              el
+                                .tooltip("Double-click to rename")
+                                .on_mouse_down("left", (ev, downCx) => {
+                                  if (ev.click_count === 2) {
+                                    downCx.stop_propagation();
+                                    this.startRename(
+                                      {
+                                        kind: "session",
+                                        key: session.key,
+                                        streamKey,
+                                        title: session.title,
+                                      },
+                                      downCx
+                                    );
+                                  }
+                                })
+                            )
+                            .child(
+                              isSessionRenamePending ? `${session.title}…` : session.title
+                            )
+                    )
+                    .when(!isRenamingSession, (row) =>
+                      row.child(
+                        (() => {
+                          if (!sessionWritable) {
+                            return statusBadge(effectiveStatus, t)
+                              .id("session-header-status-ro")
+                              .tooltip(sessionForeignHost.tooltip);
+                          }
+                          if (coordinator.pendingStatusSessions.has(session.key)) {
+                            return statusDropdownBadge(effectiveStatus, t, { pending: true })
+                              .id("session-header-status-pending")
+                              .tooltip("Updating status…");
+                          }
+                          const statusMenuId = `session-status-${session.key}`;
+                          return this.renderMenuPopover({
+                            id: statusMenuId,
+                            width: 155,
+                            anchor: "top_right",
+                            t,
+                            items: buildStatusMenuItems({
+                              sessionKey: session.key,
+                              streamKey,
+                              status: session.status,
+                            }),
+                            trigger: statusDropdownBadge(effectiveStatus, t, {
+                              open: this.openMenu === statusMenuId,
+                            })
+                              .id("session-header-status-btn")
+                              .tooltip("Change status"),
+                          });
+                        })()
+                      )
+                    );
+                })()
               )
               .when(
                 !session.state && !session.recap && !session.remaining && references.length === 0,

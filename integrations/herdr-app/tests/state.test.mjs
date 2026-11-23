@@ -3071,3 +3071,95 @@ test("pending mutation sets track in-flight status, bulk stream, and resume acti
   assert.equal(delRes.ok, false);
   assert.equal(coord.pendingStreamActions.has("h1/st1"), false);
 });
+test("renameSession and renameStream route to owning host, validate non-empty titles, and refresh caches", async () => {
+  const calls = [];
+  let sessionTitle = "Old session";
+  let streamTitle = "Old stream";
+  const coord = new StreamsCoordinator({
+    exec: async (bin, args, opts) => {
+      calls.push({ bin, args, on: opts?.on ?? null });
+      if (args[0] === "session" && args[1] === "edit") {
+        sessionTitle = args[args.indexOf("--title") + 1];
+        return { code: 0, stdout: "{}", stderr: "" };
+      }
+      if (args[0] === "stream" && args[1] === "edit") {
+        streamTitle = args[args.indexOf("--title") + 1];
+        return { code: 0, stdout: "{}", stderr: "" };
+      }
+      if (args[0] === "session" && args[1] === "show") {
+        return {
+          code: 0,
+          stdout: JSON.stringify(
+            makeSessionJson({ host: "h-rem", id: "s1", stream_id: "st1", title: sessionTitle })
+          ),
+          stderr: "",
+        };
+      }
+      if (args[0] === "stream" && args[1] === "show") {
+        return {
+          code: 0,
+          stdout: JSON.stringify(
+            makeStreamJson({
+              host: "h-rem",
+              id: "st1",
+              title: streamTitle,
+              sessions: [
+                makeSessionJson({ host: "h-rem", id: "s1", stream_id: "st1", title: sessionTitle }),
+              ],
+            })
+          ),
+          stderr: "",
+        };
+      }
+      return { code: 0, stdout: "{}", stderr: "" };
+    },
+  });
+  coord.configLoaded = true;
+  coord._hasMachineSnapshot = true;
+  coord.machineLayouts = new Map([["retriever", "ready"]]);
+  coord.recordHostMachine("h-rem", "retriever");
+  coord.streams.set("h-rem/st1", {
+    key: "h-rem/st1",
+    host_id: "h-rem",
+    id: "st1",
+    title: "Old stream",
+    status: "active",
+    sessions: [],
+  });
+  coord.previewSessions.set("h-rem/pi/s1", {
+    key: "h-rem/pi/s1",
+    host_id: "h-rem",
+    id: "s1",
+    stream: "h-rem/st1",
+    title: "Old session",
+    status: "active",
+  });
+
+  // Empty title rejected without CLI call.
+  const emptyRes = await coord.renameSession("h-rem/pi/s1", "   ", "h-rem/st1");
+  assert.equal(emptyRes.ok, false);
+  assert.equal(calls.length, 0);
+
+  // Remote session rename routes with { on: "retriever" } and refreshes preview + stream caches.
+  const sessRes = await coord.renameSession("h-rem/pi/s1", "  New session  ", "h-rem/st1");
+  assert.equal(sessRes.ok, true);
+  assert.equal(sessRes.title, "New session");
+  assert.equal(coord.pendingRenames.has("h-rem/pi/s1"), false);
+  assert.equal(coord.previewSessions.get("h-rem/pi/s1").title, "New session");
+  assert.equal(calls[0].on, "retriever");
+  assert.deepEqual(calls[0].args, ["session", "edit", "h-rem/pi/s1", "--title", "New session"]);
+
+  // Remote stream rename routes with { on: "retriever" } and updates cached stream title.
+  const stRes = await coord.renameStream("h-rem/st1", "Renamed stream");
+  assert.equal(stRes.ok, true);
+  assert.equal(stRes.title, "Renamed stream");
+  assert.equal(coord.pendingRenames.has("h-rem/st1"), false);
+  assert.equal(coord.streams.get("h-rem/st1").title, "Renamed stream");
+
+  // Offline remote refuses rename cleanly without invoking CLI.
+  coord.machineLayouts.set("retriever", "unavailable");
+  const prevCalls = calls.length;
+  const offlineRes = await coord.renameStream("h-rem/st1", "Blocked rename");
+  assert.equal(offlineRes.ok, false);
+  assert.equal(calls.length, prevCalls);
+});
