@@ -29,6 +29,7 @@ import {
   formatRelativeAge,
   findLivePaneForStream,
   findLivePaneForSession,
+  sessionForFramePane,
   buildMoveCandidates,
   statusToTerminalMark,
   buildSharedTerminalMarks,
@@ -1865,16 +1866,23 @@ test("hostScope toggle, per-machine cache isolation, and out-of-order deferred r
   });
 
   const listCalls = [];
+  const identityCalls = [];
   const coord = new StreamsCoordinator({
     exec: async (bin, args, opts) => {
       const on = opts?.on ?? null;
       if (args[0] === "config") {
         return { code: 0, stdout: JSON.stringify({ herdr: {} }), stderr: "" };
       }
+      if (args[0] === "catalog" && args[1] === "label") {
+        identityCalls.push({ on });
+        if (on === "retriever") {
+          return { code: 0, stdout: JSON.stringify({ host_id: "h-rem", label: "retriever" }), stderr: "" };
+        }
+        return { code: 0, stdout: JSON.stringify({ host_id: "h-loc", label: "local" }), stderr: "" };
+      }
       if (args[0] === "stream" && args[1] === "list") {
         const isLocalFlag = args.includes("--local");
-        const isProbe = args.includes("--limit");
-        listCalls.push({ on, isLocalFlag, isProbe });
+        listCalls.push({ on, isLocalFlag });
         if (on === null && isLocalFlag) {
           return localListDeferred;
         }
@@ -1905,6 +1913,7 @@ test("hostScope toggle, per-machine cache isolation, and out-of-order deferred r
   // 2. Before local resolves, switch to retriever + All hosts and fetch immediately.
   coord.activeMachine = "retriever";
   await coord.setHostScope("all");
+  await Promise.all(coord._identityProbes.values());
   assert.deepEqual(
     coord.getStreamList().items.map((s) => s.key),
     [stRemOnly.key, stLocalOnly.key]
@@ -1936,12 +1945,12 @@ test("hostScope toggle, per-machine cache isolation, and out-of-order deferred r
   assert.equal(coord.machineForHost("h-rem"), "retriever");
 
   // 5. Verify --local flag was passed for local scope, omitted for all scope,
-  //    and the unchecked remote ran its one-time --local --limit 1 owner probe.
+  //    and the unchecked remote ran its one-time `catalog label --json` identity query.
   assert.deepEqual(listCalls, [
-    { on: null, isLocalFlag: true, isProbe: false },
-    { on: "retriever", isLocalFlag: false, isProbe: false },
-    { on: "retriever", isLocalFlag: true, isProbe: true },
+    { on: null, isLocalFlag: true },
+    { on: "retriever", isLocalFlag: false },
   ]);
+  assert.deepEqual(identityCalls, [{ on: "retriever" }]);
 });
 
 test("initial inspectStream and previewSession route to remote owner for unsynced remote-only records", async () => {
@@ -2319,6 +2328,9 @@ test("empty local host refuses owner-only actions on unmapped synced remote reco
       if (args[0] === "config") {
         return { code: 0, stdout: JSON.stringify({ herdr: {} }), stderr: "" };
       }
+      if (args[0] === "catalog" && args[1] === "label") {
+        return { code: 0, stdout: JSON.stringify({ host_id: "h-loc", label: "mac" }), stderr: "" };
+      }
       if (args[0] === "stream" && args[1] === "list") {
         // Local host has ZERO local Streams, while All hosts returns the synced remote Stream.
         if (args.includes("--local")) {
@@ -2333,6 +2345,8 @@ test("empty local host refuses owner-only actions on unmapped synced remote reco
   // No pre-registered host IDs at all: local `--local` returns empty, then user toggles All hosts.
   await coord.ensureHostStreams(true);
   await coord.setHostScope("all");
+  await Promise.all(coord._identityProbes.values());
+  assert.equal(coord.machineForHost("h-loc"), null);
   assert.deepEqual(
     coord.getStreamList().items.map((s) => s.key),
     [stRem.key]
@@ -2372,7 +2386,7 @@ test("empty local host refuses owner-only actions on unmapped synced remote reco
   );
 
   // Companion check: arriving on a local host in All hosts mode (before --local ever ran) lazily
-  // probes `stream list --local --limit 1` once, learns local host ID, and allows local actions.
+  // queries `catalog label --json` once, learns local host ID, and allows local actions.
   const stLocal = makeStreamJson({ host: "h-loc", id: "st-loc", title: "Local Stream" });
   const sLocal = makeSessionJson({ host: "h-loc", id: "s-loc", stream_id: "st-loc", status: "active" });
   const probeCalls = [];
@@ -2380,8 +2394,8 @@ test("empty local host refuses owner-only actions on unmapped synced remote reco
     exec: async (bin, args, opts) => {
       const on = opts?.on ?? null;
       probeCalls.push({ bin, args, on });
-      if (args[0] === "stream" && args[1] === "list" && args.includes("--local")) {
-        return { code: 0, stdout: JSON.stringify({ items: [stLocal], unreadable: [] }), stderr: "" };
+      if (args[0] === "catalog" && args[1] === "label") {
+        return { code: 0, stdout: JSON.stringify({ host_id: "h-loc", label: "mac" }), stderr: "" };
       }
       if (args[0] === "session" && args[1] === "edit") {
         sLocal.status = "parked";
@@ -2401,15 +2415,15 @@ test("empty local host refuses owner-only actions on unmapped synced remote reco
   assert.equal(localEdit.ok, true);
   assert.equal(coord2.machineForHost("h-loc"), null);
   assert.equal(
-    probeCalls.filter((c) => c.args[0] === "stream" && c.args[1] === "list").length,
+    probeCalls.filter((c) => c.args[0] === "catalog" && c.args[1] === "label").length,
     1
   );
-  // Foreign host on coord2 is still refused cleanly with zero additional probe calls.
+  // Foreign host on coord2 is still refused cleanly with zero additional identity calls.
   const foreignEdit = await coord2.setSessionStatus(sRem.key, "parked", stRem.key);
   assert.equal(foreignEdit.ok, false);
   assert.match(foreignEdit.error, /not linked to an online machine/);
   assert.equal(
-    probeCalls.filter((c) => c.args[0] === "stream" && c.args[1] === "list").length,
+    probeCalls.filter((c) => c.args[0] === "catalog" && c.args[1] === "label").length,
     1
   );
 });
@@ -2455,8 +2469,8 @@ test("foreignHostBadge hides active host and cold boot, distinguishes online/loa
   assert.equal(coord.foreignHostBadge("/invalid", null), null);
   assert.equal(coord.foreignHostBadge("", null), null);
 
-  // Once the active host is checked (even with zero local streams), unmapped hosts report as unmapped.
-  coord._localOwnerChecked.add(coord._machineKey(null));
+  // Once the active host's identity is known, unmapped hosts report as unmapped.
+  coord.recordHostMachine("0abb3ca7-local", null);
   assert.deepEqual(coord.foreignHostBadge("abcdef123456/s1", null), {
     label: "abcdef12",
     state: "unmapped",
@@ -2464,8 +2478,7 @@ test("foreignHostBadge hides active host and cold boot, distinguishes online/loa
       "Host abcdef12 is not linked yet — visit its space or open a terminal there (read-only)",
   });
 
-  // Map local, ready remote, and connecting remote hosts.
-  coord.recordHostMachine("0abb3ca7-local", null);
+  // Map ready remote and connecting remote hosts.
   coord.recordHostMachine("62435806-rem", "retriever");
   coord.recordHostMachine("99999999-box", "buildbox");
 
@@ -2513,19 +2526,24 @@ test("foreignHostBadge hides active host and cold boot, distinguishes online/loa
     }
   );
 
-  // Regression: reaching a remote All hosts view without preseeding hostToMachine probes once,
-  // suppresses the active remote's own badge, reports foreign unmapped hosts, and does not re-probe.
+  // Regression: reaching a remote All hosts view without preseeding hostToMachine queries
+  // `catalog label --json` once, suppresses the active remote's own badge, reports foreign
+  // unmapped hosts, and does not re-query.
   const stRem = makeStreamJson({ host: "62435806-rem", id: "st-r", title: "Remote Streams" });
   const stOther = makeStreamJson({ host: "deadbeef-9999", id: "st-o", title: "Other Host Stream" });
   let probeCount = 0;
   const unseeded = new StreamsCoordinator({
     exec: async (_bin, args, opts) => {
       const on = opts?.on ?? null;
+      if (args[0] === "catalog" && args[1] === "label" && on === "retriever") {
+        probeCount += 1;
+        return {
+          code: 0,
+          stdout: JSON.stringify({ host_id: "62435806-rem", label: "retriever" }),
+          stderr: "",
+        };
+      }
       if (args[0] === "stream" && args[1] === "list") {
-        if (on === "retriever" && args.includes("--local")) {
-          probeCount += 1;
-          return { code: 0, stdout: JSON.stringify({ items: [stRem], unreadable: [] }), stderr: "" };
-        }
         if (on === "retriever" && !args.includes("--local")) {
           return {
             code: 0,
@@ -2541,7 +2559,7 @@ test("foreignHostBadge hides active host and cold boot, distinguishes online/loa
   unseeded.machineLayouts.set("retriever", "ready");
   unseeded.activeMachine = "retriever";
   await unseeded.setHostScope("all");
-  await Promise.all(unseeded._localOwnerProbes.values());
+  await Promise.all(unseeded._identityProbes.values());
 
   assert.equal(probeCount, 1);
   assert.equal(unseeded.machineForHost("62435806-rem"), "retriever");
@@ -2645,7 +2663,7 @@ test("formatHostStreamMeta promotes goal, suppresses zero/redundant counts, and 
   );
 });
 
-test("_probeLocalOwner recovers on forced refresh, preserves deletions during pending probes/lists, and deduplicates concurrent probes", async () => {
+test("ensureMachineIdentity uses catalog label --json (including empty catalogs), recovers on retry, preserves deletions during pending queries, and deduplicates concurrent calls", async () => {
   const stRem = makeStreamJson({ host: "62435806-rem", id: "st-r", title: "Remote Streams" });
   const sRem = makeSessionJson({
     host: "62435806-rem",
@@ -2654,24 +2672,26 @@ test("_probeLocalOwner recovers on forced refresh, preserves deletions during pe
     status: "active",
   });
 
-  // (a) Probe fails (transportError) while All hosts list succeeds:
+  // (a) Identity query fails (transportError) while All hosts list succeeds:
   //     rows still populate and the machine stays unchecked for later recovery.
   let failProbe = true;
   let probeCalls = 0;
   const coordFail = new StreamsCoordinator({
     exec: async (_bin, args, opts) => {
       const on = opts?.on ?? null;
-      if (args[0] === "stream" && args[1] === "list") {
-        if (on === "retriever" && args.includes("--local")) {
-          probeCalls += 1;
-          if (failProbe) {
-            throw new Error("ssh probe timed out");
-          }
-          return { code: 0, stdout: JSON.stringify({ items: [stRem], unreadable: [] }), stderr: "" };
+      if (args[0] === "catalog" && args[1] === "label" && on === "retriever") {
+        probeCalls += 1;
+        if (failProbe) {
+          throw new Error("ssh probe timed out");
         }
-        if (on === "retriever" && !args.includes("--local")) {
-          return { code: 0, stdout: JSON.stringify({ items: [stRem], unreadable: [] }), stderr: "" };
-        }
+        return {
+          code: 0,
+          stdout: JSON.stringify({ host_id: stRem.host_id, label: "retriever" }),
+          stderr: "",
+        };
+      }
+      if (args[0] === "stream" && args[1] === "list" && on === "retriever" && !args.includes("--local")) {
+        return { code: 0, stdout: JSON.stringify({ items: [stRem], unreadable: [] }), stderr: "" };
       }
       return { code: 0, stdout: "", stderr: "" };
     },
@@ -2681,44 +2701,37 @@ test("_probeLocalOwner recovers on forced refresh, preserves deletions during pe
   coordFail.activeMachine = "retriever";
 
   await coordFail.setHostScope("all");
-  await Promise.all(coordFail._localOwnerProbes.values());
+  await Promise.all(coordFail._identityProbes.values());
   assert.equal(probeCalls, 1);
   assert.deepEqual(
     coordFail.getStreamList().items.map((s) => s.key),
     [stRem.key]
   );
   assert.equal(coordFail.machineForHost(stRem.host_id), undefined);
-  // While the active machine is still unchecked after a failed probe, never flash a false-positive chip.
   assert.equal(coordFail.foreignHostBadge(stRem), null);
 
-  // Once the transient probe error clears, a subsequent refresh learns ownership and reports unmapped hosts.
+  // Once the transient error clears, a subsequent refresh learns ownership and reports unmapped hosts.
   failProbe = false;
   await coordFail.ensureHostStreams(true);
-  await Promise.all(coordFail._localOwnerProbes.values());
+  await Promise.all(coordFail._identityProbes.values());
   assert.equal(probeCalls, 2);
   assert.equal(coordFail.machineForHost(stRem.host_id), "retriever");
   assert.equal(coordFail.foreignHostBadge(stRem), null);
   assert.equal(coordFail.foreignHostBadge("deadbeef-9999/st-o")?.state, "unmapped");
 
-  // (b) Initially empty --local probe notifies views when the first empty check settles,
-  //     suppresses unknown-owner pills while a forced re-probe is pending so the first local
-  //     Stream never flashes as foreign, and does not re-probe once ownership is learned.
+  // (b) Even on a machine with ZERO local Streams, `catalog label --json` immediately returns
+  //     its authoritative host_id on the very first call, notifies views, and never re-queries.
   const stSynced = makeStreamJson({ host: "0abb3ca7-mac", id: "st-mac", title: "Synced Mac" });
   const stKnownForeign = makeStreamJson({
     host: "11112222-box",
     id: "st-box",
     title: "Known Foreign",
   });
-  let localCreated = false;
   let emptyProbeCalls = 0;
   let emptyNotifyCount = 0;
-  let resolveInitialEmptyProbe;
-  const initialEmptyProbe = new Promise((r) => {
-    resolveInitialEmptyProbe = r;
-  });
-  let resolveForcedReprobe;
-  const forcedReprobe = new Promise((r) => {
-    resolveForcedReprobe = r;
+  let resolveInitialIdentity;
+  const initialIdentityPromise = new Promise((r) => {
+    resolveInitialIdentity = r;
   });
   const coordEmpty = new StreamsCoordinator({
     notify: () => {
@@ -2726,20 +2739,16 @@ test("_probeLocalOwner recovers on forced refresh, preserves deletions during pe
     },
     exec: async (_bin, args, opts) => {
       const on = opts?.on ?? null;
-      if (args[0] === "stream" && args[1] === "list") {
-        if (on === "retriever" && args.includes("--local")) {
-          emptyProbeCalls += 1;
-          if (emptyProbeCalls === 1) return initialEmptyProbe;
-          if (emptyProbeCalls === 2) return forcedReprobe;
-          const items = localCreated ? [stRem] : [];
-          return { code: 0, stdout: JSON.stringify({ items, unreadable: [] }), stderr: "" };
-        }
-        if (on === "retriever" && !args.includes("--local")) {
-          const items = localCreated
-            ? [stRem, stSynced, stKnownForeign]
-            : [stSynced, stKnownForeign];
-          return { code: 0, stdout: JSON.stringify({ items, unreadable: [] }), stderr: "" };
-        }
+      if (args[0] === "catalog" && args[1] === "label" && on === "retriever") {
+        emptyProbeCalls += 1;
+        return initialIdentityPromise;
+      }
+      if (args[0] === "stream" && args[1] === "list" && on === "retriever" && !args.includes("--local")) {
+        return {
+          code: 0,
+          stdout: JSON.stringify({ items: [stSynced, stKnownForeign], unreadable: [] }),
+          stderr: "",
+        };
       }
       return { code: 0, stdout: "", stderr: "" };
     },
@@ -2751,90 +2760,30 @@ test("_probeLocalOwner recovers on forced refresh, preserves deletions during pe
   coordEmpty.activeMachine = "retriever";
 
   await coordEmpty.setHostScope("all");
-  // While the first empty probe is pending, unmapped rows stay null (no false-positive flash),
-  // while already-mapped foreign hosts still show their badge.
   assert.equal(coordEmpty.foreignHostBadge(stSynced), null);
   assert.equal(coordEmpty.foreignHostBadge(stKnownForeign)?.label, "buildbox");
 
-  const notifiesBeforeEmptyResolve = emptyNotifyCount;
-  resolveInitialEmptyProbe({ code: 0, stdout: JSON.stringify({ items: [], unreadable: [] }), stderr: "" });
-  await Promise.all(coordEmpty._localOwnerProbes.values());
-  assert.equal(emptyProbeCalls, 1);
-  assert.equal(coordEmpty.machineForHost(stRem.host_id), undefined);
-  // First empty check completion MUST notify views and reveal unmapped foreign rows.
-  assert.equal(emptyNotifyCount, notifiesBeforeEmptyResolve + 1);
-  assert.equal(coordEmpty.foreignHostBadge(stSynced)?.state, "unmapped");
-
-  // Non-forced write refusal on foreign synced Stream does not re-probe while empty.
-  const foreignDel = await coordEmpty.deleteStream(stSynced.key);
-  assert.equal(foreignDel.ok, false);
-  assert.equal(emptyProbeCalls, 1);
-
-  // Passive non-forced observe() transitions in All hosts mode reload the list without re-probing.
-  const emptySpace = { id: "retriever/sp-empty", name: "Empty Remote", machine: "retriever" };
-  await coordEmpty.observe({
-    activeSpace: emptySpace,
-    activeTabId: "retriever/tb-1",
-    visibleTerminals: [],
-    terminalList: [],
-    machineList: [
-      { name: null, layout: "ready" },
-      { name: "retriever", layout: "ready" },
-      { name: "buildbox", layout: "ready" },
-    ],
-  });
-  await coordEmpty.observe({
-    activeSpace: emptySpace,
-    activeTabId: "retriever/tb-2",
-    visibleTerminals: [],
-    terminalList: [],
-    machineList: [
-      { name: null, layout: "ready" },
-      { name: "retriever", layout: "ready" },
-      { name: "buildbox", layout: "ready" },
-    ],
-  });
-  assert.equal(emptyProbeCalls, 1);
-
-  // Later, first local Stream is created on retriever; forced observe() starts a deferred re-probe.
-  // While the forced re-probe is pending, the new local Stream must NOT flash an unmapped pill,
-  // while mapped foreign host buildbox keeps its badge.
-  localCreated = true;
-  await coordEmpty.observe({
-    activeSpace: emptySpace,
-    activeTabId: "retriever/tb-2",
-    visibleTerminals: [],
-    terminalList: [],
-    machineList: [
-      { name: null, layout: "ready" },
-      { name: "retriever", layout: "ready" },
-      { name: "buildbox", layout: "ready" },
-    ],
-    force: true,
-  });
-  assert.equal(emptyProbeCalls, 2);
-  assert.equal(coordEmpty.foreignHostBadge(stRem), null);
-  assert.equal(coordEmpty.foreignHostBadge(stKnownForeign)?.label, "buildbox");
-
-  const notifiesBeforeForcedResolve = emptyNotifyCount;
-  resolveForcedReprobe({
+  const notifiesBeforeResolve = emptyNotifyCount;
+  resolveInitialIdentity({
     code: 0,
-    stdout: JSON.stringify({ items: [stRem], unreadable: [] }),
+    stdout: JSON.stringify({ host_id: stRem.host_id, label: null }),
     stderr: "",
   });
-  await Promise.all(coordEmpty._localOwnerProbes.values());
-  assert.equal(emptyNotifyCount, notifiesBeforeForcedResolve + 1);
+  await Promise.all(coordEmpty._identityProbes.values());
+  assert.equal(emptyProbeCalls, 1);
   assert.equal(coordEmpty.machineForHost(stRem.host_id), "retriever");
+  assert.equal(emptyNotifyCount, notifiesBeforeResolve + 1);
   assert.equal(coordEmpty.foreignHostBadge(stRem), null);
   assert.equal(coordEmpty.foreignHostBadge(stSynced)?.state, "unmapped");
 
-  // Once learned, another forced refresh does not re-probe.
+  const foreignDel = await coordEmpty.deleteStream(stSynced.key);
+  assert.equal(foreignDel.ok, false);
   await coordEmpty.ensureHostStreams(true);
-  assert.equal(emptyProbeCalls, 2);
+  assert.equal(emptyProbeCalls, 1);
 
-  // (c) Through observe(): a slow owner probe must NOT hold the sidebar loading guard once the
-  //     All hosts list resolves, deleting a Stream while the probe is pending must NOT be undone
-  //     when the probe settles, and concurrent _probeLocalOwner calls share one --local --limit 1 exec.
+  // (c) Through observe(): a slow identity query must NOT hold the sidebar loading guard once the
+  //     All hosts list resolves, deleting a Stream while the query is pending must NOT be undone
+  //     when the query settles, and concurrent ensureMachineIdentity calls share one exec.
   const stDel = makeStreamJson({ host: "0abb3ca7-mac", id: "st-del", title: "Empty Local Stream" });
   let resolveSlowProbe;
   const slowProbePromise = new Promise((r) => {
@@ -2848,18 +2797,16 @@ test("_probeLocalOwner recovers on forced refresh, preserves deletions during pe
     },
     exec: async (_bin, args, opts) => {
       const on = opts?.on ?? null;
-      if (args[0] === "stream" && args[1] === "list") {
-        if (on === "retriever" && args.includes("--local")) {
-          concurrentProbes += 1;
-          return slowProbePromise;
-        }
-        if (on === "retriever" && !args.includes("--local")) {
-          return {
-            code: 0,
-            stdout: JSON.stringify({ items: [stRem, stDel], unreadable: [] }),
-            stderr: "",
-          };
-        }
+      if (args[0] === "catalog" && args[1] === "label" && on === "retriever") {
+        concurrentProbes += 1;
+        return slowProbePromise;
+      }
+      if (args[0] === "stream" && args[1] === "list" && on === "retriever" && !args.includes("--local")) {
+        return {
+          code: 0,
+          stdout: JSON.stringify({ items: [stRem, stDel], unreadable: [] }),
+          stderr: "",
+        };
       }
       if (args[0] === "stream" && args[1] === "delete") {
         return { code: 0, stdout: "", stderr: "" };
@@ -2881,7 +2828,6 @@ test("_probeLocalOwner recovers on forced refresh, preserves deletions during pe
       { name: "retriever", layout: "ready" },
     ],
   });
-  // observe() must finish and clear the sidebar loading guard even though slowProbePromise is still pending!
   assert.equal(obsRes?.kind, "listing");
   assert.notEqual(coordRace.lastCompletedKey, null);
   assert.equal(coordRace.inFlightKey, null);
@@ -2889,8 +2835,6 @@ test("_probeLocalOwner recovers on forced refresh, preserves deletions during pe
     coordRace.getStreamList().items.map((s) => s.key),
     [stRem.key, stDel.key]
   );
-  // Before slowProbePromise finishes, stRem must NOT flash a false-positive unmapped chip,
-  // while known foreign host stDel still shows its online "local" badge.
   assert.equal(coordRace.foreignHostBadge(stRem), null);
   assert.deepEqual(coordRace.foreignHostBadge(stDel), {
     label: "local",
@@ -2898,7 +2842,6 @@ test("_probeLocalOwner recovers on forced refresh, preserves deletions during pe
     tooltip: "On local",
   });
 
-  // Concurrently run ensureWriteMachineForKey on retriever (shares in-flight probe) AND delete stDel.
   const concurrentWriteCheck = coordRace.ensureWriteMachineForKey(sRem.key);
   const delRes = await coordRace.deleteStream(stDel.key);
   assert.equal(delRes.ok, true);
@@ -2911,12 +2854,12 @@ test("_probeLocalOwner recovers on forced refresh, preserves deletions during pe
   const notifiesBeforeProbeResolve = notifyCount;
   resolveSlowProbe({
     code: 0,
-    stdout: JSON.stringify({ items: [stRem], unreadable: [] }),
+    stdout: JSON.stringify({ host_id: stRem.host_id, label: "retriever" }),
     stderr: "",
   });
 
   const writeTarget = await concurrentWriteCheck;
-  await Promise.all(coordRace._localOwnerProbes.values());
+  await Promise.all(coordRace._identityProbes.values());
   assert.deepEqual(writeTarget, { ok: true, machine: "retriever" });
   assert.deepEqual(
     coordRace.getStreamList().items.map((s) => s.key),
@@ -2982,11 +2925,16 @@ test("_probeLocalOwner recovers on forced refresh, preserves deletions during pe
   const staleRes = await staleObserve;
   assert.equal(staleRes, null);
   assert.equal(coordListDel.lastCompletedKey, null);
-  assert.deepEqual(coordListDel.getStreamList().items, []);
-
-  // A repeat observe() with the exact same snapshot must refetch and populate [stKept].
-  const refetched = await coordListDel.observe(localSnap);
+  // Wait for the automatic invalidation refetch kicked off by deleteStream.
+  await new Promise((r) => setTimeout(r, 0));
   assert.equal(listCalls, 2);
+  assert.deepEqual(
+    coordListDel.getStreamList().items.map((s) => s.key),
+    [stKept.key]
+  );
+
+  // A repeat observe() with the exact same snapshot completes cleanly without resurrecting stDel.
+  const refetched = await coordListDel.observe(localSnap);
   assert.equal(refetched?.kind, "listing");
   assert.notEqual(coordListDel.lastCompletedKey, null);
   assert.deepEqual(
@@ -3836,4 +3784,275 @@ test("Stage 1 edge cases: session survives stream show failure, force clears sta
     contextSynced: true,
   });
   assert.equal(coord3.previewStreamKey, "h1/preview");
+});
+
+test("Stage 2: scoped fetchers skip unchanged scopes, role-scoped notify wakes frames only on frame changes, and sessionForFramePane resolves O(1)", async () => {
+  const s1 = makeSessionJson({ host: "h1", id: "s1", stream_id: "st1", title: "Active Sess", status: "active" });
+  const s2 = makeSessionJson({ host: "h1", id: "s2", stream_id: "st2", title: "Off-tab Sess", status: "active" });
+  const st1 = makeStreamJson({ host: "h1", id: "st1", title: "Stream One", sessions: [s1] });
+  const st2 = makeStreamJson({ host: "h1", id: "st2", title: "Stream Two", sessions: [s2] });
+
+  const execLog = [];
+  const notifyScopes = [];
+  const coord = new StreamsCoordinator({
+    notify: (scope) => notifyScopes.push(scope),
+    exec: async (_bin, args) => {
+      execLog.push(args.slice(0, 3).join(" "));
+      if (args[0] === "config") return { code: 0, stdout: JSON.stringify({ herdr: {} }), stderr: "" };
+      if (args[0] === "session" && args[1] === "show") {
+        const key = args[2];
+        const sess = key === s1.key ? s1 : s2;
+        return { code: 0, stdout: JSON.stringify(sess), stderr: "" };
+      }
+      if (args[0] === "stream" && args[1] === "show") {
+        const key = args[2];
+        const st = key === st1.key ? st1 : st2;
+        return { code: 0, stdout: JSON.stringify(st), stderr: "" };
+      }
+      if (args[0] === "session" && args[1] === "list") {
+        return {
+          code: 0,
+          stdout: JSON.stringify({
+            items: [{ key: s2.key, stream_id: "st2", title: s2.title, status: s2.status, state: s2.state }],
+          }),
+          stderr: "",
+        };
+      }
+      if (args[0] === "stream" && args[1] === "list") {
+        return { code: 0, stdout: JSON.stringify({ items: [st1, st2], unreadable: [] }), stderr: "" };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    },
+  });
+
+  const makeSnap = ({ activeTab = "tab1", t1Saved = "1", t2Saved = "1" } = {}) => ({
+    activeSpace: { id: "sp1", machine: null },
+    activeTabId: activeTab,
+    visibleTerminals: activeTab === "tab1" ? ["t1"] : activeTab === "tab2" ? ["t2"] : [],
+    focusedTerminal: activeTab === "tab1" ? "t1" : activeTab === "tab2" ? "t2" : null,
+    terminalList: [
+      { address: "t1", state: "live", labels: { [LABEL_SESSION]: s1.key, [LABEL_STREAM]: st1.key, [LABEL_SAVED]: t1Saved } },
+      { address: "t2", state: "live", labels: { [LABEL_SESSION]: s2.key, [LABEL_STREAM]: st2.key, [LABEL_SAVED]: t2Saved } },
+    ],
+    panes: [
+      { pane: "p1", tab: "tab1", terminal: "t1", program: { key: "pi", agent: true } },
+      { pane: "p2", tab: "tab2", terminal: "t2", program: { key: "pi", agent: true } },
+    ],
+    agents: [
+      { address: "t1", app: "pi", program: { key: "pi", agent: true } },
+      { address: "t2", app: "pi", program: { key: "pi", agent: true } },
+    ],
+  });
+
+  // Initial load: populates both active (t1) and off-tab (t2) -> wakes "all" because frame sig changed.
+  const snap1 = makeSnap({ activeTab: "tab1", t1Saved: "1", t2Saved: "1" });
+  const peek1 = coord.peekObservationKey(snap1);
+  assert.equal(typeof peek1, "string");
+  await coord.observe(snap1);
+  assert.equal(notifyScopes.includes("all"), true);
+
+  // Off-tab save on t2 while active tab t1 is unchanged:
+  // `_syncActiveTarget` MUST SKIP `session show` / `stream show` for t1; ONLY `session list` runs for t2!
+  execLog.length = 0;
+  notifyScopes.length = 0;
+  s2.status = "waiting";
+  await coord.observe(makeSnap({ activeTab: "tab1", t1Saved: "1", t2Saved: "2" }));
+  assert.equal(execLog.some((c) => c.startsWith("session show")), false);
+  assert.equal(execLog.some((c) => c.startsWith("stream show")), false);
+  assert.equal(execLog.some((c) => c.startsWith("session list")), true);
+  assert.equal(coord.sessions.get(s2.key)?.status, "waiting");
+  // Frame sig changed (t2 status active -> waiting) -> wakes "all".
+  assert.deepEqual(notifyScopes, ["all"]);
+
+  // Sidebar-only UI actions MUST wake ONLY "sidebar", never "all".
+  notifyScopes.length = 0;
+  coord.reportActionError("Oops", "minor error");
+  coord.clearActionError();
+  assert.deepEqual(notifyScopes, ["sidebar", "sidebar"]);
+
+  // Switching to unenrolled tab3 loads list once; switching to unenrolled tab4 reuses loaded list (0 stream list calls!).
+  execLog.length = 0;
+  await coord.observe(makeSnap({ activeTab: "tab3", t1Saved: "1", t2Saved: "2" }));
+  execLog.length = 0;
+  await coord.observe(makeSnap({ activeTab: "tab4", t1Saved: "1", t2Saved: "2" }));
+  assert.equal(execLog.some((c) => c.startsWith("stream list")), false);
+
+  // sessionForFramePane resolves enrolled Pi panes directly (including content.terminal) and ignores non-Pi shells.
+  const resolved = sessionForFramePane({
+    pane: { pane: "p1", tab: "tab1", content: { terminal: "t1" }, program: { key: "pi", agent: true } },
+    terminalList: snap1.terminalList,
+    agents: snap1.agents,
+    staleSessionKeys: coord.staleSessionKeys,
+    sessions: coord.sessions,
+  });
+  assert.equal(resolved?.sessionKey, s1.key);
+  assert.equal(resolved?.session?.title, "Active Sess");
+  assert.equal(
+    sessionForFramePane({
+      pane: { pane: "p-zsh", tab: "tab1", terminal: "t1", program: { key: "zsh", shell: true, agent: false } },
+      terminalList: snap1.terminalList,
+      agents: [],
+      staleSessionKeys: coord.staleSessionKeys,
+      sessions: coord.sessions,
+    }),
+    null
+  );
+});
+
+test("Stage 2 review fixes: sibling save, non-Pi shell save, cold Space fallback, reconnect refetch, homeDir & stale frame wakeups, and tab-switch stability", async () => {
+  // 1. Same-stream sibling save refreshes sibling AND active Stream instead of reverting from stale cache.
+  const s1 = makeSessionJson({ host: "h1", id: "s1", stream_id: "st1", title: "Lead", status: "active" });
+  const s2 = makeSessionJson({ host: "h1", id: "s2", stream_id: "st1", title: "Worker", status: "active" });
+  const st1 = makeStreamJson({ host: "h1", id: "st1", title: "Shared Stream", sessions: [s1, s2] });
+
+  const calls = [];
+  const scopes = [];
+  let failSessionShow = false;
+  let sessionNotFound = false;
+  const coord = new StreamsCoordinator({
+    notify: (scope) => scopes.push(scope),
+    exec: async (_bin, args, opts) => {
+      calls.push({ on: opts?.on ?? null, cmd: args.slice(0, 3).join(" ") });
+      if (args[0] === "config") return { code: 0, stdout: JSON.stringify({ herdr: {} }), stderr: "" };
+      if (args[0] === "-c") return { code: 0, stdout: "/home/bits", stderr: "" };
+      if (args[0] === "session" && args[1] === "show") {
+        if (sessionNotFound) {
+          return { code: 1, stdout: "", stderr: JSON.stringify({ error: { kind: "not-found", message: "gone" } }) };
+        }
+        if (failSessionShow) return { code: 1, stdout: "", stderr: "transient err" };
+        return { code: 0, stdout: JSON.stringify(args[2] === s1.key ? s1 : s2), stderr: "" };
+      }
+      if (args[0] === "stream" && args[1] === "show") {
+        return { code: 0, stdout: JSON.stringify({ ...st1, sessions: sessionNotFound ? [s2] : [s1, s2] }), stderr: "" };
+      }
+      if (args[0] === "session" && args[1] === "list") {
+        const list = sessionNotFound ? [s2] : [s1, s2];
+        return {
+          code: 0,
+          stdout: JSON.stringify({
+            items: list.map((s) => ({ key: s.key, stream_id: "st1", title: s.title, status: s.status, state: s.state })),
+          }),
+          stderr: "",
+        };
+      }
+      if (args[0] === "stream" && args[1] === "list") {
+        return { code: 0, stdout: JSON.stringify({ items: [st1], unreadable: [] }), stderr: "" };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    },
+  });
+
+  const mkSnap = ({ tab = "tab1", t1s = "1", t2s = "1", shSaved = null, streamLabel = st1.key } = {}) => ({
+    activeSpace: { id: "sp1", machine: null, tabs: [{ id: "tab1" }, { id: "tab2" }, { id: "tab-unenrolled" }] },
+    activeTabId: tab,
+    visibleTerminals: tab === "tab1" ? ["t1"] : tab === "tab2" ? ["t2"] : [],
+    focusedTerminal: tab === "tab1" ? "t1" : tab === "tab2" ? "t2" : null,
+    terminalList: [
+      { address: "t1", state: "live", labels: { [LABEL_SESSION]: s1.key, ...(streamLabel ? { [LABEL_STREAM]: streamLabel } : {}), [LABEL_SAVED]: t1s } },
+      { address: "t2", state: "live", labels: { [LABEL_SESSION]: s2.key, ...(streamLabel ? { [LABEL_STREAM]: streamLabel } : {}), [LABEL_SAVED]: t2s } },
+      ...(shSaved ? [{ address: "t-sh", state: "live", labels: { [LABEL_SAVED]: shSaved } }] : []),
+    ],
+    panes: [
+      { pane: "p1", tab: "tab1", terminal: "t1", program: { key: "pi", agent: true } },
+      { pane: "p2", tab: "tab2", terminal: "t2", program: { key: "pi", agent: true } },
+    ],
+    agents: [
+      { address: "t1", app: "pi", program: { key: "pi", agent: true } },
+      { address: "t2", app: "pi", program: { key: "pi", agent: true } },
+    ],
+  });
+
+  await coord.observe(mkSnap());
+  assert.equal(coord.sessions.get(s2.key)?.status, "active");
+
+  // Sibling t2 changes status to waiting and saves: must update s2 (not revert!).
+  s2.status = "waiting";
+  calls.length = 0;
+  await coord.observe(mkSnap({ t2s: "2" }));
+  assert.equal(coord.sessions.get(s2.key)?.status, "waiting");
+  assert.equal(calls.some((c) => c.cmd.startsWith("stream show")), true);
+
+  // Switching Tab 1 -> Tab 2 -> Tab 1 without any saves runs ZERO off-tab session list calls (no ping-pong).
+  calls.length = 0;
+  await coord.observe(mkSnap({ tab: "tab2", t2s: "2" }));
+  await coord.observe(mkSnap({ tab: "tab1", t2s: "2" }));
+  assert.equal(calls.some((c) => c.cmd.startsWith("session list")), false);
+
+  // 2. Non-Pi shell terminal `streams.saved` refreshes active target even when Pi tokens are unchanged!
+  s1.title = "Edited from shell";
+  calls.length = 0;
+  await coord.observe(mkSnap({ t2s: "2", shSaved: "cli-99" }));
+  assert.equal(calls.some((c) => c.cmd.startsWith("session show")), true);
+  assert.equal(coord.sessions.get(s1.key)?.title, "Edited from shell");
+
+  // 3. ensureHomeDir wakes "all" so remote pane headers shorten ~/ paths.
+  scopes.length = 0;
+  const homeDir = await coord.ensureHomeDir("retriever");
+  assert.equal(homeDir, "/home/bits");
+  assert.deepEqual(scopes, ["all"]);
+
+  // 4. Marking a previously cached live session stale via `not-found` wakes "all" (frames clear pill).
+  scopes.length = 0;
+  sessionNotFound = true;
+  await coord.observe({ ...mkSnap({ t2s: "2", shSaved: "cli-99" }), force: true });
+  assert.equal(coord.staleSessionKeys.has(s1.key), true);
+  assert.equal(scopes.includes("all"), true);
+
+  // 5. Cold-boot unenrolled tab with off-tab Pi terminal lacking `streams.stream` label still fetches Space fallback Stream detail.
+  sessionNotFound = false;
+  const coordCold = new StreamsCoordinator({
+    exec: async (_bin, args) => {
+      if (args[0] === "config") return { code: 0, stdout: JSON.stringify({ herdr: {} }), stderr: "" };
+      if (args[0] === "session" && args[1] === "list") {
+        return { code: 0, stdout: JSON.stringify({ items: [{ key: s2.key, stream_id: "st1", title: s2.title, status: "active" }] }), stderr: "" };
+      }
+      if (args[0] === "stream" && args[1] === "show") {
+        return { code: 0, stdout: JSON.stringify(st1), stderr: "" };
+      }
+      if (args[0] === "stream" && args[1] === "list") {
+        return { code: 0, stdout: JSON.stringify({ items: [st1], unreadable: [] }), stderr: "" };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    },
+  });
+  await coordCold.observe(mkSnap({ tab: "tab-unenrolled", streamLabel: null }));
+  assert.equal(coordCold.streams.get(st1.key)?.detail, true);
+
+  // 6. Remote machine disconnect -> reconnect clears cached active/off-tab sigs so reconnect refetches.
+  const sRem = makeSessionJson({ host: "h-rem", id: "sr1", stream_id: "str1", title: "Before" });
+  const stRem = makeStreamJson({ host: "h-rem", id: "str1", title: "Remote", sessions: [sRem] });
+  let remShowCalls = 0;
+  const coordRem = new StreamsCoordinator({
+    exec: async (_bin, args) => {
+      if (args[0] === "config") return { code: 0, stdout: JSON.stringify({ herdr: {} }), stderr: "" };
+      if (args[0] === "session" && args[1] === "show") {
+        remShowCalls += 1;
+        return { code: 0, stdout: JSON.stringify(sRem), stderr: "" };
+      }
+      if (args[0] === "stream" && args[1] === "show") {
+        return { code: 0, stdout: JSON.stringify(stRem), stderr: "" };
+      }
+      return { code: 0, stdout: JSON.stringify({ items: [], unreadable: [] }), stderr: "" };
+    },
+  });
+  const remSnap = (layout) => ({
+    activeSpace: { id: "retriever/sp1", machine: "retriever" },
+    activeTabId: "retriever/tab1",
+    visibleTerminals: ["retriever/t1"],
+    focusedTerminal: "retriever/t1",
+    terminalList: [{ address: "retriever/t1", machine: "retriever", state: "live", labels: { [LABEL_SESSION]: sRem.key, [LABEL_STREAM]: stRem.key, [LABEL_SAVED]: "1" } }],
+    panes: [{ pane: "retriever/p1", tab: "retriever/tab1", terminal: "retriever/t1", program: { key: "pi", agent: true } }],
+    agents: [{ address: "retriever/t1", app: "pi", program: { key: "pi", agent: true } }],
+    machineList: [
+      { name: null, layout: "ready" },
+      { name: "retriever", layout },
+    ],
+  });
+  await coordRem.observe(remSnap("ready"));
+  assert.equal(remShowCalls, 1);
+  await coordRem.observe(remSnap("unavailable"));
+  sRem.title = "After Reconnect";
+  await coordRem.observe(remSnap("ready"));
+  assert.equal(remShowCalls, 2);
+  assert.equal(coordRem.sessions.get(sRem.key)?.title, "After Reconnect");
 });

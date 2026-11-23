@@ -36,15 +36,14 @@ import {
   notify as herdrNotify,
 } from "herdr";
 import {
-  LABEL_SAVED,
   STALE_FALLBACK_MS,
   SESSION_STATUSES,
   resolveRole,
   parseTerminalAddress,
   recordHostId,
   indexLive,
+  sessionForFramePane,
   buildMoveCandidates,
-  observeNoticeToken,
   resolveSidebarView,
   effectiveSessionStatus,
   resolveTabRenameTarget,
@@ -61,14 +60,53 @@ import {
 } from "./state.js";
 
 let lastWindowActive = false;
-const viewWaiters = new Set();
+let lastScheduledObsKey = null;
+let mountedSidebars = 0;
+const sidebarWaiters = new Set();
+const frameWaiters = new Set();
 
-function notifyStreamsViews() {
-  if (checking() || viewWaiters.size === 0) return;
-  const waiters = [...viewWaiters];
-  viewWaiters.clear();
+function isStreamsSidebarVisible(node) {
+  if (!node || node.hidden) return false;
+  if (node.type === "block") {
+    return node.content?.mod === "streams" && node.id !== "streams-frame";
+  }
+  if (node.type === "stack") {
+    const active = (node.children ?? []).find((c) => c.id === node.active);
+    return active ? isStreamsSidebarVisible(active) : false;
+  }
+  for (const child of node.children ?? []) {
+    if (isStreamsSidebarVisible(child)) return true;
+  }
+  return false;
+}
+
+function isSidebarDrivingObserve() {
+  if (mountedSidebars === 0) return false;
+  try {
+    return isStreamsSidebarVisible(layout());
+  } catch {
+    return false;
+  }
+}
+
+function wakeWaiters(set) {
+  if (set.size === 0) return;
+  const waiters = [...set];
+  set.clear();
   for (const resolve of waiters) {
     resolve();
+  }
+}
+
+function notifyStreamsViews(scope = "sidebar") {
+  if (checking()) return;
+  if (scope === "frame") {
+    wakeWaiters(frameWaiters);
+    return;
+  }
+  wakeWaiters(sidebarWaiters);
+  if (scope === "all") {
+    wakeWaiters(frameWaiters);
   }
 }
 
@@ -107,8 +145,8 @@ const coordinator = new StreamsCoordinator({
       return null;
     }
   })(),
-  notify: () => {
-    notifyStreamsViews();
+  notify: (scope) => {
+    notifyStreamsViews(scope);
   },
 });
 
@@ -322,33 +360,6 @@ function syncActiveTabName(snap) {
   run("tab.rename", { id: target.tabId, name: target.desiredName });
 }
 
-function snapshotSignature(snap) {
-  const running = [
-    ...runningSessionTerminals({
-      ...snap,
-      staleSessionKeys: coordinator.staleSessionKeys,
-    }).entries(),
-  ]
-    .map(([t, s]) => `${t}=${s}`)
-    .sort();
-  const machineStates = (snap.machineList ?? [])
-    .map((m) => `${m?.name ?? "__local__"}=${m?.layout ?? "ready"}`)
-    .sort();
-  return JSON.stringify({
-    space: snap.activeSpace?.id ?? null,
-    machine: snap.activeSpace?.machine ?? null,
-    tab: snap.activeTabId,
-    tabName: snap.activeTab?.name ?? null,
-    terminals: snap.visibleTerminals,
-    liveTerminals: snap.liveTerminals,
-    running,
-    focused: snap.focusedTerminal,
-    notice: observeNoticeToken(snap.terminalList, LABEL_SAVED),
-    machines: machineStates,
-    hostScope: coordinator.hostScope,
-  });
-}
-
 const VIEWER_LANG = {
   ts: "js",
   tsx: "js",
@@ -444,12 +455,18 @@ export default class StreamsMod extends View {
       return;
     }
     this.syncConfiguredBin();
+    if (role === "sidebar") {
+      mountedSidebars += 1;
+      this._countedSidebar = true;
+    }
+    const waiterSet = role === "sidebar" ? sidebarWaiters : frameWaiters;
     if (cx?.spawn) {
       this._subTask = cx.spawn(async (asyncCx) => {
         for (;;) {
           await new Promise((resolve) => {
             this._subResolve = resolve;
-            viewWaiters.add(resolve);
+            this._subWaiters = waiterSet;
+            waiterSet.add(resolve);
           });
           this._subResolve = null;
           if (this._role === "sidebar") {
@@ -459,21 +476,30 @@ export default class StreamsMod extends View {
         }
       });
     }
-    this.scheduleObserve(cx, collectSnapshot());
+    if (role === "sidebar" || !isSidebarDrivingObserve()) {
+      this.scheduleObserve(cx, collectSnapshot());
+    }
     if (role === "sidebar" && cx?.timer?.every) {
       this._timerTask = cx.timer.every(STALE_FALLBACK_MS, (timerCx) => {
-        this.scheduleObserve(timerCx, collectSnapshot(), true);
+        this.scheduleObserve(timerCx, collectSnapshot(), { force: true });
       });
     }
   }
 
   async close() {
+    if (this._countedSidebar) {
+      this._countedSidebar = false;
+      mountedSidebars = Math.max(0, mountedSidebars - 1);
+    }
     if (this._subResolve) {
-      viewWaiters.delete(this._subResolve);
+      this._subWaiters?.delete(this._subResolve);
       this._subResolve = null;
     }
+    this._subWaiters = null;
     this._subTask?.cancel?.();
     this._subTask = null;
+    this._observeTask?.cancel?.();
+    this._observeTask = null;
     this._timerTask?.cancel?.();
     this._timerTask = null;
     this.searchInput?.release?.();
@@ -1005,13 +1031,15 @@ export default class StreamsMod extends View {
     }
   }
 
-  scheduleObserve(cx, snap, force = false) {
+  scheduleObserve(cx, snap, opts = {}) {
     if (checking()) return;
+    const force = typeof opts === "boolean" ? opts : Boolean(opts?.force);
+    const live = typeof opts === "object" ? opts?.live ?? null : null;
     this.syncConfiguredBin();
     const isWinActive = Boolean(herdrWindow()?.active);
     const windowActivated = isWinActive && !lastWindowActive;
     lastWindowActive = isWinActive;
-    const sig = snapshotSignature(snap);
+    const obsKey = coordinator.peekObservationKey(snap, live);
     const stale =
       coordinator.staleFallbackMs > 0 &&
       coordinator.lastCompletedAt > 0 &&
@@ -1019,7 +1047,7 @@ export default class StreamsMod extends View {
     if (
       !force &&
       !(windowActivated && stale) &&
-      sig === this._lastSig &&
+      obsKey === lastScheduledObsKey &&
       (coordinator.lastCompletedAt > 0 ||
         coordinator.readError ||
         coordinator.lastFailedKey !== null ||
@@ -1027,27 +1055,19 @@ export default class StreamsMod extends View {
     ) {
       return;
     }
-    this._lastSig = sig;
+    lastScheduledObsKey = obsKey;
+    const runObserve = async () => {
+      await coordinator.observe({
+        ...snap,
+        force,
+        contextSynced: this._role === "sidebar",
+      });
+      syncActiveTabName(collectSnapshot());
+    };
     if (cx?.spawn) {
-      this._observeTask = cx.spawn(async (asyncCx) => {
-        try {
-          await coordinator.observe({
-            ...snap,
-            force,
-            contextSynced: this._role === "sidebar",
-          });
-          syncActiveTabName(collectSnapshot());
-        } finally {
-          asyncCx.notify();
-        }
-      });
+      this._observeTask = cx.spawn(runObserve);
     } else {
-      Promise.resolve(
-        coordinator.observe({ ...snap, force, contextSynced: this._role === "sidebar" })
-      ).then(() => {
-        syncActiveTabName(collectSnapshot());
-        cx?.notify?.();
-      });
+      void runObserve();
     }
   }
 
@@ -1076,8 +1096,9 @@ export default class StreamsMod extends View {
     );
     if (!p) return div();
 
-    const snap = collectSnapshot();
-    this.scheduleObserve(cx, snap);
+    if (!isSidebarDrivingObserve()) {
+      this.scheduleObserve(cx, collectSnapshot());
+    }
 
     const pane = p.pane;
     const bottom = paneFrame(layout())?.header?.position === "bottom";
@@ -1124,24 +1145,20 @@ export default class StreamsMod extends View {
         );
     }
 
-    const runningByTerm = runningSessionTerminals({
-      ...snap,
+    const frameInfo = sessionForFramePane({
+      pane: p,
+      terminalList: terminals(),
+      agents: agents(),
       staleSessionKeys: coordinator.staleSessionKeys,
+      sessions: coordinator.sessions,
     });
-    const enrolledKey = p.terminal ? runningByTerm.get(p.terminal) ?? null : null;
-    const enrolled = enrolledKey ? coordinator.sessions.get(enrolledKey) ?? null : null;
+    const enrolled = frameInfo?.session ?? null;
     const streamTitle = enrolled ? coordinator.streamTitle(enrolled.stream) : null;
-    const termInfo = p.terminal
-      ? snap.terminalList.find((item) => (item.address ?? item.id) === p.terminal) ?? null
-      : null;
-    const liveAgent = p.terminal
-      ? agents().find((a) => a.address === p.terminal) ?? null
-      : null;
     const effectiveStatus = enrolled
       ? effectiveSessionStatus(enrolled, {
           pane: p,
-          terminal: termInfo,
-          agent: liveAgent,
+          terminal: frameInfo.terminal,
+          agent: frameInfo.agent,
         })
       : null;
     const enrolledStyle = enrolled ? statusStyle(effectiveStatus, t) : null;
@@ -1153,9 +1170,10 @@ export default class StreamsMod extends View {
       "shell";
     const pic = icon(p.program, 14, t.dim);
     const st = p.status;
-    const tabPaneCount = snap.panes.filter((paneItem) => paneItem.tab === p.tab).length;
+    const tabPaneCount = allPanes.filter((paneItem) => paneItem.tab === p.tab).length;
+    const activeSpace = spaces().find((s) => s.active) ?? null;
     const paneMachine =
-      parseTerminalAddress(p.terminal)?.machine ?? snap.activeSpace?.machine ?? null;
+      parseTerminalAddress(p.terminal)?.machine ?? activeSpace?.machine ?? null;
 
     return h_flex()
       .id(`pane-head-${pane}`)
@@ -1229,7 +1247,7 @@ export default class StreamsMod extends View {
                       kind: "session-popup",
                       session: enrolled,
                       stream_title: streamTitle,
-                      space_id: snap.activeSpace?.id ?? null,
+                      space_id: activeSpace?.id ?? null,
                     },
                   });
                 }
@@ -1538,7 +1556,7 @@ export default class StreamsMod extends View {
       lastFocusedStreamBySpace: coordinator.lastFocusedStreamBySpace,
     });
     coordinator.syncContext(live);
-    this.scheduleObserve(cx, snap);
+    this.scheduleObserve(cx, snap, { live });
 
     const activeSpace = snap.activeSpace;
 
