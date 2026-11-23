@@ -15,7 +15,7 @@ Each term below keeps one meaning throughout this document.
 - Enrolled describes a local terminal running a live Pi agent whose `streams.session` label names a saved Session on this host. An enrolled Tab hosts at least one enrolled terminal.
 - Primary agent terminal is the focused enrolled terminal inside a Tab, or the first enrolled terminal in Tab order when no enrolled pane is focused.
 - The coordinator is the in-mod state controller inside `mods/streams` that calls the public `streams` CLI, reconciles terminal labels, opens Sessions, and publishes shared state.
-- Work status is the durable catalog status (`active`, `waiting`, `blocked`, `parked`, `done`, or `closed`). Sessions store `status` directly; Streams derive `status` as the highest member Session status under `active > blocked > waiting > parked > done > closed`, or `active` when a Stream has no Sessions.
+- Work status is the durable catalog status (`active`, `waiting`, `blocked`, `parked`, `done`, or `closed`). Sessions store `status` directly; Streams derive `status` as the highest member Session status under `active > waiting > blocked > parked > done > closed`, or `active` when a Stream has no Sessions.
 - Harness status is the live turn state reported by `herdr-app` for a running agent (`working`, `blocked`, `done`, or `idle`).
 - Openness is whether a Session or Stream currently has a live enrolled terminal pane in `herdr-app`. A record with no live pane is unopened; the word `closed` refers strictly to the `closed` work status.
 

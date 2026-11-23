@@ -32,7 +32,7 @@ pub fn stream_activity_ms(stream: &Stream, members: &[&Session]) -> u64 {
 }
 
 /// Derived Stream status: the highest status among its Sessions under
-/// `active > blocked > waiting > parked > done > closed` (or `active` when empty),
+/// `active > waiting > blocked > parked > done > closed` (or `active` when empty),
 /// with read-only age decay (`cutoff_ms`) matching what `catalog tidy` persists.
 pub fn derived_stream_status(
     stream: &Stream,
@@ -52,5 +52,46 @@ pub fn derived_stream_status(
         }
     } else {
         status
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Session, Stream, Title};
+
+    fn test_stream() -> Stream {
+        Stream::new("host-1", "str-1", Title::new("Work", false), None).expect("valid stream")
+    }
+
+    fn test_session(id: &str, status: Status) -> Session {
+        let mut session =
+            Session::new("host-1", "pi", id, "str-1", Title::new("Lane", false)).expect("session");
+        session.status = status;
+        session
+    }
+
+    #[test]
+    fn derived_stream_status_follows_active_waiting_blocked_parked_done_closed() {
+        let stream = test_stream();
+        assert_eq!(derived_stream_status(&stream, &[], None), Status::Active);
+
+        let ordered = [
+            Status::Active,
+            Status::Waiting,
+            Status::Blocked,
+            Status::Parked,
+            Status::Done,
+            Status::Closed,
+        ];
+        for (i, &higher) in ordered.iter().enumerate() {
+            for &lower in &ordered[i + 1..] {
+                assert!(higher.precedence() > lower.precedence());
+                let a = test_session("a", higher);
+                let b = test_session("b", lower);
+                assert_eq!(derived_stream_status(&stream, &[&a, &b], None), higher);
+                assert_eq!(derived_stream_status(&stream, &[&b, &a], None), higher);
+            }
+        }
     }
 }

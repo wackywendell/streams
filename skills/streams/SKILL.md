@@ -11,10 +11,10 @@ Streams records whole efforts separately from their sessions. Read the relevant 
 
 ## Record semantics
 
-- A Stream has a stable ID, a title (`{ text, manual }`), and an optional goal (`{ text, short, manual } | null`). Stream status is derived from its Sessions (`active > blocked > waiting > parked > done > closed`, or `active` when empty) and is not stored or edited directly.
+- A Stream has a stable ID, a title (`{ text, manual }`), and an optional goal (`{ text, short, manual } | null`). Stream status is derived from its Sessions (`active > waiting > blocked > parked > done > closed`, or `active` when empty) and is not stored or edited directly.
 - Each Session belongs to one Stream and host, keyed as `HOST/HARNESS/ID` where `ID` is the harness's real session ID. It owns its title (`{ text, manual }`), status, progress text pairs (`recap`, `state`, `remaining`, each `{ text, short } | null`), working `directory` (`{ path, repository } | null`), `references` (keyed by HTTP(S) URL or path relative to `directory.path`), and `artifacts` (keyed by filename).
-- Session status is `active`, `blocked`, `waiting`, `parked`, `done` or `closed`. Marking work `done` or `closed` does not close running agents or terminals.
-- Automatic reports may update Session progress, Session references (without restoring `dropped` entries or rewriting manual names/purposes/roles), `directory.repository.branch`, and Session status (`active`, `blocked`, `waiting`, `parked` or `done`, never `closed`). Setting `closed` requires explicit user direction or `streams catalog tidy`.
+- Session status is `active` (work underway), `waiting` (paused waiting for the user: decision, answer, review, approval, or manual step), `blocked` (stopped on an external event or dependency such as CI, another person's review or reply, another team, or an external service), `parked` (deliberately paused), `done` (contribution finished) or `closed`. Marking work `done` or `closed` does not close running agents or terminals.
+- Automatic reports may update Session progress, Session references (without restoring `dropped` entries or rewriting manual names/purposes/roles), `directory.repository.branch`, and Session status (`active`, `waiting`, `blocked`, `parked` or `done`, never `closed`). Setting `closed` requires explicit user direction or `streams catalog tidy`.
 - Manual marks on `title`, `goal`, and `references` protect user edits from automatic refinement.
 - Plans, decisions and substantial drafts belong in project documents referenced from the Session, or in Session artifacts when they have no repository home.
 - Record edit times are not verification times. Historical conversation and file contents do not establish that a branch, PR or document is still current.

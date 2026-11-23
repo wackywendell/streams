@@ -15,6 +15,7 @@ streams config get naming --json
 Keep these snapshots immutable while generating updates:
 
 - A **Session report** sees the conversation, the Session's own `references` (including `dropped` entries), and `session.directory`. It can propose updates to `title` (when `!session.title.manual` and `naming.session == "automatic"`), `status` (`active`, `waiting`, `blocked`, `parked`, `done` — never `closed`), `recap`, `state`, `remaining`, `directory.repository.branch` (when `directory.repository` is set), and `references`.
+  - Status meanings: `active` = work underway; `waiting` = paused waiting for the user (decision, answer, review, approval, or manual step — not merely because a turn ended during ongoing work); `blocked` = stopped on an external event or dependency (CI, another person's PR review or reply, another team or ticket, upstream fix, or external access/service issue); `parked` = explicitly paused; `done` = this contribution finished with no newer accepted task remaining.
 - A **Stream report** updates only `title` (when `!stream.title.manual` and `naming.stream == "automatic"`) and `goal` (when `!stream.goal?.manual`). It never edits Stream status (which is derived from Sessions).
 - For short forms (`short` inside `goal`, `recap`, `state`, `remaining`), prefer 1–2 words, under 20 characters, always under 25. Use `null` when omitted or empty.
 

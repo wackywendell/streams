@@ -102,7 +102,7 @@ streams stream edit STREAM --clear-goal
 streams stream delete STREAM
 ```
 
-`stream list` searches case-insensitive literal substrings of the title or goal. Stream status is derived from its Sessions (`active > blocked > waiting > parked > done > closed`, or `active` when empty) and is not stored or edited directly. `list` excludes `closed` Streams unless `--closed` or `--all` is passed.
+`stream list` searches case-insensitive literal substrings of the title or goal. Stream status is derived from its Sessions (`active > waiting > blocked > parked > done > closed`, or `active` when empty) and is not stored or edited directly. `list` excludes `closed` Streams unless `--closed` or `--all` is passed.
 
 Unreadable record files are reported on stderr (or under `unreadable` with `--json`) without failing the listing.
 

@@ -51,12 +51,12 @@ impl Status {
     }
 
     /// Precedence order for deriving a Stream's status as `max(sessions)`:
-    /// `active > blocked > waiting > parked > done > closed`.
+    /// `active > waiting > blocked > parked > done > closed`.
     pub const fn precedence(self) -> u8 {
         match self {
             Self::Active => 5,
-            Self::Blocked => 4,
-            Self::Waiting => 3,
+            Self::Waiting => 4,
+            Self::Blocked => 3,
             Self::Parked => 2,
             Self::Done => 1,
             Self::Closed => 0,

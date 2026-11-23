@@ -179,9 +179,17 @@ export type InferenceResult<T extends Inference> = T extends EnrollmentInference
       ? StreamReportResult
       : DiscussionResult;
 
-const literalUnion = (values: string[]) => Type.Union(values.map((v) => Type.Literal(v)));
+const literalUnion = (values: string[], options?: Record<string, unknown>) =>
+  Type.Union(
+    values.map((v) => Type.Literal(v)),
+    options
+  );
 const nullableString = () => Type.Union([Type.String(), Type.Null()]);
-const statusEnum = () => literalUnion(["active", "waiting", "blocked", "parked", "done"]);
+const statusEnum = (description?: string) =>
+  literalUnion(
+    ["active", "waiting", "blocked", "parked", "done"],
+    description ? { description } : undefined
+  );
 const referenceKindEnum = () => literalUnion(["document", "pr", "issue", "link"]);
 const referenceRoleEnum = () => literalUnion(["deliverable", "dependency", "brief", "background"]);
 const referenceStatusEnum = () => literalUnion(["active", "fulfilled", "dropped"]);
@@ -209,7 +217,11 @@ export function sessionChangesSchema(catalog: LocalContext, allowEmpty = true) {
       Type.String({ description: "Short recognizable Session handle (1–2 words, 3 max)." })
     );
   }
-  props.status = Type.Optional(statusEnum());
+  props.status = Type.Optional(
+    statusEnum(
+      "Work status: active (work underway), waiting (paused waiting for the user: decision, answer, review, approval, or manual step), blocked (stopped on an external event or dependency: CI, another person's review or reply, another team, upstream fix, or external access/service issue), parked (deliberately paused), done (contribution finished)."
+    )
+  );
   props.recap = Type.Optional(
     Type.Union([
       Type.String({
@@ -324,16 +336,16 @@ For every short form (goal_short, recap_short, state_short, remaining_short), pr
 
 const sessionProgressPrompt = `Describe this conversation's own contribution, not work inherited from or performed by other sessions. The three display rows have distinct jobs:
 - Recap (displayed as Session): what this Session is for and its main result, in one short sentence of roughly 12 words. Choose one main contribution, not a history or list of duties, components or milestones. Start with the work itself, never "This session". Preserve a fitting concise recap when only the current step changes; shorten an overlong recap even if its facts have not changed.
-- State (displayed as Status): the concrete current position of the work in one short sentence, roughly 12 words. Say what is done or underway and what it is waiting on, when applicable; omit unrelated pending work. Do not put instructions or next-action lists here; those belong in Remaining.
+- State (displayed as Status): the concrete current position of the work in one short sentence, roughly 12 words. Say what is done or underway and any immediate wait or blocker, when applicable; omit unrelated pending work. Do not put instructions or next-action lists here; those belong in Remaining.
 - Remaining: ONE concrete next action or decision not already stated in Status, in one short sentence of roughly 12 words. Name the action and its target. Do not repeat the wait or blocker from Status; use null if Status already covers the next step or no work remains. Empty Remaining does not mean the Session is done.
 Produce recap_short, state_short and remaining_short alongside their full text; use null for the short form of empty text. Omit commit hashes, test counts and repetition of the lifecycle from all descriptions.
-Infer session.status (active, waiting, blocked, parked, done) from the evidence. Done means this contribution has finished, even if integration happens elsewhere; parked means deliberately paused; waiting means an external dependency. A short-handle session.title names the specific lane, topic, or role in 1–2 words, 3 max, not a task sentence or a repetition of the effort title.`;
+Infer session.status (active, waiting, blocked, parked, done) from the evidence. Active means work is underway; waiting means paused waiting for the user (a decision, answer, approval, review, or manual step); blocked means blocked on an external event or dependency (CI, another person's PR review or reply, another team or ticket, an upstream fix, or an external access/service issue); parked means deliberately paused; done means this contribution has finished, even if integration happens elsewhere. A short-handle session.title names the specific lane, topic, or role in 1–2 words, 3 max, not a task sentence or a repetition of the effort title.`;
 
 const sessionEditingPrompt = `Final editing rules for this small display:
 - Read the conversation in order. Report the newest task the session has accepted or started. A later task supersedes an older completion, done card or successful review. Resolve the latest user request and subsequent actions before writing Status or Remaining.
 - Title identifies this conversation's continuing responsibility, not its latest task. Keep recognizable titles that already fit.
 - Read the proposed three rows together before calling record_card. Recap must not be an inventory. Remove from Remaining any action already stated in Status or already completed.
-- Status follows the current task: use active when it has started or resumed, waiting for an external dependency, blocked for an unresolved blocker, parked for an explicit pause, and done only when no newer accepted task remains.
+- Status follows the current task: use active when work is underway or has resumed; waiting when progress is paused for the user (a decision, answer, approval, review, or manual step — not merely because an assistant turn ended during ongoing work); blocked when progress is stopped on an external event or dependency (CI, another person's review or reply, another team, upstream fix, or external access/service issue); parked for an explicit pause; and done only when no newer accepted task remains.
 - Keep genuine uncertainty and blockers; do not claim unfinished work is complete.`;
 
 const sessionReferencesPrompt = `Review this Session's references independently of the progress summary. References describe this Session's work and belong to this Session. Propose reference_proposals outside changes when conversation evidence establishes a resource's identity and relevance to this Session.
