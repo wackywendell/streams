@@ -37,6 +37,7 @@ import {
   resolveTabRenameTarget,
   buildReferenceItems,
   groupHostStreams,
+  formatHostStreamMeta,
   unreadableNotice,
   hostStreamsEmptyMessage,
   formatRelativeAge,
@@ -194,6 +195,23 @@ function statusDropdownBadge(status, t) {
 
 function foreignHostChip(badge, t, id) {
   if (!badge) return null;
+  const isOnline = badge.state === "online";
+  const isLoading = badge.state === "loading";
+  const bg = isOnline
+    ? t.ansi6 + "1a"
+    : isLoading
+      ? t.working + "16"
+      : t.chrome;
+  const border = isOnline
+    ? t.ansi6 + "40"
+    : isLoading
+      ? t.working + "38"
+      : t.border;
+  const fg = isOnline
+    ? t.ansi6
+    : isLoading
+      ? t.working
+      : t.dim;
   return div()
     .id(id)
     .flex_none()
@@ -201,12 +219,13 @@ function foreignHostChip(badge, t, id) {
     .py(1)
     .rounded(4)
     .border(1)
-    .border_color(t.border)
-    .bg(badge.online ? t.background : t.chrome)
+    .border_color(border)
+    .bg(bg)
     .text_size(10.5)
-    .text_color(badge.online ? t.muted : t.dim)
+    .when(isOnline || isLoading, (pill) => pill.font_medium())
+    .text_color(fg)
     .tooltip(badge.tooltip)
-    .child(`@${badge.label}`);
+    .child(badge.label);
 }
 
 function referenceStyle(kind, t) {
@@ -1857,15 +1876,20 @@ export default class StreamsMod extends View {
             )
         );
 
-      const renderStreamRow = (summary, idx) => {
+      const renderStreamRow = (summary, idx, groupId) => {
         const openCount = openCounts.get(summary.key) ?? 0;
         const age = formatRelativeAge(summary.last_activity_ms);
-        const openText = openCount > 0 ? `${openCount} open` : "none open";
-        const hostLabel =
-          hostScope === "all" ? coordinator.machineLabelForHost(summary.host_id) : "";
-        const metaLine = hostLabel
-          ? `${hostLabel} · ${summary.active_sessions} active · ${openText}`
-          : `${summary.active_sessions} active · ${openText}`;
+        const hostBadge =
+          hostScope === "all"
+            ? coordinator.foreignHostBadge(summary, activeSpace.machine ?? null)
+            : null;
+        const meta = formatHostStreamMeta({
+          groupId,
+          openCount,
+          activeSessions: summary.active_sessions,
+          goalShort: summary.goal_short,
+          hostBadge,
+        });
         return v_flex()
           .id(`host-stream-${summary.key}`)
           .px(9)
@@ -1891,7 +1915,7 @@ export default class StreamsMod extends View {
             h_flex()
               .gap(6)
               .items_center()
-              .child(div().flex_none().text_size(12).text_color(t.accent).child("≋"))
+              .child(div().w(12).flex_none().text_size(12).text_color(t.accent).child("≋"))
               .child(
                 div()
                   .flex_1()
@@ -1913,18 +1937,44 @@ export default class StreamsMod extends View {
                 )
               )
           )
-          .child(
-            h_flex()
-              .gap(6)
-              .items_center()
-              .text_size(11)
-              .text_color(t.dim)
-              .child(metaLine)
-              .when(Boolean(summary.goal_short), (row) =>
-                row
-                  .child("·")
-                  .child(div().flex_1().min_w(0).truncate().child(summary.goal_short))
-              )
+          .when(meta.hasSecondLine, (row) =>
+            row.child(
+              h_flex()
+                .pl(18)
+                .gap(6)
+                .items_center()
+                .child(
+                  div()
+                    .flex_1()
+                    .min_w(0)
+                    .truncate()
+                    .text_size(11)
+                    .text_color(t.muted)
+                    .child(meta.goalText)
+                )
+                .when(Boolean(meta.hostBadge || meta.countText), (line) =>
+                  line.child(
+                    h_flex()
+                      .flex_none()
+                      .gap(6)
+                      .items_center()
+                      .when(Boolean(meta.hostBadge), (right) =>
+                        right.child(
+                          foreignHostChip(meta.hostBadge, t, `host-stream-pill-${summary.key}`)
+                        )
+                      )
+                      .when(Boolean(meta.countText), (right) =>
+                        right.child(
+                          div()
+                            .flex_none()
+                            .text_size(10.5)
+                            .text_color(t.dim)
+                            .child(meta.countText)
+                        )
+                      )
+                  )
+                )
+            )
           );
       };
 
@@ -1995,7 +2045,11 @@ export default class StreamsMod extends View {
                               .bg(t.raised)
                               .border(1)
                               .border_color(t.border)
-                              .children(group.streams.map(renderStreamRow))
+                              .children(
+                                group.streams.map((summary, idx) =>
+                                  renderStreamRow(summary, idx, group.id)
+                                )
+                              )
                           )
                         );
                     })
@@ -2312,7 +2366,7 @@ export default class StreamsMod extends View {
                               .child(sess.title)
                           )
                           .child(
-                            streamForeignHost && !streamForeignHost.online
+                            streamForeignHost && streamForeignHost.state !== "online"
                               ? statusBadge(sess.status, t)
                                   .id(`stream-session-status-ro-${sess.id}`)
                                   .tooltip(streamForeignHost.tooltip)
@@ -2667,7 +2721,7 @@ export default class StreamsMod extends View {
                         session,
                         activeSpace?.machine
                       );
-                      if (sessionForeignHost && !sessionForeignHost.online) {
+                      if (sessionForeignHost && sessionForeignHost.state !== "online") {
                         return statusBadge(effectiveStatus, t)
                           .id("session-header-status-ro")
                           .tooltip(sessionForeignHost.tooltip);

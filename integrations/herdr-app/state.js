@@ -725,6 +725,37 @@ export function groupHostStreams(
 }
 
 /**
+ * Format the secondary row metadata for an `All` view Stream card.
+ * Keeps `goal_short` on the left, suppresses redundant zero counts (`none open`, `0 active`),
+ * and omits counts on `done_closed` rows so only meaningful signals appear.
+ */
+export function formatHostStreamMeta({
+  groupId = "not_open",
+  openCount = 0,
+  activeSessions = 0,
+  goalShort = null,
+  hostBadge = null,
+} = {}) {
+  const goalText = typeof goalShort === "string" ? goalShort.trim() : "";
+  const openN = typeof openCount === "number" && openCount > 0 ? openCount : 0;
+  const activeN =
+    typeof activeSessions === "number" && activeSessions > 0 ? activeSessions : 0;
+  let countText = "";
+  if (groupId === "open" && openN > 0) {
+    countText = `${openN} open`;
+  } else if (groupId === "not_open" && activeN > 0) {
+    countText = `${activeN} active`;
+  }
+  const badge = hostBadge && typeof hostBadge.label === "string" && hostBadge.label ? hostBadge : null;
+  return {
+    goalText,
+    countText,
+    hostBadge: badge,
+    hasSecondLine: Boolean(goalText || countText || badge),
+  };
+}
+
+/**
  * Compute convention-gated bulk actions for a format-5 Stream header menu.
  */
 export function streamBulkActionState(stream) {
@@ -1483,6 +1514,7 @@ export class StreamsCoordinator {
     this.hostToMachine = new Map(); // hostId -> machineName | null
     this.machineToHost = new Map(); // machineKey -> hostId
     this._localOwnerChecked = new Set(); // machineKeys whose `--local` Streams were already checked
+    this._localOwnerProbes = new Map(); // machineKey -> in-flight probe Promise
     this.homeDirByMachine = new Map(); // machineName -> remote $HOME
     this._homeDirPromises = new Map(); // machineName -> Promise<string | null>
     this.preferredView = "session"; // "session" | "stream" | "all"
@@ -1591,18 +1623,60 @@ export class StreamsCoordinator {
     return this.hostToMachine.get(hostId);
   }
 
-  machineLabelForHost(hostId) {
-    if (!hostId) return "";
-    if (this.hostToMachine.has(hostId)) {
-      return this.hostToMachine.get(hostId) ?? "local";
+  async _probeLocalOwner(machine = this.activeMachine, { force = false } = {}) {
+    const targetMachine = machine ?? null;
+    const mKey = this._machineKey(targetMachine);
+    if (
+      this.machineToHost.has(mKey) ||
+      (!force && this._localOwnerChecked.has(mKey)) ||
+      !this.isMachineReady(targetMachine)
+    ) {
+      return { ok: true };
     }
-    return hostId.slice(0, 8);
+    if (this._localOwnerProbes.has(mKey)) {
+      return this._localOwnerProbes.get(mKey);
+    }
+    const promise = (async () => {
+      try {
+        const probe = await this.runExec(
+          this.streamsBinFor(targetMachine),
+          ["stream", "list", "--local", "--all", "--limit", "1", "--fields", "key", "--json"],
+          { on: targetMachine }
+        );
+        if (probe.code === 0) {
+          const hadHost = this.machineToHost.has(mKey);
+          this._localOwnerChecked.add(mKey);
+          const parsed = parseJsonSafe(probe.stdout);
+          for (const item of parsed?.items ?? []) {
+            const foundHost = item?.host_id ?? recordHostId(item?.key);
+            if (foundHost) this.recordHostMachine(foundHost, targetMachine);
+          }
+          if (!hadHost && this.machineToHost.has(mKey)) {
+            this.notifyViews();
+          }
+          return { ok: true };
+        }
+        if (probe.transportError) {
+          return {
+            ok: false,
+            error: extractCliError(probe, "could not reach active host").message,
+          };
+        }
+        return { ok: true };
+      } finally {
+        this._localOwnerProbes.delete(mKey);
+      }
+    })();
+    this._localOwnerProbes.set(mKey, promise);
+    return promise;
   }
 
   /**
-   * Return a compact foreign-host badge (`{ label, online, tooltip }`) when a record belongs
+   * Return a foreign-host pill descriptor (`{ label, state, tooltip }`) when a record belongs
    * to a different host than `activeMachine`, or `null` when it is local to `activeMachine`
    * (or the active machine's host ID has not yet been discovered).
+   *
+   * `state` is one of `"online" | "loading" | "offline" | "unmapped"`.
    */
   foreignHostBadge(recordOrKey, activeMachine = this.activeMachine) {
     const hostId =
@@ -1615,14 +1689,27 @@ export class StreamsCoordinator {
     const activeHostId = this.machineToHost.get(mKey) ?? null;
 
     if (this.hostToMachine.has(hostId)) {
-      const owner = this.hostToMachine.get(hostId);
+      const owner = this.hostToMachine.get(hostId) ?? null;
       if (owner === targetMachine) return null;
       const label = owner ?? "local";
-      const online = this.isMachineReady(owner);
+      if (this.isMachineReady(owner)) {
+        return {
+          label,
+          state: "online",
+          tooltip: `On ${label}`,
+        };
+      }
+      if (this.machineLayout(owner) === "loading") {
+        return {
+          label,
+          state: "loading",
+          tooltip: `Connecting to ${label} — read-only until ready`,
+        };
+      }
       return {
         label,
-        online,
-        tooltip: online ? `On ${label}` : `${label} is offline — read-only`,
+        state: "offline",
+        tooltip: `${label} is offline — read-only (writes and resume unavailable)`,
       };
     }
 
@@ -1630,8 +1717,8 @@ export class StreamsCoordinator {
       const short = hostId.slice(0, 8);
       return {
         label: short,
-        online: false,
-        tooltip: `On host ${short} (offline or unlinked)`,
+        state: "unmapped",
+        tooltip: `Host ${short} is not linked yet — visit its space or open a terminal there (read-only)`,
       };
     }
 
@@ -1692,26 +1779,9 @@ export class StreamsCoordinator {
       return this.resolveWriteMachineForKey(key);
     }
     const activeMachine = this.activeMachine ?? null;
-    const activeKey = this._machineKey(activeMachine);
-    if (!this._localOwnerChecked.has(activeKey) && this.isMachineReady(activeMachine)) {
-      const probe = await this.runExec(
-        this.streamsBinFor(activeMachine),
-        ["stream", "list", "--local", "--all", "--limit", "1", "--fields", "key", "--json"],
-        { on: activeMachine }
-      );
-      if (probe.code === 0) {
-        this._localOwnerChecked.add(activeKey);
-        const parsed = parseJsonSafe(probe.stdout);
-        for (const item of parsed?.items ?? []) {
-          const foundHost = item?.host_id ?? recordHostId(item?.key);
-          if (foundHost) this.recordHostMachine(foundHost, activeMachine);
-        }
-      } else if (probe.transportError) {
-        return {
-          ok: false,
-          error: extractCliError(probe, "could not reach active host").message,
-        };
-      }
+    const probeRes = await this._probeLocalOwner(activeMachine);
+    if (!probeRes.ok) {
+      return probeRes;
     }
     return this.resolveWriteMachineForKey(key);
   }
@@ -1868,6 +1938,7 @@ export class StreamsCoordinator {
     machine = this.activeMachine,
     scope = this.hostScope,
     force = false,
+    forceProbe = force,
   } = {}) {
     const targetMachine = machine ?? null;
     const targetScope = scope === "all" ? "all" : "local";
@@ -1889,9 +1960,20 @@ export class StreamsCoordinator {
     if (targetScope === "local") args.push("--local");
     args.push("--all", "--json", "--fields", HOST_STREAM_LIST_FIELDS);
 
-    const listOut = await this.runExec(this.streamsBinFor(targetMachine), args, {
+    const mKey = this._machineKey(targetMachine);
+    const listPromise = this.runExec(this.streamsBinFor(targetMachine), args, {
       on: targetMachine,
     });
+    if (
+      targetScope === "all" &&
+      !this.machineToHost.has(mKey) &&
+      (forceProbe || !this._localOwnerChecked.has(mKey))
+    ) {
+      // Run ownership discovery in the background so a slow probe never blocks
+      // rendering the All hosts list behind the sidebar loading guard.
+      void this._probeLocalOwner(targetMachine, { force: forceProbe });
+    }
+    const listOut = await listPromise;
     if (bucket.seq !== reqSeq) {
       return { ok: false, stale: true, bucket };
     }
@@ -2379,6 +2461,7 @@ export class StreamsCoordinator {
     this.actionError = null;
     this.streams.delete(streamKey);
     for (const bucket of this.hostStreamsByScope.values()) {
+      bucket.seq += 1;
       if (Array.isArray(bucket.items)) {
         bucket.items = bucket.items.filter((s) => s.key !== streamKey);
       }
@@ -2866,14 +2949,18 @@ export class StreamsCoordinator {
           hasUnknownOffTabStream ||
           (activeBucket.loaded && (force || noticeChanged));
 
+        let listStale = false;
         if (shouldFetchHostStreams) {
           const listRes = await this._fetchHostStreams({
             machine: activeMachine,
             scope: activeScope,
             force: true,
+            forceProbe: force,
           });
           if (gen !== this.readGeneration) return null;
-          if (!listRes.ok && !listRes.stale && !primarySession) {
+          if (listRes.stale) {
+            listStale = true;
+          } else if (!listRes.ok && !primarySession) {
             this.lastFailedKey = key ?? null;
             this.publishSharedTerminals(running);
             return null;
@@ -2915,9 +3002,12 @@ export class StreamsCoordinator {
         this.lastNoticeToken = observation.noticeToken ?? "";
         this.readError = null;
         this.lastFailedKey = null;
+        this.publishSharedTerminals(running);
+        if (listStale && !primarySession) {
+          return null;
+        }
         this.lastCompletedAt = now;
         this.lastCompletedKey = key ?? null;
-        this.publishSharedTerminals(running);
         return primarySession
           ? { kind: "stream", stream: activeStream, session: primarySession }
           : { kind: "listing", streams: activeBucket.items };
