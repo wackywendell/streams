@@ -33,6 +33,7 @@ import {
   findLivePaneForStream,
   findLivePaneForSession,
   resolveMoveSpaceTarget,
+  buildMoveCandidates,
   statusToTerminalMark,
   buildSharedTerminalMarks,
   groupStreamSessions,
@@ -3338,6 +3339,7 @@ test("resolveMoveSpaceTarget and moveSessionToStream handle same-host move with 
 
   // Move without tab transfer skips terminal.park and only updates streams.stream label.
   const prevRuns = runCalls.length;
+  const prevExecs = execCalls.length;
   const movedNoTab = await coord.moveSessionToStream(
     {
       sessionKey: "h1/pi/s1",
@@ -3356,4 +3358,243 @@ test("resolveMoveSpaceTarget and moveSessionToStream handle same-host move with 
   assert.equal(movedNoTab.ok, true);
   assert.equal(movedNoTab.movedTab, false);
   assert.equal(runCalls.length, prevRuns);
+  const labelOnlyCall = execCalls
+    .slice(prevExecs)
+    .find((c) => c.bin === "hc" && c.args[0] === "label");
+  assert.ok(labelOnlyCall);
+  assert.deepEqual(labelOnlyCall.args, ["label", "t1", "streams.stream=h1/st2"]);
+});
+
+test("buildMoveCandidates uses snapshot allSpaces and remote resolveMoveSpaceTarget never aliases local Spaces or exited terminals", () => {
+  const snapshot = {
+    allSpaces: [
+      { id: "sp1", name: "Local Streams", machine: null, tabs: [{ id: "tb1", name: "UI", named: true }] },
+      { id: "sp2", name: "Local Dev", machine: null, tabs: [{ id: "tb2", name: "Dot", named: true }] },
+      { id: "retriever/sp1", name: "Rem Streams", machine: "retriever", tabs: [{ id: "retriever/tb1", name: "Rem", named: true }] },
+    ],
+    panes: [
+      { pane: "p1", terminal: "t1", space: "sp1", tab: "tb1" },
+      { pane: "p2", terminal: "t2", space: "sp2", tab: "tb2" },
+      { pane: "retriever/p1", terminal: "retriever/t1", space: "retriever/sp1", tab: "retriever/tb1" },
+    ],
+    terminalList: [
+      { address: "t1", state: "live", labels: { [LABEL_SESSION]: "h1/pi/s1", [LABEL_STREAM]: "h1/st1", [LABEL_HERDR_SPACE]: "sp1" } },
+      { address: "t2", state: "live", labels: { [LABEL_SESSION]: "h1/pi/s2", [LABEL_STREAM]: "h1/st2", [LABEL_HERDR_SPACE]: "sp2" } },
+      { address: "retriever/t1", state: "live", labels: { [LABEL_SESSION]: "h-rem/pi/rs1", [LABEL_STREAM]: "h-rem/st1", [LABEL_HERDR_SPACE]: "sp1" } },
+      // Exited remote terminal retaining herdr.space=sp2 while retriever/sp2 is closed and local sp2 exists.
+      { address: "retriever/t2", state: "exited", labels: { [LABEL_SESSION]: "h-rem/pi/rs2", [LABEL_STREAM]: "h-rem/st2", [LABEL_HERDR_SPACE]: "sp2" } },
+    ],
+  };
+
+  const cands = buildMoveCandidates({
+    sessionKey: "h1/pi/s1",
+    sourceStreamKey: "h1/st1",
+    hostId: "h1",
+    machine: null,
+    streams: [
+      { key: "h1/st1", host_id: "h1", title: "Streams", status: "active", last_activity_ms: 10 },
+      { key: "h1/st2", host_id: "h1", title: "Dev", status: "active", last_activity_ms: 5 },
+      { key: "h-rem/st2", host_id: "h-rem", title: "Remote", status: "active", last_activity_ms: 20 },
+    ],
+    snapshot,
+  });
+  assert.equal(cands.length, 1);
+  assert.equal(cands[0].stream.key, "h1/st2");
+  assert.equal(cands[0].spaceInfo.canMoveTab, true);
+  assert.equal(cands[0].spaceInfo.targetSpace.id, "sp2");
+
+  // Remote lookup must NOT alias local sp2!
+  const remTarget = resolveMoveSpaceTarget({
+    sessionKey: "h-rem/pi/rs1",
+    targetStreamKey: "h-rem/st2",
+    machine: "retriever",
+    terminalList: snapshot.terminalList,
+    panes: snapshot.panes,
+    spaces: snapshot.allSpaces,
+  });
+  assert.equal(remTarget.canMoveTab, false);
+  assert.equal(remTarget.targetSpace, null);
+  assert.equal(remTarget.reason, "Target stream has no open space");
+});
+
+test("moveSessionToStream handles missing sleep, park detach timeout, and post-park hc label failure honestly", async () => {
+  const spaces = [
+    { id: "sp1", name: "Streams", machine: null, tabs: [{ id: "tb1", name: "Tab", named: true }] },
+    { id: "sp2", name: "Dev", machine: null, tabs: [{ id: "tb2", name: "Other", named: true }] },
+  ];
+  const terminalList = [
+    { address: "t1", state: "live", labels: { [LABEL_SESSION]: "h1/pi/s1", [LABEL_STREAM]: "h1/st1", [LABEL_HERDR_SPACE]: "sp1" } },
+    { address: "t2", state: "live", labels: { [LABEL_SESSION]: "h1/pi/s2", [LABEL_STREAM]: "h1/st2", [LABEL_HERDR_SPACE]: "sp2" } },
+  ];
+  const panes = [
+    { pane: "p1", terminal: "t1", space: "sp1", tab: "tb1" },
+    { pane: "p2", terminal: "t2", space: "sp2", tab: "tb2" },
+  ];
+
+  // Case 1: missing sleep skips terminal.park without crashing and still refreshes catalog move.
+  const runs1 = [];
+  const coord1 = new StreamsCoordinator({
+    exec: async (_bin, args) => {
+      if (args[0] === "session" && args[1] === "show") {
+        return { code: 0, stdout: JSON.stringify(makeSessionJson({ host: "h1", id: "s1", stream_id: "st2" })), stderr: "" };
+      }
+      if (args[0] === "stream" && args[1] === "show") {
+        return { code: 0, stdout: JSON.stringify(makeStreamJson({ host: "h1", id: args[2].split("/")[1], sessions: [] })), stderr: "" };
+      }
+      return { code: 0, stdout: "{}", stderr: "" };
+    },
+  });
+  coord1.configLoaded = true;
+  coord1.recordHostMachine("h1", null);
+  const resNoSleep = await coord1.moveSessionToStream(
+    { sessionKey: "h1/pi/s1", sourceStreamKey: "h1/st1", targetStreamKey: "h1/st2", moveTab: true, terminalList, panes, spaces },
+    { run: (cmd) => runs1.push(cmd) }
+  );
+  assert.equal(resNoSleep.ok, true);
+  assert.equal(resNoSleep.movedTab, false);
+  assert.equal(runs1.length, 0);
+  assert.match(coord1.actionError?.title ?? "", /skipped tab transfer/i);
+
+  // Case 2: park never detaches -> no herdr.space placement label written, clear banner.
+  const hcArgs2 = [];
+  const coord2 = new StreamsCoordinator({
+    exec: async (bin, args) => {
+      if (bin === "hc") hcArgs2.push(args);
+      if (args[0] === "session" && args[1] === "show") {
+        return { code: 0, stdout: JSON.stringify(makeSessionJson({ host: "h1", id: "s1", stream_id: "st2" })), stderr: "" };
+      }
+      if (args[0] === "stream" && args[1] === "show") {
+        return { code: 0, stdout: JSON.stringify(makeStreamJson({ host: "h1", id: args[2].split("/")[1], sessions: [] })), stderr: "" };
+      }
+      return { code: 0, stdout: "{}", stderr: "" };
+    },
+  });
+  coord2.configLoaded = true;
+  coord2.recordHostMachine("h1", null);
+  const resTimeout = await coord2.moveSessionToStream(
+    { sessionKey: "h1/pi/s1", sourceStreamKey: "h1/st1", targetStreamKey: "h1/st2", moveTab: true, terminalList, panes, spaces },
+    { run: () => {}, readPanes: () => panes, sleep: async () => {} }
+  );
+  assert.equal(resTimeout.ok, true);
+  assert.equal(resTimeout.movedTab, false);
+  assert.equal(hcArgs2.some((a) => a.some((x) => x.startsWith("herdr.space="))), false);
+  assert.match(coord2.actionError?.title ?? "", /tab stayed put/i);
+
+  // Case 3: park detaches but hc label fails -> reports terminal was parked honestly.
+  let livePanes3 = [...panes];
+  const coord3 = new StreamsCoordinator({
+    exec: async (bin, args) => {
+      if (bin === "hc" && args[0] === "label") return { code: 1, stdout: "", stderr: "hc down" };
+      if (args[0] === "session" && args[1] === "show") {
+        return { code: 0, stdout: JSON.stringify(makeSessionJson({ host: "h1", id: "s1", stream_id: "st2" })), stderr: "" };
+      }
+      if (args[0] === "stream" && args[1] === "show") {
+        return { code: 0, stdout: JSON.stringify(makeStreamJson({ host: "h1", id: args[2].split("/")[1], sessions: [] })), stderr: "" };
+      }
+      return { code: 0, stdout: "{}", stderr: "" };
+    },
+  });
+  coord3.configLoaded = true;
+  coord3.recordHostMachine("h1", null);
+  const resParked = await coord3.moveSessionToStream(
+    { sessionKey: "h1/pi/s1", sourceStreamKey: "h1/st1", targetStreamKey: "h1/st2", moveTab: true, terminalList, panes, spaces },
+    {
+      run: (cmd) => {
+        if (cmd === "terminal.park") livePanes3 = [panes[1]];
+      },
+      readPanes: () => livePanes3,
+      sleep: async () => {},
+    }
+  );
+  assert.equal(resParked.ok, true);
+  assert.equal(resParked.movedTab, false);
+  assert.match(coord3.actionError?.title ?? "", /terminal was parked/i);
+});
+
+test("refreshAfterMutation advances readGeneration so stale observations cannot revert fresh edits, and pending guards reject duplicates", async () => {
+  let releaseOldObserve;
+  const oldObserveGate = new Promise((r) => {
+    releaseOldObserve = r;
+  });
+  let notifyOldShowStarted;
+  const oldShowStarted = new Promise((r) => {
+    notifyOldShowStarted = r;
+  });
+  let currentTitle = "Old Title";
+  let showCount = 0;
+
+  let releaseSecondOpen;
+  const openGate = new Promise((r) => {
+    releaseSecondOpen = r;
+  });
+  let openListCalls = 0;
+
+  const coord = new StreamsCoordinator({
+    exec: async (_bin, args) => {
+      if (args[0] === "stream" && args[1] === "show") {
+        showCount += 1;
+        if (showCount === 1) {
+          notifyOldShowStarted();
+          await oldObserveGate;
+          return { code: 0, stdout: JSON.stringify(makeStreamJson({ host: "h1", id: "st1", title: "Old Title", sessions: [] })), stderr: "" };
+        }
+        return { code: 0, stdout: JSON.stringify(makeStreamJson({ host: "h1", id: "st1", title: currentTitle, sessions: [] })), stderr: "" };
+      }
+      if (args[0] === "stream" && args[1] === "edit") {
+        currentTitle = args[args.indexOf("--title") + 1];
+        return { code: 0, stdout: "{}", stderr: "" };
+      }
+      if (args[0] === "session" && args[1] === "show") {
+        return { code: 0, stdout: JSON.stringify(makeSessionJson({ host: "h1", id: "s1", stream_id: "st1", title: "Sess" })), stderr: "" };
+      }
+      if (args[0] === "session" && args[1] === "list" && args.includes("--stream")) {
+        openListCalls += 1;
+        await openGate;
+        return { code: 0, stdout: JSON.stringify({ items: [] }), stderr: "" };
+      }
+      return { code: 0, stdout: "{}", stderr: "" };
+    },
+  });
+  coord.configLoaded = true;
+  coord.recordHostMachine("h1", null);
+
+  // Start a slow observe reading Old Title.
+  const slowObs = coord.observe({
+    activeSpace: { id: "sp1", machine: null },
+    activeTabId: "tb1",
+    visibleTerminals: ["t1"],
+    focusedTerminal: "t1",
+    terminalList: [{ address: "t1", state: "live", labels: { [LABEL_SESSION]: "h1/pi/s1", [LABEL_STREAM]: "h1/st1" } }],
+    panes: [{ pane: "p1", terminal: "t1", space: "sp1", tab: "tb1", program: { agent: "pi" } }],
+    agents: [{ address: "t1", agent: "pi" }],
+    force: true,
+  });
+  await oldShowStarted;
+
+  // While slowObs is blocked on pre-edit stream show, rename stream to "New Title".
+  const renameRes = await coord.renameStream("h1/st1", "New Title");
+  assert.equal(renameRes.ok, true);
+  assert.equal(coord.streams.get("h1/st1").title, "New Title");
+
+  // Release stale observation: it must NOT revert the title back to "Old Title"!
+  releaseOldObserve();
+  await slowObs;
+  assert.equal(coord.streams.get("h1/st1").title, "New Title");
+
+  // Duplicate concurrent openWork on same selected session is rejected cleanly.
+  const open1 = coord.openWork({
+    stream: "h1/st1",
+    sessions: { kind: "selected", session_ids: ["h1/pi/s1"] },
+  });
+  const open2 = await coord.openWork({
+    stream: "h1/st1",
+    sessions: { kind: "selected", session_ids: ["h1/pi/s1"] },
+  });
+  assert.equal(open2.ok, false);
+  assert.equal(open2.duplicate, true);
+  assert.equal(coord.pendingResumeSessions.has("h1/pi/s1"), true);
+  releaseSecondOpen();
+  await open1;
+  assert.equal(coord.pendingResumeSessions.has("h1/pi/s1"), false);
+  assert.equal(openListCalls, 1);
 });

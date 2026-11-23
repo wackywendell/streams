@@ -41,7 +41,7 @@ import {
   resolveRole,
   parseTerminalAddress,
   recordHostId,
-  resolveMoveSpaceTarget,
+  buildMoveCandidates,
   observeNoticeToken,
   resolveSpaceStreamKey,
   resolveSidebarView,
@@ -364,8 +364,8 @@ export default class StreamsMod extends View {
     };
     this.hoveredSessionKey = null;
     this.hoveredRefId = null;
-    this.openMenu = null;
-    this.menuIndex = -1;
+    this.interaction = null;
+    this._lastContextKey = null;
     this.menuFocus = null;
     this.sessionSort = "recent";
     this.streamSort = "recent";
@@ -381,11 +381,7 @@ export default class StreamsMod extends View {
     this._viewerKey = null;
     this.searchInput = null;
     this.renameInput = null;
-    this.renaming = null;
-    this.renameValue = "";
     this.moveSearchInput = null;
-    this.moveState = null;
-    this.moveQuery = "";
     const rawProps = props() ?? initialProps ?? {};
     const role = resolveRole(rawProps);
     this._role = role;
@@ -398,7 +394,6 @@ export default class StreamsMod extends View {
       });
       this.renameInput = InputState.new({ placeholder: "Title" });
       this.renameInput.on("change", (_e, changeCx) => {
-        this.renameValue = this.renameInput.value();
         changeCx.notify();
       });
       this.renameInput.on("submit", (_e, submitCx) => {
@@ -406,7 +401,6 @@ export default class StreamsMod extends View {
       });
       this.moveSearchInput = InputState.new({ placeholder: "Filter streams…" });
       this.moveSearchInput.on("change", (_e, changeCx) => {
-        this.moveQuery = this.moveSearchInput.value();
         changeCx.notify();
       });
       this.moveSearchInput.on("submit", (_e, submitCx) => {
@@ -445,27 +439,35 @@ export default class StreamsMod extends View {
     this._viewerKey = null;
   }
 
+  setInteraction(next, cx) {
+    this.interaction = next;
+    cx?.notify?.();
+  }
+
+  isMenuOpen(id) {
+    return this.interaction?.kind === "menu" && this.interaction.id === id;
+  }
+
   openMoveMenu({ sessionKey, sourceStreamKey, sessionTitle = "" }, cx) {
     if (!sessionKey || !this.moveSearchInput) return;
-    this.openMenu = null;
-    this.menuIndex = -1;
-    this.renaming = null;
     const owner = coordinator.resolveReadMachineForKey(sessionKey);
     const machine = owner.unavailable ? null : owner.machine ?? null;
     const hostId = recordHostId(sessionKey) ?? recordHostId(sourceStreamKey);
-    this.moveQuery = "";
     this.moveSearchInput.set_value("");
-    this.moveState = {
-      sessionKey,
-      sourceStreamKey,
-      sessionTitle,
-      machine,
-      hostId,
-      selectedStreamKey: null,
-      moveTabOverride: null,
-    };
+    this.setInteraction(
+      {
+        kind: "move",
+        sessionKey,
+        sourceStreamKey,
+        sessionTitle,
+        machine,
+        hostId,
+        selectedStreamKey: null,
+        moveTabOverride: null,
+      },
+      cx
+    );
     this.moveSearchInput.focus();
-    cx?.notify?.();
     if (cx?.spawn) {
       cx.spawn(async (asyncCx) => {
         try {
@@ -478,73 +480,48 @@ export default class StreamsMod extends View {
   }
 
   closeMoveMenu(cx) {
-    if (!this.moveState) return;
-    this.moveState = null;
-    this.moveQuery = "";
-    cx?.notify?.();
+    if (this.interaction?.kind !== "move") return;
+    this.setInteraction(null, cx);
   }
 
   moveCandidates(state, snap) {
     if (!state) return [];
     const byKey = new Map();
-    const bucket = coordinator._getHostStreamsEntry(state.machine, "local");
-    for (const item of bucket?.items ?? []) {
+    const bucket = coordinator.hostStreamsState(state.machine, "local");
+    for (const item of bucket.items ?? []) {
       if (item?.key) byKey.set(item.key, item);
     }
     for (const st of coordinator.streams.values()) {
       if (st?.key && !byKey.has(st.key)) byKey.set(st.key, st);
     }
-    const q = (this.moveQuery ?? "").trim().toLowerCase();
-    const list = [];
-    for (const item of byKey.values()) {
-      if (item.key === state.sourceStreamKey) continue;
-      if (state.hostId && item.host_id && item.host_id !== state.hostId) continue;
-      if (q) {
-        const hay = `${item.title ?? ""} ${item.goal ?? ""} ${item.id ?? ""}`.toLowerCase();
-        if (!hay.includes(q)) continue;
-      }
-      const spaceInfo = resolveMoveSpaceTarget({
-        sessionKey: state.sessionKey,
-        targetStreamKey: item.key,
-        machine: state.machine,
-        terminalList: snap.terminalList,
-        panes: snap.panes,
-        spaces: snap.spaces,
-      });
-      list.push({
-        stream: item,
-        spaceInfo,
-        isArchived: item.status === "done" || item.status === "closed",
-      });
-    }
-    list.sort((a, b) => {
-      if (a.isArchived !== b.isArchived) return a.isArchived ? 1 : -1;
-      const aOpen = a.spaceInfo.targetSpace ? 1 : 0;
-      const bOpen = b.spaceInfo.targetSpace ? 1 : 0;
-      if (aOpen !== bOpen) return bOpen - aOpen;
-      return (b.stream.last_activity_ms ?? 0) - (a.stream.last_activity_ms ?? 0);
+    return buildMoveCandidates({
+      sessionKey: state.sessionKey,
+      sourceStreamKey: state.sourceStreamKey,
+      hostId: state.hostId,
+      machine: state.machine,
+      streams: Array.from(byKey.values()),
+      query: this.moveSearchInput?.value?.() ?? "",
+      snapshot: snap,
     });
-    return list;
   }
 
   commitMove(cx, explicitTargetKey = null) {
-    const state = this.moveState;
-    if (!state) return;
+    if (this.interaction?.kind !== "move") return;
+    const state = this.interaction;
     const snap = collectSnapshot();
     const candidates = this.moveCandidates(state, snap);
     const chosenKey =
       explicitTargetKey ??
-      (candidates.some((c) => c.stream.key === state.selectedStreamKey)
+      (state.selectedStreamKey && candidates.some((c) => c.stream.key === state.selectedStreamKey)
         ? state.selectedStreamKey
-        : candidates[0]?.stream.key ?? null);
+        : null);
     if (!chosenKey) return;
     const chosen = candidates.find((c) => c.stream.key === chosenKey);
-    const canMoveTab = Boolean(chosen?.spaceInfo?.canMoveTab);
+    if (!chosen) return;
+    const canMoveTab = Boolean(chosen.spaceInfo?.canMoveTab);
     const moveTab = canMoveTab ? (state.moveTabOverride ?? true) : false;
 
-    this.moveState = null;
-    this.moveQuery = "";
-    cx?.notify?.();
+    this.setInteraction(null, cx);
     if (!cx?.spawn) return;
     cx.spawn(async (asyncCx) => {
       try {
@@ -556,11 +533,13 @@ export default class StreamsMod extends View {
             moveTab,
             terminalList: snap.terminalList,
             panes: snap.panes,
-            spaces: snap.spaces,
+            spaces: snap.allSpaces,
           },
           {
             run,
             readPanes: () => panes(),
+            readSpaces: () => spaces(),
+            sleep: (ms) => asyncCx.sleep(ms),
           }
         );
       } finally {
@@ -570,14 +549,19 @@ export default class StreamsMod extends View {
   }
 
   renderMovePopover({ id, trigger, snap, t }) {
-    const state = this.moveState;
-    if (!state) return trigger;
+    if (this.interaction?.kind !== "move") return trigger;
+    const state = this.interaction;
     const candidates = this.moveCandidates(state, snap);
-    const bucket = coordinator._getHostStreamsEntry(state.machine, "local");
-    const isLoadingStreams = !bucket?.loaded && candidates.length === 0;
+    const bucket = coordinator.hostStreamsState(state.machine, "local");
+    const isLoadingStreams = !bucket.loaded && !bucket.error && candidates.length === 0;
+    const queryText = (this.moveSearchInput?.value?.() ?? "").trim();
+
+    // Seed explicit selection once when unset so keyboard/Move reflect a stable, visible row.
+    if (state.selectedStreamKey === null && candidates.length > 0) {
+      state.selectedStreamKey = candidates[0].stream.key;
+    }
     const selectedIdx = candidates.findIndex((c) => c.stream.key === state.selectedStreamKey);
-    const effectiveIdx = selectedIdx >= 0 ? selectedIdx : candidates.length > 0 ? 0 : -1;
-    const effectiveCandidate = effectiveIdx >= 0 ? candidates[effectiveIdx] : null;
+    const effectiveCandidate = selectedIdx >= 0 ? candidates[selectedIdx] : null;
     const moveInfo = effectiveCandidate?.spaceInfo ?? {
       canMoveTab: false,
       targetSpace: null,
@@ -588,6 +572,305 @@ export default class StreamsMod extends View {
       ? `Move tab to ${moveInfo.targetSpace.name}`
       : "Move tab to space";
 
+    const panel = v_flex()
+      .id(`${id}-panel`)
+      .w(260)
+      .p(8)
+      .gap(6)
+      .rounded(6)
+      .bg(t.popover)
+      .border(1)
+      .border_color(t.border)
+      .shadow_md()
+      .text_size(12)
+      .text_color(t.foreground)
+      .on_mouse_down("left", (_e, downCx) => downCx.stop_propagation())
+      .on_click((_e, clickCx) => clickCx.stop_propagation())
+      .on_key_down((e, keyCx) => {
+        const k = String(e.key ?? "").toLowerCase();
+        if (k === "escape") {
+          keyCx.stop_propagation();
+          this.closeMoveMenu(keyCx);
+          return;
+        }
+        if ((k === "down" || k === "arrowdown") && candidates.length > 0) {
+          keyCx.stop_propagation();
+          const next = selectedIdx < 0 ? 0 : (selectedIdx + 1) % candidates.length;
+          this.setInteraction(
+            {
+              ...state,
+              selectedStreamKey: candidates[next].stream.key,
+              moveTabOverride: null,
+            },
+            keyCx
+          );
+          return;
+        }
+        if ((k === "up" || k === "arrowup") && candidates.length > 0) {
+          keyCx.stop_propagation();
+          const next =
+            selectedIdx <= 0 ? candidates.length - 1 : (selectedIdx - 1) % candidates.length;
+          this.setInteraction(
+            {
+              ...state,
+              selectedStreamKey: candidates[next].stream.key,
+              moveTabOverride: null,
+            },
+            keyCx
+          );
+          return;
+        }
+        if (k === "enter" || k === "return") {
+          keyCx.stop_propagation();
+          this.commitMove(keyCx);
+        }
+      })
+      .child(
+        h_flex()
+          .gap(6)
+          .items_center()
+          .justify_between()
+          .child(div().font_semibold().text_size(12).child("Move to stream"))
+          .child(
+            div()
+              .flex_1()
+              .min_w(0)
+              .truncate()
+              .text_size(10.5)
+              .text_color(t.dim)
+              .child(state.sessionTitle || "")
+          )
+      )
+      .child(
+        h_flex()
+          .h(26)
+          .px(7)
+          .items_center()
+          .rounded(4)
+          .border(1)
+          .border_color(t.border)
+          .bg(t.background)
+          .child(
+            Input.new(this.moveSearchInput)
+              .flex_1()
+              .h_full()
+              .text_size(11.5)
+              .text_color(t.foreground)
+          )
+      )
+      .when(Boolean(bucket.error), (el) =>
+        el.child(
+          div()
+            .px(6)
+            .py(4)
+            .rounded(4)
+            .bg(t.raised)
+            .text_size(11)
+            .text_color(t.blocked)
+            .child(`Could not load streams: ${bucket.error}`)
+        )
+      )
+      .child(
+        v_flex()
+          .id(`${id}-list`)
+          .max_h(180)
+          .overflow_y_scrollbar()
+          .rounded(4)
+          .border(1)
+          .border_color(t.border)
+          .bg(t.background)
+          .when(isLoadingStreams, (el) =>
+            el.child(
+              div().p(8).text_size(11.5).text_color(t.dim).child("Loading streams…")
+            )
+          )
+          .when(!isLoadingStreams && candidates.length === 0, (el) =>
+            el.child(
+              div()
+                .p(8)
+                .text_size(11.5)
+                .text_color(t.dim)
+                .child(
+                  bucket.error
+                    ? "Stream list unavailable."
+                    : queryText
+                      ? "No matching streams on this host."
+                      : "No other streams on this host."
+                )
+            )
+          )
+          .when(candidates.length > 0, (el) =>
+            el.children(
+              candidates.map((cand, idx) => {
+                const isSelected = idx === selectedIdx;
+                const stStyle = statusStyle(cand.stream.status, t);
+                return h_flex()
+                  .id(`${id}-cand-${idx}`)
+                  .px(8)
+                  .py(5)
+                  .gap(6)
+                  .items_center()
+                  .cursor_pointer()
+                  .when(idx > 0, (r) => r.border_t(1).border_color(t.border))
+                  .when(isSelected, (r) => r.bg(t.selected))
+                  .hover((s) => s.bg(t.hover))
+                  .on_mouse_down("left", (ev, downCx) => {
+                    downCx.stop_propagation();
+                    if (ev.click_count === 2) {
+                      this.commitMove(downCx, cand.stream.key);
+                      return;
+                    }
+                    if (state.selectedStreamKey !== cand.stream.key) {
+                      this.setInteraction(
+                        {
+                          ...state,
+                          selectedStreamKey: cand.stream.key,
+                          moveTabOverride: null,
+                        },
+                        downCx
+                      );
+                    }
+                  })
+                  .child(
+                    div()
+                      .flex_none()
+                      .text_size(9)
+                      .text_color(stStyle.color)
+                      .child(stStyle.symbol)
+                  )
+                  .child(
+                    div()
+                      .flex_1()
+                      .min_w(0)
+                      .truncate()
+                      .text_size(11.5)
+                      .when(isSelected, (elTitle) => elTitle.font_medium())
+                      .text_color(cand.isArchived ? t.muted : t.foreground)
+                      .child(cand.stream.title)
+                  )
+                  .when(Boolean(cand.spaceInfo.targetSpace?.name), (r) =>
+                    r.child(
+                      div()
+                        .flex_none()
+                        .max_w(75)
+                        .truncate()
+                        .px(4)
+                        .py(1)
+                        .rounded(3)
+                        .bg(t.raised)
+                        .text_size(10)
+                        .text_color(t.dim)
+                        .child(cand.spaceInfo.targetSpace.name)
+                    )
+                  );
+              })
+            )
+          )
+      )
+      .child(
+        h_flex()
+          .id(`${id}-move-tab-toggle`)
+          .px(4)
+          .py(3)
+          .gap(7)
+          .items_center()
+          .rounded(4)
+          .when(moveInfo.canMoveTab, (row) =>
+            row
+              .cursor_pointer()
+              .hover((s) => s.bg(t.hover))
+              .on_click((_e, clickCx) => {
+                clickCx.stop_propagation();
+                this.setInteraction(
+                  {
+                    ...state,
+                    selectedStreamKey: effectiveCandidate?.stream.key ?? state.selectedStreamKey,
+                    moveTabOverride: !moveTabChecked,
+                  },
+                  clickCx
+                );
+              })
+          )
+          .when(!moveInfo.canMoveTab && Boolean(moveInfo.reason), (row) =>
+            row.tooltip(moveInfo.reason)
+          )
+          .child(
+            div()
+              .w(14)
+              .h(14)
+              .flex_none()
+              .flex()
+              .items_center()
+              .justify_center()
+              .rounded(3)
+              .border(1)
+              .border_color(
+                !moveInfo.canMoveTab
+                  ? t.border
+                  : moveTabChecked
+                    ? t.accent
+                    : t.muted
+              )
+              .bg(moveTabChecked ? t.accent : t.background)
+              .text_size(10)
+              .text_color(t.background)
+              .child(moveTabChecked ? "✓" : "")
+          )
+          .child(
+            div()
+              .flex_1()
+              .min_w(0)
+              .truncate()
+              .text_size(11.5)
+              .text_color(moveInfo.canMoveTab ? t.foreground : t.dim)
+              .child(checkboxLabel)
+          )
+      )
+      .child(
+        h_flex()
+          .pt(2)
+          .gap(6)
+          .justify_end()
+          .items_center()
+          .child(
+            div()
+              .id(`${id}-cancel`)
+              .px(8)
+              .py(3)
+              .rounded(4)
+              .cursor_pointer()
+              .text_size(11.5)
+              .text_color(t.muted)
+              .hover((s) => s.bg(t.hover).text_color(t.foreground))
+              .on_click((_e, clickCx) => {
+                clickCx.stop_propagation();
+                this.closeMoveMenu(clickCx);
+              })
+              .child("Cancel")
+          )
+          .child(
+            div()
+              .id(`${id}-confirm`)
+              .px(10)
+              .py(3)
+              .rounded(4)
+              .font_medium()
+              .text_size(11.5)
+              .bg(effectiveCandidate ? t.accent : t.raised)
+              .text_color(effectiveCandidate ? t.background : t.dim)
+              .when(Boolean(effectiveCandidate), (btn) =>
+                btn
+                  .cursor_pointer()
+                  .hover((s) => s.opacity(0.9))
+                  .on_click((_e, clickCx) => {
+                    clickCx.stop_propagation();
+                    this.commitMove(clickCx);
+                  })
+              )
+              .child("Move")
+          )
+      );
+
     return Popover.new(id)
       .open(true)
       .on_open_change((nextOpen, popCx) => {
@@ -595,318 +878,38 @@ export default class StreamsMod extends View {
       })
       .anchor("top_right")
       .trigger(trigger)
-      .content(() =>
-        v_flex()
-          .id(`${id}-panel`)
-          .w(260)
-          .p(8)
-          .gap(6)
-          .rounded(6)
-          .bg(t.popover)
-          .border(1)
-          .border_color(t.border)
-          .shadow_md()
-          .text_size(12)
-          .text_color(t.foreground)
-          .on_mouse_down("left", (_e, downCx) => downCx.stop_propagation())
-          .on_click((_e, clickCx) => clickCx.stop_propagation())
-          .on_key_down((e, keyCx) => {
-            const k = String(e.key ?? "").toLowerCase();
-            if (k === "escape") {
-              keyCx.stop_propagation();
-              this.closeMoveMenu(keyCx);
-              return;
-            }
-            if ((k === "down" || k === "arrowdown") && candidates.length > 0) {
-              keyCx.stop_propagation();
-              const next = (effectiveIdx + 1) % candidates.length;
-              this.moveState = {
-                ...state,
-                selectedStreamKey: candidates[next].stream.key,
-                moveTabOverride: null,
-              };
-              keyCx.notify();
-              return;
-            }
-            if ((k === "up" || k === "arrowup") && candidates.length > 0) {
-              keyCx.stop_propagation();
-              const next = (effectiveIdx - 1 + candidates.length) % candidates.length;
-              this.moveState = {
-                ...state,
-                selectedStreamKey: candidates[next].stream.key,
-                moveTabOverride: null,
-              };
-              keyCx.notify();
-              return;
-            }
-            if (k === "enter" || k === "return") {
-              keyCx.stop_propagation();
-              this.commitMove(keyCx);
-            }
-          })
-          .child(
-            h_flex()
-              .gap(6)
-              .items_center()
-              .justify_between()
-              .child(div().font_semibold().text_size(12).child("Move to stream"))
-              .child(
-                div()
-                  .flex_1()
-                  .min_w(0)
-                  .truncate()
-                  .text_size(10.5)
-                  .text_color(t.dim)
-                  .child(state.sessionTitle || "")
-              )
-          )
-          .child(
-            h_flex()
-              .h(26)
-              .px(7)
-              .items_center()
-              .rounded(4)
-              .border(1)
-              .border_color(t.border)
-              .bg(t.background)
-              .child(
-                Input.new(this.moveSearchInput)
-                  .flex_1()
-                  .h_full()
-                  .text_size(11.5)
-                  .text_color(t.foreground)
-              )
-          )
-          .child(
-            v_flex()
-              .id(`${id}-list`)
-              .max_h(180)
-              .overflow_y_scrollbar()
-              .rounded(4)
-              .border(1)
-              .border_color(t.border)
-              .bg(t.background)
-              .when(isLoadingStreams, (el) =>
-                el.child(
-                  div().p(8).text_size(11.5).text_color(t.dim).child("Loading streams…")
-                )
-              )
-              .when(!isLoadingStreams && candidates.length === 0, (el) =>
-                el.child(
-                  div()
-                    .p(8)
-                    .text_size(11.5)
-                    .text_color(t.dim)
-                    .child(
-                      this.moveQuery.trim()
-                        ? "No matching streams on this host."
-                        : "No other streams on this host."
-                    )
-                )
-              )
-              .when(candidates.length > 0, (el) =>
-                el.children(
-                  candidates.map((cand, idx) => {
-                    const isSelected = idx === effectiveIdx;
-                    const stStyle = statusStyle(cand.stream.status, t);
-                    return h_flex()
-                      .id(`${id}-cand-${idx}`)
-                      .px(8)
-                      .py(5)
-                      .gap(6)
-                      .items_center()
-                      .cursor_pointer()
-                      .when(idx > 0, (r) => r.border_t(1).border_color(t.border))
-                      .when(isSelected, (r) => r.bg(t.selected))
-                      .hover((s) => s.bg(t.hover))
-                      .on_mouse_down("left", (ev, downCx) => {
-                        downCx.stop_propagation();
-                        if (ev.click_count === 2) {
-                          this.commitMove(downCx, cand.stream.key);
-                          return;
-                        }
-                        if (this.moveState?.selectedStreamKey !== cand.stream.key) {
-                          this.moveState = {
-                            ...state,
-                            selectedStreamKey: cand.stream.key,
-                            moveTabOverride: null,
-                          };
-                          downCx.notify();
-                        }
-                      })
-                      .child(
-                        div()
-                          .flex_none()
-                          .text_size(9)
-                          .text_color(stStyle.color)
-                          .child(stStyle.symbol)
-                      )
-                      .child(
-                        div()
-                          .flex_1()
-                          .min_w(0)
-                          .truncate()
-                          .text_size(11.5)
-                          .when(isSelected, (elTitle) => elTitle.font_medium())
-                          .text_color(cand.isArchived ? t.muted : t.foreground)
-                          .child(cand.stream.title)
-                      )
-                      .when(Boolean(cand.spaceInfo.targetSpace?.name), (r) =>
-                        r.child(
-                          div()
-                            .flex_none()
-                            .max_w(75)
-                            .truncate()
-                            .px(4)
-                            .py(1)
-                            .rounded(3)
-                            .bg(t.raised)
-                            .text_size(10)
-                            .text_color(t.dim)
-                            .child(cand.spaceInfo.targetSpace.name)
-                        )
-                      );
-                  })
-                )
-              )
-          )
-          .child(
-            h_flex()
-              .id(`${id}-move-tab-toggle`)
-              .px(4)
-              .py(3)
-              .gap(7)
-              .items_center()
-              .rounded(4)
-              .when(moveInfo.canMoveTab, (row) =>
-                row
-                  .cursor_pointer()
-                  .hover((s) => s.bg(t.hover))
-                  .on_click((_e, clickCx) => {
-                    clickCx.stop_propagation();
-                    this.moveState = {
-                      ...state,
-                      selectedStreamKey: effectiveCandidate?.stream.key ?? state.selectedStreamKey,
-                      moveTabOverride: !moveTabChecked,
-                    };
-                    clickCx.notify();
-                  })
-              )
-              .when(!moveInfo.canMoveTab && Boolean(moveInfo.reason), (row) =>
-                row.tooltip(moveInfo.reason)
-              )
-              .child(
-                div()
-                  .w(14)
-                  .h(14)
-                  .flex_none()
-                  .flex()
-                  .items_center()
-                  .justify_center()
-                  .rounded(3)
-                  .border(1)
-                  .border_color(
-                    !moveInfo.canMoveTab
-                      ? t.border
-                      : moveTabChecked
-                        ? t.accent
-                        : t.muted
-                  )
-                  .bg(moveTabChecked ? t.accent : t.background)
-                  .text_size(10)
-                  .text_color(t.background)
-                  .child(moveTabChecked ? "✓" : "")
-              )
-              .child(
-                div()
-                  .flex_1()
-                  .min_w(0)
-                  .truncate()
-                  .text_size(11.5)
-                  .text_color(moveInfo.canMoveTab ? t.foreground : t.dim)
-                  .child(checkboxLabel)
-              )
-          )
-          .child(
-            h_flex()
-              .pt(2)
-              .gap(6)
-              .justify_end()
-              .items_center()
-              .child(
-                div()
-                  .id(`${id}-cancel`)
-                  .px(8)
-                  .py(3)
-                  .rounded(4)
-                  .cursor_pointer()
-                  .text_size(11.5)
-                  .text_color(t.muted)
-                  .hover((s) => s.bg(t.hover).text_color(t.foreground))
-                  .on_click((_e, clickCx) => {
-                    clickCx.stop_propagation();
-                    this.closeMoveMenu(clickCx);
-                  })
-                  .child("Cancel")
-              )
-              .child(
-                div()
-                  .id(`${id}-confirm`)
-                  .px(10)
-                  .py(3)
-                  .rounded(4)
-                  .font_medium()
-                  .text_size(11.5)
-                  .bg(effectiveCandidate ? t.accent : t.raised)
-                  .text_color(effectiveCandidate ? t.background : t.dim)
-                  .when(Boolean(effectiveCandidate), (btn) =>
-                    btn
-                      .cursor_pointer()
-                      .hover((s) => s.opacity(0.9))
-                      .on_click((_e, clickCx) => {
-                        clickCx.stop_propagation();
-                        this.commitMove(clickCx);
-                      })
-                  )
-                  .child("Move")
-              )
-          )
-      );
+      .content(panel);
   }
 
   startRename({ kind, key, streamKey = null, title = "" }, cx) {
     if (!key || !this.renameInput) return;
-    this.openMenu = null;
-    this.menuIndex = -1;
-    this.renaming = { kind, key, streamKey, originalTitle: title };
-    this.renameValue = title;
     this.renameInput.set_value(title);
     if (title) {
       this.renameInput.set_selected_range({ start: 0, end: title.length });
     }
+    this.setInteraction(
+      { kind: "rename", entityKind: kind, key, streamKey, originalTitle: title },
+      cx
+    );
     this.renameInput.focus();
-    cx?.notify?.();
   }
 
   cancelRename(cx) {
-    if (!this.renaming) return;
-    this.renaming = null;
-    this.renameValue = "";
-    cx?.notify?.();
+    if (this.interaction?.kind !== "rename") return;
+    this.setInteraction(null, cx);
   }
 
   commitRename(cx) {
-    const target = this.renaming;
-    if (!target) return;
-    const trimmed = (this.renameInput?.value?.() ?? this.renameValue ?? "").trim();
-    this.renaming = null;
-    this.renameValue = "";
-    cx?.notify?.();
-    if (!trimmed || trimmed === target.originalTitle) return;
+    if (this.interaction?.kind !== "rename") return;
+    const target = this.interaction;
+    const trimmed = (this.renameInput?.value?.() ?? "").trim();
+    if (!trimmed) return;
+    this.setInteraction(null, cx);
+    if (trimmed === target.originalTitle) return;
     if (!cx?.spawn) return;
     cx.spawn(async (asyncCx) => {
       try {
-        if (target.kind === "stream") {
+        if (target.entityKind === "stream") {
           await coordinator.renameStream(target.key, trimmed);
         } else {
           await coordinator.renameSession(target.key, trimmed, target.streamKey);
@@ -918,7 +921,7 @@ export default class StreamsMod extends View {
   }
 
   renderInlineRename(t, { id, compact = false } = {}) {
-    const canSave = this.renameValue.trim().length > 0;
+    const canSave = (this.renameInput?.value?.() ?? "").trim().length > 0;
     return h_flex()
       .id(id)
       .flex_1()
@@ -1389,147 +1392,146 @@ export default class StreamsMod extends View {
     stopRowPropagation = false,
     t,
   }) {
-    const isOpen = this.openMenu === id;
-    const selectable = [];
-    for (let i = 0; i < items.length; i += 1) {
-      if (!items[i].type && !items[i].disabled) selectable.push(i);
-    }
-    const firstIndex = selectable.length > 0 ? selectable[0] : -1;
-    const activeIndex = selectable.includes(this.menuIndex) ? this.menuIndex : firstIndex;
+    const isOpen = this.isMenuOpen(id);
 
-    const closeMenu = (closeCx) => {
-      this.openMenu = null;
-      this.menuIndex = -1;
-      closeCx?.notify?.();
-    };
-
-    const runSelected = (idx, actCx) => {
-      const item = items[idx];
-      if (!item || item.type || item.disabled) return;
-      this.openMenu = null;
-      this.menuIndex = -1;
-      try {
-        item.onSelect?.(actCx);
-      } finally {
-        actCx?.notify?.();
+    const buildContent = () => {
+      const resolvedItems = typeof items === "function" ? items() : items;
+      const selectable = [];
+      for (let i = 0; i < resolvedItems.length; i += 1) {
+        if (!resolvedItems[i].type && !resolvedItems[i].disabled) selectable.push(i);
       }
-    };
+      const firstIndex = selectable.length > 0 ? selectable[0] : -1;
+      const curIndex = this.interaction?.kind === "menu" ? this.interaction.index : -1;
+      const activeIndex = selectable.includes(curIndex) ? curIndex : firstIndex;
 
-    const menuContent = v_flex()
-      .id(`${id}-content`)
-      .w(width)
-      .p(5)
-      .rounded(8)
-      .border_1()
-      .border_color(t.border)
-      .bg(t.popover)
-      .shadow_lg()
-      .text_size(12)
-      .text_color(t.foreground)
-      .when(Boolean(this.menuFocus), (el) => el.track_focus(this.menuFocus))
-      .on_mouse_down("left", (_e, downCx) => downCx.stop_propagation())
-      .on_key_down((e, keyCx) => {
-        if (e.modifiers?.control || e.modifiers?.platform || e.modifiers?.alt) return;
-        const key = String(e.key ?? "").toLowerCase();
-        if (key === "escape") {
-          keyCx.stop_propagation();
-          closeMenu(keyCx);
-          return;
+      const closeMenu = (closeCx) => {
+        if (this.isMenuOpen(id)) this.setInteraction(null, closeCx);
+      };
+
+      const runSelected = (idx, actCx) => {
+        const item = resolvedItems[idx];
+        if (!item || item.type || item.disabled) return;
+        this.interaction = null;
+        try {
+          item.onSelect?.(actCx);
+        } finally {
+          actCx?.notify?.();
         }
-        if (selectable.length === 0) return;
-        if (key === "down" || key === "arrowdown" || key === "j") {
-          keyCx.stop_propagation();
-          const pos = selectable.indexOf(activeIndex);
-          this.menuIndex = selectable[(pos + 1) % selectable.length];
-          keyCx.notify();
-          return;
-        }
-        if (key === "up" || key === "arrowup" || key === "k") {
-          keyCx.stop_propagation();
-          const pos = selectable.indexOf(activeIndex);
-          this.menuIndex =
-            pos <= 0 ? selectable[selectable.length - 1] : selectable[pos - 1];
-          keyCx.notify();
-          return;
-        }
-        if (key === "enter" || key === "return") {
-          keyCx.stop_propagation();
-          runSelected(activeIndex, keyCx);
-        }
-      })
-      .children(
-        items.map((item, idx) => {
-          if (item.type === "divider") {
-            return div().my(3).h(1).w_full().bg(t.border);
+      };
+
+      return v_flex()
+        .id(`${id}-content`)
+        .w(width)
+        .p(5)
+        .rounded(8)
+        .border_1()
+        .border_color(t.border)
+        .bg(t.popover)
+        .shadow_lg()
+        .text_size(12)
+        .text_color(t.foreground)
+        .when(Boolean(this.menuFocus), (el) => el.track_focus(this.menuFocus))
+        .on_mouse_down("left", (_e, downCx) => downCx.stop_propagation())
+        .on_key_down((e, keyCx) => {
+          if (e.modifiers?.control || e.modifiers?.platform || e.modifiers?.alt) return;
+          const key = String(e.key ?? "").toLowerCase();
+          if (key === "escape") {
+            keyCx.stop_propagation();
+            closeMenu(keyCx);
+            return;
           }
-          if (item.type === "label") {
-            return div()
-              .px(10)
-              .py(3)
-              .text_size(10.5)
-              .font_medium()
-              .text_color(t.dim)
-              .child(item.text);
-          }
-          const highlighted = !item.disabled && idx === activeIndex;
-          return h_flex()
-            .id(`${id}-${item.id}`)
-            .h(28)
-            .px(10)
-            .gap(8)
-            .items_center()
-            .justify_between()
-            .rounded(5)
-            .text_size(12)
-            .when(item.disabled, (el) => el.text_color(t.dim))
-            .when(!item.disabled, (el) =>
-              el
-                .cursor_pointer()
-                .text_color(item.danger ? t.blocked : t.foreground)
-                .when(highlighted, (row) => row.bg(t.hover))
-                .hover((s) => s.bg(t.hover))
-                .on_hover((hovered, hoverCx) => {
-                  if (hovered && this.menuIndex !== idx) {
-                    this.menuIndex = idx;
-                    hoverCx.notify();
-                  }
-                })
-                .on_mouse_down("left", (_e, downCx) => downCx.stop_propagation())
-                .on_click((_e, clickCx) => {
-                  clickCx.stop_propagation();
-                  runSelected(idx, clickCx);
-                })
-            )
-            .when(Boolean(item.icon), (el) =>
-              el.child(
-                div()
-                  .flex_none()
-                  .w(10)
-                  .text_size(9)
-                  .text_color(item.disabled ? t.dim : item.icon.color)
-                  .child(item.icon.symbol)
-              )
-            )
-            .child(div().flex_1().min_w(0).truncate().child(item.label))
-            .when(Boolean(item.checked), (el) =>
-              el.child(div().flex_none().text_size(11).text_color(t.dim).child("✓"))
+          if (selectable.length === 0) return;
+          if (key === "down" || key === "arrowdown" || key === "j") {
+            keyCx.stop_propagation();
+            const pos = selectable.indexOf(activeIndex);
+            this.setInteraction(
+              { kind: "menu", id, index: selectable[(pos + 1) % selectable.length] },
+              keyCx
             );
+            return;
+          }
+          if (key === "up" || key === "arrowup" || key === "k") {
+            keyCx.stop_propagation();
+            const pos = selectable.indexOf(activeIndex);
+            const nextIdx =
+              pos <= 0 ? selectable[selectable.length - 1] : selectable[pos - 1];
+            this.setInteraction({ kind: "menu", id, index: nextIdx }, keyCx);
+            return;
+          }
+          if (key === "enter" || key === "return") {
+            keyCx.stop_propagation();
+            runSelected(activeIndex, keyCx);
+          }
         })
-      );
+        .children(
+          resolvedItems.map((item, idx) => {
+            if (item.type === "divider") {
+              return div().my(3).h(1).w_full().bg(t.border);
+            }
+            if (item.type === "label") {
+              return div()
+                .px(10)
+                .py(3)
+                .text_size(10.5)
+                .font_medium()
+                .text_color(t.dim)
+                .child(item.text);
+            }
+            const highlighted = !item.disabled && idx === activeIndex;
+            return h_flex()
+              .id(`${id}-${item.id}`)
+              .h(28)
+              .px(10)
+              .gap(8)
+              .items_center()
+              .justify_between()
+              .rounded(5)
+              .text_size(12)
+              .when(item.disabled, (el) => el.text_color(t.dim))
+              .when(!item.disabled, (el) =>
+                el
+                  .cursor_pointer()
+                  .text_color(item.danger ? t.blocked : t.foreground)
+                  .when(highlighted, (row) => row.bg(t.hover))
+                  .hover((s) => s.bg(t.hover))
+                  .on_hover((hovered, hoverCx) => {
+                    if (hovered && this.isMenuOpen(id) && this.interaction.index !== idx) {
+                      this.setInteraction({ kind: "menu", id, index: idx }, hoverCx);
+                    }
+                  })
+                  .on_mouse_down("left", (_e, downCx) => downCx.stop_propagation())
+                  .on_click((_e, clickCx) => {
+                    clickCx.stop_propagation();
+                    runSelected(idx, clickCx);
+                  })
+              )
+              .when(Boolean(item.icon), (el) =>
+                el.child(
+                  div()
+                    .flex_none()
+                    .w(10)
+                    .text_size(9)
+                    .text_color(item.disabled ? t.dim : item.icon.color)
+                    .child(item.icon.symbol)
+                )
+              )
+              .child(div().flex_1().min_w(0).truncate().child(item.label))
+              .when(Boolean(item.checked), (el) =>
+                el.child(div().flex_none().text_size(11).text_color(t.dim).child("✓"))
+              );
+          })
+        );
+    };
 
     let pop = Popover.new(id)
       .anchor(anchor)
       .open(isOpen)
       .on_open_change((open, openCx) => {
         if (open) {
-          this.openMenu = id;
-          this.menuIndex = firstIndex;
+          this.setInteraction({ kind: "menu", id, index: -1 }, openCx);
           this.menuFocus?.focus?.();
-          openCx.notify();
-        } else if (this.openMenu === id) {
-          this.openMenu = null;
-          this.menuIndex = -1;
-          openCx.notify();
+        } else if (this.isMenuOpen(id)) {
+          this.setInteraction(null, openCx);
         }
       })
       .trigger(trigger);
@@ -1539,7 +1541,9 @@ export default class StreamsMod extends View {
     if (this.menuFocus) {
       pop = pop.track_focus(this.menuFocus);
     }
-    pop = pop.when(isOpen, (el) => el.content(menuContent));
+    if (isOpen) {
+      pop = pop.content(buildContent());
+    }
 
     if (!stopRowPropagation) return pop;
     return div()
@@ -1613,6 +1617,11 @@ export default class StreamsMod extends View {
     this.scheduleObserve(cx, snap);
 
     const activeSpace = snap.activeSpace;
+    const contextKey = `${activeSpace?.id ?? ""}\0${snap.activeTabId ?? ""}\0${coordinator.preferredView}\0${coordinator.previewStreamKey ?? ""}\0${coordinator.previewSessionKey ?? ""}`;
+    if (this._lastContextKey !== null && this._lastContextKey !== contextKey) {
+      this.interaction = null;
+    }
+    this._lastContextKey = contextKey;
     const monoFont = settings()?.font_family ?? "JetBrains Mono";
     const spaceStreamKey = resolveSpaceStreamKey({
       space: activeSpace,
@@ -1668,10 +1677,7 @@ export default class StreamsMod extends View {
       return btn
         .on_click((_e, clickCx) => {
           clickCx.stop_propagation();
-          this.openMenu = null;
-          this.menuIndex = -1;
-          this.renaming = null;
-          this.moveState = null;
+          this.interaction = null;
           clickCx.spawn(async () => {
             await coordinator.setView(targetView);
           });
@@ -1922,14 +1928,15 @@ export default class StreamsMod extends View {
 
     const statusLabel = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 
-    const buildStatusMenuItems = ({ sessionKey, streamKey, status }) =>
-      SESSION_STATUSES.map((st) => {
+    const buildStatusMenuItems = ({ sessionKey, streamKey, status }) => {
+      const statusPending = Boolean(sessionKey && coordinator.pendingStatusSessions.has(sessionKey));
+      return SESSION_STATUSES.map((st) => {
         const style = statusStyle(st, t);
         return {
           id: `status-${st}`,
           label: statusLabel(st),
           icon: { symbol: style.symbol, color: style.color },
-          disabled: status === st,
+          disabled: statusPending || status === st,
           checked: status === st,
           onSelect: (actCx) => {
             if (!sessionKey) return;
@@ -1939,15 +1946,18 @@ export default class StreamsMod extends View {
           },
         };
       });
+    };
 
     const buildStreamMenuItems = (stream, { writable = true } = {}) => {
       const streamKey = stream?.key ?? null;
       const bulk = streamBulkActionState(stream);
+      const streamBusy = Boolean(streamKey && coordinator.pendingStreamActions.has(streamKey));
+      const renameBusy = Boolean(streamKey && coordinator.pendingRenames.has(streamKey));
       return [
         {
           id: "rename",
           label: "Rename…",
-          disabled: !streamKey || !writable,
+          disabled: !streamKey || !writable || renameBusy || streamBusy,
           onSelect: (actCx) => {
             if (!streamKey || !writable) return;
             this.startRename({ kind: "stream", key: streamKey, title: stream.title ?? "" }, actCx);
@@ -1956,7 +1966,7 @@ export default class StreamsMod extends View {
         {
           id: "open-active",
           label: "Open all active sessions",
-          disabled: !bulk.canOpenActive,
+          disabled: !bulk.canOpenActive || streamBusy,
           onSelect: (actCx) => {
             if (!streamKey) return;
             const snapNow = collectSnapshot();
@@ -1978,7 +1988,7 @@ export default class StreamsMod extends View {
         {
           id: "park-all",
           label: "Park all",
-          disabled: !bulk.canParkAll,
+          disabled: !bulk.canParkAll || streamBusy,
           onSelect: (actCx) => {
             if (!streamKey) return;
             spawnSidebarWork(actCx, async () => {
@@ -1989,8 +1999,8 @@ export default class StreamsMod extends View {
         {
           id: "close-all",
           label: "Close all",
-          disabled: !bulk.canCloseAll,
-          danger: bulk.canCloseAll,
+          disabled: !bulk.canCloseAll || streamBusy,
+          danger: bulk.canCloseAll && !streamBusy,
           onSelect: (actCx) => {
             if (!streamKey) return;
             spawnSidebarWork(actCx, async () => {
@@ -2011,8 +2021,8 @@ export default class StreamsMod extends View {
         {
           id: "delete",
           label: "Delete empty stream",
-          disabled: !bulk.canDelete,
-          danger: bulk.canDelete,
+          disabled: !bulk.canDelete || streamBusy,
+          danger: bulk.canDelete && !streamBusy,
           onSelect: (actCx) => {
             if (!streamKey) return;
             spawnSidebarWork(actCx, async () => {
@@ -2032,6 +2042,9 @@ export default class StreamsMod extends View {
       writable = true,
     }) => {
       const isOpen = Boolean(livePane);
+      const isResuming = coordinator.pendingResumeSessions.has(sessionKey);
+      const isRenaming = coordinator.pendingRenames.has(sessionKey);
+      const isMoving = coordinator.pendingMoves.has(sessionKey);
       const items = isOpen
         ? [
             {
@@ -2049,7 +2062,7 @@ export default class StreamsMod extends View {
             {
               id: "rename",
               label: "Rename…",
-              disabled: !writable,
+              disabled: !writable || isRenaming,
               onSelect: (actCx) => {
                 if (!writable) return;
                 this.startRename(
@@ -2061,7 +2074,7 @@ export default class StreamsMod extends View {
             {
               id: "move",
               label: "Move to stream…",
-              disabled: !writable || coordinator.pendingMoves.has(sessionKey),
+              disabled: !writable || isMoving,
               onSelect: (actCx) => {
                 if (!writable) return;
                 this.openMoveMenu(
@@ -2082,7 +2095,8 @@ export default class StreamsMod extends View {
         : [
             {
               id: "resume",
-              label: "Resume",
+              label: isResuming ? "Resuming…" : "Resume",
+              disabled: isResuming,
               onSelect: (actCx) => {
                 resumeSingleSession(actCx, streamKey, sessionKey);
               },
@@ -2099,7 +2113,7 @@ export default class StreamsMod extends View {
             {
               id: "rename",
               label: "Rename…",
-              disabled: !writable,
+              disabled: !writable || isRenaming,
               onSelect: (actCx) => {
                 if (!writable) return;
                 this.startRename(
@@ -2111,7 +2125,7 @@ export default class StreamsMod extends View {
             {
               id: "move",
               label: "Move to stream…",
-              disabled: !writable || coordinator.pendingMoves.has(sessionKey),
+              disabled: !writable || isMoving,
               onSelect: (actCx) => {
                 if (!writable) return;
                 this.openMoveMenu(
@@ -2168,12 +2182,15 @@ export default class StreamsMod extends View {
         },
       });
       if (!isArtifact) {
+        const isDropping =
+          Boolean(item.sessionKey && item.refKey) &&
+          coordinator.pendingDropReferences.has(`${item.sessionKey}\0${item.refKey}`);
         items.push({ type: "divider" });
         items.push({
           id: "drop",
-          label: "Drop",
-          danger: true,
-          disabled: !item.sessionKey || !item.refKey,
+          label: isDropping ? "Dropping…" : "Drop",
+          danger: !isDropping,
+          disabled: !item.sessionKey || !item.refKey || isDropping,
           onSelect: (actCx) => {
             if (!item.sessionKey || !item.refKey) return;
             spawnSidebarWork(actCx, async () => {
@@ -2246,10 +2263,10 @@ export default class StreamsMod extends View {
               .border_color(t.border)
               .children(
                 references.map((item, idx) => {
-                  const refMenuItems = buildReferenceMenuItems(item);
+                  const refMenuItems = () => buildReferenceMenuItems(item);
                   const refBtnMenuId = `ref-menu-${item.id}`;
                   const refCtxMenuId = `ref-ctx-${item.id}`;
-                  const refBtnOpen = this.openMenu === refBtnMenuId;
+                  const refBtnOpen = this.isMenuOpen(refBtnMenuId);
                   const isRefHovered = this.hoveredRefId === item.id;
                   const isRefDropping =
                     Boolean(item.sessionKey && item.refKey) &&
@@ -2301,6 +2318,7 @@ export default class StreamsMod extends View {
                       h_flex()
                         .gap(6)
                         .items_center()
+                        .when(isRefHovered || refBtnOpen, (line) => line.pr(26))
                         .child(referenceIcon(item.kind, t))
                         .child(
                           div()
@@ -2836,7 +2854,9 @@ export default class StreamsMod extends View {
                   (() => {
                     const streamWritable = !(streamForeignHost && streamForeignHost.state !== "online");
                     const isRenamingStream =
-                      this.renaming?.kind === "stream" && this.renaming?.key === stream.key;
+                      this.interaction?.kind === "rename" &&
+                      this.interaction.entityKind === "stream" &&
+                      this.interaction.key === stream.key;
                     const isStreamRenamePending = coordinator.pendingRenames.has(stream.key);
                     return h_flex()
                       .gap(6)
@@ -2892,13 +2912,14 @@ export default class StreamsMod extends View {
                           .child(
                             (() => {
                               const streamMenuId = `stream-actions-${stream.key}`;
-                              const streamMenuOpen = this.openMenu === streamMenuId;
+                              const streamMenuOpen = this.isMenuOpen(streamMenuId);
                               return this.renderMenuPopover({
                                 id: streamMenuId,
                                 width: 215,
                                 anchor: "top_right",
                                 t,
-                                items: buildStreamMenuItems(stream, { writable: streamWritable }),
+                                items: () =>
+                                  buildStreamMenuItems(stream, { writable: streamWritable }),
                                 trigger: div()
                                   .id("streams-menu-btn")
                                   .flex_none()
@@ -3021,25 +3042,30 @@ export default class StreamsMod extends View {
                     const rowStatusMenuId = `row-status-${sess.key}`;
                     const rowActionMenuId = `row-menu-${sess.key}`;
                     const rowCtxMenuId = `row-ctx-${sess.key}`;
-                    const rowStatusOpen = this.openMenu === rowStatusMenuId;
-                    const rowActionOpen = this.openMenu === rowActionMenuId;
+                    const rowStatusOpen = this.isMenuOpen(rowStatusMenuId);
+                    const rowActionOpen = this.isMenuOpen(rowActionMenuId);
                     const isRowStatusPending = coordinator.pendingStatusSessions.has(sess.key);
                     const isRowResuming = coordinator.pendingResumeSessions.has(sess.key);
                     const isRowMoving = coordinator.pendingMoves.has(sess.key);
-                    const isRowMovingMenu = this.moveState?.sessionKey === sess.key;
+                    const isRowMovingMenu =
+                      this.interaction?.kind === "move" &&
+                      this.interaction.sessionKey === sess.key;
                     const isRowRenaming =
-                      this.renaming?.kind === "session" && this.renaming?.key === sess.key;
+                      this.interaction?.kind === "rename" &&
+                      this.interaction.entityKind === "session" &&
+                      this.interaction.key === sess.key;
                     const isRowRenamePending = coordinator.pendingRenames.has(sess.key);
                     const rowWritable = !(streamForeignHost && streamForeignHost.state !== "online");
                     const showRowActions = isRowHovered || rowActionOpen || isRowMovingMenu;
-                    const rowMenuItems = buildSessionMenuItems({
-                      sessionKey: sess.key,
-                      streamKey: stream.key,
-                      title: sess.title,
-                      status: sess.status,
-                      livePane: liveMatch?.pane ?? null,
-                      writable: rowWritable,
-                    });
+                    const rowMenuItems = () =>
+                      buildSessionMenuItems({
+                        sessionKey: sess.key,
+                        streamKey: stream.key,
+                        title: sess.title,
+                        status: sess.status,
+                        livePane: liveMatch?.pane ?? null,
+                        writable: rowWritable,
+                      });
                     const rowEl = v_flex()
                       .id(`stream-session-${sess.id}`)
                       .px(9)
@@ -3127,11 +3153,12 @@ export default class StreamsMod extends View {
                                       anchor: "top_right",
                                       stopRowPropagation: true,
                                       t,
-                                      items: buildStatusMenuItems({
-                                        sessionKey: sess.key,
-                                        streamKey: stream.key,
-                                        status: sess.status,
-                                      }),
+                                      items: () =>
+                                        buildStatusMenuItems({
+                                          sessionKey: sess.key,
+                                          streamKey: stream.key,
+                                          status: sess.status,
+                                        }),
                                       trigger: div()
                                         .id(`stream-session-status-${sess.id}`)
                                         .flex_none()
@@ -3551,7 +3578,9 @@ export default class StreamsMod extends View {
                     sessionForeignHost && sessionForeignHost.state !== "online"
                   );
                   const isRenamingSession =
-                    this.renaming?.kind === "session" && this.renaming?.key === session.key;
+                    this.interaction?.kind === "rename" &&
+                    this.interaction.entityKind === "session" &&
+                    this.interaction.key === session.key;
                   const isSessionRenamePending = coordinator.pendingRenames.has(session.key);
                   return h_flex()
                     .gap(6)
@@ -3609,13 +3638,14 @@ export default class StreamsMod extends View {
                             width: 155,
                             anchor: "top_right",
                             t,
-                            items: buildStatusMenuItems({
-                              sessionKey: session.key,
-                              streamKey,
-                              status: session.status,
-                            }),
+                            items: () =>
+                              buildStatusMenuItems({
+                                sessionKey: session.key,
+                                streamKey,
+                                status: session.status,
+                              }),
                             trigger: statusDropdownBadge(effectiveStatus, t, {
-                              open: this.openMenu === statusMenuId,
+                              open: this.isMenuOpen(statusMenuId),
                             })
                               .id("session-header-status-btn")
                               .tooltip("Change status"),
@@ -3626,7 +3656,13 @@ export default class StreamsMod extends View {
                 })()
               )
               .when(
-                !session.state && !session.recap && !session.remaining && references.length === 0,
+                !view.isUnopened &&
+                  session.status !== "done" &&
+                  session.status !== "closed" &&
+                  !session.state &&
+                  !session.recap &&
+                  !session.remaining &&
+                  references.length === 0,
                 (el) =>
                   el.child(
                     div()

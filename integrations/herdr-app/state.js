@@ -425,7 +425,9 @@ export function resolveMoveSpaceTarget({
   }
   const spaceById = new Map();
   for (const sp of spaces ?? []) {
-    if (sp?.id) spaceById.set(sp.id, sp);
+    if (sp?.id && (sp.machine ?? null) === targetMachine) {
+      spaceById.set(sp.id, sp);
+    }
   }
 
   let liveTerm = null;
@@ -475,10 +477,12 @@ export function resolveMoveSpaceTarget({
       }
     }
     if (!targetSpace) {
-      const rawSpaceId = findSpaceForStream(terminalList, targetStreamKey, targetMachine);
+      const liveTerms = (terminalList ?? []).filter((t) => t?.state === "live");
+      const rawSpaceId = findSpaceForStream(liveTerms, targetStreamKey, targetMachine);
       if (rawSpaceId) {
-        const qualified = qualifyForMachine(rawSpaceId, targetMachine);
-        targetSpace = spaceById.get(qualified) ?? spaceById.get(rawSpaceId) ?? null;
+        const lookupId =
+          targetMachine !== null ? qualifyForMachine(rawSpaceId, targetMachine) : rawSpaceId;
+        targetSpace = spaceById.get(lookupId) ?? null;
       }
     }
   }
@@ -525,6 +529,57 @@ export function resolveMoveSpaceTarget({
     canMoveTab: true,
     reason: null,
   };
+}
+
+/**
+ * Pure candidate builder for the "Move to stream…" picker.
+ * Accepts snapshot-shaped input (`allSpaces` or `spaces`, `panes`, `terminalList`).
+ */
+export function buildMoveCandidates({
+  sessionKey,
+  sourceStreamKey,
+  hostId = null,
+  machine = null,
+  streams = [],
+  query = "",
+  snapshot = {},
+} = {}) {
+  const targetMachine = machine ?? null;
+  const spaces = snapshot.allSpaces ?? snapshot.spaces ?? [];
+  const panes = snapshot.panes ?? [];
+  const terminalList = snapshot.terminalList ?? [];
+
+  const q = (query ?? "").trim().toLowerCase();
+  const list = [];
+  for (const item of streams ?? []) {
+    if (!item?.key || item.key === sourceStreamKey) continue;
+    if (hostId && item.host_id && item.host_id !== hostId) continue;
+    if (q) {
+      const hay = `${item.title ?? ""} ${item.goal ?? ""} ${item.id ?? ""}`.toLowerCase();
+      if (!hay.includes(q)) continue;
+    }
+    const spaceInfo = resolveMoveSpaceTarget({
+      sessionKey,
+      targetStreamKey: item.key,
+      machine: targetMachine,
+      terminalList,
+      panes,
+      spaces,
+    });
+    list.push({
+      stream: item,
+      spaceInfo,
+      isArchived: item.status === "done" || item.status === "closed",
+    });
+  }
+  list.sort((a, b) => {
+    if (a.isArchived !== b.isArchived) return a.isArchived ? 1 : -1;
+    const aOpen = a.spaceInfo.targetSpace ? 1 : 0;
+    const bOpen = b.spaceInfo.targetSpace ? 1 : 0;
+    if (aOpen !== bOpen) return bOpen - aOpen;
+    return (b.stream.last_activity_ms ?? 0) - (a.stream.last_activity_ms ?? 0);
+  });
+  return list;
 }
 
 /**
@@ -1675,6 +1730,40 @@ export class StreamsCoordinator {
     return entry;
   }
 
+  hostStreamsState(machine = this.activeMachine, scope = this.hostScope) {
+    const entry = this._getHostStreamsEntry(machine, scope);
+    return {
+      items: entry.items,
+      unreadable: entry.unreadable,
+      error: entry.error,
+      loaded: entry.loaded,
+    };
+  }
+
+  async _withPendingSet(set, key, fn) {
+    if (set.has(key)) return { ok: false, duplicate: true };
+    set.add(key);
+    this.notifyViews();
+    try {
+      return await fn();
+    } finally {
+      set.delete(key);
+      this.notifyViews();
+    }
+  }
+
+  async _withPendingMap(map, key, label, fn) {
+    if (map.has(key)) return { ok: false, duplicate: true };
+    map.set(key, label);
+    this.notifyViews();
+    try {
+      return await fn();
+    } finally {
+      map.delete(key);
+      this.notifyViews();
+    }
+  }
+
   get hostStreams() {
     return this._getHostStreamsEntry().items;
   }
@@ -2327,11 +2416,22 @@ export class StreamsCoordinator {
   }
 
   /**
-   * Targeted, authoritative post-mutation refresh: re-reads only the affected Session and/or
-   * parent Stream (1-2 local CLI reads), updates every in-memory cache (`frames`,
-   * `previewSessions`, `streams`, `hostStreams`), republishes `terminal.marks`, and notifies views.
+   * Targeted, authoritative post-mutation refresh: advances `readGeneration` so any slower
+   * pre-mutation background observation is discarded, re-reads only the affected Session and/or
+   * Stream(s), updates every in-memory cache (`frames`, `previewSessions`, `streams`,
+   * `hostStreams`), republishes `terminal.marks`, and notifies views.
    */
-  async refreshAfterMutation({ sessionKey = null, streamKey = null, machine = undefined } = {}) {
+  async refreshAfterMutation({
+    sessionKey = null,
+    streamKey = null,
+    extraStreamKeys = [],
+    machine = undefined,
+  } = {}) {
+    this.readGeneration += 1;
+    for (const bucket of this.hostStreamsByScope.values()) {
+      bucket.seq += 1;
+    }
+
     let resolvedStreamKey = streamKey ?? null;
     const readTarget =
       machine !== undefined
@@ -2356,84 +2456,88 @@ export class StreamsCoordinator {
               this.frames.set(term, { kind: "enrolled", session: freshSession });
             }
           }
-          if (this.previewSessions.has(freshSession.key) || this.previewSessionKey === freshSession.key) {
+          if (
+            this.previewSessions.has(freshSession.key) ||
+            this.previewSessionKey === freshSession.key
+          ) {
             this.previewSessions.set(freshSession.key, freshSession);
           }
         }
       }
     }
 
-    if (resolvedStreamKey && !readTarget.unavailable) {
+    const streamKeysToRefresh = [];
+    if (resolvedStreamKey) streamKeysToRefresh.push(resolvedStreamKey);
+    for (const k of extraStreamKeys ?? []) {
+      if (k && !streamKeysToRefresh.includes(k)) streamKeysToRefresh.push(k);
+    }
+
+    for (const stKey of streamKeysToRefresh) {
       const streamTarget =
-        machine !== undefined
-          ? readTarget
-          : this.resolveReadMachineForKey(resolvedStreamKey);
+        machine !== undefined ? readTarget : this.resolveReadMachineForKey(stKey);
       const streamMachine = streamTarget.unavailable ? null : streamTarget.machine;
-      const stOut = !streamTarget.unavailable
-        ? await this.runExec(
-            this.streamsBinFor(streamMachine),
-            ["stream", "show", resolvedStreamKey, "--json"],
-            { on: streamMachine }
-          )
-        : { code: -1 };
-      if (stOut.code === 0) {
-        const freshStream = normalizeStream(parseJsonSafe(stOut.stdout));
-        if (freshStream) {
-          this.streams.set(freshStream.key, freshStream);
+      if (streamTarget.unavailable) continue;
+      const stOut = await this.runExec(
+        this.streamsBinFor(streamMachine),
+        ["stream", "show", stKey, "--json"],
+        { on: streamMachine }
+      );
+      if (stOut.code !== 0) continue;
+      const freshStream = normalizeStream(parseJsonSafe(stOut.stdout));
+      if (!freshStream) continue;
+      this.streams.set(freshStream.key, freshStream);
 
-          const memberByKey = new Map();
-          for (const member of freshStream.sessions ?? []) {
-            memberByKey.set(member.key, member);
-          }
+      const memberByKey = new Map();
+      for (const member of freshStream.sessions ?? []) {
+        memberByKey.set(member.key, member);
+      }
 
-          // Sync any live frames or cached preview Sessions whose status/title/state changed in bulk.
-          for (const [term, frame] of this.frames.entries()) {
-            if (frame?.kind !== "enrolled" || !frame.session) continue;
-            if (sessionKey && frame.session.key === sessionKey) continue;
-            const updatedMember = memberByKey.get(frame.session.key);
-            if (updatedMember) {
-              this.frames.set(term, {
-                kind: "enrolled",
-                session: {
-                  ...frame.session,
-                  title: updatedMember.title ?? frame.session.title,
-                  status: updatedMember.status ?? frame.session.status,
-                  state: updatedMember.state ?? frame.session.state,
-                },
-              });
-            }
-          }
-          for (const [key, cached] of this.previewSessions.entries()) {
-            if (sessionKey && key === sessionKey) continue;
-            const updatedMember = memberByKey.get(key);
-            if (updatedMember) {
-              this.previewSessions.set(key, {
-                ...cached,
-                title: updatedMember.title ?? cached.title,
-                status: updatedMember.status ?? cached.status,
-                state: updatedMember.state ?? cached.state,
-              });
-            }
-          }
+      // Sync any live frames or cached preview Sessions whose status/title/state changed in bulk.
+      for (const [term, frame] of this.frames.entries()) {
+        if (frame?.kind !== "enrolled" || !frame.session) continue;
+        if (sessionKey && frame.session.key === sessionKey) continue;
+        const updatedMember = memberByKey.get(frame.session.key);
+        if (updatedMember) {
+          this.frames.set(term, {
+            kind: "enrolled",
+            session: {
+              ...frame.session,
+              title: updatedMember.title ?? frame.session.title,
+              status: updatedMember.status ?? frame.session.status,
+              state: updatedMember.state ?? frame.session.state,
+            },
+          });
+        }
+      }
+      for (const [key, cached] of this.previewSessions.entries()) {
+        if (sessionKey && key === sessionKey) continue;
+        const updatedMember = memberByKey.get(key);
+        if (updatedMember) {
+          this.previewSessions.set(key, {
+            ...cached,
+            title: updatedMember.title ?? cached.title,
+            status: updatedMember.status ?? cached.status,
+            state: updatedMember.state ?? cached.state,
+          });
+        }
+      }
 
-          // Patch matching summary entries across every cached hostStreams bucket so `All` stays consistent.
-          for (const bucket of this.hostStreamsByScope.values()) {
-            if (!Array.isArray(bucket.items) || bucket.items.length === 0) continue;
-            const idx = bucket.items.findIndex((s) => s.key === freshStream.key);
-            if (idx >= 0) {
-              const prev = bucket.items[idx];
-              bucket.items[idx] = {
-                ...prev,
-                title: freshStream.title ?? prev.title,
-                goal: freshStream.goal ?? prev.goal,
-                goal_short: freshStream.goal_short ?? prev.goal_short,
-                status: freshStream.status ?? prev.status,
-                active_sessions: freshStream.active_sessions,
-                total_sessions: freshStream.total_sessions,
-                last_activity_ms: freshStream.last_activity_ms ?? prev.last_activity_ms,
-              };
-            }
-          }
+      // Patch matching summary entries across every cached hostStreams bucket so `All` stays consistent.
+      for (const bucket of this.hostStreamsByScope.values()) {
+        if (!Array.isArray(bucket.items) || bucket.items.length === 0) continue;
+        const idx = bucket.items.findIndex((s) => s.key === freshStream.key);
+        if (idx >= 0) {
+          const prev = bucket.items[idx];
+          bucket.items[idx] = {
+            ...prev,
+            title: freshStream.title ?? prev.title,
+            goal: freshStream.goal ?? prev.goal,
+            goal_short: freshStream.goal_short ?? prev.goal_short,
+            status: freshStream.status ?? prev.status,
+            active_sessions: freshStream.active_sessions,
+            total_sessions: freshStream.total_sessions,
+            last_activity_ms: freshStream.last_activity_ms ?? prev.last_activity_ms,
+          };
         }
       }
     }
@@ -2444,15 +2548,13 @@ export class StreamsCoordinator {
 
   async dropReference(sessionKey, refKey, streamKey = null) {
     if (!sessionKey || !refKey) return { ok: false, error: "missing session or reference key" };
-    const target = await this.ensureWriteMachineForKey(sessionKey);
-    if (!target.ok) {
-      this.reportActionError("Could not drop reference", target.error);
-      return { ok: false, error: target.error };
-    }
     const pendingKey = `${sessionKey}\0${refKey}`;
-    this.pendingDropReferences.add(pendingKey);
-    this.notifyViews();
-    try {
+    return this._withPendingSet(this.pendingDropReferences, pendingKey, async () => {
+      const target = await this.ensureWriteMachineForKey(sessionKey);
+      if (!target.ok) {
+        this.reportActionError("Could not drop reference", target.error);
+        return { ok: false, error: target.error };
+      }
       const out = await this.runExec(
         this.streamsBinFor(target.machine),
         ["session", "edit", sessionKey, "--drop-reference", refKey],
@@ -2467,10 +2569,7 @@ export class StreamsCoordinator {
       this.lastCompletedKey = null;
       await this.refreshAfterMutation({ sessionKey, streamKey, machine: target.machine });
       return { ok: true };
-    } finally {
-      this.pendingDropReferences.delete(pendingKey);
-      this.notifyViews();
-    }
+    });
   }
 
   async setSessionStatus(sessionKey, status, streamKey = null) {
@@ -2479,14 +2578,12 @@ export class StreamsCoordinator {
       this.reportActionError("Could not update status", msg);
       return { ok: false, error: msg };
     }
-    const target = await this.ensureWriteMachineForKey(sessionKey);
-    if (!target.ok) {
-      this.reportActionError("Could not update status", target.error);
-      return { ok: false, error: target.error };
-    }
-    this.pendingStatusSessions.add(sessionKey);
-    this.notifyViews();
-    try {
+    return this._withPendingSet(this.pendingStatusSessions, sessionKey, async () => {
+      const target = await this.ensureWriteMachineForKey(sessionKey);
+      if (!target.ok) {
+        this.reportActionError("Could not update status", target.error);
+        return { ok: false, error: target.error };
+      }
       const out = await this.runExec(
         this.streamsBinFor(target.machine),
         ["session", "edit", sessionKey, "--status", status],
@@ -2501,10 +2598,7 @@ export class StreamsCoordinator {
       this.lastCompletedKey = null;
       await this.refreshAfterMutation({ sessionKey, streamKey, machine: target.machine });
       return { ok: true };
-    } finally {
-      this.pendingStatusSessions.delete(sessionKey);
-      this.notifyViews();
-    }
+    });
   }
 
   async renameSession(sessionKey, newTitle, streamKey = null) {
@@ -2514,14 +2608,12 @@ export class StreamsCoordinator {
       this.reportActionError("Could not rename Session", msg);
       return { ok: false, error: msg };
     }
-    const target = await this.ensureWriteMachineForKey(sessionKey);
-    if (!target.ok) {
-      this.reportActionError("Could not rename Session", target.error);
-      return { ok: false, error: target.error };
-    }
-    this.pendingRenames.add(sessionKey);
-    this.notifyViews();
-    try {
+    return this._withPendingSet(this.pendingRenames, sessionKey, async () => {
+      const target = await this.ensureWriteMachineForKey(sessionKey);
+      if (!target.ok) {
+        this.reportActionError("Could not rename Session", target.error);
+        return { ok: false, error: target.error };
+      }
       const out = await this.runExec(
         this.streamsBinFor(target.machine),
         ["session", "edit", sessionKey, "--title", trimmed],
@@ -2536,10 +2628,7 @@ export class StreamsCoordinator {
       this.lastCompletedKey = null;
       await this.refreshAfterMutation({ sessionKey, streamKey, machine: target.machine });
       return { ok: true, title: trimmed };
-    } finally {
-      this.pendingRenames.delete(sessionKey);
-      this.notifyViews();
-    }
+    });
   }
 
   async renameStream(streamKey, newTitle) {
@@ -2549,14 +2638,12 @@ export class StreamsCoordinator {
       this.reportActionError("Could not rename Stream", msg);
       return { ok: false, error: msg };
     }
-    const target = await this.ensureWriteMachineForKey(streamKey);
-    if (!target.ok) {
-      this.reportActionError("Could not rename Stream", target.error);
-      return { ok: false, error: target.error };
-    }
-    this.pendingRenames.add(streamKey);
-    this.notifyViews();
-    try {
+    return this._withPendingSet(this.pendingRenames, streamKey, async () => {
+      const target = await this.ensureWriteMachineForKey(streamKey);
+      if (!target.ok) {
+        this.reportActionError("Could not rename Stream", target.error);
+        return { ok: false, error: target.error };
+      }
       const out = await this.runExec(
         this.streamsBinFor(target.machine),
         ["stream", "edit", streamKey, "--title", trimmed],
@@ -2571,10 +2658,7 @@ export class StreamsCoordinator {
       this.lastCompletedKey = null;
       await this.refreshAfterMutation({ streamKey, machine: target.machine });
       return { ok: true, title: trimmed };
-    } finally {
-      this.pendingRenames.delete(streamKey);
-      this.notifyViews();
-    }
+    });
   }
 
   async moveSessionToStream(
@@ -2587,7 +2671,7 @@ export class StreamsCoordinator {
       panes = [],
       spaces = [],
     } = {},
-    { run, readPanes, sleep } = {}
+    { run, readPanes, readSpaces, sleep } = {}
   ) {
     if (!sessionKey || !targetStreamKey) {
       const msg = "missing Session or target Stream key";
@@ -2604,22 +2688,14 @@ export class StreamsCoordinator {
       this.reportActionError("Could not move Session", msg);
       return { ok: false, error: msg };
     }
-    const target = await this.ensureWriteMachineForKey(sessionKey);
-    if (!target.ok) {
-      this.reportActionError("Could not move Session", target.error);
-      return { ok: false, error: target.error };
-    }
 
-    const waitMs =
-      typeof sleep === "function"
-        ? sleep
-        : (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    return this._withPendingSet(this.pendingMoves, sessionKey, async () => {
+      const target = await this.ensureWriteMachineForKey(sessionKey);
+      if (!target.ok) {
+        this.reportActionError("Could not move Session", target.error);
+        return { ok: false, error: target.error };
+      }
 
-    this.pendingMoves.add(sessionKey);
-    this.notifyViews();
-    let movedTab = false;
-    let tabMoveFailed = false;
-    try {
       const out = await this.runExec(
         this.streamsBinFor(target.machine),
         ["session", "edit", sessionKey, "--stream", targetStreamKey],
@@ -2631,107 +2707,145 @@ export class StreamsCoordinator {
         return { ok: false, error: err.message };
       }
 
-      const moveInfo = resolveMoveSpaceTarget({
-        sessionKey,
-        targetStreamKey,
-        machine: target.machine,
-        terminalList,
-        panes,
-        spaces,
-      });
+      let movedTab = false;
+      let tabMoveFailed = false;
+      try {
+        const latestPanes = typeof readPanes === "function" ? readPanes() ?? panes : panes;
+        const latestSpaces = typeof readSpaces === "function" ? readSpaces() ?? spaces : spaces;
+        const moveInfo = resolveMoveSpaceTarget({
+          sessionKey,
+          targetStreamKey,
+          machine: target.machine,
+          terminalList,
+          panes: latestPanes,
+          spaces: latestSpaces,
+        });
 
-      const liveTermAddress = moveInfo.liveTerm?.address ?? null;
-      if (moveTab && moveInfo.canMoveTab && liveTermAddress && typeof run === "function") {
-        const unqualSpace = unqualifyForMachine(moveInfo.targetSpace.id, target.machine);
-        const freshTabId = `tb_mv_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
-        const qualifiedTabId = qualifyForMachine(freshTabId, target.machine);
-        run("terminal.park", { terminal: liveTermAddress });
-        if (typeof readPanes === "function") {
-          for (let attempt = 0; attempt < 30; attempt++) {
-            await waitMs(50);
-            const currentPanes = readPanes() ?? [];
-            if (!currentPanes.some((p) => p?.terminal === liveTermAddress)) break;
-          }
-        } else {
-          await waitMs(0);
-        }
-        const labelOut = await this.runExec(this.hcBin, [
-          "label",
-          liveTermAddress,
-          `${LABEL_STREAM}=${targetStreamKey}`,
-          `${LABEL_HERDR_SPACE}=${unqualSpace}`,
-          `${LABEL_HERDR_TAB}=${freshTabId}`,
-        ]);
-        if (labelOut.code !== 0) {
-          tabMoveFailed = true;
-          const err = extractCliError(
-            labelOut,
-            "moved Session, but could not move tab to target Space"
-          );
-          this.reportActionError("Tab stayed in original Space", err.message);
-        } else {
-          movedTab = true;
-          if (moveInfo.currentTabName) {
-            if (typeof readPanes === "function") {
-              for (let attempt = 0; attempt < 30; attempt++) {
-                await waitMs(50);
-                const currentPanes = readPanes() ?? [];
-                if (
-                  currentPanes.some(
-                    (p) => p?.terminal === liveTermAddress && p?.space === moveInfo.targetSpace.id
-                  )
-                ) {
-                  break;
+        const liveTermAddress = moveInfo.liveTerm?.address ?? null;
+        if (moveTab && moveInfo.canMoveTab && liveTermAddress && typeof run === "function") {
+          if (typeof sleep !== "function" || typeof readPanes !== "function") {
+            tabMoveFailed = true;
+            this.reportActionError(
+              "Moved Session, skipped tab transfer",
+              "Tab transfer requires Herdr async sleep and pane polling."
+            );
+            await this.runExec(this.hcBin, [
+              "label",
+              liveTermAddress,
+              `${LABEL_STREAM}=${targetStreamKey}`,
+            ]);
+          } else {
+            const unqualSpace = unqualifyForMachine(moveInfo.targetSpace.id, target.machine);
+            const freshTabId = `tb_mv_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+            const qualifiedTabId = qualifyForMachine(freshTabId, target.machine);
+            run("terminal.park", { terminal: liveTermAddress });
+            let detached = false;
+            for (let attempt = 0; attempt < 30; attempt++) {
+              await sleep(50);
+              const currentPanes = readPanes() ?? [];
+              if (!currentPanes.some((p) => p?.terminal === liveTermAddress)) {
+                detached = true;
+                break;
+              }
+            }
+            if (!detached) {
+              tabMoveFailed = true;
+              this.reportActionError(
+                "Moved Session, tab stayed put",
+                "The tab did not detach in time for transfer to the target Space."
+              );
+              await this.runExec(this.hcBin, [
+                "label",
+                liveTermAddress,
+                `${LABEL_STREAM}=${targetStreamKey}`,
+              ]);
+            } else {
+              const labelOut = await this.runExec(this.hcBin, [
+                "label",
+                liveTermAddress,
+                `${LABEL_STREAM}=${targetStreamKey}`,
+                `${LABEL_HERDR_SPACE}=${unqualSpace}`,
+                `${LABEL_HERDR_TAB}=${freshTabId}`,
+              ]);
+              if (labelOut.code !== 0) {
+                tabMoveFailed = true;
+                const err = extractCliError(labelOut, "could not label parked terminal");
+                this.reportActionError(
+                  "Moved Session, terminal was parked",
+                  `Could not place tab in ${moveInfo.targetSpace.name} (${err.message}). Re-keep it from the Agents list.`
+                );
+              } else {
+                let adopted = false;
+                for (let attempt = 0; attempt < 30; attempt++) {
+                  await sleep(50);
+                  const currentPanes = readPanes() ?? [];
+                  if (
+                    currentPanes.some(
+                      (p) =>
+                        p?.terminal === liveTermAddress &&
+                        p?.space === moveInfo.targetSpace.id
+                    )
+                  ) {
+                    adopted = true;
+                    break;
+                  }
+                }
+                if (adopted) {
+                  movedTab = true;
+                  if (moveInfo.currentTabName) {
+                    run("tab.rename", { id: qualifiedTabId, name: moveInfo.currentTabName });
+                  }
+                } else {
+                  tabMoveFailed = true;
+                  this.reportActionError(
+                    "Moved Session, tab placement unconfirmed",
+                    `Placement in ${moveInfo.targetSpace.name} was not confirmed in time.`
+                  );
                 }
               }
             }
-            run("tab.rename", { id: qualifiedTabId, name: moveInfo.currentTabName });
           }
+        } else if (liveTermAddress) {
+          await this.runExec(this.hcBin, [
+            "label",
+            liveTermAddress,
+            `${LABEL_STREAM}=${targetStreamKey}`,
+          ]);
         }
-      } else if (liveTermAddress) {
-        await this.runExec(this.hcBin, [
-          "label",
-          liveTermAddress,
-          `${LABEL_STREAM}=${targetStreamKey}`,
-        ]);
+      } catch (err) {
+        tabMoveFailed = true;
+        this.reportActionError(
+          "Moved Session, tab transfer failed",
+          String(err?.message ?? err ?? "unknown error")
+        );
       }
 
       if (!tabMoveFailed) {
         this.actionError = null;
       }
       this.lastCompletedKey = null;
-      if (sourceStreamKey && sourceStreamKey !== targetStreamKey) {
-        await this.refreshAfterMutation({
-          sessionKey,
-          streamKey: sourceStreamKey,
-          machine: target.machine,
-        });
-      }
       await this.refreshAfterMutation({
         sessionKey,
         streamKey: targetStreamKey,
+        extraStreamKeys:
+          sourceStreamKey && sourceStreamKey !== targetStreamKey ? [sourceStreamKey] : [],
         machine: target.machine,
       });
       return { ok: true, movedTab };
-    } finally {
-      this.pendingMoves.delete(sessionKey);
-      this.notifyViews();
-    }
+    });
   }
 
   async _bulkSetStreamSessionsStatus(streamKey, targetStatus, predicate) {
     if (!streamKey) return { ok: false, error: "missing Stream key", updated: [] };
-    const target = await this.ensureWriteMachineForKey(streamKey);
     const errorTitle =
       targetStatus === "parked" ? "Could not park all sessions" : "Could not close all sessions";
-    if (!target.ok) {
-      this.reportActionError(errorTitle, target.error);
-      return { ok: false, error: target.error, updated: [] };
-    }
     const pendingLabel = targetStatus === "parked" ? "Parking…" : "Closing…";
-    this.pendingStreamActions.set(streamKey, pendingLabel);
-    this.notifyViews();
-    try {
+    return this._withPendingMap(this.pendingStreamActions, streamKey, pendingLabel, async () => {
+      const target = await this.ensureWriteMachineForKey(streamKey);
+      if (!target.ok) {
+        this.reportActionError(errorTitle, target.error);
+        return { ok: false, error: target.error, updated: [] };
+      }
       const targetMachine = target.machine;
       const bin = this.streamsBinFor(targetMachine);
       let stream = this.streams.get(streamKey) ?? null;
@@ -2776,10 +2890,7 @@ export class StreamsCoordinator {
       this.lastCompletedKey = null;
       await this.refreshAfterMutation({ streamKey, machine: targetMachine });
       return { ok: true, updated };
-    } finally {
-      this.pendingStreamActions.delete(streamKey);
-      this.notifyViews();
-    }
+    });
   }
 
   async parkAllSessions(streamKey) {
@@ -2800,14 +2911,12 @@ export class StreamsCoordinator {
 
   async deleteStream(streamKey) {
     if (!streamKey) return { ok: false, error: "missing Stream key" };
-    const target = await this.ensureWriteMachineForKey(streamKey);
-    if (!target.ok) {
-      this.reportActionError("Could not delete Stream", target.error);
-      return { ok: false, error: target.error };
-    }
-    this.pendingStreamActions.set(streamKey, "Deleting…");
-    this.notifyViews();
-    try {
+    return this._withPendingMap(this.pendingStreamActions, streamKey, "Deleting…", async () => {
+      const target = await this.ensureWriteMachineForKey(streamKey);
+      if (!target.ok) {
+        this.reportActionError("Could not delete Stream", target.error);
+        return { ok: false, error: target.error };
+      }
       const out = await this.runExec(
         this.streamsBinFor(target.machine),
         ["stream", "delete", streamKey, "--json"],
@@ -2833,10 +2942,7 @@ export class StreamsCoordinator {
       }
       this.lastCompletedKey = null;
       return { ok: true, key: streamKey };
-    } finally {
-      this.pendingStreamActions.delete(streamKey);
-      this.notifyViews();
-    }
+    });
   }
 
   recordPendingViewer(entry) {
@@ -3557,21 +3663,33 @@ export class StreamsCoordinator {
     { run, focusTerminal } = {}
   ) {
     if (!stream) return null;
-    const selectedIds =
-      sessions?.kind === "selected" && Array.isArray(sessions.session_ids)
-        ? sessions.session_ids
-        : [];
-    const isBulkOpen = selectedIds.length === 0;
-    for (const id of selectedIds) this.pendingResumeSessions.add(id);
-    if (isBulkOpen) this.pendingStreamActions.set(stream, "Opening…");
+    const isSelected = sessions?.kind === "selected" && Array.isArray(sessions.session_ids);
+    const isBulkOpen =
+      !isSelected &&
+      (sessions == null || sessions.kind === "all_eligible" || sessions.kind === "only_active");
+
+    let effectiveSessions = sessions;
+    const addedSessionIds = [];
+    if (isSelected) {
+      const freshIds = sessions.session_ids.filter((id) => !this.pendingResumeSessions.has(id));
+      if (freshIds.length === 0) return { ok: false, duplicate: true };
+      for (const id of freshIds) {
+        this.pendingResumeSessions.add(id);
+        addedSessionIds.push(id);
+      }
+      effectiveSessions = { ...sessions, session_ids: freshIds };
+    } else if (isBulkOpen) {
+      if (this.pendingStreamActions.has(stream)) return { ok: false, duplicate: true };
+      this.pendingStreamActions.set(stream, "Opening…");
+    }
     this.notifyViews();
     try {
       return await this._openWorkInner(
-        { stream, sessions, terminalList, panes, agents },
+        { stream, sessions: effectiveSessions, terminalList, panes, agents },
         { run, focusTerminal }
       );
     } finally {
-      for (const id of selectedIds) this.pendingResumeSessions.delete(id);
+      for (const id of addedSessionIds) this.pendingResumeSessions.delete(id);
       if (isBulkOpen) this.pendingStreamActions.delete(stream);
       this.notifyViews();
     }
