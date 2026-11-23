@@ -60,9 +60,9 @@ test-native-rust: build
 test-herdr:
     npm --prefix integrations/herdr-work-cards test
 
-# Run herdr-app mod state, batching and viewer dispatch unit tests
+# Run herdr-app mod state, batching, viewer dispatch, and UI smoke tests
 test-herdr-app:
-    node --test integrations/herdr-app/tests/state.test.mjs
+    node --test integrations/herdr-app/tests/state.test.mjs integrations/herdr-app/tests/ui_smoke.test.mjs
 
 # Development gate: Rust contracts and Pi tests, not full acceptance
 test-fast: test-rust-fast test-pi
@@ -83,7 +83,8 @@ install-herdr-app-mod:
     set -eu
     home="${HERDR_APP_HOME:-$HOME/.config/herdr-app}"
     mkdir -p "$home/mods/streams/icons"
-    cp integrations/herdr-app/mod.json integrations/herdr-app/main.js integrations/herdr-app/state.js "$home/mods/streams/"
+    rm -f "$home/mods/streams/"*.js
+    cp integrations/herdr-app/mod.json integrations/herdr-app/*.js "$home/mods/streams/"
     cp integrations/herdr-app/icons/*.svg "$home/mods/streams/icons/"
     if command -v herdr-app >/dev/null 2>&1; then
       herdr-app check "$home/mods/streams"
