@@ -406,6 +406,128 @@ export function findSpaceForStream(terminalList, streamKey, machine = null) {
 }
 
 /**
+ * Determine whether moving `sessionKey` to `targetStreamKey` can also move its live tab
+ * to an open Space belonging to `targetStreamKey` on the same machine.
+ */
+export function resolveMoveSpaceTarget({
+  sessionKey,
+  targetStreamKey,
+  machine = null,
+  terminalList = [],
+  panes = [],
+  spaces = [],
+} = {}) {
+  const targetMachine = machine ?? null;
+  const termByAddr = new Map();
+  for (const term of terminalList ?? []) {
+    const parsed = parseTerminalAddress(term);
+    if (parsed) termByAddr.set(parsed.address, { term, parsed });
+  }
+  const spaceById = new Map();
+  for (const sp of spaces ?? []) {
+    if (sp?.id) spaceById.set(sp.id, sp);
+  }
+
+  let liveTerm = null;
+  let livePane = null;
+  if (sessionKey) {
+    for (const pane of panes ?? []) {
+      const entry = termByAddr.get(pane?.terminal);
+      if (!entry || entry.parsed.machine !== targetMachine) continue;
+      if (entry.term.labels?.[LABEL_SESSION] === sessionKey) {
+        liveTerm = entry.term;
+        livePane = pane;
+        break;
+      }
+    }
+    if (!liveTerm) {
+      for (const { term, parsed } of termByAddr.values()) {
+        if (parsed.machine !== targetMachine) continue;
+        if (term.labels?.[LABEL_SESSION] === sessionKey && term.state === "live") {
+          liveTerm = term;
+          break;
+        }
+      }
+    }
+  }
+
+  const currentSpaceId = livePane?.space ?? null;
+  let currentTabName = null;
+  if (currentSpaceId && livePane?.tab) {
+    const sp = spaceById.get(currentSpaceId);
+    const tb = sp?.tabs?.find((t) => t.id === livePane.tab);
+    if (tb?.named && typeof tb.name === "string" && tb.name.trim()) {
+      currentTabName = tb.name.trim();
+    }
+  }
+
+  let targetSpace = null;
+  if (targetStreamKey) {
+    // Prefer an open pane currently enrolled in targetStreamKey.
+    for (const pane of panes ?? []) {
+      const entry = termByAddr.get(pane?.terminal);
+      if (!entry || entry.parsed.machine !== targetMachine) continue;
+      if (entry.term.labels?.[LABEL_STREAM] !== targetStreamKey) continue;
+      const sp = spaceById.get(pane.space);
+      if (sp) {
+        targetSpace = sp;
+        break;
+      }
+    }
+    if (!targetSpace) {
+      const rawSpaceId = findSpaceForStream(terminalList, targetStreamKey, targetMachine);
+      if (rawSpaceId) {
+        const qualified = qualifyForMachine(rawSpaceId, targetMachine);
+        targetSpace = spaceById.get(qualified) ?? spaceById.get(rawSpaceId) ?? null;
+      }
+    }
+  }
+
+  if (!liveTerm || !livePane) {
+    return {
+      liveTerm,
+      livePane,
+      currentSpaceId,
+      currentTabName,
+      targetSpace,
+      canMoveTab: false,
+      reason: "Session is not open",
+    };
+  }
+  if (!targetSpace) {
+    return {
+      liveTerm,
+      livePane,
+      currentSpaceId,
+      currentTabName,
+      targetSpace: null,
+      canMoveTab: false,
+      reason: "Target stream has no open space",
+    };
+  }
+  if (targetSpace.id === currentSpaceId) {
+    return {
+      liveTerm,
+      livePane,
+      currentSpaceId,
+      currentTabName,
+      targetSpace,
+      canMoveTab: false,
+      reason: "Already in this space",
+    };
+  }
+  return {
+    liveTerm,
+    livePane,
+    currentSpaceId,
+    currentTabName,
+    targetSpace,
+    canMoveTab: true,
+    reason: null,
+  };
+}
+
+/**
  * Identify Stream keys that currently have a live running agent terminal in Herdr,
  * from either `frames` or `streams.stream` labels on live terminals (local or remote).
  */
@@ -1531,6 +1653,7 @@ export class StreamsCoordinator {
     this.pendingStreamActions = new Map();
     this.pendingDropReferences = new Set();
     this.pendingRenames = new Set();
+    this.pendingMoves = new Set();
   }
 
   _machineKey(machine = this.activeMachine) {
@@ -2450,6 +2573,148 @@ export class StreamsCoordinator {
       return { ok: true, title: trimmed };
     } finally {
       this.pendingRenames.delete(streamKey);
+      this.notifyViews();
+    }
+  }
+
+  async moveSessionToStream(
+    {
+      sessionKey,
+      sourceStreamKey = null,
+      targetStreamKey,
+      moveTab = false,
+      terminalList = [],
+      panes = [],
+      spaces = [],
+    } = {},
+    { run, readPanes, sleep } = {}
+  ) {
+    if (!sessionKey || !targetStreamKey) {
+      const msg = "missing Session or target Stream key";
+      this.reportActionError("Could not move Session", msg);
+      return { ok: false, error: msg };
+    }
+    if (sourceStreamKey && targetStreamKey === sourceStreamKey) {
+      return { ok: true, movedTab: false };
+    }
+    const sessHost = recordHostId(sessionKey);
+    const targetHost = recordHostId(targetStreamKey);
+    if (sessHost && targetHost && sessHost !== targetHost) {
+      const msg = "Sessions can only move to a Stream on the same host.";
+      this.reportActionError("Could not move Session", msg);
+      return { ok: false, error: msg };
+    }
+    const target = await this.ensureWriteMachineForKey(sessionKey);
+    if (!target.ok) {
+      this.reportActionError("Could not move Session", target.error);
+      return { ok: false, error: target.error };
+    }
+
+    const waitMs =
+      typeof sleep === "function"
+        ? sleep
+        : (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    this.pendingMoves.add(sessionKey);
+    this.notifyViews();
+    let movedTab = false;
+    let tabMoveFailed = false;
+    try {
+      const out = await this.runExec(
+        this.streamsBinFor(target.machine),
+        ["session", "edit", sessionKey, "--stream", targetStreamKey],
+        { on: target.machine }
+      );
+      if (out.code !== 0) {
+        const err = extractCliError(out, "could not move Session");
+        this.reportActionError("Could not move Session", err.message);
+        return { ok: false, error: err.message };
+      }
+
+      const moveInfo = resolveMoveSpaceTarget({
+        sessionKey,
+        targetStreamKey,
+        machine: target.machine,
+        terminalList,
+        panes,
+        spaces,
+      });
+
+      const liveTermAddress = moveInfo.liveTerm?.address ?? null;
+      if (moveTab && moveInfo.canMoveTab && liveTermAddress && typeof run === "function") {
+        const unqualSpace = unqualifyForMachine(moveInfo.targetSpace.id, target.machine);
+        const freshTabId = `tb_mv_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+        const qualifiedTabId = qualifyForMachine(freshTabId, target.machine);
+        run("terminal.park", { terminal: liveTermAddress });
+        if (typeof readPanes === "function") {
+          for (let attempt = 0; attempt < 30; attempt++) {
+            await waitMs(50);
+            const currentPanes = readPanes() ?? [];
+            if (!currentPanes.some((p) => p?.terminal === liveTermAddress)) break;
+          }
+        } else {
+          await waitMs(0);
+        }
+        const labelOut = await this.runExec(this.hcBin, [
+          "label",
+          liveTermAddress,
+          `${LABEL_STREAM}=${targetStreamKey}`,
+          `${LABEL_HERDR_SPACE}=${unqualSpace}`,
+          `${LABEL_HERDR_TAB}=${freshTabId}`,
+        ]);
+        if (labelOut.code !== 0) {
+          tabMoveFailed = true;
+          const err = extractCliError(
+            labelOut,
+            "moved Session, but could not move tab to target Space"
+          );
+          this.reportActionError("Tab stayed in original Space", err.message);
+        } else {
+          movedTab = true;
+          if (moveInfo.currentTabName) {
+            if (typeof readPanes === "function") {
+              for (let attempt = 0; attempt < 30; attempt++) {
+                await waitMs(50);
+                const currentPanes = readPanes() ?? [];
+                if (
+                  currentPanes.some(
+                    (p) => p?.terminal === liveTermAddress && p?.space === moveInfo.targetSpace.id
+                  )
+                ) {
+                  break;
+                }
+              }
+            }
+            run("tab.rename", { id: qualifiedTabId, name: moveInfo.currentTabName });
+          }
+        }
+      } else if (liveTermAddress) {
+        await this.runExec(this.hcBin, [
+          "label",
+          liveTermAddress,
+          `${LABEL_STREAM}=${targetStreamKey}`,
+        ]);
+      }
+
+      if (!tabMoveFailed) {
+        this.actionError = null;
+      }
+      this.lastCompletedKey = null;
+      if (sourceStreamKey && sourceStreamKey !== targetStreamKey) {
+        await this.refreshAfterMutation({
+          sessionKey,
+          streamKey: sourceStreamKey,
+          machine: target.machine,
+        });
+      }
+      await this.refreshAfterMutation({
+        sessionKey,
+        streamKey: targetStreamKey,
+        machine: target.machine,
+      });
+      return { ok: true, movedTab };
+    } finally {
+      this.pendingMoves.delete(sessionKey);
       this.notifyViews();
     }
   }

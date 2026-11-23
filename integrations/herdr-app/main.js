@@ -40,6 +40,8 @@ import {
   SESSION_STATUSES,
   resolveRole,
   parseTerminalAddress,
+  recordHostId,
+  resolveMoveSpaceTarget,
   observeNoticeToken,
   resolveSpaceStreamKey,
   resolveSidebarView,
@@ -381,6 +383,9 @@ export default class StreamsMod extends View {
     this.renameInput = null;
     this.renaming = null;
     this.renameValue = "";
+    this.moveSearchInput = null;
+    this.moveState = null;
+    this.moveQuery = "";
     const rawProps = props() ?? initialProps ?? {};
     const role = resolveRole(rawProps);
     this._role = role;
@@ -398,6 +403,14 @@ export default class StreamsMod extends View {
       });
       this.renameInput.on("submit", (_e, submitCx) => {
         this.commitRename(submitCx);
+      });
+      this.moveSearchInput = InputState.new({ placeholder: "Filter streams…" });
+      this.moveSearchInput.on("change", (_e, changeCx) => {
+        this.moveQuery = this.moveSearchInput.value();
+        changeCx.notify();
+      });
+      this.moveSearchInput.on("submit", (_e, submitCx) => {
+        this.commitMove(submitCx);
       });
     }
     if (role === "viewer") {
@@ -425,9 +438,440 @@ export default class StreamsMod extends View {
     this.searchInput = null;
     this.renameInput?.release?.();
     this.renameInput = null;
+    this.moveSearchInput?.release?.();
+    this.moveSearchInput = null;
     this._editorState?.release?.();
     this._editorState = null;
     this._viewerKey = null;
+  }
+
+  openMoveMenu({ sessionKey, sourceStreamKey, sessionTitle = "" }, cx) {
+    if (!sessionKey || !this.moveSearchInput) return;
+    this.openMenu = null;
+    this.menuIndex = -1;
+    this.renaming = null;
+    const owner = coordinator.resolveReadMachineForKey(sessionKey);
+    const machine = owner.unavailable ? null : owner.machine ?? null;
+    const hostId = recordHostId(sessionKey) ?? recordHostId(sourceStreamKey);
+    this.moveQuery = "";
+    this.moveSearchInput.set_value("");
+    this.moveState = {
+      sessionKey,
+      sourceStreamKey,
+      sessionTitle,
+      machine,
+      hostId,
+      selectedStreamKey: null,
+      moveTabOverride: null,
+    };
+    this.moveSearchInput.focus();
+    cx?.notify?.();
+    if (cx?.spawn) {
+      cx.spawn(async (asyncCx) => {
+        try {
+          await coordinator.ensureHostStreams(false, { machine, scope: "local" });
+        } finally {
+          asyncCx.notify();
+        }
+      });
+    }
+  }
+
+  closeMoveMenu(cx) {
+    if (!this.moveState) return;
+    this.moveState = null;
+    this.moveQuery = "";
+    cx?.notify?.();
+  }
+
+  moveCandidates(state, snap) {
+    if (!state) return [];
+    const byKey = new Map();
+    const bucket = coordinator._getHostStreamsEntry(state.machine, "local");
+    for (const item of bucket?.items ?? []) {
+      if (item?.key) byKey.set(item.key, item);
+    }
+    for (const st of coordinator.streams.values()) {
+      if (st?.key && !byKey.has(st.key)) byKey.set(st.key, st);
+    }
+    const q = (this.moveQuery ?? "").trim().toLowerCase();
+    const list = [];
+    for (const item of byKey.values()) {
+      if (item.key === state.sourceStreamKey) continue;
+      if (state.hostId && item.host_id && item.host_id !== state.hostId) continue;
+      if (q) {
+        const hay = `${item.title ?? ""} ${item.goal ?? ""} ${item.id ?? ""}`.toLowerCase();
+        if (!hay.includes(q)) continue;
+      }
+      const spaceInfo = resolveMoveSpaceTarget({
+        sessionKey: state.sessionKey,
+        targetStreamKey: item.key,
+        machine: state.machine,
+        terminalList: snap.terminalList,
+        panes: snap.panes,
+        spaces: snap.spaces,
+      });
+      list.push({
+        stream: item,
+        spaceInfo,
+        isArchived: item.status === "done" || item.status === "closed",
+      });
+    }
+    list.sort((a, b) => {
+      if (a.isArchived !== b.isArchived) return a.isArchived ? 1 : -1;
+      const aOpen = a.spaceInfo.targetSpace ? 1 : 0;
+      const bOpen = b.spaceInfo.targetSpace ? 1 : 0;
+      if (aOpen !== bOpen) return bOpen - aOpen;
+      return (b.stream.last_activity_ms ?? 0) - (a.stream.last_activity_ms ?? 0);
+    });
+    return list;
+  }
+
+  commitMove(cx, explicitTargetKey = null) {
+    const state = this.moveState;
+    if (!state) return;
+    const snap = collectSnapshot();
+    const candidates = this.moveCandidates(state, snap);
+    const chosenKey =
+      explicitTargetKey ??
+      (candidates.some((c) => c.stream.key === state.selectedStreamKey)
+        ? state.selectedStreamKey
+        : candidates[0]?.stream.key ?? null);
+    if (!chosenKey) return;
+    const chosen = candidates.find((c) => c.stream.key === chosenKey);
+    const canMoveTab = Boolean(chosen?.spaceInfo?.canMoveTab);
+    const moveTab = canMoveTab ? (state.moveTabOverride ?? true) : false;
+
+    this.moveState = null;
+    this.moveQuery = "";
+    cx?.notify?.();
+    if (!cx?.spawn) return;
+    cx.spawn(async (asyncCx) => {
+      try {
+        await coordinator.moveSessionToStream(
+          {
+            sessionKey: state.sessionKey,
+            sourceStreamKey: state.sourceStreamKey,
+            targetStreamKey: chosenKey,
+            moveTab,
+            terminalList: snap.terminalList,
+            panes: snap.panes,
+            spaces: snap.spaces,
+          },
+          {
+            run,
+            readPanes: () => panes(),
+          }
+        );
+      } finally {
+        asyncCx.notify();
+      }
+    });
+  }
+
+  renderMovePopover({ id, trigger, snap, t }) {
+    const state = this.moveState;
+    if (!state) return trigger;
+    const candidates = this.moveCandidates(state, snap);
+    const bucket = coordinator._getHostStreamsEntry(state.machine, "local");
+    const isLoadingStreams = !bucket?.loaded && candidates.length === 0;
+    const selectedIdx = candidates.findIndex((c) => c.stream.key === state.selectedStreamKey);
+    const effectiveIdx = selectedIdx >= 0 ? selectedIdx : candidates.length > 0 ? 0 : -1;
+    const effectiveCandidate = effectiveIdx >= 0 ? candidates[effectiveIdx] : null;
+    const moveInfo = effectiveCandidate?.spaceInfo ?? {
+      canMoveTab: false,
+      targetSpace: null,
+      reason: "Select a target stream",
+    };
+    const moveTabChecked = moveInfo.canMoveTab ? (state.moveTabOverride ?? true) : false;
+    const checkboxLabel = moveInfo.targetSpace?.name
+      ? `Move tab to ${moveInfo.targetSpace.name}`
+      : "Move tab to space";
+
+    return Popover.new(id)
+      .open(true)
+      .on_open_change((nextOpen, popCx) => {
+        if (!nextOpen) this.closeMoveMenu(popCx);
+      })
+      .anchor("top_right")
+      .trigger(trigger)
+      .content(() =>
+        v_flex()
+          .id(`${id}-panel`)
+          .w(260)
+          .p(8)
+          .gap(6)
+          .rounded(6)
+          .bg(t.popover)
+          .border(1)
+          .border_color(t.border)
+          .shadow_md()
+          .text_size(12)
+          .text_color(t.foreground)
+          .on_mouse_down("left", (_e, downCx) => downCx.stop_propagation())
+          .on_click((_e, clickCx) => clickCx.stop_propagation())
+          .on_key_down((e, keyCx) => {
+            const k = String(e.key ?? "").toLowerCase();
+            if (k === "escape") {
+              keyCx.stop_propagation();
+              this.closeMoveMenu(keyCx);
+              return;
+            }
+            if ((k === "down" || k === "arrowdown") && candidates.length > 0) {
+              keyCx.stop_propagation();
+              const next = (effectiveIdx + 1) % candidates.length;
+              this.moveState = {
+                ...state,
+                selectedStreamKey: candidates[next].stream.key,
+                moveTabOverride: null,
+              };
+              keyCx.notify();
+              return;
+            }
+            if ((k === "up" || k === "arrowup") && candidates.length > 0) {
+              keyCx.stop_propagation();
+              const next = (effectiveIdx - 1 + candidates.length) % candidates.length;
+              this.moveState = {
+                ...state,
+                selectedStreamKey: candidates[next].stream.key,
+                moveTabOverride: null,
+              };
+              keyCx.notify();
+              return;
+            }
+            if (k === "enter" || k === "return") {
+              keyCx.stop_propagation();
+              this.commitMove(keyCx);
+            }
+          })
+          .child(
+            h_flex()
+              .gap(6)
+              .items_center()
+              .justify_between()
+              .child(div().font_semibold().text_size(12).child("Move to stream"))
+              .child(
+                div()
+                  .flex_1()
+                  .min_w(0)
+                  .truncate()
+                  .text_size(10.5)
+                  .text_color(t.dim)
+                  .child(state.sessionTitle || "")
+              )
+          )
+          .child(
+            h_flex()
+              .h(26)
+              .px(7)
+              .items_center()
+              .rounded(4)
+              .border(1)
+              .border_color(t.border)
+              .bg(t.background)
+              .child(
+                Input.new(this.moveSearchInput)
+                  .flex_1()
+                  .h_full()
+                  .text_size(11.5)
+                  .text_color(t.foreground)
+              )
+          )
+          .child(
+            v_flex()
+              .id(`${id}-list`)
+              .max_h(180)
+              .overflow_y_scrollbar()
+              .rounded(4)
+              .border(1)
+              .border_color(t.border)
+              .bg(t.background)
+              .when(isLoadingStreams, (el) =>
+                el.child(
+                  div().p(8).text_size(11.5).text_color(t.dim).child("Loading streams…")
+                )
+              )
+              .when(!isLoadingStreams && candidates.length === 0, (el) =>
+                el.child(
+                  div()
+                    .p(8)
+                    .text_size(11.5)
+                    .text_color(t.dim)
+                    .child(
+                      this.moveQuery.trim()
+                        ? "No matching streams on this host."
+                        : "No other streams on this host."
+                    )
+                )
+              )
+              .when(candidates.length > 0, (el) =>
+                el.children(
+                  candidates.map((cand, idx) => {
+                    const isSelected = idx === effectiveIdx;
+                    const stStyle = statusStyle(cand.stream.status, t);
+                    return h_flex()
+                      .id(`${id}-cand-${idx}`)
+                      .px(8)
+                      .py(5)
+                      .gap(6)
+                      .items_center()
+                      .cursor_pointer()
+                      .when(idx > 0, (r) => r.border_t(1).border_color(t.border))
+                      .when(isSelected, (r) => r.bg(t.selected))
+                      .hover((s) => s.bg(t.hover))
+                      .on_mouse_down("left", (ev, downCx) => {
+                        downCx.stop_propagation();
+                        if (ev.click_count === 2) {
+                          this.commitMove(downCx, cand.stream.key);
+                          return;
+                        }
+                        if (this.moveState?.selectedStreamKey !== cand.stream.key) {
+                          this.moveState = {
+                            ...state,
+                            selectedStreamKey: cand.stream.key,
+                            moveTabOverride: null,
+                          };
+                          downCx.notify();
+                        }
+                      })
+                      .child(
+                        div()
+                          .flex_none()
+                          .text_size(9)
+                          .text_color(stStyle.color)
+                          .child(stStyle.symbol)
+                      )
+                      .child(
+                        div()
+                          .flex_1()
+                          .min_w(0)
+                          .truncate()
+                          .text_size(11.5)
+                          .when(isSelected, (elTitle) => elTitle.font_medium())
+                          .text_color(cand.isArchived ? t.muted : t.foreground)
+                          .child(cand.stream.title)
+                      )
+                      .when(Boolean(cand.spaceInfo.targetSpace?.name), (r) =>
+                        r.child(
+                          div()
+                            .flex_none()
+                            .max_w(75)
+                            .truncate()
+                            .px(4)
+                            .py(1)
+                            .rounded(3)
+                            .bg(t.raised)
+                            .text_size(10)
+                            .text_color(t.dim)
+                            .child(cand.spaceInfo.targetSpace.name)
+                        )
+                      );
+                  })
+                )
+              )
+          )
+          .child(
+            h_flex()
+              .id(`${id}-move-tab-toggle`)
+              .px(4)
+              .py(3)
+              .gap(7)
+              .items_center()
+              .rounded(4)
+              .when(moveInfo.canMoveTab, (row) =>
+                row
+                  .cursor_pointer()
+                  .hover((s) => s.bg(t.hover))
+                  .on_click((_e, clickCx) => {
+                    clickCx.stop_propagation();
+                    this.moveState = {
+                      ...state,
+                      selectedStreamKey: effectiveCandidate?.stream.key ?? state.selectedStreamKey,
+                      moveTabOverride: !moveTabChecked,
+                    };
+                    clickCx.notify();
+                  })
+              )
+              .when(!moveInfo.canMoveTab && Boolean(moveInfo.reason), (row) =>
+                row.tooltip(moveInfo.reason)
+              )
+              .child(
+                div()
+                  .w(14)
+                  .h(14)
+                  .flex_none()
+                  .flex()
+                  .items_center()
+                  .justify_center()
+                  .rounded(3)
+                  .border(1)
+                  .border_color(
+                    !moveInfo.canMoveTab
+                      ? t.border
+                      : moveTabChecked
+                        ? t.accent
+                        : t.muted
+                  )
+                  .bg(moveTabChecked ? t.accent : t.background)
+                  .text_size(10)
+                  .text_color(t.background)
+                  .child(moveTabChecked ? "✓" : "")
+              )
+              .child(
+                div()
+                  .flex_1()
+                  .min_w(0)
+                  .truncate()
+                  .text_size(11.5)
+                  .text_color(moveInfo.canMoveTab ? t.foreground : t.dim)
+                  .child(checkboxLabel)
+              )
+          )
+          .child(
+            h_flex()
+              .pt(2)
+              .gap(6)
+              .justify_end()
+              .items_center()
+              .child(
+                div()
+                  .id(`${id}-cancel`)
+                  .px(8)
+                  .py(3)
+                  .rounded(4)
+                  .cursor_pointer()
+                  .text_size(11.5)
+                  .text_color(t.muted)
+                  .hover((s) => s.bg(t.hover).text_color(t.foreground))
+                  .on_click((_e, clickCx) => {
+                    clickCx.stop_propagation();
+                    this.closeMoveMenu(clickCx);
+                  })
+                  .child("Cancel")
+              )
+              .child(
+                div()
+                  .id(`${id}-confirm`)
+                  .px(10)
+                  .py(3)
+                  .rounded(4)
+                  .font_medium()
+                  .text_size(11.5)
+                  .bg(effectiveCandidate ? t.accent : t.raised)
+                  .text_color(effectiveCandidate ? t.background : t.dim)
+                  .when(Boolean(effectiveCandidate), (btn) =>
+                    btn
+                      .cursor_pointer()
+                      .hover((s) => s.opacity(0.9))
+                      .on_click((_e, clickCx) => {
+                        clickCx.stop_propagation();
+                        this.commitMove(clickCx);
+                      })
+                  )
+                  .child("Move")
+              )
+          )
+      );
   }
 
   startRename({ kind, key, streamKey = null, title = "" }, cx) {
@@ -1227,6 +1671,7 @@ export default class StreamsMod extends View {
           this.openMenu = null;
           this.menuIndex = -1;
           this.renaming = null;
+          this.moveState = null;
           clickCx.spawn(async () => {
             await coordinator.setView(targetView);
           });
@@ -1614,6 +2059,18 @@ export default class StreamsMod extends View {
               },
             },
             {
+              id: "move",
+              label: "Move to stream…",
+              disabled: !writable || coordinator.pendingMoves.has(sessionKey),
+              onSelect: (actCx) => {
+                if (!writable) return;
+                this.openMoveMenu(
+                  { sessionKey, sourceStreamKey: streamKey, sessionTitle: title },
+                  actCx
+                );
+              },
+            },
+            {
               id: "close-term",
               label: "Close terminal",
               onSelect: () => {
@@ -1647,6 +2104,18 @@ export default class StreamsMod extends View {
                 if (!writable) return;
                 this.startRename(
                   { kind: "session", key: sessionKey, streamKey, title },
+                  actCx
+                );
+              },
+            },
+            {
+              id: "move",
+              label: "Move to stream…",
+              disabled: !writable || coordinator.pendingMoves.has(sessionKey),
+              onSelect: (actCx) => {
+                if (!writable) return;
+                this.openMoveMenu(
+                  { sessionKey, sourceStreamKey: streamKey, sessionTitle: title },
                   actCx
                 );
               },
@@ -2556,11 +3025,13 @@ export default class StreamsMod extends View {
                     const rowActionOpen = this.openMenu === rowActionMenuId;
                     const isRowStatusPending = coordinator.pendingStatusSessions.has(sess.key);
                     const isRowResuming = coordinator.pendingResumeSessions.has(sess.key);
+                    const isRowMoving = coordinator.pendingMoves.has(sess.key);
+                    const isRowMovingMenu = this.moveState?.sessionKey === sess.key;
                     const isRowRenaming =
                       this.renaming?.kind === "session" && this.renaming?.key === sess.key;
                     const isRowRenamePending = coordinator.pendingRenames.has(sess.key);
                     const rowWritable = !(streamForeignHost && streamForeignHost.state !== "online");
-                    const showRowActions = isRowHovered || rowActionOpen;
+                    const showRowActions = isRowHovered || rowActionOpen || isRowMovingMenu;
                     const rowMenuItems = buildSessionMenuItems({
                       sessionKey: sess.key,
                       streamKey: stream.key,
@@ -2620,13 +3091,17 @@ export default class StreamsMod extends View {
                                   .font_medium()
                                   .text_size(12)
                                   .text_color(
-                                    isRowRenamePending
+                                    isRowRenamePending || isRowMoving
                                       ? t.dim
                                       : isOpen
                                         ? t.foreground
                                         : t.muted
                                   )
-                                  .child(isRowRenamePending ? `${sess.title}…` : sess.title)
+                                  .child(
+                                    isRowRenamePending || isRowMoving
+                                      ? `${sess.title}…`
+                                      : sess.title
+                                  )
                           )
                           .when(!isRowRenaming, (line) =>
                             line.child(
@@ -2690,101 +3165,125 @@ export default class StreamsMod extends View {
                                 .child(sess.state_short ?? "")
                             )
                             .child(
-                              isRowResuming
+                              isRowMoving
                                 ? div()
-                                    .id(`stream-session-resuming-${sess.id}`)
+                                    .id(`stream-session-moving-${sess.id}`)
                                     .flex_none()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .tooltip("Resuming…")
-                                    .child(
-                                      svg("mods/workspace-chrome/spinner.svg")
-                                        .size(11)
-                                        .text_color(t.accent)
-                                        .spin(900)
-                                    )
-                                : showRowActions
-                                  ? h_flex()
+                                    .text_size(10.5)
+                                    .text_color(t.dim)
+                                    .child("Moving…")
+                                : isRowResuming
+                                  ? div()
+                                      .id(`stream-session-resuming-${sess.id}`)
                                       .flex_none()
-                                      .gap(2)
+                                      .flex()
                                       .items_center()
-                                      .when(isOpen && Boolean(liveMatch?.pane), (actions) =>
-                                        actions.child(
-                                          div()
-                                            .id(`stream-session-close-${sess.id}`)
-                                            .flex_none()
-                                            .px(5)
-                                            .py(1)
-                                            .rounded(4)
-                                            .cursor_pointer()
-                                            .text_size(11)
-                                            .text_color(t.dim)
-                                            .hover((s) => s.bg(t.raised).text_color(t.blocked))
-                                            .tooltip("Close terminal")
-                                            .on_mouse_down("left", (_e, downCx) =>
-                                              downCx.stop_propagation()
-                                            )
-                                            .on_click((_e, clickCx) => {
-                                              clickCx.stop_propagation();
-                                              run("pane.close", { pane: liveMatch.pane });
-                                            })
-                                            .child("×")
-                                        )
-                                      )
-                                      .when(!isOpen, (actions) =>
-                                        actions.child(
-                                          div()
-                                            .id(`stream-session-resume-${sess.id}`)
-                                            .flex_none()
-                                            .px(5)
-                                            .py(1)
-                                            .rounded(4)
-                                            .cursor_pointer()
-                                            .text_size(10.5)
-                                            .text_color(t.accent)
-                                            .hover((s) => s.bg(t.raised))
-                                            .tooltip("Resume session")
-                                            .on_mouse_down("left", (_e, downCx) =>
-                                              downCx.stop_propagation()
-                                            )
-                                            .on_click((_e, clickCx) => {
-                                              clickCx.stop_propagation();
-                                              resumeSingleSession(clickCx, stream.key, sess.key);
-                                            })
-                                            .child("▶")
-                                        )
-                                      )
+                                      .justify_center()
+                                      .tooltip("Resuming…")
                                       .child(
-                                        this.renderMenuPopover({
-                                          id: rowActionMenuId,
-                                          width: 190,
-                                          anchor: "top_right",
-                                          stopRowPropagation: true,
-                                          t,
-                                          items: rowMenuItems,
-                                          trigger: div()
-                                            .id(`stream-session-menu-${sess.id}`)
-                                            .flex_none()
-                                            .px(4)
-                                            .py(1)
-                                            .rounded(4)
-                                            .cursor_pointer()
-                                            .text_color(rowActionOpen ? t.foreground : t.dim)
-                                            .when(rowActionOpen, (el) => el.bg(t.hover))
-                                            .hover((s) =>
-                                              s.bg(t.hover).text_color(t.foreground)
-                                            )
-                                            .child("⋮"),
-                                        })
+                                        svg("mods/workspace-chrome/spinner.svg")
+                                          .size(11)
+                                          .text_color(t.accent)
+                                          .spin(900)
                                       )
-                                  : rowAge
-                                    ? div()
+                                  : showRowActions
+                                    ? h_flex()
                                         .flex_none()
-                                        .text_size(10.5)
-                                        .text_color(t.dim)
-                                        .child(rowAge)
-                                    : div()
+                                        .gap(2)
+                                        .items_center()
+                                        .when(isOpen && Boolean(liveMatch?.pane), (actions) =>
+                                          actions.child(
+                                            div()
+                                              .id(`stream-session-close-${sess.id}`)
+                                              .flex_none()
+                                              .px(5)
+                                              .py(1)
+                                              .rounded(4)
+                                              .cursor_pointer()
+                                              .text_size(11)
+                                              .text_color(t.dim)
+                                              .hover((s) => s.bg(t.raised).text_color(t.blocked))
+                                              .tooltip("Close terminal")
+                                              .on_mouse_down("left", (_e, downCx) =>
+                                                downCx.stop_propagation()
+                                              )
+                                              .on_click((_e, clickCx) => {
+                                                clickCx.stop_propagation();
+                                                run("pane.close", { pane: liveMatch.pane });
+                                              })
+                                              .child("×")
+                                          )
+                                        )
+                                        .when(!isOpen, (actions) =>
+                                          actions.child(
+                                            div()
+                                              .id(`stream-session-resume-${sess.id}`)
+                                              .flex_none()
+                                              .px(5)
+                                              .py(1)
+                                              .rounded(4)
+                                              .cursor_pointer()
+                                              .text_size(10.5)
+                                              .text_color(t.accent)
+                                              .hover((s) => s.bg(t.raised))
+                                              .tooltip("Resume session")
+                                              .on_mouse_down("left", (_e, downCx) =>
+                                                downCx.stop_propagation()
+                                              )
+                                              .on_click((_e, clickCx) => {
+                                                clickCx.stop_propagation();
+                                                resumeSingleSession(clickCx, stream.key, sess.key);
+                                              })
+                                              .child("▶")
+                                          )
+                                        )
+                                        .child(
+                                          (() => {
+                                            const menuTrigger = div()
+                                              .id(`stream-session-menu-${sess.id}`)
+                                              .flex_none()
+                                              .px(4)
+                                              .py(1)
+                                              .rounded(4)
+                                              .cursor_pointer()
+                                              .text_color(
+                                                rowActionOpen || isRowMovingMenu
+                                                  ? t.foreground
+                                                  : t.dim
+                                              )
+                                              .when(rowActionOpen || isRowMovingMenu, (el) =>
+                                                el.bg(t.hover)
+                                              )
+                                              .hover((s) =>
+                                                s.bg(t.hover).text_color(t.foreground)
+                                              )
+                                              .child("⋮");
+                                            if (isRowMovingMenu) {
+                                              return this.renderMovePopover({
+                                                id: `stream-session-move-pop-${sess.id}`,
+                                                trigger: menuTrigger,
+                                                snap,
+                                                t,
+                                              });
+                                            }
+                                            return this.renderMenuPopover({
+                                              id: rowActionMenuId,
+                                              width: 190,
+                                              anchor: "top_right",
+                                              stopRowPropagation: true,
+                                              t,
+                                              items: rowMenuItems,
+                                              trigger: menuTrigger,
+                                            });
+                                          })()
+                                        )
+                                    : rowAge
+                                      ? div()
+                                          .flex_none()
+                                          .text_size(10.5)
+                                          .text_color(t.dim)
+                                          .child(rowAge)
+                                      : div()
                             );
                         })()
                       );

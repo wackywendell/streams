@@ -32,6 +32,7 @@ import {
   countLiveTerminalsByStream,
   findLivePaneForStream,
   findLivePaneForSession,
+  resolveMoveSpaceTarget,
   statusToTerminalMark,
   buildSharedTerminalMarks,
   groupStreamSessions,
@@ -3162,4 +3163,197 @@ test("renameSession and renameStream route to owning host, validate non-empty ti
   const offlineRes = await coord.renameStream("h-rem/st1", "Blocked rename");
   assert.equal(offlineRes.ok, false);
   assert.equal(calls.length, prevCalls);
+});
+
+test("resolveMoveSpaceTarget and moveSessionToStream handle same-host move with and without live Space transfer", async () => {
+  const spaces = [
+    {
+      id: "sp1",
+      name: "Streams",
+      machine: null,
+      tabs: [{ id: "tb1", name: "Herdr UI", named: true }],
+    },
+    {
+      id: "sp2",
+      name: "Dev",
+      machine: null,
+      tabs: [{ id: "tb2", name: "Dotfiles", named: true }],
+    },
+  ];
+  const terminalList = [
+    {
+      address: "t1",
+      state: "live",
+      labels: {
+        [LABEL_SESSION]: "h1/pi/s1",
+        [LABEL_STREAM]: "h1/st1",
+        [LABEL_HERDR_SPACE]: "sp1",
+        [LABEL_HERDR_TAB]: "tb1",
+      },
+    },
+    {
+      address: "t2",
+      state: "live",
+      labels: {
+        [LABEL_SESSION]: "h1/pi/s2",
+        [LABEL_STREAM]: "h1/st2",
+        [LABEL_HERDR_SPACE]: "sp2",
+        [LABEL_HERDR_TAB]: "tb2",
+      },
+    },
+  ];
+  const panes = [
+    { pane: "p1", terminal: "t1", space: "sp1", tab: "tb1" },
+    { pane: "p2", terminal: "t2", space: "sp2", tab: "tb2" },
+  ];
+
+  // Live session moving to stream in another open space.
+  const canMove = resolveMoveSpaceTarget({
+    sessionKey: "h1/pi/s1",
+    targetStreamKey: "h1/st2",
+    machine: null,
+    terminalList,
+    panes,
+    spaces,
+  });
+  assert.equal(canMove.canMoveTab, true);
+  assert.equal(canMove.targetSpace.id, "sp2");
+  assert.equal(canMove.currentTabName, "Herdr UI");
+
+  // Unopened session cannot move tab.
+  const unopened = resolveMoveSpaceTarget({
+    sessionKey: "h1/pi/s-unopened",
+    targetStreamKey: "h1/st2",
+    machine: null,
+    terminalList,
+    panes,
+    spaces,
+  });
+  assert.equal(unopened.canMoveTab, false);
+  assert.equal(unopened.reason, "Session is not open");
+
+  // Target stream with no open space cannot move tab.
+  const noSpace = resolveMoveSpaceTarget({
+    sessionKey: "h1/pi/s1",
+    targetStreamKey: "h1/st3",
+    machine: null,
+    terminalList,
+    panes,
+    spaces,
+  });
+  assert.equal(noSpace.canMoveTab, false);
+  assert.equal(noSpace.reason, "Target stream has no open space");
+
+  // Target stream already in the same space cannot move tab.
+  const sameSpace = resolveMoveSpaceTarget({
+    sessionKey: "h1/pi/s1",
+    targetStreamKey: "h1/st1",
+    machine: null,
+    terminalList,
+    panes,
+    spaces,
+  });
+  assert.equal(sameSpace.canMoveTab, false);
+  assert.equal(sameSpace.reason, "Already in this space");
+
+  // Coordinator moveSessionToStream with moveTab: true parks, re-labels, renames tab, and refreshes both streams.
+  const execCalls = [];
+  const runCalls = [];
+  let livePanes = [...panes];
+  const coord = new StreamsCoordinator({
+    exec: async (bin, args, opts) => {
+      execCalls.push({ bin, args, on: opts?.on ?? null });
+      if (bin === "hc" && args[0] === "label" && args.some((a) => a.startsWith("herdr.space="))) {
+        const tabArg = args.find((a) => a.startsWith("herdr.tab=")).slice("herdr.tab=".length);
+        livePanes = [
+          { pane: "p1-moved", terminal: "t1", space: "sp2", tab: tabArg },
+          panes[1],
+        ];
+      }
+      if (args[0] === "session" && args[1] === "show") {
+        return {
+          code: 0,
+          stdout: JSON.stringify(makeSessionJson({ host: "h1", id: "s1", stream_id: "st2" })),
+          stderr: "",
+        };
+      }
+      if (args[0] === "stream" && args[1] === "show") {
+        const id = args[2].split("/")[1];
+        return {
+          code: 0,
+          stdout: JSON.stringify(makeStreamJson({ host: "h1", id, sessions: [] })),
+          stderr: "",
+        };
+      }
+      return { code: 0, stdout: "{}", stderr: "" };
+    },
+  });
+  coord.configLoaded = true;
+  coord.recordHostMachine("h1", null);
+
+  // Cross-host move rejected cleanly.
+  const crossHost = await coord.moveSessionToStream({
+    sessionKey: "h1/pi/s1",
+    sourceStreamKey: "h1/st1",
+    targetStreamKey: "h2/st9",
+  });
+  assert.equal(crossHost.ok, false);
+  assert.equal(execCalls.length, 0);
+
+  // Move with tab transfer.
+  const movedWithTab = await coord.moveSessionToStream(
+    {
+      sessionKey: "h1/pi/s1",
+      sourceStreamKey: "h1/st1",
+      targetStreamKey: "h1/st2",
+      moveTab: true,
+      terminalList,
+      panes,
+      spaces,
+    },
+    {
+      run: (cmd, args) => {
+        runCalls.push({ cmd, args });
+        if (cmd === "terminal.park") {
+          livePanes = [panes[1]];
+        }
+      },
+      readPanes: () => livePanes,
+      sleep: async () => {},
+    }
+  );
+  assert.equal(movedWithTab.ok, true);
+  assert.equal(movedWithTab.movedTab, true);
+  assert.equal(coord.pendingMoves.has("h1/pi/s1"), false);
+  assert.deepEqual(execCalls[0].args, ["session", "edit", "h1/pi/s1", "--stream", "h1/st2"]);
+  assert.equal(runCalls[0].cmd, "terminal.park");
+  assert.deepEqual(runCalls[0].args, { terminal: "t1" });
+  const hcLabelCall = execCalls.find((c) => c.bin === "hc" && c.args[0] === "label");
+  assert.ok(hcLabelCall);
+  assert.ok(hcLabelCall.args.includes("streams.stream=h1/st2"));
+  assert.ok(hcLabelCall.args.includes("herdr.space=sp2"));
+  assert.ok(hcLabelCall.args.some((a) => a.startsWith("herdr.tab=tb_mv_")));
+  assert.equal(runCalls[1].cmd, "tab.rename");
+  assert.equal(runCalls[1].args.name, "Herdr UI");
+
+  // Move without tab transfer skips terminal.park and only updates streams.stream label.
+  const prevRuns = runCalls.length;
+  const movedNoTab = await coord.moveSessionToStream(
+    {
+      sessionKey: "h1/pi/s1",
+      sourceStreamKey: "h1/st1",
+      targetStreamKey: "h1/st2",
+      moveTab: false,
+      terminalList,
+      panes,
+      spaces,
+    },
+    {
+      run: (cmd, args) => runCalls.push({ cmd, args }),
+      sleep: async () => {},
+    }
+  );
+  assert.equal(movedNoTab.ok, true);
+  assert.equal(movedNoTab.movedTab, false);
+  assert.equal(runCalls.length, prevRuns);
 });
