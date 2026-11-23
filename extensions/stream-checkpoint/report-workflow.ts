@@ -34,7 +34,7 @@ export type ReportSnapshot = {
   evidence: { messages: any[]; leafId: string | null };
   catalog: LocalContext;
   valid(): boolean;
-  attached(): Promise<boolean>;
+  attached(requireSameStream?: boolean): Promise<boolean>;
 };
 
 export type ReportGenerator = <T extends EnrollmentInference | ReportInference>(
@@ -200,7 +200,7 @@ export async function runReport(
         before.goal = structuredClone(st.goal);
       }
       if (Object.keys(changes).length > 0) {
-        if (signal.aborted || !(await capture.attached())) return savedAny;
+        if (signal.aborted || !(await capture.attached(true))) return savedAny;
         const body: EditBody = { changes, before };
         const res = await environment.editStream(stKey, body);
         environment.onEditResult?.("stream", body, res);
@@ -275,7 +275,7 @@ export async function runReport(
       instructions,
       reset,
     })) as StreamReportResult;
-    if (signal.aborted || !(await capture.attached())) return savedAny;
+    if (signal.aborted || !(await capture.attached(true))) return savedAny;
 
     const body = buildStreamReportEdit(
       capture.catalog.stream,

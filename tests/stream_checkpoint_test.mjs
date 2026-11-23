@@ -526,6 +526,58 @@ test('Reporter cadence triggers every N responses and respects exclusive lock', 
   assert.deepEqual(ran, ['session', 'stream']);
 });
 
+test('Reporter skips Stream edit if Session moves during Stream inference while keeping Session edits', async () => {
+  const manager = SessionManager.inMemory('/repo/work', { id: 'sess-move' });
+  manager.appendMessage({ role: 'user', content: 'hi', timestamp: 1 });
+  const ctx = { cwd: '/repo/work', sessionManager: manager };
+  let currentStreamId = 'effort-a';
+  const sessionEdits = [];
+  const streamEdits = [];
+  const reporter = new Reporter({
+    cli: () => ({
+      context: async () =>
+        makeCatalog({
+          stream: makeStream({ id: currentStreamId, title: { text: `Stream ${currentStreamId}`, manual: false } }),
+          session: makeSession({ id: 'sess-move', stream_id: currentStreamId }),
+        }),
+      editSession: async (key, body) => {
+        sessionEdits.push({ key, body });
+        return { key, not_written: {} };
+      },
+      editStream: async (key, body) => {
+        streamEdits.push({ key, body });
+        return { key, not_written: {} };
+      },
+    }),
+    settings: () => ({
+      reporting: 'automatic',
+      enrollment: 'automatic',
+      frequency: 1,
+      context: 'trimmed',
+      session_logging: false,
+      debug_commands: false,
+      pi_name_edits: true,
+    }),
+    infer: async (_ctx, req) => {
+      if (req.type === 'session') {
+        return { changes: { state: 'Updated state' }, reference_proposals: [] };
+      }
+      if (req.type === 'stream') {
+        // Session moves to another Stream while Stream inference is in flight.
+        currentStreamId = 'effort-b';
+        return { changes: { title: 'Stale title for effort-a' } };
+      }
+      return { changes: {} };
+    },
+    notice: () => {},
+  });
+
+  reporter.response(ctx);
+  await reporter.idle();
+  assert.equal(sessionEdits.length, 1);
+  assert.deepEqual(streamEdits, [], 'must not edit old Stream after Session moved during inference');
+});
+
 test('chooseInitial enrolls against an existing Stream and refuses already-bound sessions', async () => {
   const calls = [];
   let bound = false;

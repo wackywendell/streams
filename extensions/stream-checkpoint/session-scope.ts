@@ -82,7 +82,7 @@ export async function captureInputs(
     (evidence.leafId === null
       ? ctx.sessionManager.getLeafId() === null
       : ctx.sessionManager.getBranch().some((entry) => entry.id === evidence.leafId));
-  const attached = async () => {
+  const attached = async (requireSameStream = purpose !== "report") => {
     if (!valid()) return false;
     const current = await cli.context(native, fence.signal);
     const sameSession =
@@ -91,7 +91,7 @@ export async function captureInputs(
     const sameStream =
       (current.stream ? streamKeyOf(current.stream) : null) ===
       (catalog.stream ? streamKeyOf(catalog.stream) : null);
-    return valid() && sameSession && (purpose === "report" || sameStream);
+    return valid() && sameSession && (!requireSameStream || sameStream);
   };
   return { native, cwd, evidence, catalog, valid, attached };
 }
