@@ -45,6 +45,11 @@ pub const STREAM_FIELDS: &[FieldSpec] = &[
         is_collection: false,
     },
     FieldSpec {
+        name: "host_label",
+        class: FieldClass::Computed,
+        is_collection: false,
+    },
+    FieldSpec {
         name: "id",
         class: FieldClass::ReadOnly,
         is_collection: false,
@@ -101,7 +106,8 @@ pub const STREAM_FIELDS: &[FieldSpec] = &[
     },
 ];
 
-pub const STREAM_LIST_DEFAULTS: &[&str] = &["key", "status", "title", "last_activity_ms"];
+pub const STREAM_LIST_DEFAULTS: &[&str] =
+    &["key", "host_label", "status", "title", "last_activity_ms"];
 
 pub const SESSION_FIELDS: &[FieldSpec] = &[
     FieldSpec {
@@ -112,6 +118,11 @@ pub const SESSION_FIELDS: &[FieldSpec] = &[
     FieldSpec {
         name: "host_id",
         class: FieldClass::ReadOnly,
+        is_collection: false,
+    },
+    FieldSpec {
+        name: "host_label",
+        class: FieldClass::Computed,
         is_collection: false,
     },
     FieldSpec {
@@ -186,7 +197,8 @@ pub const SESSION_FIELDS: &[FieldSpec] = &[
     },
 ];
 
-pub const SESSION_LIST_DEFAULTS: &[&str] = &["key", "status", "title", "updated_at_ms"];
+pub const SESSION_LIST_DEFAULTS: &[&str] =
+    &["key", "host_label", "status", "title", "updated_at_ms"];
 
 pub const ARTIFACT_FIELDS: &[FieldSpec] = &[
     FieldSpec {
@@ -385,6 +397,7 @@ impl ArtifactRow {
 pub fn project_stream(
     stream: &Stream,
     members: &[&Session],
+    host_label: Option<&str>,
     cutoff_ms: Option<u64>,
     fields: &[&str],
 ) -> Map<String, Value> {
@@ -401,6 +414,9 @@ pub fn project_stream(
         let value = match field {
             "key" => Value::String(stream.key().to_string()),
             "host_id" => Value::String(stream.host_id.clone()),
+            "host_label" => host_label
+                .map(|label| Value::String(label.to_owned()))
+                .unwrap_or(Value::Null),
             "id" => Value::String(stream.id.clone()),
             "title" => serde_json::to_value(&stream.title).expect("title json"),
             "goal" => serde_json::to_value(&stream.goal).expect("goal json"),
@@ -460,6 +476,7 @@ pub fn project_stream(
 pub fn project_session(
     local_host: &str,
     session: &Session,
+    host_label: Option<&str>,
     fields: &[&str],
 ) -> Result<Map<String, Value>, ApplicationError> {
     let mut obj = Map::new();
@@ -467,6 +484,9 @@ pub fn project_session(
         let value = match field {
             "key" => Value::String(session.key().to_string()),
             "host_id" => Value::String(session.host_id.clone()),
+            "host_label" => host_label
+                .map(|label| Value::String(label.to_owned()))
+                .unwrap_or(Value::Null),
             "harness" => Value::String(session.harness.clone()),
             "id" => Value::String(session.id.clone()),
             "stream_id" => Value::String(session.stream_id.clone()),

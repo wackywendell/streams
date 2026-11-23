@@ -270,7 +270,14 @@ fn fresh_initialization_creates_the_saved_producer_and_selected_transport_withou
         let config = fixture_config(directory.path());
         let opened = application::initialize_records(&config, strategy, None, "main").unwrap();
         assert_eq!(opened.host(), &config.host_identity().unwrap());
-        assert!(opened.inventory().unwrap().is_empty());
+        let inventory = opened.inventory().unwrap();
+        assert_eq!(inventory.len(), 1);
+        assert_eq!(inventory[0].kind(), streams::model::RecordKind::Host);
+        assert!(
+            application::read_host_label(&opened, opened.host().as_str())
+                .unwrap()
+                .is_some()
+        );
         let sync = streams::sync::open_backend(opened.root(), opened.host().as_str()).unwrap();
         assert_eq!(sync.strategy(), strategy);
         assert_eq!(

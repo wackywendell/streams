@@ -16,8 +16,9 @@ pub use listing::{
     list_sessions, list_streams,
 };
 pub use records::{
-    DiscardedCard, OpenedRecords, configure_records, initialize_records, open_records,
-    open_records_observed,
+    DiscardedCard, OpenedRecords, configure_records, default_host_label, initialize_records,
+    initialize_records_with_label, open_records, open_records_observed, read_host_label,
+    set_host_label,
 };
 
 use crate::config::ConfigError;

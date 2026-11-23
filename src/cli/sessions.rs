@@ -136,9 +136,14 @@ impl App {
         };
         let mut items = Vec::with_capacity(kept.len());
         for entry in kept {
+            let host_label = listed
+                .host_labels
+                .get(&entry.session.host_id)
+                .map(String::as_str);
             items.push(project_session(
                 opened.host().as_str(),
                 &entry.session,
+                host_label,
                 &selected_fields,
             )?);
         }
@@ -158,7 +163,17 @@ impl App {
         let selected_fields =
             resolve_fields(SESSION_FIELDS, "Session", requested_fields, &defaults)?;
         let session = select::select_session(&opened, selector)?;
-        let projected = project_session(opened.host().as_str(), &session, &selected_fields)?;
+        let host_label = if selected_fields.contains(&"host_label") {
+            application::read_host_label(&opened, &session.host_id)?
+        } else {
+            None
+        };
+        let projected = project_session(
+            opened.host().as_str(),
+            &session,
+            host_label.as_deref(),
+            &selected_fields,
+        )?;
         Ok(self.render_show_output(projected, &selected_fields))
     }
 

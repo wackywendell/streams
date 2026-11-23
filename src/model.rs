@@ -5,9 +5,8 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::Path;
 
-use chrono::{DateTime, FixedOffset, SecondsFormat};
 use percent_encoding::percent_decode_str;
-use serde::{Deserialize, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 use strum::{AsRefStr, Display, EnumString, VariantNames};
 use unicode_general_category::{GeneralCategory, get_general_category};
 
@@ -213,18 +212,6 @@ crate::codec::deserialize_string_enum!(
     ReferenceRole,
     ReferenceStatus
 );
-
-fn serialize_checked_at<S: Serializer>(
-    checked_at: &DateTime<FixedOffset>,
-    s: S,
-) -> Result<S::Ok, S::Error> {
-    let precision = if checked_at.timestamp_subsec_nanos() == 0 {
-        SecondsFormat::Secs
-    } else {
-        SecondsFormat::Micros
-    };
-    s.serialize_str(&checked_at.to_rfc3339_opts(precision, false))
-}
 
 /// A logical constraint violation in a record or catalog.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -665,27 +652,20 @@ impl Session {
     }
 }
 
-/// A durable host identity and the time it was last checked.
+/// A durable host identity and its human-readable label.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Host {
     pub id: String,
     pub label: String,
-    #[serde(serialize_with = "serialize_checked_at")]
-    pub checked_at: DateTime<FixedOffset>,
 }
 
 impl Host {
-    /// Requires valid token ID, nonempty label, and timestamp with at most microsecond precision.
-    pub fn new(
-        id: impl Into<String>,
-        label: impl Into<String>,
-        checked_at: DateTime<FixedOffset>,
-    ) -> Result<Self, ValidationError> {
+    /// Requires valid token ID and nonempty single-line label.
+    pub fn new(id: impl Into<String>, label: impl Into<String>) -> Result<Self, ValidationError> {
         let host = Self {
             id: id.into(),
             label: label.into(),
-            checked_at,
         };
         host.validate()?;
         Ok(host)
@@ -694,15 +674,6 @@ impl Host {
     pub fn validate(&self) -> Result<(), ValidationError> {
         check_token(&self.id, "host.id")?;
         check_text(&self.label, "host.label", false)?;
-        if !self
-            .checked_at
-            .timestamp_subsec_nanos()
-            .is_multiple_of(1000)
-        {
-            return Err(ValidationError::new(
-                "host.checked_at exceeds microsecond precision",
-            ));
-        }
         Ok(())
     }
 

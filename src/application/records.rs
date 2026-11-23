@@ -5,9 +5,9 @@ use std::path::{Path, PathBuf};
 use crate::{
     config::{Config, HostIdentity, Settings, Strategy, source_id},
     file_store::records::{FileRecordStore, RecordIoEvent},
-    model::{Record, Stream, Title},
+    model::{Host, Record, Stream, Title},
     runtime::state::RuntimeState,
-    storage::records::{RecordAddress, RecordInventory, RecordListing, RecordStore},
+    storage::records::{RecordAddress, RecordChange, RecordInventory, RecordListing, RecordStore},
     sync::{self, RemoteUpdate},
 };
 
@@ -132,6 +132,51 @@ pub struct DiscardedCard {
     pub stream: Option<String>,
 }
 
+/// Return the current machine's OS hostname trimmed for a default host label, falling back
+/// to `"host"` when unavailable or invalid.
+pub fn default_host_label() -> String {
+    let mut buf = [0u8; 256];
+    let ok = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) } == 0;
+    if ok {
+        let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+        if let Ok(raw) = std::str::from_utf8(&buf[..len]) {
+            let trimmed = raw.trim();
+            if Host::new("host", trimmed).is_ok() {
+                return trimmed.to_owned();
+            }
+        }
+    }
+    "host".to_owned()
+}
+
+/// Read one host's saved label from `hosts/<host_id>/host.json` without scanning the catalog.
+pub fn read_host_label(opened: &OpenedRecords, host_id: &str) -> Result<Option<String>> {
+    let address = RecordAddress::host_record(host_id)?;
+    let record = opened
+        .records()
+        .with_reader::<_, super::ApplicationError>(|reader| Ok(reader.read(&address)?))?;
+    Ok(match record {
+        Some(Record::Host(host)) => Some(host.label),
+        _ => None,
+    })
+}
+
+/// Set or update this host's label in `hosts/<local-host>/host.json`.
+pub fn set_host_label(opened: &OpenedRecords, label: &str) -> Result<(Host, bool)> {
+    let host = Host::new(opened.host().as_str(), label)?;
+    let address = RecordAddress::host_record(&host.id)?;
+    let save =
+        opened
+            .records()
+            .save::<_, super::ApplicationError>(&address, |_reader, _before| {
+                Ok(RecordChange {
+                    record: Record::Host(host.clone()),
+                    outcome: (),
+                })
+            })?;
+    Ok((host, save.written))
+}
+
 /// Initialize only an empty catalog. Existing data is neither interpreted nor adopted.
 pub fn initialize_records(
     config: &Config,
@@ -139,11 +184,37 @@ pub fn initialize_records(
     remote: Option<&str>,
     branch: &str,
 ) -> Result<OpenedRecords> {
+    initialize_records_with_label(config, strategy, remote, branch, None)
+}
+
+/// Initialize an empty catalog and write `hosts/<host>/host.json` with `label` (or OS hostname).
+pub fn initialize_records_with_label(
+    config: &Config,
+    strategy: Strategy,
+    remote: Option<&str>,
+    branch: &str,
+    label: Option<&str>,
+) -> Result<OpenedRecords> {
+    let resolved_label = match label {
+        Some(value) => {
+            Host::new("host", value)?;
+            value.to_owned()
+        }
+        None => default_host_label(),
+    };
     let mut lock = config.lock()?;
     let settings = lock.settings()?;
     let host = lock.host_identity_for_new_catalog()?;
     let records = FileRecordStore::new(&settings.catalog_root, host.as_str())?;
     records.initialize()?;
+    let host_record = Host::new(host.as_str(), &resolved_label)?;
+    let host_address = RecordAddress::host_record(host.as_str())?;
+    records.save::<_, super::ApplicationError>(&host_address, |_reader, _before| {
+        Ok(RecordChange {
+            record: Record::Host(host_record.clone()),
+            outcome: (),
+        })
+    })?;
     sync::initialize(
         records.root(),
         host.as_str(),

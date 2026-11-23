@@ -33,6 +33,7 @@ pub struct ListedStream {
 pub struct StreamList {
     /// Sorted by `last_activity_ms` descending, then full key ascending.
     pub streams: Vec<ListedStream>,
+    pub host_labels: BTreeMap<String, String>,
     pub unreadable: Vec<UnreadableRecord>,
 }
 
@@ -47,12 +48,19 @@ pub fn list_streams(
     let query = filter.query.map(fold);
     let listing = opened.listing()?;
     let mut sessions_by_stream: BTreeMap<(String, String), Vec<Session>> = BTreeMap::new();
+    let mut host_labels: BTreeMap<String, String> = BTreeMap::new();
     for read in &listing.records {
-        if let Record::Session(session) = read {
-            sessions_by_stream
-                .entry((session.host_id.clone(), session.stream_id.clone()))
-                .or_default()
-                .push(session.clone());
+        match read {
+            Record::Session(session) => {
+                sessions_by_stream
+                    .entry((session.host_id.clone(), session.stream_id.clone()))
+                    .or_default()
+                    .push(session.clone());
+            }
+            Record::Host(host) => {
+                host_labels.insert(host.id.clone(), host.label.clone());
+            }
+            Record::Stream(_) => {}
         }
     }
     let mut streams: Vec<ListedStream> = listing
@@ -108,6 +116,7 @@ pub fn list_streams(
     });
     Ok(StreamList {
         streams,
+        host_labels,
         unreadable: listing.unreadable,
     })
 }
@@ -131,6 +140,7 @@ pub struct ListedSession {
 pub struct SessionList {
     /// Sorted by `updated_at_ms` descending, then full key ascending.
     pub sessions: Vec<ListedSession>,
+    pub host_labels: BTreeMap<String, String>,
     pub unreadable: Vec<UnreadableRecord>,
 }
 
@@ -138,7 +148,7 @@ pub fn list_sessions(opened: &OpenedRecords, filter: &SessionFilter<'_>) -> Resu
     let fold = |value: &str| CaseMapper::new().fold_string(value).into_owned();
     let query = filter.query.map(fold);
 
-    let (raw_sessions, unreadable) = if !filter.keys.is_empty() {
+    let (raw_sessions, mut host_labels, unreadable) = if !filter.keys.is_empty() {
         // Point reads only: deduplicate keys, silently omit missing Sessions, collect decode errors.
         let unique: BTreeSet<&RecordAddress> = filter.keys.iter().collect();
         let mut sessions = Vec::new();
@@ -157,7 +167,7 @@ pub fn list_sessions(opened: &OpenedRecords, filter: &SessionFilter<'_>) -> Resu
             }
             Ok(())
         })?;
-        (sessions, unreadable)
+        (sessions, BTreeMap::new(), unreadable)
     } else if let Some((host, _)) = &filter.stream {
         let listing = opened.sessions_for_host(host)?;
         let sessions = listing
@@ -168,18 +178,21 @@ pub fn list_sessions(opened: &OpenedRecords, filter: &SessionFilter<'_>) -> Resu
                 _ => None,
             })
             .collect();
-        (sessions, listing.unreadable)
+        (sessions, BTreeMap::new(), listing.unreadable)
     } else {
         let listing = opened.listing()?;
-        let sessions = listing
-            .records
-            .into_iter()
-            .filter_map(|record| match record {
-                Record::Session(session) => Some(session),
-                _ => None,
-            })
-            .collect();
-        (sessions, listing.unreadable)
+        let mut host_labels = BTreeMap::new();
+        let mut sessions = Vec::new();
+        for record in listing.records {
+            match record {
+                Record::Session(session) => sessions.push(session),
+                Record::Host(host) => {
+                    host_labels.insert(host.id, host.label);
+                }
+                Record::Stream(_) => {}
+            }
+        }
+        (sessions, host_labels, listing.unreadable)
     };
 
     let mut sessions: Vec<ListedSession> = raw_sessions
@@ -200,6 +213,24 @@ pub fn list_sessions(opened: &OpenedRecords, filter: &SessionFilter<'_>) -> Resu
         .map(|session| ListedSession { session })
         .collect();
 
+    // Point-read host labels for filtered/key-addressed queries when not already gathered from listing.
+    if host_labels.is_empty() && !sessions.is_empty() {
+        let hosts: BTreeSet<&str> = sessions
+            .iter()
+            .map(|entry| entry.session.host_id.as_str())
+            .collect();
+        opened.records().with_reader(|reader| -> Result<()> {
+            for host_id in hosts {
+                if let Ok(addr) = RecordAddress::host_record(host_id)
+                    && let Ok(Some(Record::Host(host))) = reader.read(&addr)
+                {
+                    host_labels.insert(host.id, host.label);
+                }
+            }
+            Ok(())
+        })?;
+    }
+
     sessions.sort_by(|left, right| {
         right
             .session
@@ -215,6 +246,7 @@ pub fn list_sessions(opened: &OpenedRecords, filter: &SessionFilter<'_>) -> Resu
 
     Ok(SessionList {
         sessions,
+        host_labels,
         unreadable,
     })
 }

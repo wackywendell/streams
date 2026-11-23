@@ -34,8 +34,8 @@ fn session_json() -> Value {
     })
 }
 
-fn host_json(checked_at: &str) -> Value {
-    json!({"id": "host", "label": "Laptop", "checked_at": checked_at})
+fn host_json() -> Value {
+    json!({"id": "host", "label": "Laptop"})
 }
 
 fn roundtrip(kind: RecordKind, data: &Value) -> Value {
@@ -49,7 +49,11 @@ fn roundtrip(kind: RecordKind, data: &Value) -> Value {
 fn records_roundtrip_and_refuse_missing_required_or_nullable_fields() {
     roundtrip(RecordKind::Stream, &stream_json());
     roundtrip(RecordKind::Session, &session_json());
-    roundtrip(RecordKind::Host, &host_json("2025-01-02T03:04:05+00:00"));
+    roundtrip(RecordKind::Host, &host_json());
+
+    let mut legacy_host = host_json();
+    legacy_host["checked_at"] = json!("2025-01-02T03:04:05+00:00");
+    assert!(record_from_data(RecordKind::Host, &legacy_host).is_err());
 
     for field in [
         "host_id",
@@ -112,10 +116,7 @@ fn duplicate_keys_and_unknown_fields_are_rejected() {
 #[test]
 fn positional_arrays_are_rejected_for_records_and_nested_objects() {
     for (kind, positional) in [
-        (
-            RecordKind::Host,
-            json!(["host", "Laptop", "2025-01-02T03:04:05+00:00"]),
-        ),
+        (RecordKind::Host, json!(["host", "Laptop"])),
         (
             RecordKind::Stream,
             json!(["host", "work", ["Café", false], null, 1, 0]),

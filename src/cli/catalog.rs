@@ -32,26 +32,54 @@ impl App {
                 sync,
                 remote,
                 branch,
+                label,
             } => {
-                let opened = application::initialize_records(
+                let opened = application::initialize_records_with_label(
                     &self.config,
                     sync,
                     remote.as_deref(),
                     &branch,
+                    label.as_deref(),
                 )?;
+                let host_label = application::read_host_label(&opened, opened.host().as_str())?;
                 let value = json!({
                     "catalog": opened.root(),
                     "host_id": opened.host().as_str(),
+                    "host_label": host_label,
                     "sync": sync,
                 });
                 let plain = format!(
-                    "initialized catalog at {} (host {}, sync {})",
+                    "initialized catalog at {} (host {} ({}), sync {})",
                     opened.root().display(),
                     opened.host().as_str(),
+                    host_label.as_deref().unwrap_or("-"),
                     sync
                 );
                 let output = Output::plain(value, plain);
                 Ok(output)
+            }
+            CatalogCommand::Label { label } => {
+                let opened = application::open_records(&self.config)?;
+                if let Some(new_label) = label {
+                    let (host, written) = application::set_host_label(&opened, &new_label)?;
+                    let value = json!({
+                        "host_id": host.id,
+                        "label": host.label,
+                        "written": written,
+                    });
+                    let mut output = Output::plain(value, host.label);
+                    output.notify_ui = written;
+                    output.wrote_catalog = written;
+                    Ok(output)
+                } else {
+                    let current = application::read_host_label(&opened, opened.host().as_str())?;
+                    let value = json!({
+                        "host_id": opened.host().as_str(),
+                        "label": current,
+                    });
+                    let plain = current.unwrap_or_else(|| "-".into());
+                    Ok(Output::plain(value, plain))
+                }
             }
             CatalogCommand::Configure {
                 sync,

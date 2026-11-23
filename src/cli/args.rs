@@ -589,6 +589,16 @@ pub(super) enum CatalogCommand {
         /// Git branch name
         #[arg(long, default_value = "main")]
         branch: String,
+
+        /// Human-readable label for this host (defaults to the machine's hostname)
+        #[arg(long)]
+        label: Option<String>,
+    },
+
+    /// Show or update this host's human-readable label in hosts/<host>/host.json
+    Label {
+        /// New label for this host (omit to show the current label)
+        label: Option<String>,
     },
 
     /// Configure sync transport on an existing catalog (none -> git, or update git remote)

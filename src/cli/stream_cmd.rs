@@ -94,9 +94,19 @@ impl App {
             .iter()
             .map(|entry| {
                 let refs: Vec<&Session> = entry.members.iter().collect();
+                let host_label = listed
+                    .host_labels
+                    .get(&entry.stream.host_id)
+                    .map(String::as_str);
                 let stream_cutoff =
                     cutoff.filter(|_| entry.stream.host_id == opened.host().as_str());
-                project_stream(&entry.stream, &refs, stream_cutoff, &selected_fields)
+                project_stream(
+                    &entry.stream,
+                    &refs,
+                    host_label,
+                    stream_cutoff,
+                    &selected_fields,
+                )
             })
             .collect();
 
@@ -122,11 +132,22 @@ impl App {
         } else {
             Vec::new()
         };
+        let host_label = if selected_fields.contains(&"host_label") {
+            application::read_host_label(&opened, &stream.host_id)?
+        } else {
+            None
+        };
         let refs: Vec<&Session> = members.iter().collect();
         let cutoff = (stream.host_id == opened.host().as_str())
             .then(|| decay_cutoff_ms(opened.settings().lifecycle.decay_days, now_ms()))
             .flatten();
-        let projected = project_stream(&stream, &refs, cutoff, &selected_fields);
+        let projected = project_stream(
+            &stream,
+            &refs,
+            host_label.as_deref(),
+            cutoff,
+            &selected_fields,
+        );
         Ok(self.render_show_output(projected, &selected_fields))
     }
 

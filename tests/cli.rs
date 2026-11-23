@@ -907,3 +907,98 @@ fn git_sync_cli_end_to_end_configure_and_background_auto_sync() {
     assert_eq!(code, 3);
     assert_eq!(none_explicit["local"], "repair-required");
 }
+
+#[test]
+fn host_label_is_written_at_init_editable_and_shown_across_hosts() {
+    let bare = tempfile::tempdir().unwrap();
+    let status = Command::new("git")
+        .args(["init", "--bare"])
+        .arg(bare.path())
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let remote = bare.path().to_str().unwrap();
+
+    let make_host = || {
+        let host = Fixture {
+            directory: tempfile::tempdir().unwrap(),
+        };
+        host.ok_json(&["config", "set", "frontend.mode", "none"], None);
+        host.ok_json(&["config", "set", "sync.auto_interval_minutes", "0"], None);
+        host
+    };
+
+    let host_a = make_host();
+    let init_a = host_a.ok_json(
+        &[
+            "catalog", "init", "--sync", "git", "--remote", remote, "--label", "macbook",
+        ],
+        None,
+    );
+    assert_eq!(init_a["host_label"], "macbook");
+    let host_a_id = init_a["host_id"].as_str().unwrap().to_owned();
+    assert!(
+        host_a
+            .root()
+            .join(format!("hosts/{host_a_id}/host.json"))
+            .exists()
+    );
+
+    let read_label = host_a.ok_json(&["catalog", "label"], None);
+    assert_eq!(read_label["label"], "macbook");
+    let updated = host_a.ok_json(&["catalog", "label", "work-mac"], None);
+    assert_eq!(updated["label"], "work-mac");
+    assert_eq!(updated["written"], true);
+
+    let stream = host_a.ok_json(&["stream", "create", "--title", "Mac stream"], None);
+    let stream_key = stream["key"].as_str().unwrap().to_owned();
+    let session = host_a.ok_json(
+        &[
+            "session",
+            "create",
+            "pi/01ab0001",
+            "--stream",
+            &stream_key,
+            "--title",
+            "Mac session",
+        ],
+        None,
+    );
+    let session_key = session["key"].as_str().unwrap().to_owned();
+    host_a.ok_json(&["catalog", "sync"], None);
+
+    let shown_stream = host_a.ok_json(&["stream", "show", &stream_key], None);
+    assert_eq!(shown_stream["host_label"], "work-mac");
+    let shown_session = host_a.ok_json(&["session", "show", &session_key], None);
+    assert_eq!(shown_session["host_label"], "work-mac");
+
+    let host_b = make_host();
+    host_b.ok_json(
+        &[
+            "catalog",
+            "init",
+            "--sync",
+            "git",
+            "--remote",
+            remote,
+            "--label",
+            "retriever",
+        ],
+        None,
+    );
+    host_b.ok_json(&["catalog", "sync"], None);
+    host_b.ok_json(&["stream", "create", "--title", "Linux stream"], None);
+
+    let listed = host_b.ok_json(&["stream", "list", "--all"], None);
+    let items = listed["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2);
+    let labels: Vec<&str> = items
+        .iter()
+        .map(|item| item["host_label"].as_str().unwrap())
+        .collect();
+    assert!(labels.contains(&"work-mac"), "{labels:?}");
+    assert!(labels.contains(&"retriever"), "{labels:?}");
+
+    let listed_sessions = host_b.ok_json(&["session", "list", "--all"], None);
+    assert_eq!(listed_sessions["items"][0]["host_label"], "work-mac");
+}
