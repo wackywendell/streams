@@ -140,72 +140,6 @@ export function effectiveSessionStatus(session, { pane = null, terminal = null, 
   return status;
 }
 
-export const HOST_STREAM_FILTERS = [
-  { id: "in_progress", label: "In Progress" },
-  { id: "parked", label: "Parked" },
-  { id: "done", label: "Done" },
-  { id: "closed", label: "Closed" },
-  { id: "all", label: "All" },
-];
-
-export const HOST_STREAM_SORTS = [
-  { id: "recent", label: "Recent" },
-  { id: "alpha", label: "A–Z" },
-];
-
-function matchesHostStreamFilter(status, filter) {
-  switch (filter) {
-    case "in_progress":
-      return status === "active" || status === "waiting" || status === "blocked";
-    case "parked":
-      return status === "parked";
-    case "done":
-      return status === "done";
-    case "closed":
-      return status === "closed";
-    case "all":
-      return true;
-    default:
-      return true;
-  }
-}
-
-/**
- * Filter and sort host Stream summaries in the unassociated sidebar.
- */
-export function filterHostStreams(
-  streams,
-  { filter = "in_progress", sort = "recent", query = "" } = {}
-) {
-  if (!Array.isArray(streams)) return [];
-  const q = typeof query === "string" ? query.trim().toLowerCase() : "";
-  const filtered = streams.filter((summary) => {
-    if (!summary || !matchesHostStreamFilter(summary.status, filter)) return false;
-    if (!q) return true;
-    const title = (summary.title ?? "").toLowerCase();
-    const goalShort = (summary.goal_short ?? "").toLowerCase();
-    const id = (summary.id ?? "").toLowerCase();
-    return title.includes(q) || goalShort.includes(q) || id.includes(q);
-  });
-  filtered.sort((a, b) => {
-    if (sort === "alpha") {
-      const cmp = (a.title ?? "").localeCompare(b.title ?? "", undefined, {
-        sensitivity: "base",
-      });
-      if (cmp !== 0) return cmp;
-      return (a.id ?? "").localeCompare(b.id ?? "");
-    }
-    const tsDiff = (b.last_activity_ms ?? 0) - (a.last_activity_ms ?? 0);
-    if (tsDiff !== 0) return tsDiff;
-    const cmp = (a.title ?? "").localeCompare(b.title ?? "", undefined, {
-      sensitivity: "base",
-    });
-    if (cmp !== 0) return cmp;
-    return (a.id ?? "").localeCompare(b.id ?? "");
-  });
-  return filtered;
-}
-
 /**
  * The short sidebar notice for records a listing or Stream view could not read: one entry per
  * record with the repair Streams chose for its kind. Null when every record was read.
@@ -233,9 +167,11 @@ export function hostStreamsEmptyMessage({
   shown,
   unreadable,
   scope = "local",
+  loaded = true,
 }) {
-  if (error) return `Streams are unavailable: ${error}`;
   if (shown.length > 0) return null;
+  if (error) return `Streams are unavailable: ${error}`;
+  if (!loaded) return "Loading Streams…";
   if (streams.length > 0) return "No matching Streams.";
   if (scope === "all") {
     if (unreadable.length > 0) return "No readable Streams in the catalog.";
@@ -327,18 +263,16 @@ export function unqualifyForMachine(id, machine = null) {
   return id.startsWith(prefix) ? id.slice(prefix.length) : id;
 }
 
-/** Return the local terminal address (id/address), or null for remote terminals. */
-export function localTerminalAddress(term) {
-  const parsed = parseTerminalAddress(term);
-  if (!parsed || parsed.machine !== null) return null;
-  return parsed.address;
-}
-
 /**
  * Build a map of terminalKey -> sessionKey for local and remote terminals that carry a non-empty
  * `streams.session` label AND have a live Pi agent reported by Herdr.
  */
-export function runningSessionTerminals({ terminalList = [], panes = [], agents = [] } = {}) {
+export function runningSessionTerminals({
+  terminalList = [],
+  panes = [],
+  agents = [],
+  staleSessionKeys = null,
+} = {}) {
   const paneByTerm = new Map();
   for (const pane of panes ?? []) {
     if (pane?.terminal) paneByTerm.set(pane.terminal, pane);
@@ -359,8 +293,6 @@ export function runningSessionTerminals({ terminalList = [], panes = [], agents 
     if (term.state && term.state !== "live") continue;
     const ag = agentByTerm.get(addr);
     const pane = paneByTerm.get(addr);
-    // In real herdr-app, AgentInfo/PaneInfo expose `app: "pi"` and `program: { key: "pi", agent: true }`.
-    // Unit tests may also pass shorthand `agent: "pi"` or `program: { agent: "pi" }`.
     const explicitKind =
       (typeof ag?.app === "string" && ag.app) ||
       (typeof ag?.program?.key === "string" && ag.program.key) ||
@@ -377,11 +309,11 @@ export function runningSessionTerminals({ terminalList = [], panes = [], agents 
         pane?.program?.agent === true ||
         term?.program?.agent === true
     );
-    const isLivePi = explicitKind
-      ? explicitKind.toLowerCase() === "pi"
-      : hasAgentBool;
+    const isLivePi = explicitKind ? explicitKind.toLowerCase() === "pi" : hasAgentBool;
     if (!isLivePi) continue;
-    running.set(addr, sessionKey.trim());
+    const trimmed = sessionKey.trim();
+    if (staleSessionKeys?.has?.(trimmed)) continue;
+    running.set(addr, trimmed);
   }
   return running;
 }
@@ -406,182 +338,161 @@ export function findSpaceForStream(terminalList, streamKey, machine = null) {
 }
 
 /**
- * Build a Map from qualified Tab ID to `{ space, tab }` from Herdr `spaces()`.
- * Optional `machine` filters spaces to `(sp.machine ?? null) === (machine ?? null)`.
+ * Single synchronous pass over a Herdr desktop snapshot, computing every live lookup needed
+ * by `renderFrame`, `renderSidebar`, `resolveSidebarView`, and background fetchers.
  */
-export function buildTabSpaceMap(spaces = [], machine = undefined) {
-  const byTab = new Map();
-  const filterMachine = machine !== undefined;
-  const targetMachine = machine ?? null;
-  for (const sp of spaces ?? []) {
-    if (!sp?.id) continue;
-    if (filterMachine && (sp.machine ?? null) !== targetMachine) continue;
-    for (const tab of sp.tabs ?? []) {
-      if (tab?.id) {
-        byTab.set(tab.id, { space: sp, tab });
-      }
-    }
-  }
-  return byTab;
-}
+export function indexLive(
+  snap = {},
+  { sessions = null, staleSessionKeys = null, lastFocusedStreamBySpace = null } = {}
+) {
+  const {
+    allSpaces = null,
+    spaces = [],
+    activeSpace = null,
+    activeTab = null,
+    activeTabId = activeTab?.id ?? null,
+    visibleTerminals = [],
+    focusedTerminal = null,
+    terminalList = [],
+    panes = [],
+    agents = [],
+  } = snap ?? {};
+  const spaceList = allSpaces ?? spaces ?? [];
 
-/**
- * Determine whether moving `sessionKey` to `targetStreamKey` can also move its live tab
- * to an open Space belonging to `targetStreamKey` on the same machine.
- */
-export function resolveMoveSpaceTarget({
-  sessionKey,
-  targetStreamKey,
-  machine = null,
-  terminalList = [],
-  panes = [],
-  spaces = [],
-  agents = [],
-} = {}) {
-  const targetMachine = machine ?? null;
   const termByAddr = new Map();
+  const savedTokensByTerm = new Map();
   for (const term of terminalList ?? []) {
     const parsed = parseTerminalAddress(term);
-    if (parsed) termByAddr.set(parsed.address, { term, parsed });
-  }
-  const spaceById = new Map();
-  for (const sp of spaces ?? []) {
-    if (sp?.id && (sp.machine ?? null) === targetMachine) {
-      spaceById.set(sp.id, sp);
+    if (!parsed) continue;
+    termByAddr.set(parsed.address, term);
+    const tok = term.labels?.[LABEL_SAVED];
+    if (typeof tok === "string" && tok.length > 0) {
+      savedTokensByTerm.set(parsed.address, tok);
     }
   }
-  const tabSpaceMap = buildTabSpaceMap(spaces, targetMachine);
-  const running = runningSessionTerminals({ terminalList, panes, agents });
 
-  let liveTerm = null;
-  let livePane = null;
-  if (sessionKey) {
-    for (const pane of panes ?? []) {
-      const addr = pane?.terminal;
-      if (!addr || running.get(addr) !== sessionKey) continue;
-      const entry = termByAddr.get(addr);
-      if (!entry || entry.parsed.machine !== targetMachine) continue;
-      liveTerm = entry.term;
-      livePane = pane;
-      break;
+  const paneByTerm = new Map();
+  const panesByTab = new Map();
+  for (const pane of panes ?? []) {
+    if (!pane) continue;
+    const addr = parseTerminalAddress(pane.terminal ?? pane.content?.terminal)?.address;
+    if (addr && !paneByTerm.has(addr)) paneByTerm.set(addr, pane);
+    if (pane.tab) {
+      const list = panesByTab.get(pane.tab) ?? [];
+      list.push(pane);
+      panesByTab.set(pane.tab, list);
     }
-    if (!liveTerm) {
-      for (const [addr, runningKey] of running) {
-        if (runningKey !== sessionKey) continue;
-        const entry = termByAddr.get(addr);
-        if (!entry || entry.parsed.machine !== targetMachine) continue;
-        liveTerm = entry.term;
+  }
+
+  const runningByTerm = runningSessionTerminals({
+    terminalList,
+    panes,
+    agents,
+    staleSessionKeys,
+  });
+
+  const streamKeyForTerm = (addr, sessionKey) => {
+    const cachedStream = sessionKey ? sessions?.get?.(sessionKey)?.stream : null;
+    if (cachedStream) return cachedStream;
+    const label = termByAddr.get(addr)?.labels?.[LABEL_STREAM];
+    return typeof label === "string" && label.trim() ? label.trim() : null;
+  };
+
+  const paneBySession = new Map();
+  const openCountByStream = new Map();
+  const liveSessionKeys = new Set();
+  for (const [addr, sessionKey] of runningByTerm) {
+    liveSessionKeys.add(sessionKey);
+    const pane = paneByTerm.get(addr);
+    if (pane && !paneBySession.has(sessionKey)) {
+      paneBySession.set(sessionKey, {
+        pane: pane.pane,
+        terminal: addr,
+        tab: pane.tab ?? null,
+      });
+    }
+    const streamKey = streamKeyForTerm(addr, sessionKey);
+    if (streamKey) {
+      openCountByStream.set(streamKey, (openCountByStream.get(streamKey) ?? 0) + 1);
+    }
+  }
+
+  const visible = tabTerminals(visibleTerminals);
+  let activeTerm = null;
+  if (focusedTerminal && visible.includes(focusedTerminal) && runningByTerm.has(focusedTerminal)) {
+    activeTerm = focusedTerminal;
+  } else {
+    for (const addr of visible) {
+      if (runningByTerm.has(addr)) {
+        activeTerm = addr;
         break;
       }
     }
   }
+  const activeSessionKey = activeTerm ? runningByTerm.get(activeTerm) ?? null : null;
+  const activeStreamKey = activeTerm ? streamKeyForTerm(activeTerm, activeSessionKey) : null;
 
-  const currentLoc = livePane?.tab ? tabSpaceMap.get(livePane.tab) ?? null : null;
-  const currentSpaceId = currentLoc?.space?.id ?? null;
-  let currentTabName = null;
+  let spaceStreamKey = null;
   if (
-    currentLoc?.tab?.named &&
-    typeof currentLoc.tab.name === "string" &&
-    currentLoc.tab.name.trim()
+    activeSpace &&
+    Array.isArray(activeSpace.tabs) &&
+    activeSpace.tabs.length > 0 &&
+    runningByTerm.size > 0
   ) {
-    currentTabName = currentLoc.tab.name.trim();
-  }
-
-  let targetSpace = null;
-  if (targetStreamKey) {
-    // Prefer an open pane running an enrolled agent in targetStreamKey.
-    for (const pane of panes ?? []) {
-      const addr = pane?.terminal;
-      if (!addr || !running.has(addr)) continue;
-      const entry = termByAddr.get(addr);
-      if (!entry || entry.parsed.machine !== targetMachine) continue;
-      if (entry.term.labels?.[LABEL_STREAM] !== targetStreamKey) continue;
-      const loc = pane?.tab ? tabSpaceMap.get(pane.tab) ?? null : null;
-      if (loc?.space) {
-        targetSpace = loc.space;
-        break;
+    const liveSpaceStreams = new Set();
+    for (const tab of activeSpace.tabs) {
+      const tabId = typeof tab === "string" ? tab : tab?.id;
+      if (!tabId) continue;
+      for (const pane of panesByTab.get(tabId) ?? []) {
+        const addr = parseTerminalAddress(pane.terminal ?? pane.content?.terminal)?.address;
+        if (!addr || !runningByTerm.has(addr)) continue;
+        const sk = streamKeyForTerm(addr, runningByTerm.get(addr));
+        if (sk) liveSpaceStreams.add(sk);
       }
     }
-    if (!targetSpace) {
-      const runningTerms = [];
-      for (const [addr] of running) {
-        const entry = termByAddr.get(addr);
-        if (entry && entry.parsed.machine === targetMachine) {
-          runningTerms.push(entry.term);
-        }
-      }
-      const rawSpaceId = findSpaceForStream(runningTerms, targetStreamKey, targetMachine);
-      if (rawSpaceId) {
-        const lookupId =
-          targetMachine !== null ? qualifyForMachine(rawSpaceId, targetMachine) : rawSpaceId;
-        targetSpace = spaceById.get(lookupId) ?? null;
-      }
+    if (liveSpaceStreams.size > 0) {
+      const lastFocused = lastFocusedStreamBySpace?.get?.(activeSpace.id) ?? null;
+      spaceStreamKey =
+        lastFocused && liveSpaceStreams.has(lastFocused)
+          ? lastFocused
+          : liveSpaceStreams.values().next().value ?? null;
     }
   }
 
-  if (!liveTerm || !livePane) {
-    return {
-      liveTerm,
-      livePane,
-      currentSpaceId,
-      currentTabName,
-      targetSpace,
-      canMoveTab: false,
-      reason: "Session is not open",
-    };
-  }
-  if (!targetSpace) {
-    return {
-      liveTerm,
-      livePane,
-      currentSpaceId,
-      currentTabName,
-      targetSpace: null,
-      canMoveTab: false,
-      reason: "Target stream has no open space",
-    };
-  }
-  if (targetSpace.id === currentSpaceId) {
-    return {
-      liveTerm,
-      livePane,
-      currentSpaceId,
-      currentTabName,
-      targetSpace,
-      canMoveTab: false,
-      reason: "Already in this space",
-    };
-  }
   return {
-    liveTerm,
-    livePane,
-    currentSpaceId,
-    currentTabName,
-    targetSpace,
-    canMoveTab: true,
-    reason: null,
+    spaces: spaceList,
+    activeSpace,
+    activeTab,
+    activeTabId,
+    visibleTerminals: visible,
+    focusedTerminal,
+    termByAddr,
+    paneByTerm,
+    panesByTab,
+    runningByTerm,
+    paneBySession,
+    openCountByStream,
+    liveSessionKeys,
+    savedTokensByTerm,
+    activeTerm,
+    activeSessionKey,
+    activeStreamKey,
+    spaceStreamKey,
   };
 }
 
 /**
- * Pure candidate builder for the "Move to stream…" picker.
- * Accepts snapshot-shaped input (`allSpaces` or `spaces`, `panes`, `terminalList`).
+ * Filter and sort target Streams for the "Move to stream…" popover.
+ * Only lists same-host Streams (excluding the current source Stream), non-archived first,
+ * open Streams first, then most recently active.
  */
 export function buildMoveCandidates({
-  sessionKey,
   sourceStreamKey,
   hostId = null,
-  machine = null,
   streams = [],
+  openCounts = new Map(),
   query = "",
-  snapshot = {},
 } = {}) {
-  const targetMachine = machine ?? null;
-  const spaces = snapshot.allSpaces ?? snapshot.spaces ?? [];
-  const panes = snapshot.panes ?? [];
-  const terminalList = snapshot.terminalList ?? [];
-  const agents = snapshot.agents ?? [];
-
   const q = (query ?? "").trim().toLowerCase();
   const list = [];
   for (const item of streams ?? []) {
@@ -591,89 +502,20 @@ export function buildMoveCandidates({
       const hay = `${item.title ?? ""} ${item.goal ?? ""} ${item.id ?? ""}`.toLowerCase();
       if (!hay.includes(q)) continue;
     }
-    const spaceInfo = resolveMoveSpaceTarget({
-      sessionKey,
-      targetStreamKey: item.key,
-      machine: targetMachine,
-      terminalList,
-      panes,
-      spaces,
-      agents,
-    });
+    const openCount = openCounts?.get?.(item.key) ?? 0;
     list.push({
       stream: item,
-      spaceInfo,
+      openCount,
+      isOpen: openCount > 0,
       isArchived: item.status === "done" || item.status === "closed",
     });
   }
   list.sort((a, b) => {
     if (a.isArchived !== b.isArchived) return a.isArchived ? 1 : -1;
-    const aOpen = a.spaceInfo.targetSpace ? 1 : 0;
-    const bOpen = b.spaceInfo.targetSpace ? 1 : 0;
-    if (aOpen !== bOpen) return bOpen - aOpen;
+    if (a.isOpen !== b.isOpen) return a.isOpen ? -1 : 1;
     return (b.stream.last_activity_ms ?? 0) - (a.stream.last_activity_ms ?? 0);
   });
   return list;
-}
-
-/**
- * Identify Stream keys that currently have a live running agent terminal in Herdr,
- * from either `frames` or `streams.stream` labels on live terminals (local or remote).
- */
-export function liveStreamIds({ panes = [], terminalList = [], agents = [], frames } = {}) {
-  const live = new Set();
-  const running = runningSessionTerminals({ terminalList, panes, agents });
-  const termById = new Map();
-  for (const term of terminalList ?? []) {
-    const parsed = parseTerminalAddress(term);
-    if (parsed) termById.set(parsed.address, term);
-  }
-  for (const [addr] of running) {
-    const frame = frames?.get?.(addr);
-    if (frame?.kind === "enrolled" && frame.session?.stream) {
-      live.add(frame.session.stream);
-      if (frame.session.stream_id) live.add(frame.session.stream_id);
-    }
-    const streamLabel = termById.get(addr)?.labels?.[LABEL_STREAM];
-    if (typeof streamLabel === "string" && streamLabel.trim()) {
-      live.add(streamLabel.trim());
-      const parts = streamLabel.trim().split("/");
-      if (parts.length === 2) live.add(parts[1]);
-    }
-  }
-  return live;
-}
-
-/**
- * Count open live enrolled terminals per Stream key.
- */
-export function countLiveTerminalsByStream({
-  panes = [],
-  terminalList = [],
-  agents = [],
-  frames,
-} = {}) {
-  const counts = new Map();
-  const running = runningSessionTerminals({ terminalList, panes, agents });
-  const termById = new Map();
-  for (const term of terminalList ?? []) {
-    const parsed = parseTerminalAddress(term);
-    if (parsed) termById.set(parsed.address, term);
-  }
-  for (const [addr] of running) {
-    const frame = frames?.get?.(addr);
-    let streamKey =
-      frame?.kind === "enrolled" && frame.session?.stream ? frame.session.stream : null;
-    if (!streamKey) {
-      const streamLabel = termById.get(addr)?.labels?.[LABEL_STREAM];
-      if (typeof streamLabel === "string" && streamLabel.trim()) {
-        streamKey = streamLabel.trim();
-      }
-    }
-    if (!streamKey) continue;
-    counts.set(streamKey, (counts.get(streamKey) ?? 0) + 1);
-  }
-  return counts;
 }
 
 /**
@@ -686,21 +528,15 @@ export function findLivePaneForStream({
   panes = [],
   terminalList = [],
   agents = [],
-  frames,
+  sessions = null,
 } = {}) {
   if (!streamKey) return null;
-  const running = runningSessionTerminals({ terminalList, panes, agents });
-  const termById = new Map();
-  for (const term of terminalList ?? []) {
-    const parsed = parseTerminalAddress(term);
-    if (parsed) termById.set(parsed.address, term);
-  }
+  const live = indexLive({ spaces, panes, terminalList, agents }, { sessions });
   const matchingTerms = new Set();
-  for (const [addr] of running) {
-    const frame = frames?.get?.(addr);
-    const frameStream = frame?.kind === "enrolled" ? frame.session?.stream : null;
-    const labelStream = termById.get(addr)?.labels?.[LABEL_STREAM]?.trim() ?? null;
-    if (frameStream === streamKey || labelStream === streamKey) {
+  for (const [addr, sk] of live.runningByTerm) {
+    const cachedStream = sessions?.get?.(sk)?.stream ?? null;
+    const labelStream = live.termByAddr.get(addr)?.labels?.[LABEL_STREAM]?.trim() ?? null;
+    if (cachedStream === streamKey || labelStream === streamKey) {
       matchingTerms.add(addr);
     }
   }
@@ -734,15 +570,7 @@ export function findLivePaneForSession({
   agents = [],
 } = {}) {
   if (!sessionKey) return null;
-  const running = runningSessionTerminals({ terminalList, panes, agents });
-  for (const [addr, runningKey] of running) {
-    if (runningKey !== sessionKey) continue;
-    const pane = (panes ?? []).find((p) => p?.terminal === addr);
-    if (pane) {
-      return { pane: pane.pane, terminal: addr, tab: pane.tab ?? null };
-    }
-  }
-  return null;
+  return indexLive({ panes, terminalList, agents }).paneBySession.get(sessionKey) ?? null;
 }
 
 /**
@@ -768,29 +596,23 @@ export function statusToTerminalMark(status) {
 }
 
 /**
- * Build the generic `terminal.marks` shared-state payload keyed by local terminal address,
+ * Build the generic `terminal.marks` shared-state payload keyed by terminal address,
  * keeping tab bar and sidebar consumers orthogonal to Streams.
  */
-export function buildSharedTerminalMarks({ frames, running } = {}) {
+export function buildSharedTerminalMarks({ sessions, running } = {}) {
   const result = {};
-  if (!frames || !running) return result;
+  if (!sessions || !running) return result;
   const addrs = [...running.keys()].sort();
   for (const addr of addrs) {
-    const frame = frames.get(addr);
-    if (frame?.kind !== "enrolled" || !frame.session) continue;
-    const mark = statusToTerminalMark(frame.session.status ?? "parked");
+    const sessionKey = running.get(addr);
+    const session = sessionKey ? sessions.get(sessionKey) : null;
+    if (!session) continue;
+    const mark = statusToTerminalMark(session.status ?? "parked");
     if (mark) result[addr] = mark;
   }
   return result;
 }
 
-/**
- * Partition and sort a Stream's Sessions into three foldable status sections:
- * 1. Active & waiting (default open)
- * 2. Blocked & parked (default open)
- * 3. Done & closed (default closed)
- *
- * Within each section: current Tab's Session first, then live/open Sessions,
 /**
  * Partition a Stream's Sessions by openness first, then archive:
  *  - `open`: every Session with a live open terminal (regardless of status, so finished-but-open
@@ -1070,179 +892,34 @@ export function computeObservationKey({
 }
 
 /**
- * Resolve the primary enrolled session for the active tab (preferring the focused terminal),
- * counting only Sessions of `stream` when it is given.
- */
-export function activeTabSession({
-  visibleTerminals = [],
-  focusedTerminal = null,
-  frames,
-  stream = null,
-}) {
-  if (!frames) return null;
-  const enrolled = (terminalKey) => {
-    const frame = frames.get(terminalKey);
-    return frame?.kind === "enrolled" &&
-      frame.session &&
-      (stream === null || frame.session.stream === stream || frame.session.stream_id === stream)
-      ? { terminal: terminalKey, session: frame.session }
-      : null;
-  };
-  if (focusedTerminal && visibleTerminals.includes(focusedTerminal)) {
-    const focused = enrolled(focusedTerminal);
-    if (focused) return focused;
-  }
-  for (const terminalKey of visibleTerminals) {
-    const found = enrolled(terminalKey);
-    if (found) return found;
-  }
-  return null;
-}
-
-/**
- * Choose what the sidebar shows for the active tab:
- * - `loading`: the tab has not been read yet and a read is in flight.
- * - `session`: the tab's Stream with one of its enrolled Sessions (the focused one first), including Stream ID.
- * - `stream`: the tab's Stream when none of its Sessions is focused/visible in the tab (no references).
- * - `inspected`: a tab without a Stream, showing the Stream picked from the host listing (no references).
- * - `listing`: a tab without a Stream, showing the host's Streams.
- */
-export function tabSidebarView({
-  tabId,
-  tabStreams,
-  streams,
-  frames,
-  visibleTerminals = [],
-  focusedTerminal = null,
-  inspectedStreamId = null,
-  inFlight = false,
-}) {
-  if (!tabStreams.has(tabId) && inFlight) return { kind: "loading" };
-  const tabStreamKey = tabStreams.get(tabId) ?? "";
-  const tabStream = streams.get(tabStreamKey) ?? null;
-  if (tabStream) {
-    const viewing = activeTabSession({
-      visibleTerminals,
-      focusedTerminal,
-      frames,
-      stream: tabStream.key,
-    });
-    return viewing
-      ? { kind: "session", stream: tabStream, streamIdDisplay: tabStream.id, ...viewing }
-      : { kind: "stream", stream: tabStream, streamIdDisplay: tabStream.id };
-  }
-  const inspected = inspectedStreamId ? streams.get(inspectedStreamId) ?? null : null;
-  return inspected
-    ? { kind: "inspected", stream: inspected, streamIdDisplay: inspected.id }
-    : { kind: "listing" };
-}
-
-/**
- * Resolve the Stream associated with a Space when the active tab itself is not enrolled.
- * Prefers the last-focused Stream in that Space if it still has a live enrolled terminal there,
- * falling back to the first live enrolled Stream in Space tab/pane layout order.
- */
-export function resolveSpaceStreamKey({
-  space,
-  panes = [],
-  terminalList = [],
-  agents = [],
-  frames,
-  lastFocusedStreamBySpace,
-} = {}) {
-  if (!space || !Array.isArray(space.tabs) || space.tabs.length === 0) return null;
-  const running = runningSessionTerminals({ terminalList, panes, agents });
-  if (running.size === 0) return null;
-
-  const termByAddr = new Map();
-  for (const t of terminalList) {
-    const parsed = parseTerminalAddress(t);
-    if (parsed) termByAddr.set(parsed.address, t);
-  }
-
-  const panesByTab = new Map();
-  for (const pane of panes) {
-    const list = panesByTab.get(pane.tab) ?? [];
-    list.push(pane);
-    panesByTab.set(pane.tab, list);
-  }
-
-  const liveStreams = new Set();
-  for (const tab of space.tabs) {
-    const tabId = typeof tab === "string" ? tab : tab?.id;
-    if (!tabId) continue;
-    for (const pane of panesByTab.get(tabId) ?? []) {
-      const rawTerm = pane.terminal ?? pane.content?.terminal;
-      const addr = parseTerminalAddress(rawTerm)?.address ?? null;
-      if (!addr || !running.has(addr)) continue;
-      const fromFrame = frames?.get?.(addr)?.session?.stream ?? null;
-      const fromLabel = termByAddr.get(addr)?.labels?.[LABEL_STREAM] ?? null;
-      const streamKey = fromFrame || fromLabel;
-      if (streamKey) liveStreams.add(streamKey);
-    }
-  }
-
-  if (liveStreams.size === 0) return null;
-  const lastFocused = lastFocusedStreamBySpace?.get?.(space.id) ?? null;
-  if (lastFocused && liveStreams.has(lastFocused)) return lastFocused;
-  return liveStreams.values().next().value ?? null;
-}
-
-/**
- * Resolve the three-view right panel state (`session`, `stream`, `all`, or `loading`),
+ * Resolve the three-view right panel state (`session`, `stream`, or `all`),
  * applying sticky user intent (`preferredView`) with graceful fallback (`session -> stream -> all`)
  * while keeping detached preview overrides separate.
+ *
+ * Enrollment (`hasSessionAccess`, `hasStreamAccess`) is derived synchronously from Herdr's live
+ * terminal labels (`live`), never from async CLI caches, so cache misses render inline loading
+ * inside the intended view instead of spontaneously jumping to `Stream` or `All`.
  */
 export function resolveSidebarView({
   preferredView = "session",
-  activeView = null,
-  tabId,
-  tabStreams,
+  sessions,
   streams,
-  previewSessions,
-  frames,
-  visibleTerminals = [],
-  focusedTerminal = null,
-  spaceStreamKey = null,
+  live,
   previewStreamKey = null,
   previewSessionKey = null,
-  inFlight = false,
 }) {
-  const desired = activeView ?? preferredView ?? "session";
-  const currentStreamKey = tabStreams?.get?.(tabId) ?? "";
+  const desired = preferredView ?? "session";
+  const currentSessionKey = live?.activeSessionKey ?? null;
+  const currentSession = currentSessionKey ? sessions?.get?.(currentSessionKey) ?? null : null;
+  const currentStreamKey = currentSession?.stream ?? live?.activeStreamKey ?? null;
   const currentTabStream = currentStreamKey ? streams?.get?.(currentStreamKey) ?? null : null;
-  const currentViewing = currentTabStream
-    ? activeTabSession({
-        visibleTerminals,
-        focusedTerminal,
-        frames,
-        stream: currentTabStream.key,
-      })
-    : null;
-  const isEnrolled = Boolean(currentTabStream && currentViewing);
-  const spaceStream = !currentTabStream && spaceStreamKey ? streams?.get?.(spaceStreamKey) ?? null : null;
-  const contextStream = currentTabStream ?? spaceStream;
+  const isEnrolled = Boolean(currentSessionKey);
+  const contextStreamKey = currentStreamKey ?? live?.spaceStreamKey ?? null;
+  const contextStream =
+    currentTabStream ?? (live?.spaceStreamKey ? streams?.get?.(live.spaceStreamKey) ?? null : null);
 
   const hasSessionAccess = isEnrolled || Boolean(previewSessionKey);
-  const hasStreamAccess = Boolean(contextStream) || Boolean(spaceStreamKey) || Boolean(previewStreamKey);
-
-  if (
-    !tabStreams?.has?.(tabId) &&
-    inFlight &&
-    !previewStreamKey &&
-    !previewSessionKey &&
-    desired !== "all"
-  ) {
-    return {
-      view: "loading",
-      preferredView: desired,
-      hasSessionAccess: false,
-      hasStreamAccess,
-      isEnrolled: false,
-      currentStream: contextStream,
-      currentSession: null,
-    };
-  }
+  const hasStreamAccess = Boolean(contextStreamKey || previewStreamKey || isEnrolled);
 
   let effectiveView = "all";
   if (desired === "session") {
@@ -1252,8 +929,6 @@ export function resolveSidebarView({
   } else if (desired === "stream") {
     if (hasStreamAccess) effectiveView = "stream";
     else effectiveView = "all";
-  } else {
-    effectiveView = "all";
   }
 
   if (effectiveView === "all") {
@@ -1263,33 +938,35 @@ export function resolveSidebarView({
       hasSessionAccess,
       hasStreamAccess,
       isEnrolled,
+      currentStreamKey: contextStreamKey,
       currentStream: contextStream,
-      currentSession: currentViewing?.session ?? null,
+      currentSession,
     };
   }
 
   if (effectiveView === "stream") {
-    const stream = (previewStreamKey ? streams?.get?.(previewStreamKey) : null) ?? contextStream;
-    const isPreview = Boolean(
-      previewStreamKey && (!contextStream || previewStreamKey !== contextStream.key)
-    );
+    const streamKey = previewStreamKey ?? contextStreamKey;
+    const stream = streamKey ? streams?.get?.(streamKey) ?? null : null;
+    const isPreview = Boolean(previewStreamKey && previewStreamKey !== contextStreamKey);
     return {
       view: "stream",
       preferredView: desired,
       hasSessionAccess,
       hasStreamAccess,
+      streamKey,
       stream,
       isPreview,
-      canReturnToCurrent: isPreview && Boolean(contextStream),
+      canReturnToCurrent: isPreview && Boolean(contextStreamKey),
       isEnrolled,
+      currentStreamKey: contextStreamKey,
       currentStream: contextStream,
-      currentSession: currentViewing?.session ?? null,
+      currentSession,
     };
   }
 
   // effectiveView === "session"
   if (previewSessionKey) {
-    const session = previewSessions?.get?.(previewSessionKey) ?? null;
+    const session = sessions?.get?.(previewSessionKey) ?? null;
     const parentStreamKey = previewStreamKey ?? session?.stream ?? null;
     const stream = parentStreamKey ? streams?.get?.(parentStreamKey) ?? null : null;
     return {
@@ -1297,44 +974,38 @@ export function resolveSidebarView({
       preferredView: desired,
       hasSessionAccess,
       hasStreamAccess,
+      sessionKey: previewSessionKey,
       session,
+      streamKey: parentStreamKey,
       stream,
       terminal: null,
       isPreview: true,
       isUnopened: true,
-      canReturnToCurrent: Boolean(contextStream),
+      canReturnToCurrent: Boolean(contextStreamKey),
       isEnrolled,
+      currentStreamKey: contextStreamKey,
       currentStream: contextStream,
-      currentSession: currentViewing?.session ?? null,
-    };
-  }
-
-  if (currentViewing) {
-    return {
-      view: "session",
-      preferredView: desired,
-      hasSessionAccess: true,
-      hasStreamAccess: true,
-      session: currentViewing.session,
-      stream: currentTabStream,
-      terminal: currentViewing.terminal,
-      isPreview: false,
-      isUnopened: false,
-      canReturnToCurrent: false,
-      isEnrolled: true,
-      currentStream: contextStream,
-      currentSession: currentViewing.session,
+      currentSession,
     };
   }
 
   return {
-    view: "all",
+    view: "session",
     preferredView: desired,
-    hasSessionAccess: false,
-    hasStreamAccess,
-    isEnrolled: false,
+    hasSessionAccess: true,
+    hasStreamAccess: true,
+    sessionKey: currentSessionKey,
+    session: currentSession,
+    streamKey: currentStreamKey,
+    stream: currentTabStream,
+    terminal: live?.activeTerm ?? null,
+    isPreview: false,
+    isUnopened: false,
+    canReturnToCurrent: false,
+    isEnrolled: true,
+    currentStreamKey: contextStreamKey,
     currentStream: contextStream,
-    currentSession: null,
+    currentSession,
   };
 }
 
@@ -1344,14 +1015,16 @@ export function resolveSidebarView({
 export function resolveTabRenameTarget({
   activeTab,
   visibleTerminals = [],
-  frames,
+  runningByTerm,
+  sessions,
   tabNaming = true,
 }) {
   if (!tabNaming || !activeTab?.id) return null;
   for (const termKey of visibleTerminals) {
-    const frame = frames?.get?.(termKey);
-    if (frame?.kind === "enrolled" && frame.session?.title) {
-      const desired = frame.session.title.trim();
+    const sessionKey = runningByTerm?.get?.(termKey);
+    const session = sessionKey ? sessions?.get?.(sessionKey) : null;
+    if (session?.title) {
+      const desired = session.title.trim();
       if (desired && activeTab.name !== desired) {
         return {
           tabId: activeTab.id,
@@ -1525,7 +1198,6 @@ export function dispatchReferencePresentation(
     streamsBin = "streams",
     run,
     openOverlay,
-    onPendingViewer,
   } = {}
 ) {
   if (!result || typeof result !== "object") return { ok: true };
@@ -1562,14 +1234,6 @@ export function dispatchReferencePresentation(
       ...(targetPaneId ? { targetPaneId } : {}),
     };
     if (result.placement === "tab") {
-      onPendingViewer?.({
-        tabId: null,
-        spaceId: activeSpaceId,
-        title: props.title,
-        filename: props.filename,
-        truncated: props.truncated,
-        reference,
-      });
       run?.("tab.new", {
         ...(activeSpaceId ? { space: activeSpaceId } : {}),
         ...(tabNaming && result.title ? { name: result.title } : {}),
@@ -1582,14 +1246,6 @@ export function dispatchReferencePresentation(
       if (!targetPaneId) {
         return { ok: false, error: "No active pane to split for reference viewer." };
       }
-      onPendingViewer?.({
-        tabId: activeTabId,
-        spaceId: activeSpaceId,
-        title: props.title,
-        filename: props.filename,
-        truncated: props.truncated,
-        reference,
-      });
       const direction = result.placement === "pane-down" ? "down" : "right";
       run?.("pane.split", { direction, pane: targetPaneId, mod: "streams", props });
       return { ok: true };
@@ -1670,12 +1326,18 @@ export function formatMissingDirectoryError({ session, cwd, homeDir = null }) {
  * reconciles `streams.stream` labels via `hc`, opens Streams via `hc run ... streams session resume`,
  * and opens references via `openUrl` / `session document read|view` / `artifact read|view`.
  */
+const VALID_PREFERRED_VIEWS = new Set(["session", "stream", "all"]);
+const VALID_HOST_SCOPES = new Set(["local", "all"]);
+
 export class StreamsCoordinator {
   constructor({
     exec,
     notify,
     publishShared = null,
     notifyToast = null,
+    onPreferenceChange = null,
+    initialPreferredView = "session",
+    initialHostScope = "local",
     homeDir = null,
     streamsBin = "streams",
     hcBin = "hc",
@@ -1686,6 +1348,7 @@ export class StreamsCoordinator {
     this.notify = notify;
     this.publishShared = publishShared;
     this.notifyToast = notifyToast;
+    this.onPreferenceChange = onPreferenceChange;
     this.homeDir = homeDir;
     this.streamsBin = streamsBin;
     this.hcBin = hcBin;
@@ -1708,28 +1371,26 @@ export class StreamsCoordinator {
     this.lastFailedKey = null;
     this.lastCompletedAt = 0;
 
-    this.streams = new Map(); // streamKey -> normalized Stream
-    this.tabStreams = new Map(); // tabId -> streamKey | null
+    this.sessions = new Map(); // sessionKey -> normalized Session & { detail: boolean }
+    this.streams = new Map(); // streamKey -> normalized Stream & { detail: boolean }
+    this.lists = new Map(); // `${machineKey}:${scope}` -> { keys: string[], unreadable, error, loaded, seq }
+    this.staleSessionKeys = new Set(); // sessionKeys that returned CLI `not-found`
     this.lastFocusedStreamBySpace = new Map(); // spaceId -> streamKey
     this.activeMachine = null; // null for local desktop, or remote machine name
     this.machineLayouts = new Map(); // machineName -> "loading" | "ready" | "unavailable"
     this._hasMachineSnapshot = false;
-    this.hostScope = "local"; // "local" (this host) | "all" (all synced hosts)
-    this.hostStreamsByScope = new Map(); // `${machineKey}:${scope}` -> { items, unreadable, error, loaded, seq }
+    this.hostScope = VALID_HOST_SCOPES.has(initialHostScope) ? initialHostScope : "local"; // "local" | "all"
     this.hostToMachine = new Map(); // hostId -> machineName | null
     this.machineToHost = new Map(); // machineKey -> hostId
     this._localOwnerChecked = new Set(); // machineKeys whose `--local` Streams were already checked
     this._localOwnerProbes = new Map(); // machineKey -> in-flight probe Promise
     this.homeDirByMachine = new Map(); // machineName -> remote $HOME
     this._homeDirPromises = new Map(); // machineName -> Promise<string | null>
-    this.preferredView = "session"; // "session" | "stream" | "all"
-    this.inspectedStreamId = null; // alias for previewStreamKey
+    this.preferredView = VALID_PREFERRED_VIEWS.has(initialPreferredView)
+      ? initialPreferredView
+      : "session"; // "session" | "stream" | "all"
     this.previewStreamKey = null; // streamKey
     this.previewSessionKey = null; // sessionKey
-    this.previewSessions = new Map(); // sessionKey -> normalized Session
-    this.frames = new Map(); // terminalKey -> { kind: "enrolled", session }
-    this.pendingViewers = [];
-    this.viewerMetaByPane = new Map();
     this.readError = null;
     this.actionError = null;
 
@@ -1737,163 +1398,164 @@ export class StreamsCoordinator {
     this.lastSpaceTabKey = null;
     this._lastPublishedSharedJson = null;
     this._lastRunning = new Map();
-    this.pendingStatusSessions = new Set();
-    this.pendingResumeSessions = new Set();
-    this.pendingStreamActions = new Map();
-    this.pendingDropReferences = new Set();
-    this.pendingRenames = new Set();
-    this.pendingMoves = new Set();
-    this._layoutWaiters = new Set();
-  }
-
-  /**
-   * Deliver a reactive Herdr layout snapshot (`panes`, `spaces`, `terminalList`)
-   * to any active layout waiters. O(1) no-op when no waiters are registered.
-   */
-  notifyLayoutSnapshot(snapshot = {}) {
-    if (!this._layoutWaiters || this._layoutWaiters.size === 0) return;
-    for (const waiter of [...this._layoutWaiters]) {
-      let matched = null;
-      try {
-        matched = waiter.predicate(snapshot);
-      } catch {
-        matched = null;
-      }
-      if (matched) {
-        this._layoutWaiters.delete(waiter);
-        waiter.resolve(matched);
-      }
-    }
-  }
-
-  /**
-   * Event-driven wait for a Herdr layout transition driven by `notifyLayoutSnapshot`
-   * (called from `View.render()` / `observe()`), bounded by a single timeout fuse.
-   */
-  async waitForLayout(predicate, { timeoutMs = 5000, sleep, readLayout } = {}) {
-    const readCurrent = () => (typeof readLayout === "function" ? readLayout() ?? {} : null);
-    const initial = readCurrent();
-    if (initial) {
-      const hit = predicate(initial);
-      if (hit) return hit;
-    }
-
-    let settled = false;
-    let resolveWaiter;
-    const waiter = {
-      predicate,
-      resolve: (value) => {
-        if (settled) return;
-        settled = true;
-        resolveWaiter(value);
-      },
-    };
-    const eventPromise = new Promise((resolve) => {
-      resolveWaiter = resolve;
-    });
-    this._layoutWaiters.add(waiter);
-
-    try {
-      if (typeof sleep !== "function") {
-        return await eventPromise;
-      }
-      const result = await Promise.race([
-        eventPromise,
-        Promise.resolve(sleep(timeoutMs)).then(() => null),
-      ]);
-      if (result) return result;
-      // Final check in case the sidebar View was hidden and missed render callbacks.
-      const finalSnap = readCurrent();
-      return finalSnap ? predicate(finalSnap) || null : null;
-    } finally {
-      settled = true;
-      this._layoutWaiters.delete(waiter);
-    }
+    this.pending = new Map(); // key -> true | label string
   }
 
   _machineKey(machine = this.activeMachine) {
     return machine ?? "__local__";
   }
 
-  _hostStreamsBucketKey(machine = this.activeMachine, scope = this.hostScope) {
+  _listBucketKey(machine = this.activeMachine, scope = this.hostScope) {
     const normalizedScope = scope === "all" ? "all" : "local";
     return `${this._machineKey(machine)}:${normalizedScope}`;
   }
 
-  _getHostStreamsEntry(machine = this.activeMachine, scope = this.hostScope) {
-    const key = this._hostStreamsBucketKey(machine, scope);
-    let entry = this.hostStreamsByScope.get(key);
+  _getListEntry(machine = this.activeMachine, scope = this.hostScope) {
+    const key = this._listBucketKey(machine, scope);
+    let entry = this.lists.get(key);
     if (!entry) {
-      entry = { items: [], unreadable: [], error: null, loaded: false, seq: 0 };
-      this.hostStreamsByScope.set(key, entry);
+      entry = { keys: [], unreadable: [], error: null, loaded: false, seq: 0, inFlight: 0 };
+      this.lists.set(key, entry);
     }
     return entry;
   }
 
-  hostStreamsState(machine = this.activeMachine, scope = this.hostScope) {
-    const entry = this._getHostStreamsEntry(machine, scope);
+  getStreamList(machine = this.activeMachine, scope = this.hostScope) {
+    const entry = this._getListEntry(machine, scope);
     return {
-      items: entry.items,
+      items: entry.keys.map((k) => this.streams.get(k)).filter(Boolean),
       unreadable: entry.unreadable,
       error: entry.error,
       loaded: entry.loaded,
     };
   }
 
-  async _withPendingSet(set, key, fn) {
-    if (set.has(key)) return { ok: false, duplicate: true };
-    set.add(key);
+  /**
+   * Return the member Sessions of a Stream resolved from the canonical `this.sessions` map
+   * so off-tab, preview, and mutation updates always appear in Stream view immediately.
+   */
+  getStreamSessions(streamKey) {
+    const stream = streamKey ? this.streams.get(streamKey) : null;
+    if (!stream) return [];
+    if (Array.isArray(stream.sessionKeys) && stream.sessionKeys.length > 0) {
+      return stream.sessionKeys.map((k) => this.sessions.get(k)).filter(Boolean);
+    }
+    return Array.isArray(stream.sessions)
+      ? stream.sessions.map((s) => (s?.key && this.sessions.get(s.key)) || s).filter(Boolean)
+      : [];
+  }
+
+  _upsertSession(session, { detail = false } = {}) {
+    if (!session?.key) return null;
+    this.staleSessionKeys.delete(session.key);
+    const prev = this.sessions.get(session.key);
+    if (detail || !prev?.detail) {
+      const stored = { ...session, detail: Boolean(detail) };
+      this.sessions.set(session.key, stored);
+      return stored;
+    }
+    // Preserve full detail fields (`recap`, `remaining`, `references`, `artifacts`, `directory`,
+    // `updated_at_ms`) when a summary from `session list` or `stream.sessions` arrives.
+    const merged = {
+      ...prev,
+      title: session.title || prev.title,
+      title_manual: session.title_manual || prev.title_manual,
+      status: session.status || prev.status,
+      state: session.state !== null && session.state !== undefined ? session.state : prev.state,
+      state_short:
+        session.state_short !== null && session.state_short !== undefined
+          ? session.state_short
+          : session.state !== null && session.state !== undefined
+            ? session.state
+            : prev.state_short,
+      recap_short:
+        session.recap_short !== null && session.recap_short !== undefined
+          ? session.recap_short
+          : prev.recap_short,
+      stream: session.stream || prev.stream,
+      stream_id: session.stream_id || prev.stream_id,
+      host_id: session.host_id || prev.host_id,
+      updated_at_ms: session.updated_at_ms > 0 ? session.updated_at_ms : prev.updated_at_ms,
+      directory: session.directory ?? prev.directory,
+      detail: true,
+    };
+    this.sessions.set(session.key, merged);
+    return merged;
+  }
+
+  _upsertStream(stream, { detail = false } = {}) {
+    if (!stream?.key) return null;
+    const prev = this.streams.get(stream.key);
+    let stored;
+    if (detail || !prev?.detail) {
+      const sessionKeys = Array.isArray(stream.sessions)
+        ? stream.sessions.map((s) => s?.key).filter(Boolean)
+        : [];
+      stored = { ...stream, sessionKeys, detail: Boolean(detail) };
+    } else {
+      stored = {
+        ...prev,
+        title: stream.title || prev.title,
+        status: stream.status || prev.status,
+        goal_short:
+          stream.goal_short !== null && stream.goal_short !== undefined
+            ? stream.goal_short
+            : prev.goal_short,
+        active_sessions:
+          typeof stream.active_sessions === "number" ? stream.active_sessions : prev.active_sessions,
+        total_sessions:
+          typeof stream.total_sessions === "number" ? stream.total_sessions : prev.total_sessions,
+        last_activity_ms:
+          stream.last_activity_ms > 0 ? stream.last_activity_ms : prev.last_activity_ms,
+        host_id: stream.host_id || prev.host_id,
+        detail: true,
+      };
+    }
+    this.streams.set(stream.key, stored);
+    if (detail && Array.isArray(stream.sessions)) {
+      for (const member of stream.sessions) {
+        this._upsertSession(member, { detail: false });
+      }
+    }
+    return stored;
+  }
+
+  /**
+   * Synchronously reconcile active machine, detached previews, and Space stream memory against
+   * the current live snapshot BEFORE resolving the sidebar view (zero 1-frame stale flashes).
+   */
+  syncContext(live) {
+    if (!live) return;
+    this.activeMachine = live.activeSpace?.machine ?? null;
+    const spaceTabKey = `${live.activeSpace?.id ?? ""}:${live.activeTabId ?? ""}`;
+    if (this.lastSpaceTabKey !== null && spaceTabKey !== this.lastSpaceTabKey) {
+      this.previewStreamKey = null;
+      this.previewSessionKey = null;
+    }
+    this.lastSpaceTabKey = spaceTabKey;
+    if (live.activeSpace?.id && live.activeStreamKey) {
+      this.lastFocusedStreamBySpace.set(live.activeSpace.id, live.activeStreamKey);
+    }
+  }
+
+  isPending(key) {
+    return this.pending.has(key);
+  }
+
+  pendingValue(key) {
+    return this.pending.get(key) ?? null;
+  }
+
+  async _withPending(key, value, fn) {
+    if (this.pending.has(key)) return { ok: false, duplicate: true };
+    this.pending.set(key, value);
     this.notifyViews();
     try {
       return await fn();
     } finally {
-      set.delete(key);
+      this.pending.delete(key);
       this.notifyViews();
     }
-  }
-
-  async _withPendingMap(map, key, label, fn) {
-    if (map.has(key)) return { ok: false, duplicate: true };
-    map.set(key, label);
-    this.notifyViews();
-    try {
-      return await fn();
-    } finally {
-      map.delete(key);
-      this.notifyViews();
-    }
-  }
-
-  get hostStreams() {
-    return this._getHostStreamsEntry().items;
-  }
-
-  set hostStreams(value) {
-    this._getHostStreamsEntry().items = Array.isArray(value) ? value : [];
-  }
-
-  get hostUnreadable() {
-    return this._getHostStreamsEntry().unreadable;
-  }
-
-  set hostUnreadable(value) {
-    this._getHostStreamsEntry().unreadable = Array.isArray(value) ? value : [];
-  }
-
-  get hostStreamsError() {
-    return this._getHostStreamsEntry().error;
-  }
-
-  set hostStreamsError(value) {
-    this._getHostStreamsEntry().error = value ?? null;
-  }
-
-  get hostStreamsLoaded() {
-    return this._getHostStreamsEntry().loaded;
-  }
-
-  set hostStreamsLoaded(value) {
-    this._getHostStreamsEntry().loaded = Boolean(value);
   }
 
   isMachineReady(machine = null) {
@@ -2158,19 +1820,6 @@ export class StreamsCoordinator {
     return promise;
   }
 
-  get lastError() {
-    return this.actionError?.message ?? this.readError ?? null;
-  }
-
-  set lastError(value) {
-    if (!value) {
-      this.actionError = null;
-      this.readError = null;
-      return;
-    }
-    this.actionError = { title: "Streams error", message: String(value), at: Date.now() };
-  }
-
   reportActionError(title, message, { level = "error", copyText = null, copyLabel = null } = {}) {
     const cleanTitle = title || "Streams error";
     const cleanMessage = message || "Operation failed";
@@ -2197,6 +1846,7 @@ export class StreamsCoordinator {
 
   clearReadError() {
     this.readError = null;
+    this._getListEntry().error = null;
     this.notifyViews();
   }
 
@@ -2234,7 +1884,7 @@ export class StreamsCoordinator {
   publishSharedTerminals(running = this._lastRunning) {
     if (!this.publishShared) return;
     const payload = buildSharedTerminalMarks({
-      frames: this.frames,
+      sessions: this.sessions,
       running,
     });
     const json = JSON.stringify(payload);
@@ -2247,6 +1897,23 @@ export class StreamsCoordinator {
     }
   }
 
+  _setPreferredView(view, { persist = false } = {}) {
+    if (!VALID_PREFERRED_VIEWS.has(view)) return;
+    if (this.preferredView === view) return;
+    this.preferredView = view;
+    if (persist) {
+      this.onPreferenceChange?.("preferredView", view);
+    }
+  }
+
+  _setHostScopeValue(scope) {
+    const normalized = scope === "all" ? "all" : "local";
+    if (this.hostScope === normalized) return false;
+    this.hostScope = normalized;
+    this.onPreferenceChange?.("hostScope", normalized);
+    return true;
+  }
+
   /**
    * Fetch host Streams for a specific `(machine, scope)` bucket.
    * Captures the target bucket and a per-bucket sequence before `await` so delayed responses
@@ -2257,19 +1924,20 @@ export class StreamsCoordinator {
     scope = this.hostScope,
     force = false,
     forceProbe = force,
+    notify = true,
   } = {}) {
     const targetMachine = machine ?? null;
     const targetScope = scope === "all" ? "all" : "local";
-    const bucket = this._getHostStreamsEntry(targetMachine, targetScope);
+    const bucket = this._getListEntry(targetMachine, targetScope);
     if (bucket.loaded && !force) {
-      return { ok: true, items: bucket.items, bucket };
+      return { ok: true, items: this.getStreamList(targetMachine, targetScope).items, bucket };
     }
     const reqSeq = ++bucket.seq;
     if (!this.isMachineReady(targetMachine)) {
       const msg = `${targetMachine} is unavailable`;
       if (bucket.seq === reqSeq) {
         bucket.error = msg;
-        this.notifyViews();
+        if (notify) this.notifyViews();
       }
       return { ok: false, error: msg, bucket };
     }
@@ -2279,36 +1947,36 @@ export class StreamsCoordinator {
     args.push("--all", "--json", "--fields", HOST_STREAM_LIST_FIELDS);
 
     const mKey = this._machineKey(targetMachine);
-    const listPromise = this.runExec(this.streamsBinFor(targetMachine), args, {
-      on: targetMachine,
-    });
-    if (
-      targetScope === "all" &&
-      !this.machineToHost.has(mKey) &&
-      (forceProbe || !this._localOwnerChecked.has(mKey))
-    ) {
-      // Run ownership discovery in the background so a slow probe never blocks
-      // rendering the All hosts list behind the sidebar loading guard.
-      void this._probeLocalOwner(targetMachine, { force: forceProbe });
+    bucket.inFlight += 1;
+    let listOut;
+    try {
+      const listPromise = this.runExec(this.streamsBinFor(targetMachine), args, {
+        on: targetMachine,
+      });
+      if (
+        targetScope === "all" &&
+        !this.machineToHost.has(mKey) &&
+        (forceProbe || !this._localOwnerChecked.has(mKey))
+      ) {
+        void this._probeLocalOwner(targetMachine, { force: forceProbe });
+      }
+      listOut = await listPromise;
+    } finally {
+      bucket.inFlight = Math.max(0, bucket.inFlight - 1);
     }
-    const listOut = await listPromise;
     if (bucket.seq !== reqSeq) {
       return { ok: false, stale: true, bucket };
     }
     if (listOut.code !== 0) {
       const err = extractCliError(listOut, "host Streams are unavailable");
-      bucket.items = [];
-      bucket.unreadable = [];
       bucket.error = err.message;
-      this.notifyViews();
+      if (notify) this.notifyViews();
       return { ok: false, error: err.message, bucket };
     }
     const parsed = parseJsonSafe(listOut.stdout);
     if (!parsed || !Array.isArray(parsed.items)) {
-      bucket.items = [];
-      bucket.unreadable = [];
       bucket.error = "unexpected stream list response from streams";
-      this.notifyViews();
+      if (notify) this.notifyViews();
       return { ok: false, error: bucket.error, bucket };
     }
     const items = parsed.items.map(normalizeStream).filter(Boolean);
@@ -2318,13 +1986,18 @@ export class StreamsCoordinator {
         if (item.host_id) this.recordHostMachine(item.host_id, targetMachine);
       }
     }
-    bucket.items = items;
+    const keys = [];
+    for (const item of items) {
+      this._upsertStream(item, { detail: false });
+      keys.push(item.key);
+    }
+    bucket.keys = keys;
     bucket.unreadable = Array.isArray(parsed.unreadable) ? parsed.unreadable : [];
     bucket.error = null;
     bucket.loaded = true;
     this.publishSharedTerminals();
-    this.notifyViews();
-    return { ok: true, items: bucket.items, bucket };
+    if (notify) this.notifyViews();
+    return { ok: true, items: this.getStreamList(targetMachine, targetScope).items, bucket };
   }
 
   async ensureHostStreams(
@@ -2336,27 +2009,23 @@ export class StreamsCoordinator {
   }
 
   setHostScope(scope) {
-    const normalized = scope === "all" ? "all" : "local";
-    if (this.hostScope === normalized) {
+    if (!this._setHostScopeValue(scope)) {
       return this.ensureHostStreams(false);
     }
-    this.hostScope = normalized;
     this.notifyViews();
     return this.ensureHostStreams(false);
   }
 
   setView(view) {
-    this.preferredView = view;
+    this._setPreferredView(view, { persist: true });
     if (view === "all") {
       this.previewStreamKey = null;
-      this.inspectedStreamId = null;
       this.previewSessionKey = null;
       this.notifyViews();
       return this.ensureHostStreams(false);
     }
     if (view === "session") {
       this.previewStreamKey = null;
-      this.inspectedStreamId = null;
       this.previewSessionKey = null;
     } else if (view === "stream") {
       this.previewSessionKey = null;
@@ -2367,31 +2036,28 @@ export class StreamsCoordinator {
 
   returnToCurrent({ isEnrolled = true } = {}) {
     this.previewStreamKey = null;
-    this.inspectedStreamId = null;
     this.previewSessionKey = null;
-    this.preferredView = isEnrolled ? "session" : "stream";
+    this._setPreferredView(isEnrolled ? "session" : "stream");
     this.notifyViews();
   }
 
   backToStream() {
     this.previewSessionKey = null;
-    this.preferredView = "stream";
+    this._setPreferredView("stream");
     this.notifyViews();
   }
 
   async inspectStream(streamKey) {
     if (!streamKey) {
-      this.inspectedStreamId = null;
       this.previewStreamKey = null;
       this.previewSessionKey = null;
-      this.preferredView = "all";
+      this._setPreferredView("all");
       this.notifyViews();
       return null;
     }
-    this.inspectedStreamId = streamKey;
     this.previewStreamKey = streamKey;
     this.previewSessionKey = null;
-    this.preferredView = "stream";
+    this._setPreferredView("stream");
     this.notifyViews();
     const target = this.resolveReadMachineForKey(streamKey);
     if (target.unavailable) {
@@ -2416,7 +2082,7 @@ export class StreamsCoordinator {
     const raw = parseJsonSafe(out.stdout);
     const stream = normalizeStream(raw);
     if (stream) {
-      this.streams.set(stream.key, stream);
+      this._upsertStream(stream, { detail: true });
       this.actionError = null;
     }
     this.notifyViews();
@@ -2432,9 +2098,8 @@ export class StreamsCoordinator {
     this.previewSessionKey = sessionKey;
     if (streamKey) {
       this.previewStreamKey = streamKey;
-      this.inspectedStreamId = streamKey;
     }
-    this.preferredView = "session";
+    this._setPreferredView("session");
     this.notifyViews();
     const target = this.resolveReadMachineForKey(sessionKey);
     if (target.unavailable) {
@@ -2458,10 +2123,9 @@ export class StreamsCoordinator {
     }
     const session = normalizeSession(parseJsonSafe(out.stdout));
     if (session) {
-      this.previewSessions.set(session.key, session);
+      this._upsertSession(session, { detail: true });
       if (!this.previewStreamKey && session.stream) {
         this.previewStreamKey = session.stream;
-        this.inspectedStreamId = session.stream;
       }
       this.actionError = null;
     }
@@ -2481,12 +2145,11 @@ export class StreamsCoordinator {
       panes,
       terminalList,
       agents,
-      frames: this.frames,
+      sessions: this.sessions,
     });
     if (live) {
-      this.preferredView = "stream";
+      this._setPreferredView("stream");
       this.previewStreamKey = null;
-      this.inspectedStreamId = null;
       this.previewSessionKey = null;
       run?.("pane.focus", { pane: live.pane });
       this.notifyViews();
@@ -2510,9 +2173,8 @@ export class StreamsCoordinator {
       agents,
     });
     if (live) {
-      this.preferredView = "session";
+      this._setPreferredView("session");
       this.previewStreamKey = null;
-      this.inspectedStreamId = null;
       this.previewSessionKey = null;
       run?.("pane.focus", { pane: live.pane });
       this.notifyViews();
@@ -2522,11 +2184,26 @@ export class StreamsCoordinator {
     return { focused: false, session };
   }
 
+  _invalidateListsForMutation({ refetchUnloadedActive = true } = {}) {
+    const activeBucket = this._getListEntry();
+    const shouldRefetchActive =
+      refetchUnloadedActive &&
+      this.inFlightKey === null &&
+      activeBucket.inFlight > 0 &&
+      !activeBucket.loaded;
+    for (const bucket of this.lists.values()) {
+      bucket.seq += 1;
+    }
+    if (shouldRefetchActive) {
+      void this._fetchHostStreams({ force: true });
+    }
+  }
+
   /**
    * Targeted, authoritative post-mutation refresh: advances `readGeneration` so any slower
    * pre-mutation background observation is discarded, re-reads only the affected Session and/or
-   * Stream(s), updates every in-memory cache (`frames`, `previewSessions`, `streams`,
-   * `hostStreams`), republishes `terminal.marks`, and notifies views.
+   * Stream(s) directly into the normalized `sessions`/`streams` maps, republishes
+   * `terminal.marks`, and notifies views.
    */
   async refreshAfterMutation({
     sessionKey = null,
@@ -2535,9 +2212,9 @@ export class StreamsCoordinator {
     machine = undefined,
   } = {}) {
     this.readGeneration += 1;
-    for (const bucket of this.hostStreamsByScope.values()) {
-      bucket.seq += 1;
-    }
+    this.inFlightKey = null;
+    this.inFlightPromise = null;
+    this._invalidateListsForMutation();
 
     let resolvedStreamKey = streamKey ?? null;
     const readTarget =
@@ -2555,19 +2232,9 @@ export class StreamsCoordinator {
       if (sessOut.code === 0) {
         const freshSession = normalizeSession(parseJsonSafe(sessOut.stdout));
         if (freshSession) {
+          this._upsertSession(freshSession, { detail: true });
           if (!resolvedStreamKey && freshSession.stream) {
             resolvedStreamKey = freshSession.stream;
-          }
-          for (const [term, frame] of this.frames.entries()) {
-            if (frame?.kind === "enrolled" && frame.session?.key === freshSession.key) {
-              this.frames.set(term, { kind: "enrolled", session: freshSession });
-            }
-          }
-          if (
-            this.previewSessions.has(freshSession.key) ||
-            this.previewSessionKey === freshSession.key
-          ) {
-            this.previewSessions.set(freshSession.key, freshSession);
           }
         }
       }
@@ -2591,61 +2258,8 @@ export class StreamsCoordinator {
       );
       if (stOut.code !== 0) continue;
       const freshStream = normalizeStream(parseJsonSafe(stOut.stdout));
-      if (!freshStream) continue;
-      this.streams.set(freshStream.key, freshStream);
-
-      const memberByKey = new Map();
-      for (const member of freshStream.sessions ?? []) {
-        memberByKey.set(member.key, member);
-      }
-
-      // Sync any live frames or cached preview Sessions whose status/title/state changed in bulk.
-      for (const [term, frame] of this.frames.entries()) {
-        if (frame?.kind !== "enrolled" || !frame.session) continue;
-        if (sessionKey && frame.session.key === sessionKey) continue;
-        const updatedMember = memberByKey.get(frame.session.key);
-        if (updatedMember) {
-          this.frames.set(term, {
-            kind: "enrolled",
-            session: {
-              ...frame.session,
-              title: updatedMember.title ?? frame.session.title,
-              status: updatedMember.status ?? frame.session.status,
-              state: updatedMember.state ?? frame.session.state,
-            },
-          });
-        }
-      }
-      for (const [key, cached] of this.previewSessions.entries()) {
-        if (sessionKey && key === sessionKey) continue;
-        const updatedMember = memberByKey.get(key);
-        if (updatedMember) {
-          this.previewSessions.set(key, {
-            ...cached,
-            title: updatedMember.title ?? cached.title,
-            status: updatedMember.status ?? cached.status,
-            state: updatedMember.state ?? cached.state,
-          });
-        }
-      }
-
-      // Patch matching summary entries across every cached hostStreams bucket so `All` stays consistent.
-      for (const bucket of this.hostStreamsByScope.values()) {
-        if (!Array.isArray(bucket.items) || bucket.items.length === 0) continue;
-        const idx = bucket.items.findIndex((s) => s.key === freshStream.key);
-        if (idx >= 0) {
-          const prev = bucket.items[idx];
-          bucket.items[idx] = {
-            ...prev,
-            title: freshStream.title ?? prev.title,
-            goal: freshStream.goal ?? prev.goal,
-            goal_short: freshStream.goal_short ?? prev.goal_short,
-            status: freshStream.status ?? prev.status,
-            active_sessions: freshStream.active_sessions,
-            total_sessions: freshStream.total_sessions,
-            last_activity_ms: freshStream.last_activity_ms ?? prev.last_activity_ms,
-          };
-        }
+      if (freshStream) {
+        this._upsertStream(freshStream, { detail: true });
       }
     }
 
@@ -2653,29 +2267,54 @@ export class StreamsCoordinator {
     this.notifyViews();
   }
 
-  async dropReference(sessionKey, refKey, streamKey = null) {
-    if (!sessionKey || !refKey) return { ok: false, error: "missing session or reference key" };
-    const pendingKey = `${sessionKey}\0${refKey}`;
-    return this._withPendingSet(this.pendingDropReferences, pendingKey, async () => {
-      const target = await this.ensureWriteMachineForKey(sessionKey);
+  async _mutate({
+    pendingKey,
+    pendingValue = true,
+    entityKey,
+    errorTitle,
+    fallbackError,
+    args,
+    refreshSessionKey = null,
+    refreshStreamKey = null,
+    extraStreamKeys = [],
+    resultExtra = null,
+  }) {
+    return this._withPending(pendingKey, pendingValue, async () => {
+      const target = await this.ensureWriteMachineForKey(entityKey);
       if (!target.ok) {
-        this.reportActionError("Could not drop reference", target.error);
+        this.reportActionError(errorTitle, target.error);
         return { ok: false, error: target.error };
       }
-      const out = await this.runExec(
-        this.streamsBinFor(target.machine),
-        ["session", "edit", sessionKey, "--drop-reference", refKey],
-        { on: target.machine }
-      );
+      const out = await this.runExec(this.streamsBinFor(target.machine), args, {
+        on: target.machine,
+      });
       if (out.code !== 0) {
-        const err = extractCliError(out, "could not drop reference");
-        this.reportActionError("Could not drop reference", err.message);
+        const err = extractCliError(out, fallbackError);
+        this.reportActionError(errorTitle, err.message);
         return { ok: false, error: err.message };
       }
       this.actionError = null;
       this.lastCompletedKey = null;
-      await this.refreshAfterMutation({ sessionKey, streamKey, machine: target.machine });
-      return { ok: true };
+      await this.refreshAfterMutation({
+        sessionKey: refreshSessionKey,
+        streamKey: refreshStreamKey,
+        extraStreamKeys,
+        machine: target.machine,
+      });
+      return { ok: true, ...(resultExtra ?? {}) };
+    });
+  }
+
+  async dropReference(sessionKey, refKey, streamKey = null) {
+    if (!sessionKey || !refKey) return { ok: false, error: "missing session or reference key" };
+    return this._mutate({
+      pendingKey: `drop:${sessionKey}\0${refKey}`,
+      entityKey: sessionKey,
+      errorTitle: "Could not drop reference",
+      fallbackError: "could not drop reference",
+      args: ["session", "edit", sessionKey, "--drop-reference", refKey],
+      refreshSessionKey: sessionKey,
+      refreshStreamKey: streamKey,
     });
   }
 
@@ -2685,26 +2324,14 @@ export class StreamsCoordinator {
       this.reportActionError("Could not update status", msg);
       return { ok: false, error: msg };
     }
-    return this._withPendingSet(this.pendingStatusSessions, sessionKey, async () => {
-      const target = await this.ensureWriteMachineForKey(sessionKey);
-      if (!target.ok) {
-        this.reportActionError("Could not update status", target.error);
-        return { ok: false, error: target.error };
-      }
-      const out = await this.runExec(
-        this.streamsBinFor(target.machine),
-        ["session", "edit", sessionKey, "--status", status],
-        { on: target.machine }
-      );
-      if (out.code !== 0) {
-        const err = extractCliError(out, "could not update Session status");
-        this.reportActionError("Could not update status", err.message);
-        return { ok: false, error: err.message };
-      }
-      this.actionError = null;
-      this.lastCompletedKey = null;
-      await this.refreshAfterMutation({ sessionKey, streamKey, machine: target.machine });
-      return { ok: true };
+    return this._mutate({
+      pendingKey: `status:${sessionKey}`,
+      entityKey: sessionKey,
+      errorTitle: "Could not update status",
+      fallbackError: "could not update Session status",
+      args: ["session", "edit", sessionKey, "--status", status],
+      refreshSessionKey: sessionKey,
+      refreshStreamKey: streamKey,
     });
   }
 
@@ -2715,26 +2342,15 @@ export class StreamsCoordinator {
       this.reportActionError("Could not rename Session", msg);
       return { ok: false, error: msg };
     }
-    return this._withPendingSet(this.pendingRenames, sessionKey, async () => {
-      const target = await this.ensureWriteMachineForKey(sessionKey);
-      if (!target.ok) {
-        this.reportActionError("Could not rename Session", target.error);
-        return { ok: false, error: target.error };
-      }
-      const out = await this.runExec(
-        this.streamsBinFor(target.machine),
-        ["session", "edit", sessionKey, "--title", trimmed],
-        { on: target.machine }
-      );
-      if (out.code !== 0) {
-        const err = extractCliError(out, "could not rename Session");
-        this.reportActionError("Could not rename Session", err.message);
-        return { ok: false, error: err.message };
-      }
-      this.actionError = null;
-      this.lastCompletedKey = null;
-      await this.refreshAfterMutation({ sessionKey, streamKey, machine: target.machine });
-      return { ok: true, title: trimmed };
+    return this._mutate({
+      pendingKey: `rename:${sessionKey}`,
+      entityKey: sessionKey,
+      errorTitle: "Could not rename Session",
+      fallbackError: "could not rename Session",
+      args: ["session", "edit", sessionKey, "--title", trimmed],
+      refreshSessionKey: sessionKey,
+      refreshStreamKey: streamKey,
+      resultExtra: { title: trimmed },
     });
   }
 
@@ -2745,49 +2361,33 @@ export class StreamsCoordinator {
       this.reportActionError("Could not rename Stream", msg);
       return { ok: false, error: msg };
     }
-    return this._withPendingSet(this.pendingRenames, streamKey, async () => {
-      const target = await this.ensureWriteMachineForKey(streamKey);
-      if (!target.ok) {
-        this.reportActionError("Could not rename Stream", target.error);
-        return { ok: false, error: target.error };
-      }
-      const out = await this.runExec(
-        this.streamsBinFor(target.machine),
-        ["stream", "edit", streamKey, "--title", trimmed],
-        { on: target.machine }
-      );
-      if (out.code !== 0) {
-        const err = extractCliError(out, "could not rename Stream");
-        this.reportActionError("Could not rename Stream", err.message);
-        return { ok: false, error: err.message };
-      }
-      this.actionError = null;
-      this.lastCompletedKey = null;
-      await this.refreshAfterMutation({ streamKey, machine: target.machine });
-      return { ok: true, title: trimmed };
+    return this._mutate({
+      pendingKey: `rename:${streamKey}`,
+      entityKey: streamKey,
+      errorTitle: "Could not rename Stream",
+      fallbackError: "could not rename Stream",
+      args: ["stream", "edit", streamKey, "--title", trimmed],
+      refreshStreamKey: streamKey,
+      resultExtra: { title: trimmed },
     });
   }
 
-  async moveSessionToStream(
-    {
-      sessionKey,
-      sourceStreamKey = null,
-      targetStreamKey,
-      moveTab = false,
-      terminalList = [],
-      panes = [],
-      spaces = [],
-      agents = [],
-    } = {},
-    { run, readPanes, readSpaces, readAgents, sleep } = {}
-  ) {
+  async moveSessionToStream({
+    sessionKey,
+    sourceStreamKey = null,
+    targetStreamKey,
+    live = null,
+    terminalList = [],
+    panes = [],
+    agents = [],
+  } = {}) {
     if (!sessionKey || !targetStreamKey) {
       const msg = "missing Session or target Stream key";
       this.reportActionError("Could not move Session", msg);
       return { ok: false, error: msg };
     }
     if (sourceStreamKey && targetStreamKey === sourceStreamKey) {
-      return { ok: true, movedTab: false };
+      return { ok: true };
     }
     const sessHost = recordHostId(sessionKey);
     const targetHost = recordHostId(targetStreamKey);
@@ -2797,7 +2397,7 @@ export class StreamsCoordinator {
       return { ok: false, error: msg };
     }
 
-    return this._withPendingSet(this.pendingMoves, sessionKey, async () => {
+    return this._withPending(`move:${sessionKey}`, true, async () => {
       const target = await this.ensureWriteMachineForKey(sessionKey);
       if (!target.ok) {
         this.reportActionError("Could not move Session", target.error);
@@ -2815,126 +2415,28 @@ export class StreamsCoordinator {
         return { ok: false, error: err.message };
       }
 
-      let movedTab = false;
-      let tabMoveFailed = false;
-      try {
-        const latestPanes = typeof readPanes === "function" ? readPanes() ?? panes : panes;
-        const latestSpaces = typeof readSpaces === "function" ? readSpaces() ?? spaces : spaces;
-        const latestAgents = typeof readAgents === "function" ? readAgents() ?? agents : agents;
-        const moveInfo = resolveMoveSpaceTarget({
-          sessionKey,
-          targetStreamKey,
-          machine: target.machine,
-          terminalList,
-          panes: latestPanes,
-          spaces: latestSpaces,
-          agents: latestAgents,
-        });
-
-        const liveTermAddress = moveInfo.liveTerm?.address ?? null;
-        if (moveTab && moveInfo.canMoveTab && liveTermAddress && typeof run === "function") {
-          if (
-            typeof sleep !== "function" ||
-            typeof readPanes !== "function" ||
-            typeof readSpaces !== "function"
-          ) {
-            tabMoveFailed = true;
-            this.reportActionError(
-              "Moved Session, skipped tab transfer",
-              "Tab transfer requires Herdr layout readers and an async timeout fuse."
-            );
-            await this.runExec(this.hcBin, [
-              "label",
-              liveTermAddress,
-              `${LABEL_STREAM}=${targetStreamKey}`,
-            ]);
-          } else {
-            const readLayout = () => ({
-              panes: readPanes() ?? [],
-              spaces: readSpaces() ?? [],
-            });
-            const unqualSpace = unqualifyForMachine(moveInfo.targetSpace.id, target.machine);
-            const freshTabId = `tb_mv_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
-            run("terminal.park", { terminal: liveTermAddress });
-            const detached = await this.waitForLayout(
-              ({ panes: currentPanes = [] }) =>
-                !(currentPanes ?? []).some((p) => p?.terminal === liveTermAddress),
-              { timeoutMs: 5000, sleep, readLayout }
-            );
-            if (!detached) {
-              tabMoveFailed = true;
-              this.reportActionError(
-                "Moved Session, tab stayed put",
-                "The tab did not detach in time for transfer to the target Space."
-              );
-              await this.runExec(this.hcBin, [
-                "label",
-                liveTermAddress,
-                `${LABEL_STREAM}=${targetStreamKey}`,
-              ]);
-            } else {
-              const labelOut = await this.runExec(this.hcBin, [
-                "label",
-                liveTermAddress,
-                `${LABEL_STREAM}=${targetStreamKey}`,
-                `${LABEL_HERDR_SPACE}=${unqualSpace}`,
-                `${LABEL_HERDR_TAB}=${freshTabId}`,
-              ]);
-              if (labelOut.code !== 0) {
-                tabMoveFailed = true;
-                const err = extractCliError(labelOut, "could not label parked terminal");
-                this.reportActionError(
-                  "Moved Session, terminal was parked",
-                  `Could not place tab in ${moveInfo.targetSpace.name} (${err.message}). Re-keep it from the Agents list.`
-                );
-              } else {
-                const adopted = await this.waitForLayout(
-                  ({ panes: currentPanes = [], spaces: currentSpaces = [] }) => {
-                    const tabMap = buildTabSpaceMap(currentSpaces, target.machine);
-                    for (const p of currentPanes ?? []) {
-                      if (p?.terminal !== liveTermAddress || !p?.tab) continue;
-                      const loc = tabMap.get(p.tab);
-                      if (loc?.space?.id === moveInfo.targetSpace.id) {
-                        return { pane: p.pane, tab: p.tab };
-                      }
-                    }
-                    return null;
-                  },
-                  { timeoutMs: 5000, sleep, readLayout }
-                );
-                if (adopted) {
-                  movedTab = true;
-                  if (moveInfo.currentTabName && adopted.tab) {
-                    run("tab.rename", { id: adopted.tab, name: moveInfo.currentTabName });
-                  }
-                } else {
-                  tabMoveFailed = true;
-                  this.reportActionError(
-                    "Moved Session, tab placement unconfirmed",
-                    `Placement in ${moveInfo.targetSpace.name} was not confirmed in time.`
-                  );
-                }
-              }
-            }
-          }
-        } else if (liveTermAddress) {
-          await this.runExec(this.hcBin, [
-            "label",
-            liveTermAddress,
-            `${LABEL_STREAM}=${targetStreamKey}`,
-          ]);
+      const liveTermAddress =
+        live?.paneBySession?.get?.(sessionKey)?.terminal ??
+        findLivePaneForSession({ sessionKey, panes, terminalList, agents })?.terminal ??
+        null;
+      if (liveTermAddress) {
+        const labelOut = await this.runExec(this.hcBin, [
+          "label",
+          liveTermAddress,
+          `${LABEL_STREAM}=${targetStreamKey}`,
+        ]);
+        if (labelOut.code !== 0) {
+          const err = extractCliError(labelOut, "could not update terminal label");
+          this.reportActionError("Moved Session, label unchanged", err.message, {
+            level: "warning",
+          });
+        } else {
+          this.actionError = null;
         }
-      } catch (err) {
-        tabMoveFailed = true;
-        this.reportActionError(
-          "Moved Session, tab transfer failed",
-          String(err?.message ?? err ?? "unknown error")
-        );
-      }
-
-      if (!tabMoveFailed) {
+      } else {
         this.actionError = null;
       }
+
       this.lastCompletedKey = null;
       await this.refreshAfterMutation({
         sessionKey,
@@ -2943,7 +2445,7 @@ export class StreamsCoordinator {
           sourceStreamKey && sourceStreamKey !== targetStreamKey ? [sourceStreamKey] : [],
         machine: target.machine,
       });
-      return { ok: true, movedTab };
+      return { ok: true };
     });
   }
 
@@ -2952,7 +2454,7 @@ export class StreamsCoordinator {
     const errorTitle =
       targetStatus === "parked" ? "Could not park all sessions" : "Could not close all sessions";
     const pendingLabel = targetStatus === "parked" ? "Parking…" : "Closing…";
-    return this._withPendingMap(this.pendingStreamActions, streamKey, pendingLabel, async () => {
+    return this._withPending(`stream:${streamKey}`, pendingLabel, async () => {
       const target = await this.ensureWriteMachineForKey(streamKey);
       if (!target.ok) {
         this.reportActionError(errorTitle, target.error);
@@ -2961,7 +2463,7 @@ export class StreamsCoordinator {
       const targetMachine = target.machine;
       const bin = this.streamsBinFor(targetMachine);
       let stream = this.streams.get(streamKey) ?? null;
-      if (!stream || !Array.isArray(stream.sessions) || stream.sessions.length === 0) {
+      if (!stream || !stream.detail) {
         const showOut = await this.runExec(bin, ["stream", "show", streamKey, "--json"], {
           on: targetMachine,
         });
@@ -2976,9 +2478,12 @@ export class StreamsCoordinator {
           this.reportActionError(errorTitle, msg);
           return { ok: false, error: msg, updated: [] };
         }
-        this.streams.set(stream.key, stream);
+        this._upsertStream(stream, { detail: true });
       }
       const targets = (stream?.sessions ?? []).filter(predicate);
+      if (targets.length === 0) {
+        return { ok: true, updated: [] };
+      }
       const updated = [];
       for (const sess of targets) {
         const out = await this.runExec(
@@ -3023,7 +2528,7 @@ export class StreamsCoordinator {
 
   async deleteStream(streamKey) {
     if (!streamKey) return { ok: false, error: "missing Stream key" };
-    return this._withPendingMap(this.pendingStreamActions, streamKey, "Deleting…", async () => {
+    return this._withPending(`stream:${streamKey}`, "Deleting…", async () => {
       const target = await this.ensureWriteMachineForKey(streamKey);
       if (!target.ok) {
         this.reportActionError("Could not delete Stream", target.error);
@@ -3041,55 +2546,23 @@ export class StreamsCoordinator {
       }
       this.actionError = null;
       this.streams.delete(streamKey);
-      for (const bucket of this.hostStreamsByScope.values()) {
-        bucket.seq += 1;
-        if (Array.isArray(bucket.items)) {
-          bucket.items = bucket.items.filter((s) => s.key !== streamKey);
-        }
+      for (const bucket of this.lists.values()) {
+        bucket.keys = bucket.keys.filter((k) => k !== streamKey);
       }
+      this._invalidateListsForMutation();
       if (this.previewStreamKey === streamKey) {
         this.previewStreamKey = null;
         this.previewSessionKey = null;
-        this.preferredView = "all";
+        this._setPreferredView("all");
       }
       this.lastCompletedKey = null;
       return { ok: true, key: streamKey };
     });
   }
 
-  recordPendingViewer(entry) {
-    if (!entry) return;
-    this.pendingViewers.push(entry);
-    if (this.pendingViewers.length > 16) {
-      this.pendingViewers.shift();
-    }
-  }
-
-  resolveViewerPaneMeta(paneId, tabId, allPanes) {
-    if (Array.isArray(allPanes)) {
-      const livePanes = new Set(allPanes.map((p) => p.pane));
-      for (const knownPane of this.viewerMetaByPane.keys()) {
-        if (!livePanes.has(knownPane)) this.viewerMetaByPane.delete(knownPane);
-      }
-    }
-    if (this.viewerMetaByPane.has(paneId)) {
-      return this.viewerMetaByPane.get(paneId);
-    }
-    let idx = this.pendingViewers.findIndex((entry) => entry.tabId === tabId);
-    if (idx < 0) {
-      idx = this.pendingViewers.findIndex((entry) => entry.tabId === null);
-    }
-    if (idx < 0) return null;
-    const [matched] = this.pendingViewers.splice(idx, 1);
-    this.viewerMetaByPane.set(paneId, matched);
-    return matched;
-  }
-
   streamTitle(streamKey) {
     if (!streamKey) return "";
-    const cached = this.streams.get(streamKey);
-    if (cached?.title) return cached.title;
-    return streamKey;
+    return this.streams.get(streamKey)?.title || streamKey;
   }
 
   notifyViews() {
@@ -3112,7 +2585,7 @@ export class StreamsCoordinator {
     for (const [term, sk] of running) {
       if (term === skipTerm) continue;
       if (byKey.has(sk)) {
-        this.frames.set(term, { kind: "enrolled", session: byKey.get(sk) });
+        this._upsertSession(byKey.get(sk), { detail: false });
         continue;
       }
       const termMachine = parseTerminalAddress(term)?.machine ?? null;
@@ -3137,14 +2610,9 @@ export class StreamsCoordinator {
         const parsed = parseJsonSafe(listOut.stdout);
         for (const raw of parsed?.items ?? []) {
           const sess = normalizeSession(raw);
-          if (sess) byKey.set(sess.key, sess);
-        }
-        for (const item of items) {
-          const found = byKey.get(item.key);
-          if (found) {
-            this.frames.set(item.term, { kind: "enrolled", session: found });
-          } else {
-            this.frames.delete(item.term);
+          if (sess) {
+            byKey.set(sess.key, sess);
+            this._upsertSession(sess, { detail: false });
           }
         }
       }
@@ -3181,19 +2649,12 @@ export class StreamsCoordinator {
     focusedTerminal = null,
     terminalList = [],
     panes = [],
-    allSpaces = null,
-    spaces = null,
     agents = [],
     machineList,
-    tabIds,
     force = false,
+    contextSynced = false,
     now = Date.now(),
   }) {
-    this.notifyLayoutSnapshot({
-      panes,
-      spaces: Array.isArray(allSpaces) ? allSpaces : Array.isArray(spaces) ? spaces : [],
-      terminalList,
-    });
     if (Array.isArray(machineList)) {
       this._hasMachineSnapshot = true;
       this.machineLayouts.clear();
@@ -3204,35 +2665,33 @@ export class StreamsCoordinator {
       }
     }
 
-    const activeMachine = activeSpace?.machine ?? null;
-    this.activeMachine = activeMachine;
-
-    if (activeMachine && this.isMachineReady(activeMachine)) {
-      void this.ensureHomeDir(activeMachine);
+    if (force) {
+      this.staleSessionKeys.clear();
     }
 
-    const spaceTabKey = `${activeSpace?.id ?? ""}:${activeTabId ?? ""}`;
-    if (this.lastSpaceTabKey !== null && spaceTabKey !== this.lastSpaceTabKey) {
-      this.previewStreamKey = null;
-      this.inspectedStreamId = null;
-      this.previewSessionKey = null;
-    }
-    this.lastSpaceTabKey = spaceTabKey;
-
-    if (activeSpace?.id && activeTabId) {
-      const knownTabStream = this.tabStreams.get(activeTabId);
-      if (knownTabStream) {
-        this.lastFocusedStreamBySpace.set(activeSpace.id, knownTabStream);
+    const live = indexLive(
+      { activeSpace, activeTabId, visibleTerminals, focusedTerminal, terminalList, panes, agents },
+      {
+        sessions: this.sessions,
+        staleSessionKeys: this.staleSessionKeys,
+        lastFocusedStreamBySpace: this.lastFocusedStreamBySpace,
       }
+    );
+    if (!contextSynced) {
+      this.syncContext(live);
     }
 
-    const running = runningSessionTerminals({ terminalList, panes, agents });
+    if (this.activeMachine && this.isMachineReady(this.activeMachine)) {
+      void this.ensureHomeDir(this.activeMachine);
+    }
+
+    const running = live.runningByTerm;
     this._lastRunning = running;
 
     // Passively learn hostId -> machine from live running terminals and stream labels.
     this._learnHostsFromTerminals(terminalList, running);
 
-    const visible = tabTerminals(visibleTerminals);
+    const visible = live.visibleTerminals;
     const terminalSessions = visible
       .filter((t) => running.has(t))
       .map((t) => `${t}=${running.get(t)}`);
@@ -3278,7 +2737,6 @@ export class StreamsCoordinator {
       terminalList,
       panes,
       agents,
-      tabIds,
       key,
       force,
       now,
@@ -3296,24 +2754,10 @@ export class StreamsCoordinator {
     terminalList = [],
     panes = [],
     agents = [],
-    tabIds,
     key,
     force = false,
     now = Date.now(),
   }) {
-    if (Array.isArray(tabIds)) {
-      for (const tabId of this.tabStreams.keys()) {
-        if (!tabIds.includes(tabId)) this.tabStreams.delete(tabId);
-      }
-    }
-
-    // Prune exited or unenrolled terminals from frames against current running snapshot.
-    for (const term of [...this.frames.keys()]) {
-      if (!running.has(term)) {
-        this.frames.delete(term);
-      }
-    }
-
     const activeMachine = observation.activeSpace?.machine ?? null;
     const activeScope = observation.hostScope ?? this.hostScope;
     const gen = ++this.readGeneration;
@@ -3330,6 +2774,7 @@ export class StreamsCoordinator {
         // If the active remote machine is offline or still loading, keep healthy machines'
         // off-tab frames and terminal.marks up to date without issuing failing remote calls.
         if (!this.isMachineReady(activeMachine)) {
+          this._getListEntry(activeMachine, activeScope).error = `${activeMachine} is unavailable`;
           const ok = await this._refreshOffTabFrames({
             running,
             byKey,
@@ -3346,7 +2791,22 @@ export class StreamsCoordinator {
           return null;
         }
 
-        const { activeTabId = null, visibleTerminals = [], focusedTerminal = null } = observation;
+        const failRead = async (message, skipTerm = null) => {
+          this.readError = message;
+          this.lastFailedKey = key ?? null;
+          const ok = await this._refreshOffTabFrames({
+            running,
+            byKey,
+            skipTerm,
+            skipMachines: new Set([activeMachine]),
+            gen,
+          });
+          if (!ok || gen !== this.readGeneration) return null;
+          this.publishSharedTerminals(running);
+          return null;
+        };
+
+        const { visibleTerminals = [], focusedTerminal = null } = observation;
         const activeBin = this.streamsBinFor(activeMachine);
 
         // Candidate running-Session terminals in priority order: focused first, then pane order.
@@ -3376,34 +2836,24 @@ export class StreamsCoordinator {
               primaryTerm = term;
               primarySession = session;
               if (session.host_id) this.recordHostMachine(session.host_id, activeMachine);
-              this.frames.set(term, { kind: "enrolled", session });
               break;
             }
+            return await failRead("invalid session show JSON");
           } else {
             const err = extractCliError(out, "session show failed");
             if (!out.transportError && err.kind === "not-found") {
-              // Stale `streams.session` label: ignore it and move on to the next candidate.
-              this.frames.delete(term);
+              // Stale `streams.session` label: mark stale and move on to the next candidate.
+              this.staleSessionKeys.add(sessionKey);
               continue;
             }
-            this.readError = err.message;
-            this.lastFailedKey = key ?? null;
-            // Still update off-tab frames & terminal.marks for healthy machines.
-            const ok = await this._refreshOffTabFrames({
-              running,
-              byKey,
-              skipMachines: new Set([activeMachine]),
-              gen,
-            });
-            if (!ok || gen !== this.readGeneration) return null;
-            this.publishSharedTerminals(running);
-            return null;
+            return await failRead(err.message);
           }
         }
 
         let activeStream = null;
 
         if (primarySession) {
+          this._upsertSession(primarySession, { detail: true });
           const streamKey = `${primarySession.host_id}/${primarySession.stream_id}`;
           // 2. Read that Session's Stream with `stream show`.
           const streamOut = await this.runExec(activeBin, ["stream", "show", streamKey, "--json"], {
@@ -3412,38 +2862,15 @@ export class StreamsCoordinator {
           if (gen !== this.readGeneration) return null;
           if (streamOut.code !== 0) {
             const err = extractCliError(streamOut, "stream show failed");
-            this.readError = err.message;
-            this.lastFailedKey = key ?? null;
-            const ok = await this._refreshOffTabFrames({
-              running,
-              byKey,
-              skipTerm: primaryTerm,
-              skipMachines: new Set([activeMachine]),
-              gen,
-            });
-            if (!ok || gen !== this.readGeneration) return null;
-            this.publishSharedTerminals(running);
-            return null;
+            return await failRead(err.message, primaryTerm);
           }
           const stream = normalizeStream(parseJsonSafe(streamOut.stdout));
           if (!stream) {
-            this.readError = "invalid stream show JSON";
-            this.lastFailedKey = key ?? null;
-            const ok = await this._refreshOffTabFrames({
-              running,
-              byKey,
-              skipTerm: primaryTerm,
-              skipMachines: new Set([activeMachine]),
-              gen,
-            });
-            if (!ok || gen !== this.readGeneration) return null;
-            this.publishSharedTerminals(running);
-            return null;
+            return await failRead("invalid stream show JSON", primaryTerm);
           }
           activeStream = stream;
           if (stream.host_id) this.recordHostMachine(stream.host_id, activeMachine);
-          this.streams.set(stream.key, stream);
-          this.tabStreams.set(activeTabId, stream.key);
+          this._upsertStream(stream, { detail: true });
           if (observation.activeSpace?.id) {
             this.lastFocusedStreamBySpace.set(observation.activeSpace.id, stream.key);
           }
@@ -3453,11 +2880,9 @@ export class StreamsCoordinator {
           for (const member of stream.sessions) {
             if (!byKey.has(member.key)) byKey.set(member.key, member);
           }
-        } else {
-          this.tabStreams.set(activeTabId, null);
         }
 
-        // 3. Populate frames for all other live running terminals across all Spaces and machines.
+        // 3. Populate sessions for all other live running terminals across all Spaces and machines.
         const offTabOk = await this._refreshOffTabFrames({
           running,
           byKey,
@@ -3467,17 +2892,19 @@ export class StreamsCoordinator {
         if (!offTabOk || gen !== this.readGeneration) return null;
 
         // 3b. When the active tab is unenrolled, ensure the Space's fallback Stream (if any)
-        //     is loaded in `this.streams` so `Stream` fallback renders complete Sessions & goal.
+        //     is loaded with detail in `this.streams` so `Stream` fallback renders complete Sessions & goal.
         if (!primarySession && observation.activeSpace) {
-          const spaceStreamKey = resolveSpaceStreamKey({
-            space: observation.activeSpace,
-            panes,
-            terminalList,
-            agents,
-            frames: this.frames,
-            lastFocusedStreamBySpace: this.lastFocusedStreamBySpace,
-          });
-          if (spaceStreamKey && (!this.streams.has(spaceStreamKey) || force || noticeChanged)) {
+          const liveNow = indexLive(
+            { activeSpace: observation.activeSpace, panes, terminalList, agents },
+            {
+              sessions: this.sessions,
+              staleSessionKeys: this.staleSessionKeys,
+              lastFocusedStreamBySpace: this.lastFocusedStreamBySpace,
+            }
+          );
+          const spaceStreamKey = liveNow.spaceStreamKey;
+          const cachedSpaceStream = spaceStreamKey ? this.streams.get(spaceStreamKey) : null;
+          if (spaceStreamKey && (!cachedSpaceStream?.detail || force || noticeChanged)) {
             const spaceStreamOut = await this.runExec(
               activeBin,
               ["stream", "show", spaceStreamKey, "--json"],
@@ -3487,14 +2914,13 @@ export class StreamsCoordinator {
             if (spaceStreamOut.code === 0) {
               const spaceStream = normalizeStream(parseJsonSafe(spaceStreamOut.stdout));
               if (spaceStream) {
-                this.streams.set(spaceStream.key, spaceStream);
+                this._upsertStream(spaceStream, { detail: true });
               }
             }
           }
         }
 
         // 4. Reconcile `streams.stream` hc labels on visible terminals running known Sessions.
-        //    Local `hc label <machine>/<t> k=v` routes natively through the local core.
         if (primarySession) {
           const termByAddr = new Map();
           for (const t of terminalList) {
@@ -3502,9 +2928,10 @@ export class StreamsCoordinator {
             if (parsed) termByAddr.set(parsed.address, t);
           }
           for (const term of visibleTerminals) {
-            const frame = this.frames.get(term);
-            if (frame?.kind !== "enrolled" || !frame.session?.stream) continue;
-            const desiredStream = frame.session.stream;
+            const sk = running.get(term);
+            const sess = sk ? this.sessions.get(sk) : null;
+            if (!sess?.stream) continue;
+            const desiredStream = sess.stream;
             const currentLabel = termByAddr.get(term)?.labels?.[LABEL_STREAM] ?? null;
             if (currentLabel !== desiredStream) {
               await this.runExec(this.hcBin, ["label", term, `${LABEL_STREAM}=${desiredStream}`]);
@@ -3515,17 +2942,11 @@ export class StreamsCoordinator {
         // 5. Refresh the active `(activeMachine, activeScope)` Streams bucket when unenrolled,
         //    viewing `All`, on explicit/notice refresh after listing was loaded, or when an
         //    off-tab live Session belongs to an unknown Stream.
-        const activeBucket = this._getHostStreamsEntry(activeMachine, activeScope);
-        const hostByKey = new Set(activeBucket.items.map((s) => s.key));
+        const activeBucket = this._getListEntry(activeMachine, activeScope);
         let hasUnknownOffTabStream = false;
-        for (const [term] of running) {
-          const frame = this.frames.get(term);
-          if (
-            frame?.kind === "enrolled" &&
-            frame.session?.stream &&
-            !this.streams.has(frame.session.stream) &&
-            !hostByKey.has(frame.session.stream)
-          ) {
+        for (const [, sk] of running) {
+          const sess = this.sessions.get(sk);
+          if (sess?.stream && !this.streams.has(sess.stream)) {
             hasUnknownOffTabStream = true;
             break;
           }
@@ -3543,6 +2964,7 @@ export class StreamsCoordinator {
             scope: activeScope,
             force: true,
             forceProbe: force,
+            notify: false,
           });
           if (gen !== this.readGeneration) return null;
           if (listRes.stale) return null;
@@ -3565,7 +2987,7 @@ export class StreamsCoordinator {
               );
               if (gen === this.readGeneration && pOut.code === 0) {
                 const refreshed = normalizeStream(parseJsonSafe(pOut.stdout));
-                if (refreshed) this.streams.set(refreshed.key, refreshed);
+                if (refreshed) this._upsertStream(refreshed, { detail: true });
               }
             }
           }
@@ -3579,7 +3001,7 @@ export class StreamsCoordinator {
               );
               if (gen === this.readGeneration && sOut.code === 0) {
                 const refreshed = normalizeSession(parseJsonSafe(sOut.stdout));
-                if (refreshed) this.previewSessions.set(refreshed.key, refreshed);
+                if (refreshed) this._upsertSession(refreshed, { detail: true });
               }
             }
           }
@@ -3593,7 +3015,7 @@ export class StreamsCoordinator {
         this.publishSharedTerminals(running);
         return primarySession
           ? { kind: "stream", stream: activeStream, session: primarySession }
-          : { kind: "listing", streams: activeBucket.items };
+          : { kind: "listing", streams: this.getStreamList(activeMachine, activeScope).items };
       } catch (err) {
         if (gen === this.readGeneration) {
           this.readError = err instanceof Error ? err.message : String(err);
@@ -3728,7 +3150,6 @@ export class StreamsCoordinator {
           streamsBin: this.streamsBinFor(targetMachine),
           run,
           openOverlay,
-          onPendingViewer: (entry) => this.recordPendingViewer(entry),
         }
       );
       if (!outcome.ok) {
@@ -3783,18 +3204,21 @@ export class StreamsCoordinator {
       (sessions == null || sessions.kind === "all_eligible" || sessions.kind === "only_active");
 
     let effectiveSessions = sessions;
-    const addedSessionIds = [];
+    const addedKeys = [];
     if (isSelected) {
-      const freshIds = sessions.session_ids.filter((id) => !this.pendingResumeSessions.has(id));
+      const freshIds = sessions.session_ids.filter((id) => !this.pending.has(`resume:${id}`));
       if (freshIds.length === 0) return { ok: false, duplicate: true };
       for (const id of freshIds) {
-        this.pendingResumeSessions.add(id);
-        addedSessionIds.push(id);
+        const pKey = `resume:${id}`;
+        this.pending.set(pKey, true);
+        addedKeys.push(pKey);
       }
       effectiveSessions = { ...sessions, session_ids: freshIds };
     } else if (isBulkOpen) {
-      if (this.pendingStreamActions.has(stream)) return { ok: false, duplicate: true };
-      this.pendingStreamActions.set(stream, "Opening…");
+      const pKey = `stream:${stream}`;
+      if (this.pending.has(pKey)) return { ok: false, duplicate: true };
+      this.pending.set(pKey, "Opening…");
+      addedKeys.push(pKey);
     }
     this.notifyViews();
     try {
@@ -3803,8 +3227,7 @@ export class StreamsCoordinator {
         { run, focusTerminal }
       );
     } finally {
-      for (const id of addedSessionIds) this.pendingResumeSessions.delete(id);
-      if (isBulkOpen) this.pendingStreamActions.delete(stream);
+      for (const pKey of addedKeys) this.pending.delete(pKey);
       this.notifyViews();
     }
   }

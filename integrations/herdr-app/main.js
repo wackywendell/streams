@@ -31,6 +31,7 @@ import {
   window as herdrWindow,
   checking,
   exec,
+  shared,
   setShared,
   notify as herdrNotify,
 } from "herdr";
@@ -41,9 +42,9 @@ import {
   resolveRole,
   parseTerminalAddress,
   recordHostId,
+  indexLive,
   buildMoveCandidates,
   observeNoticeToken,
-  resolveSpaceStreamKey,
   resolveSidebarView,
   effectiveSessionStatus,
   resolveTabRenameTarget,
@@ -53,23 +54,31 @@ import {
   unreadableNotice,
   hostStreamsEmptyMessage,
   formatRelativeAge,
-  countLiveTerminalsByStream,
-  findLivePaneForSession,
   runningSessionTerminals,
   streamBulkActionState,
   groupStreamSessions,
   StreamsCoordinator,
 } from "./state.js";
 
-let viewRev = 0;
 let lastWindowActive = false;
+const viewWaiters = new Set();
 
-function bumpViewRev() {
-  if (checking()) return;
+function notifyStreamsViews() {
+  if (checking() || viewWaiters.size === 0) return;
+  const waiters = [...viewWaiters];
+  viewWaiters.clear();
+  for (const resolve of waiters) {
+    resolve();
+  }
+}
+
+function readSharedString(key) {
+  if (checking()) return null;
   try {
-    setShared("streams.viewRev", ++viewRev);
+    const val = shared(key);
+    return typeof val === "string" ? val : null;
   } catch {
-    // Non-fatal in check/test mode
+    return null;
   }
 }
 
@@ -81,6 +90,16 @@ const coordinator = new StreamsCoordinator({
     }),
   publishShared: (key, value) => setShared(key, value),
   notifyToast: (n) => herdrNotify(n),
+  initialPreferredView: readSharedString("streams.preferredView") ?? "session",
+  initialHostScope: readSharedString("streams.hostScope") ?? "local",
+  onPreferenceChange: (key, value) => {
+    if (checking()) return;
+    try {
+      setShared(`streams.${key}`, value);
+    } catch {
+      // Non-fatal in check/test mode
+    }
+  },
   homeDir: (() => {
     try {
       return home();
@@ -89,7 +108,7 @@ const coordinator = new StreamsCoordinator({
     }
   })(),
   notify: () => {
-    bumpViewRev();
+    notifyStreamsViews();
   },
 });
 
@@ -128,9 +147,6 @@ function icon(p, size, color) {
 
 function folder(cwd, machine = null) {
   if (!cwd) return "";
-  if (machine && !checking()) {
-    void coordinator.ensureHomeDir(machine);
-  }
   const h = coordinator.homeDirFor(machine);
   if (!h) return cwd;
   return cwd === h ? "~" : cwd.startsWith(h + "/") ? "~" + cwd.slice(h.length) : cwd;
@@ -274,7 +290,6 @@ function collectSnapshot() {
     activeSpace,
     activeTab,
     activeTabId: activeTab?.id ?? null,
-    tabIds: allSpaces.flatMap((space) => (space.tabs ?? []).map((tab) => tab.id)),
     visibleTerminals,
     liveTerminals,
     panes: allPanes,
@@ -286,10 +301,15 @@ function collectSnapshot() {
 }
 
 function syncActiveTabName(snap) {
+  const runningByTerm = runningSessionTerminals({
+    ...snap,
+    staleSessionKeys: coordinator.staleSessionKeys,
+  });
   const target = resolveTabRenameTarget({
     activeTab: snap.activeTab,
     visibleTerminals: snap.visibleTerminals,
-    frames: coordinator.frames,
+    runningByTerm,
+    sessions: coordinator.sessions,
     tabNaming: coordinator.tabNaming,
   });
   if (!target) {
@@ -303,7 +323,12 @@ function syncActiveTabName(snap) {
 }
 
 function snapshotSignature(snap) {
-  const running = [...runningSessionTerminals(snap).entries()]
+  const running = [
+    ...runningSessionTerminals({
+      ...snap,
+      staleSessionKeys: coordinator.staleSessionKeys,
+    }).entries(),
+  ]
     .map(([t, s]) => `${t}=${s}`)
     .sort();
   const machineStates = (snap.machineList ?? [])
@@ -373,7 +398,8 @@ export default class StreamsMod extends View {
     this.scrollSession = ScrollHandle.new();
     this.scrollStream = ScrollHandle.new();
     this.scrollAll = ScrollHandle.new();
-    this._sub = null;
+    this._subTask = null;
+    this._subResolve = null;
     this._lastSig = null;
     this._observeTask = null;
     this._timerTask = null;
@@ -418,6 +444,21 @@ export default class StreamsMod extends View {
       return;
     }
     this.syncConfiguredBin();
+    if (cx?.spawn) {
+      this._subTask = cx.spawn(async (asyncCx) => {
+        for (;;) {
+          await new Promise((resolve) => {
+            this._subResolve = resolve;
+            viewWaiters.add(resolve);
+          });
+          this._subResolve = null;
+          if (this._role === "sidebar") {
+            syncActiveTabName(collectSnapshot());
+          }
+          asyncCx.notify();
+        }
+      });
+    }
     this.scheduleObserve(cx, collectSnapshot());
     if (role === "sidebar" && cx?.timer?.every) {
       this._timerTask = cx.timer.every(STALE_FALLBACK_MS, (timerCx) => {
@@ -427,6 +468,13 @@ export default class StreamsMod extends View {
   }
 
   async close() {
+    if (this._subResolve) {
+      viewWaiters.delete(this._subResolve);
+      this._subResolve = null;
+    }
+    this._subTask?.cancel?.();
+    this._subTask = null;
+    this._timerTask?.cancel?.();
     this._timerTask = null;
     this.searchInput?.release?.();
     this.searchInput = null;
@@ -463,7 +511,6 @@ export default class StreamsMod extends View {
         machine,
         hostId,
         selectedStreamKey: null,
-        moveTabOverride: null,
       },
       cx
     );
@@ -487,21 +534,24 @@ export default class StreamsMod extends View {
   moveCandidates(state, snap) {
     if (!state) return [];
     const byKey = new Map();
-    const bucket = coordinator.hostStreamsState(state.machine, "local");
+    const bucket = coordinator.getStreamList(state.machine, "local");
     for (const item of bucket.items ?? []) {
       if (item?.key) byKey.set(item.key, item);
     }
     for (const st of coordinator.streams.values()) {
       if (st?.key && !byKey.has(st.key)) byKey.set(st.key, st);
     }
+    const live = indexLive(snap, {
+      sessions: coordinator.sessions,
+      staleSessionKeys: coordinator.staleSessionKeys,
+      lastFocusedStreamBySpace: coordinator.lastFocusedStreamBySpace,
+    });
     return buildMoveCandidates({
-      sessionKey: state.sessionKey,
       sourceStreamKey: state.sourceStreamKey,
       hostId: state.hostId,
-      machine: state.machine,
       streams: Array.from(byKey.values()),
+      openCounts: live.openCountByStream,
       query: this.moveSearchInput?.value?.() ?? "",
-      snapshot: snap,
     });
   }
 
@@ -518,32 +568,25 @@ export default class StreamsMod extends View {
     if (!chosenKey) return;
     const chosen = candidates.find((c) => c.stream.key === chosenKey);
     if (!chosen) return;
-    const canMoveTab = Boolean(chosen.spaceInfo?.canMoveTab);
-    const moveTab = canMoveTab ? (state.moveTabOverride ?? true) : false;
 
+    const live = indexLive(snap, {
+      sessions: coordinator.sessions,
+      staleSessionKeys: coordinator.staleSessionKeys,
+      lastFocusedStreamBySpace: coordinator.lastFocusedStreamBySpace,
+    });
     this.setInteraction(null, cx);
     if (!cx?.spawn) return;
     cx.spawn(async (asyncCx) => {
       try {
-        await coordinator.moveSessionToStream(
-          {
-            sessionKey: state.sessionKey,
-            sourceStreamKey: state.sourceStreamKey,
-            targetStreamKey: chosenKey,
-            moveTab,
-            terminalList: snap.terminalList,
-            panes: snap.panes,
-            spaces: snap.allSpaces,
-            agents: snap.agents,
-          },
-          {
-            run,
-            readPanes: () => panes(),
-            readSpaces: () => spaces(),
-            readAgents: () => agents(),
-            sleep: (ms) => asyncCx.sleep(ms),
-          }
-        );
+        await coordinator.moveSessionToStream({
+          sessionKey: state.sessionKey,
+          sourceStreamKey: state.sourceStreamKey,
+          targetStreamKey: chosenKey,
+          live,
+          terminalList: snap.terminalList,
+          panes: snap.panes,
+          agents: snap.agents,
+        });
       } finally {
         asyncCx.notify();
       }
@@ -554,25 +597,15 @@ export default class StreamsMod extends View {
     if (this.interaction?.kind !== "move") return trigger;
     const state = this.interaction;
     const candidates = this.moveCandidates(state, snap);
-    const bucket = coordinator.hostStreamsState(state.machine, "local");
+    const bucket = coordinator.getStreamList(state.machine, "local");
     const isLoadingStreams = !bucket.loaded && !bucket.error && candidates.length === 0;
     const queryText = (this.moveSearchInput?.value?.() ?? "").trim();
 
-    // Seed explicit selection once when unset so keyboard/Move reflect a stable, visible row.
     if (state.selectedStreamKey === null && candidates.length > 0) {
       state.selectedStreamKey = candidates[0].stream.key;
     }
     const selectedIdx = candidates.findIndex((c) => c.stream.key === state.selectedStreamKey);
     const effectiveCandidate = selectedIdx >= 0 ? candidates[selectedIdx] : null;
-    const moveInfo = effectiveCandidate?.spaceInfo ?? {
-      canMoveTab: false,
-      targetSpace: null,
-      reason: "Select a target stream",
-    };
-    const moveTabChecked = moveInfo.canMoveTab ? (state.moveTabOverride ?? true) : false;
-    const checkboxLabel = moveInfo.targetSpace?.name
-      ? `Move tab to ${moveInfo.targetSpace.name}`
-      : "Move tab to space";
 
     const panel = v_flex()
       .id(`${id}-panel`)
@@ -602,7 +635,6 @@ export default class StreamsMod extends View {
             {
               ...state,
               selectedStreamKey: candidates[next].stream.key,
-              moveTabOverride: null,
             },
             keyCx
           );
@@ -616,7 +648,6 @@ export default class StreamsMod extends View {
             {
               ...state,
               selectedStreamKey: candidates[next].stream.key,
-              moveTabOverride: null,
             },
             keyCx
           );
@@ -727,7 +758,6 @@ export default class StreamsMod extends View {
                         {
                           ...state,
                           selectedStreamKey: cand.stream.key,
-                          moveTabOverride: null,
                         },
                         downCx
                       );
@@ -750,82 +780,21 @@ export default class StreamsMod extends View {
                       .text_color(cand.isArchived ? t.muted : t.foreground)
                       .child(cand.stream.title)
                   )
-                  .when(Boolean(cand.spaceInfo.targetSpace?.name), (r) =>
+                  .when(cand.openCount > 0, (r) =>
                     r.child(
                       div()
                         .flex_none()
-                        .max_w(75)
-                        .truncate()
                         .px(4)
                         .py(1)
                         .rounded(3)
                         .bg(t.raised)
                         .text_size(10)
                         .text_color(t.dim)
-                        .child(cand.spaceInfo.targetSpace.name)
+                        .child(`${cand.openCount} open`)
                     )
                   );
               })
             )
-          )
-      )
-      .child(
-        h_flex()
-          .id(`${id}-move-tab-toggle`)
-          .px(4)
-          .py(3)
-          .gap(7)
-          .items_center()
-          .rounded(4)
-          .when(moveInfo.canMoveTab, (row) =>
-            row
-              .cursor_pointer()
-              .hover((s) => s.bg(t.hover))
-              .on_click((_e, clickCx) => {
-                clickCx.stop_propagation();
-                this.setInteraction(
-                  {
-                    ...state,
-                    selectedStreamKey: effectiveCandidate?.stream.key ?? state.selectedStreamKey,
-                    moveTabOverride: !moveTabChecked,
-                  },
-                  clickCx
-                );
-              })
-          )
-          .when(!moveInfo.canMoveTab && Boolean(moveInfo.reason), (row) =>
-            row.tooltip(moveInfo.reason)
-          )
-          .child(
-            div()
-              .w(14)
-              .h(14)
-              .flex_none()
-              .flex()
-              .items_center()
-              .justify_center()
-              .rounded(3)
-              .border(1)
-              .border_color(
-                !moveInfo.canMoveTab
-                  ? t.border
-                  : moveTabChecked
-                    ? t.accent
-                    : t.muted
-              )
-              .bg(moveTabChecked ? t.accent : t.background)
-              .text_size(10)
-              .text_color(t.background)
-              .child(moveTabChecked ? "✓" : "")
-          )
-          .child(
-            div()
-              .flex_1()
-              .min_w(0)
-              .truncate()
-              .text_size(11.5)
-              .text_color(moveInfo.canMoveTab ? t.foreground : t.dim)
-              .child(checkboxLabel)
           )
       )
       .child(
@@ -1039,15 +1008,9 @@ export default class StreamsMod extends View {
   scheduleObserve(cx, snap, force = false) {
     if (checking()) return;
     this.syncConfiguredBin();
-    coordinator.notifyLayoutSnapshot({
-      panes: snap.panes,
-      spaces: snap.allSpaces,
-      terminalList: snap.terminalList,
-    });
     const isWinActive = Boolean(herdrWindow()?.active);
     const windowActivated = isWinActive && !lastWindowActive;
     lastWindowActive = isWinActive;
-    syncActiveTabName(snap);
     const sig = snapshotSignature(snap);
     const stale =
       coordinator.staleFallbackMs > 0 &&
@@ -1057,9 +1020,8 @@ export default class StreamsMod extends View {
       !force &&
       !(windowActivated && stale) &&
       sig === this._lastSig &&
-      (coordinator.frames.size > 0 ||
-        coordinator.lastError ||
-        coordinator.lastCompletedKey !== null ||
+      (coordinator.lastCompletedAt > 0 ||
+        coordinator.readError ||
         coordinator.lastFailedKey !== null ||
         coordinator.inFlightKey !== null)
     ) {
@@ -1072,6 +1034,7 @@ export default class StreamsMod extends View {
           await coordinator.observe({
             ...snap,
             force,
+            contextSynced: this._role === "sidebar",
           });
           syncActiveTabName(collectSnapshot());
         } finally {
@@ -1079,7 +1042,9 @@ export default class StreamsMod extends View {
         }
       });
     } else {
-      Promise.resolve(coordinator.observe({ ...snap, force })).then(() => {
+      Promise.resolve(
+        coordinator.observe({ ...snap, force, contextSynced: this._role === "sidebar" })
+      ).then(() => {
         syncActiveTabName(collectSnapshot());
         cx?.notify?.();
       });
@@ -1118,10 +1083,6 @@ export default class StreamsMod extends View {
     const bottom = paneFrame(layout())?.header?.position === "bottom";
 
     if (p.mod === "streams") {
-      const meta = coordinator.resolveViewerPaneMeta(pane, p.tab, allPanes);
-      const monoFont = settings()?.font_family ?? "JetBrains Mono";
-      const viewerTitle = meta?.title || meta?.filename || "Reference";
-      const showFilename = Boolean(meta?.filename && meta.filename !== viewerTitle);
       return h_flex()
         .id(`pane-head-${pane}`)
         .size_full()
@@ -1141,66 +1102,12 @@ export default class StreamsMod extends View {
         .child(referenceIcon("document", t))
         .child(
           div()
-            .flex_none()
+            .flex_1()
+            .min_w(0)
             .truncate()
-            .max_w(280)
             .font_medium()
             .text_color(t.foreground)
-            .child(viewerTitle)
-        )
-        .when(showFilename, (el) =>
-          el.child(
-            div()
-              .min_w(0)
-              .truncate()
-              .font_family(monoFont)
-              .text_size(11)
-              .text_color(t.dim)
-              .child(meta.filename)
-          )
-        )
-        .child(div().flex_1())
-        .when(Boolean(meta?.truncated), (el) =>
-          el
-            .child(
-              div()
-                .flex_none()
-                .px(6)
-                .py(1)
-                .rounded(4)
-                .bg(t.raised)
-                .text_size(10.5)
-                .text_color(t.muted)
-                .child("truncated")
-            )
-            .when(Boolean(meta?.reference), (btn) =>
-              btn.child(
-                div()
-                  .id(`ph-open-editor-${pane}`)
-                  .flex_none()
-                  .px(6)
-                  .py(1)
-                  .rounded(4)
-                  .text_size(10.5)
-                  .text_color(t.accent)
-                  .hover((s) => s.bg(t.hover))
-                  .on_click((_e, clickCx) => {
-                    clickCx.stop_propagation();
-                    clickCx.spawn(async (asyncCx) => {
-                      await coordinator.openReference(meta.reference, {
-                        activeSpaceId: meta.spaceId ?? snap.activeSpace?.id ?? null,
-                        activeTabId: p.tab,
-                        targetPaneId: pane,
-                        mode: "editor",
-                        run,
-                        openOverlay,
-                        openUrl: (u) => asyncCx.open_url(u),
-                      });
-                    });
-                  })
-                  .child("Open in editor")
-              )
-            )
+            .child("Reference")
         )
         .when(this.hovered, (el) =>
           el
@@ -1217,8 +1124,12 @@ export default class StreamsMod extends View {
         );
     }
 
-    const frameCtx = p.terminal ? coordinator.frames.get(p.terminal) : null;
-    const enrolled = frameCtx?.kind === "enrolled" ? frameCtx.session : null;
+    const runningByTerm = runningSessionTerminals({
+      ...snap,
+      staleSessionKeys: coordinator.staleSessionKeys,
+    });
+    const enrolledKey = p.terminal ? runningByTerm.get(p.terminal) ?? null : null;
+    const enrolled = enrolledKey ? coordinator.sessions.get(enrolledKey) ?? null : null;
     const streamTitle = enrolled ? coordinator.streamTitle(enrolled.stream) : null;
     const termInfo = p.terminal
       ? snap.terminalList.find((item) => (item.address ?? item.id) === p.terminal) ?? null
@@ -1621,46 +1532,33 @@ export default class StreamsMod extends View {
   renderSidebar(cx) {
     const t = theme();
     const snap = collectSnapshot();
+    const live = indexLive(snap, {
+      sessions: coordinator.sessions,
+      staleSessionKeys: coordinator.staleSessionKeys,
+      lastFocusedStreamBySpace: coordinator.lastFocusedStreamBySpace,
+    });
+    coordinator.syncContext(live);
     this.scheduleObserve(cx, snap);
 
     const activeSpace = snap.activeSpace;
+
     const contextKey = `${activeSpace?.id ?? ""}\0${snap.activeTabId ?? ""}\0${coordinator.preferredView}\0${coordinator.previewStreamKey ?? ""}\0${coordinator.previewSessionKey ?? ""}`;
     if (this._lastContextKey !== null && this._lastContextKey !== contextKey) {
       this.interaction = null;
     }
     this._lastContextKey = contextKey;
     const monoFont = settings()?.font_family ?? "JetBrains Mono";
-    const spaceStreamKey = resolveSpaceStreamKey({
-      space: activeSpace,
-      panes: snap.panes,
-      terminalList: snap.terminalList,
-      agents: snap.agents,
-      frames: coordinator.frames,
-      lastFocusedStreamBySpace: coordinator.lastFocusedStreamBySpace,
-    });
+    const isRefreshing = coordinator.inFlightKey !== null;
     const view = resolveSidebarView({
       preferredView: coordinator.preferredView,
-      tabId: snap.activeTabId,
-      tabStreams: coordinator.tabStreams,
+      sessions: coordinator.sessions,
       streams: coordinator.streams,
-      previewSessions: coordinator.previewSessions,
-      frames: coordinator.frames,
-      visibleTerminals: snap.visibleTerminals,
-      focusedTerminal: snap.focusedTerminal,
-      spaceStreamKey,
+      live,
       previewStreamKey: coordinator.previewStreamKey,
       previewSessionKey: coordinator.previewSessionKey,
-      inFlight: coordinator.inFlightKey !== null,
     });
 
-    const activeSegment =
-      view.view === "session" || view.view === "stream" || view.view === "all"
-        ? view.view
-        : view.hasSessionAccess
-          ? "session"
-          : view.hasStreamAccess
-            ? "stream"
-            : "all";
+    const activeSegment = view.view;
     const sessionDisabled = !view.hasSessionAccess;
     const streamDisabled = !view.hasStreamAccess;
 
@@ -1726,7 +1624,6 @@ export default class StreamsMod extends View {
       )
       .child(
         (() => {
-          const isRefreshing = coordinator.inFlightKey !== null;
           const refreshIcon = svg("mods/streams/icons/refresh-cw.svg").size(13);
           return div()
             .id("streams-refresh")
@@ -1788,28 +1685,9 @@ export default class StreamsMod extends View {
       }
     }
 
-    if (coordinator.readError && !coordinator.actionError && coordinator.frames.size === 0 && coordinator.hostStreams.length === 0) {
-      return v_flex()
-        .size_full()
-        .bg(t.chrome)
-        .child(header)
-        .child(
-          div()
-            .p(12)
-            .text_size(12)
-            .text_color(t.dim)
-            .child(`Unavailable: ${coordinator.readError}`)
-        );
-    }
-
-    if (view.view === "loading" || (coordinator.lastCompletedKey === null && coordinator.inFlightKey !== null)) {
-      return v_flex()
-        .size_full()
-        .bg(t.chrome)
-        .child(header)
-        .child(div().p(12).text_size(12).text_color(t.dim).child("Loading Streams…"));
-    }
-
+    const hostBucket = coordinator.getStreamList();
+    const bannerError =
+      coordinator.readError || (view.view === "all" ? hostBucket.error : null);
     const activeBanner = coordinator.actionError
       ? {
           kind: "action",
@@ -1819,11 +1697,11 @@ export default class StreamsMod extends View {
           copyLabel: coordinator.actionError.copyLabel ?? "Copy",
           color: coordinator.actionError.level === "warning" ? t.working : t.blocked,
         }
-      : coordinator.readError
+      : bannerError
         ? {
             kind: "read",
             title: "Refresh failed",
-            message: coordinator.readError,
+            message: bannerError,
             copyText: null,
             copyLabel: "Copy",
             color: t.blocked,
@@ -1936,7 +1814,7 @@ export default class StreamsMod extends View {
     const statusLabel = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 
     const buildStatusMenuItems = ({ sessionKey, streamKey, status }) => {
-      const statusPending = Boolean(sessionKey && coordinator.pendingStatusSessions.has(sessionKey));
+      const statusPending = Boolean(sessionKey && coordinator.isPending(`status:${sessionKey}`));
       return SESSION_STATUSES.map((st) => {
         const style = statusStyle(st, t);
         return {
@@ -1958,8 +1836,8 @@ export default class StreamsMod extends View {
     const buildStreamMenuItems = (stream, { writable = true } = {}) => {
       const streamKey = stream?.key ?? null;
       const bulk = streamBulkActionState(stream);
-      const streamBusy = Boolean(streamKey && coordinator.pendingStreamActions.has(streamKey));
-      const renameBusy = Boolean(streamKey && coordinator.pendingRenames.has(streamKey));
+      const streamBusy = Boolean(streamKey && coordinator.isPending(`stream:${streamKey}`));
+      const renameBusy = Boolean(streamKey && coordinator.isPending(`rename:${streamKey}`));
       return [
         {
           id: "rename",
@@ -2049,9 +1927,9 @@ export default class StreamsMod extends View {
       writable = true,
     }) => {
       const isOpen = Boolean(livePane);
-      const isResuming = coordinator.pendingResumeSessions.has(sessionKey);
-      const isRenaming = coordinator.pendingRenames.has(sessionKey);
-      const isMoving = coordinator.pendingMoves.has(sessionKey);
+      const isResuming = coordinator.isPending(`resume:${sessionKey}`);
+      const isRenaming = coordinator.isPending(`rename:${sessionKey}`);
+      const isMoving = coordinator.isPending(`move:${sessionKey}`);
       const items = isOpen
         ? [
             {
@@ -2191,7 +2069,7 @@ export default class StreamsMod extends View {
       if (!isArtifact) {
         const isDropping =
           Boolean(item.sessionKey && item.refKey) &&
-          coordinator.pendingDropReferences.has(`${item.sessionKey}\0${item.refKey}`);
+          coordinator.isPending(`drop:${item.sessionKey}\0${item.refKey}`);
         items.push({ type: "divider" });
         items.push({
           id: "drop",
@@ -2277,7 +2155,7 @@ export default class StreamsMod extends View {
                   const isRefHovered = this.hoveredRefId === item.id;
                   const isRefDropping =
                     Boolean(item.sessionKey && item.refKey) &&
-                    coordinator.pendingDropReferences.has(`${item.sessionKey}\0${item.refKey}`);
+                    coordinator.isPending(`drop:${item.sessionKey}\0${item.refKey}`);
                   const card = v_flex()
                     .id(item.id)
                     .relative()
@@ -2425,14 +2303,9 @@ export default class StreamsMod extends View {
     // ALL VIEW
     // -------------------------------------------------------------------------
     if (view.view === "all") {
-      const streamList = coordinator.hostStreams ?? [];
-      const unreadable = unreadableNotice(coordinator.hostUnreadable);
-      const openCounts = countLiveTerminalsByStream({
-        panes: snap.panes,
-        terminalList: snap.terminalList,
-        agents: snap.agents,
-        frames: coordinator.frames,
-      });
+      const streamList = hostBucket.items;
+      const unreadable = unreadableNotice(hostBucket.unreadable);
+      const openCounts = live.openCountByStream;
       const streamGroups = groupHostStreams(streamList, {
         openCounts,
         sort: this.streamSort,
@@ -2446,11 +2319,12 @@ export default class StreamsMod extends View {
       const hostScope = coordinator.hostScope;
       const localHostLabel = activeSpace.machine ?? "This host";
       const emptyMessage = hostStreamsEmptyMessage({
-        error: coordinator.hostStreamsError,
+        error: activeBanner?.kind === "read" ? null : hostBucket.error,
         streams: streamList,
         shown: shownStreams,
-        unreadable: coordinator.hostUnreadable,
+        unreadable: hostBucket.unreadable,
         scope: hostScope,
+        loaded: hostBucket.loaded,
       });
       const toolbar = v_flex()
         .px(12)
@@ -2560,8 +2434,7 @@ export default class StreamsMod extends View {
             )
         );
 
-      const currentAllStreamKey =
-        coordinator.tabStreams.get(snap.activeTabId) ?? spaceStreamKey ?? null;
+      const currentAllStreamKey = view.currentStreamKey ?? null;
 
       const renderStreamRow = (summary, idx, groupId) => {
         const openCount = openCounts.get(summary.key) ?? 0;
@@ -2754,25 +2627,17 @@ export default class StreamsMod extends View {
     if (view.view === "stream") {
       const stream = view.stream ?? null;
       if (!stream) {
-        return v_flex()
-          .size_full()
-          .bg(t.chrome)
-          .text_size(12)
-          .text_color(t.foreground)
-          .child(header)
-          .child(
-            div()
-              .p(12)
-              .text_color(t.dim)
-              .child(
-                coordinator.previewStreamKey
-                  ? "Loading Stream…"
-                  : "This tab has no enrolled Stream. Switch to All to browse Streams."
-              )
-          );
+        return renderPinnedErrorBanner(
+          v_flex()
+            .size_full()
+            .bg(t.chrome)
+            .text_size(12)
+            .text_color(t.foreground)
+            .child(header)
+        ).child(div().p(12).text_color(t.dim).child("Loading Stream…"));
       }
 
-      const streamSessions = stream.sessions ?? [];
+      const streamSessions = coordinator.getStreamSessions(stream.key);
       const streamUnreadable = unreadableNotice(stream.unreadable);
       const currentSessKey = view.currentSession?.key ?? null;
       const streamForeignHost = coordinator.foreignHostBadge(stream, activeSpace?.machine);
@@ -2864,7 +2729,7 @@ export default class StreamsMod extends View {
                       this.interaction?.kind === "rename" &&
                       this.interaction.entityKind === "stream" &&
                       this.interaction.key === stream.key;
-                    const isStreamRenamePending = coordinator.pendingRenames.has(stream.key);
+                    const isStreamRenamePending = coordinator.isPending(`rename:${stream.key}`);
                     return h_flex()
                       .gap(6)
                       .items_center()
@@ -2900,13 +2765,13 @@ export default class StreamsMod extends View {
                       .when(!isRenamingStream && !view.isPreview && Boolean(streamForeignHost), (row) =>
                         row.child(foreignHostChip(streamForeignHost, t, "stream-header-host"))
                       )
-                      .when(!isRenamingStream && coordinator.pendingStreamActions.has(stream.key), (row) =>
+                      .when(!isRenamingStream && coordinator.isPending(`stream:${stream.key}`), (row) =>
                         row.child(
                           div()
                             .flex_none()
                             .text_size(10.5)
                             .text_color(t.dim)
-                            .child(coordinator.pendingStreamActions.get(stream.key))
+                            .child(coordinator.pendingValue(`stream:${stream.key}`))
                         )
                       )
                       .when(!isRenamingStream, (row) =>
@@ -2982,7 +2847,9 @@ export default class StreamsMod extends View {
                             .font_medium()
                             .text_size(11.5)
                             .text_color(t.muted)
-                            .child(`Sessions · ${streamSessions.length}`)
+                            .child(
+                              `Sessions · ${stream.detail ? streamSessions.length : stream.total_sessions}`
+                            )
                         )
                     )
                     .when(streamSessions.length > 1, (row) =>
@@ -3011,16 +2878,15 @@ export default class StreamsMod extends View {
                     )
                 )
                 .when(this.sessionsOpen && streamSessions.length === 0, (el) =>
-                  el.child(div().text_size(11.5).text_color(t.dim).child("No Sessions yet."))
+                  el.child(
+                    div()
+                      .text_size(11.5)
+                      .text_color(t.dim)
+                      .child(stream.detail ? "No Sessions yet." : "Loading Sessions…")
+                  )
                 )
                 .when(this.sessionsOpen && streamSessions.length > 0, (el) => {
-                  const liveSessionKeys = new Set(
-                    runningSessionTerminals({
-                      terminalList: snap.terminalList,
-                      panes: snap.panes,
-                      agents: snap.agents,
-                    }).values()
-                  );
+                  const liveSessionKeys = live.liveSessionKeys;
                   const sessionGroups = groupStreamSessions(streamSessions, {
                     liveSessionKeys,
                     currentSessionKey: currentSessKey,
@@ -3030,12 +2896,7 @@ export default class StreamsMod extends View {
                   const onlyFinished =
                     nonEmptyGroups.length === 1 && nonEmptyGroups[0].id === "done_closed";
                   const renderSessionRow = (sess, idx) => {
-                    const liveMatch = findLivePaneForSession({
-                      sessionKey: sess.key,
-                      panes: snap.panes,
-                      terminalList: snap.terminalList,
-                      agents: snap.agents,
-                    });
+                    const liveMatch = live.paneBySession.get(sess.key) ?? null;
                     const isOpen = Boolean(liveMatch);
                     const livePaneObj = liveMatch
                       ? snap.panes.find((p) => p.pane === liveMatch.pane) ?? null
@@ -3051,9 +2912,9 @@ export default class StreamsMod extends View {
                     const rowCtxMenuId = `row-ctx-${sess.key}`;
                     const rowStatusOpen = this.isMenuOpen(rowStatusMenuId);
                     const rowActionOpen = this.isMenuOpen(rowActionMenuId);
-                    const isRowStatusPending = coordinator.pendingStatusSessions.has(sess.key);
-                    const isRowResuming = coordinator.pendingResumeSessions.has(sess.key);
-                    const isRowMoving = coordinator.pendingMoves.has(sess.key);
+                    const isRowStatusPending = coordinator.isPending(`status:${sess.key}`);
+                    const isRowResuming = coordinator.isPending(`resume:${sess.key}`);
+                    const isRowMoving = coordinator.isPending(`move:${sess.key}`);
                     const isRowMovingMenu =
                       this.interaction?.kind === "move" &&
                       this.interaction.sessionKey === sess.key;
@@ -3061,7 +2922,7 @@ export default class StreamsMod extends View {
                       this.interaction?.kind === "rename" &&
                       this.interaction.entityKind === "session" &&
                       this.interaction.key === sess.key;
-                    const isRowRenamePending = coordinator.pendingRenames.has(sess.key);
+                    const isRowRenamePending = coordinator.isPending(`rename:${sess.key}`);
                     const rowWritable = !(streamForeignHost && streamForeignHost.state !== "online");
                     const showRowActions = isRowHovered || rowActionOpen || isRowMovingMenu;
                     const rowMenuItems = () =>
@@ -3398,22 +3259,14 @@ export default class StreamsMod extends View {
     const parentStream = view.stream ?? null;
 
     if (!session) {
-      return v_flex()
-        .size_full()
-        .bg(t.chrome)
-        .text_size(12)
-        .text_color(t.foreground)
-        .child(header)
-        .child(
-          div()
-            .p(12)
-            .text_color(t.dim)
-            .child(
-              coordinator.previewSessionKey
-                ? "Loading Session…"
-                : "This tab is not enrolled in a Session. Switch to All to browse Streams."
-            )
-        );
+      return renderPinnedErrorBanner(
+        v_flex()
+          .size_full()
+          .bg(t.chrome)
+          .text_size(12)
+          .text_color(t.foreground)
+          .child(header)
+      ).child(div().p(12).text_color(t.dim).child("Loading Session…"));
     }
 
     const tabPane = view.terminal
@@ -3496,7 +3349,7 @@ export default class StreamsMod extends View {
                     .justify_between()
                     .child(
                       (() => {
-                        const isResumingPreview = coordinator.pendingResumeSessions.has(session.key);
+                        const isResumingPreview = coordinator.isPending(`resume:${session.key}`);
                         return div()
                           .id("session-preview-resume")
                           .px(8)
@@ -3588,7 +3441,7 @@ export default class StreamsMod extends View {
                     this.interaction?.kind === "rename" &&
                     this.interaction.entityKind === "session" &&
                     this.interaction.key === session.key;
-                  const isSessionRenamePending = coordinator.pendingRenames.has(session.key);
+                  const isSessionRenamePending = coordinator.isPending(`rename:${session.key}`);
                   return h_flex()
                     .gap(6)
                     .items_center()
@@ -3634,7 +3487,7 @@ export default class StreamsMod extends View {
                               .id("session-header-status-ro")
                               .tooltip(sessionForeignHost.tooltip);
                           }
-                          if (coordinator.pendingStatusSessions.has(session.key)) {
+                          if (coordinator.isPending(`status:${session.key}`)) {
                             return statusDropdownBadge(effectiveStatus, t, { pending: true })
                               .id("session-header-status-pending")
                               .tooltip("Updating status…");
@@ -3662,8 +3515,18 @@ export default class StreamsMod extends View {
                     );
                 })()
               )
+              .when(!session.detail, (el) =>
+                el.child(
+                  div()
+                    .text_size(11.5)
+                    .text_color(t.dim)
+                    .child("Loading Session details…")
+                )
+              )
               .when(
-                !view.isUnopened &&
+                session.detail &&
+                  !view.isUnopened &&
+                  !isRefreshing &&
                   session.status !== "done" &&
                   session.status !== "closed" &&
                   !session.state &&
@@ -3711,8 +3574,11 @@ export default class StreamsMod extends View {
     const rawProps = props() ?? {};
     this.syncViewerState(rawProps);
     const title = rawProps.title || rawProps.filename || "Reference";
+    const filename = rawProps.filename || "";
+    const showFilename = Boolean(filename && filename !== title);
+    const monoFont = settings()?.font_family ?? "JetBrains Mono";
     const overlayId = rawProps.overlay ?? null;
-    const isMd = isMarkdownFilename(rawProps.filename);
+    const isMd = isMarkdownFilename(filename);
     const frameHeader = paneFrame(layout())?.header;
     const hasOuterPaneHeader =
       !overlayId && Boolean(frameHeader && frameHeader.reveal !== "none");
@@ -3757,73 +3623,72 @@ export default class StreamsMod extends View {
       .bg(t.background)
       .text_size(12)
       .text_color(t.foreground)
-      .when(!hasOuterPaneHeader, (el) =>
-        el.child(
-          h_flex()
-            .h(30)
-            .flex_none()
-            .px(10)
-            .gap(8)
-            .items_center()
-            .bg(t.chrome)
-            .border_b(1)
-            .border_color(t.border)
-            .child(div().flex_1().min_w(0).truncate().font_medium().child(title))
-            .when(Boolean(rawProps.truncated), (bar) =>
-              bar
-                .child(
-                  div()
-                    .flex_none()
-                    .px(6)
-                    .py(1)
-                    .rounded(4)
-                    .bg(t.raised)
-                    .text_size(10.5)
-                    .text_color(t.muted)
-                    .child("truncated")
-                )
-                .when(Boolean(rawProps.reference), (b) =>
-                  b.child(openInEditorButton("streams-viewer-open-editor"))
-                )
+      .child(
+        h_flex()
+          .h(hasOuterPaneHeader ? 26 : 30)
+          .flex_none()
+          .px(10)
+          .gap(8)
+          .items_center()
+          .bg(hasOuterPaneHeader ? t.background : t.chrome)
+          .border_b(1)
+          .border_color(t.border)
+          .child(
+            div()
+              .flex_none()
+              .max_w(280)
+              .truncate()
+              .font_medium()
+              .child(title)
+          )
+          .when(showFilename, (bar) =>
+            bar.child(
+              div()
+                .min_w(0)
+                .truncate()
+                .font_family(monoFont)
+                .text_size(11)
+                .text_color(t.dim)
+                .child(filename)
             )
-            .when(Boolean(overlayId), (bar) =>
-              bar.child(
+          )
+          .child(div().flex_1())
+          .when(Boolean(rawProps.truncated), (bar) =>
+            bar
+              .child(
                 div()
-                  .id("streams-viewer-close")
                   .flex_none()
                   .px(6)
-                  .py(2)
+                  .py(1)
                   .rounded(4)
-                  .text_size(11.5)
+                  .bg(t.raised)
+                  .text_size(10.5)
                   .text_color(t.muted)
-                  .hover((s) => s.bg(t.hover).text_color(t.foreground))
-                  .on_mouse_down((_e, downCx) => downCx.stop_propagation())
-                  .on_click((_e, clickCx) => {
-                    clickCx.stop_propagation();
-                    closeOverlay(overlayId);
-                  })
-                  .child("Close")
+                  .child("truncated")
               )
+              .when(Boolean(rawProps.reference), (b) =>
+                b.child(openInEditorButton("streams-viewer-open-editor"))
+              )
+          )
+          .when(Boolean(overlayId), (bar) =>
+            bar.child(
+              div()
+                .id("streams-viewer-close")
+                .flex_none()
+                .px(6)
+                .py(2)
+                .rounded(4)
+                .text_size(11.5)
+                .text_color(t.muted)
+                .hover((s) => s.bg(t.hover).text_color(t.foreground))
+                .on_mouse_down((_e, downCx) => downCx.stop_propagation())
+                .on_click((_e, clickCx) => {
+                  clickCx.stop_propagation();
+                  closeOverlay(overlayId);
+                })
+                .child("Close")
             )
-        )
-      )
-      .when(hasOuterPaneHeader && Boolean(rawProps.truncated), (el) =>
-        el.child(
-          h_flex()
-            .px(12)
-            .py(5)
-            .gap(8)
-            .items_center()
-            .bg(t.chrome)
-            .border_b(1)
-            .border_color(t.border)
-            .text_size(11)
-            .text_color(t.muted)
-            .child(div().flex_1().child("Showing first 400 KiB (truncated)."))
-            .when(Boolean(rawProps.reference), (b) =>
-              b.child(openInEditorButton("streams-viewer-banner-open-editor"))
-            )
-        )
+          )
       )
       .child(
         isMd

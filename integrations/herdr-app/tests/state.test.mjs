@@ -8,31 +8,27 @@ import {
   LABEL_HERDR_TAB,
   SHARED_TERMINAL_MARKS_KEY,
   SESSION_STATUSES,
+  normalizeSession,
+  normalizeStream,
   resolveRole,
   parseTerminalAddress,
   recordHostId,
   qualifyForMachine,
   unqualifyForMachine,
   observeNoticeToken,
-  activeTabSession,
-  tabSidebarView,
-  resolveSpaceStreamKey,
+  indexLive,
   resolveSidebarView,
   resolveTabRenameTarget,
   effectiveSessionStatus,
   buildReferenceItems,
   prepareNativeContent,
-  filterHostStreams,
   groupHostStreams,
   formatHostStreamMeta,
   unreadableNotice,
   hostStreamsEmptyMessage,
   formatRelativeAge,
-  liveStreamIds,
-  countLiveTerminalsByStream,
   findLivePaneForStream,
   findLivePaneForSession,
-  resolveMoveSpaceTarget,
   buildMoveCandidates,
   statusToTerminalMark,
   buildSharedTerminalMarks,
@@ -287,10 +283,11 @@ test("refresh_reads_the_focused_session", async () => {
     ["session", "show", s1.key, "--json"],
     ["stream", "show", st.key, "--json"],
   ]);
-  const frame = coord.frames.get("t1");
-  assert.equal(frame?.kind, "enrolled");
-  assert.equal(frame.session.key, s1.key);
-  assert.equal(coord.tabStreams.get("tab1"), st.key);
+  const sess = coord.sessions.get(s1.key);
+  assert.equal(sess?.key, s1.key);
+  assert.equal(sess?.stream, st.key);
+  assert.equal(sess?.detail, true);
+  assert.equal(coord.streams.get(st.key)?.key, st.key);
 });
 
 test("focus_change_in_a_tab_refreshes", async () => {
@@ -335,28 +332,24 @@ test("focus_change_in_a_tab_refreshes", async () => {
   };
 
   await coord.observe({ ...common, focusedTerminal: "t1" });
-  const view1 = tabSidebarView({
-    tabId: "tab1",
-    tabStreams: coord.tabStreams,
+  const live1 = indexLive({ ...common, focusedTerminal: "t1" }, { sessions: coord.sessions });
+  const view1 = resolveSidebarView({
+    sessions: coord.sessions,
     streams: coord.streams,
-    frames: coord.frames,
-    visibleTerminals: ["t1", "t2"],
-    focusedTerminal: "t1",
+    live: live1,
   });
-  assert.equal(view1.kind, "session");
+  assert.equal(view1.view, "session");
   assert.equal(view1.session.key, s1.key);
   assert.equal(buildReferenceItems(view1.session).length, 0);
 
   await coord.observe({ ...common, focusedTerminal: "t2" });
-  const view2 = tabSidebarView({
-    tabId: "tab1",
-    tabStreams: coord.tabStreams,
+  const live2 = indexLive({ ...common, focusedTerminal: "t2" }, { sessions: coord.sessions });
+  const view2 = resolveSidebarView({
+    sessions: coord.sessions,
     streams: coord.streams,
-    frames: coord.frames,
-    visibleTerminals: ["t1", "t2"],
-    focusedTerminal: "t2",
+    live: live2,
   });
-  assert.equal(view2.kind, "session");
+  assert.equal(view2.view, "session");
   assert.equal(view2.session.key, s2.key);
   const refs2 = buildReferenceItems(view2.session);
   assert.equal(refs2.length, 1);
@@ -388,9 +381,9 @@ test("stale_session_label_is_ignored", async () => {
     panes: [{ pane: "p1", tab: "tab1", terminal: "t-stale", program: { agent: "pi" } }],
     agents: [{ address: "t-stale", agent: "pi" }],
   });
-  assert.equal(coord.tabStreams.get("tab1"), null);
-  assert.equal(coord.frames.has("t-stale"), false);
-  assert.equal(coord.hostStreams.length, 1);
+  assert.equal(coord.staleSessionKeys.has("h1/pi/deleted"), true);
+  assert.equal(coord.sessions.has("h1/pi/deleted"), false);
+  assert.equal(coord.getStreamList().items.length, 1);
 
   // Case 2: terminal carries `streams.session` but has no live Pi agent -> ignored without `session show`.
   runner.calls.length = 0;
@@ -409,7 +402,7 @@ test("stale_session_label_is_ignored", async () => {
     runner.calls.some((c) => c.args[0] === "session" && c.args[1] === "show"),
     false
   );
-  assert.equal(coord.tabStreams.get("tab2"), null);
+  assert.equal(coord.sessions.has("h1/pi/old-pi"), false);
 });
 
 test("sidebar_shows_the_stream_id", async () => {
@@ -420,7 +413,7 @@ test("sidebar_shows_the_stream_id", async () => {
     streams: { [st.key]: st },
   });
   const coord = new StreamsCoordinator({ exec: runner.exec });
-  await coord.observe({
+  const snap = {
     activeSpace: { id: "sp1", machine: null },
     activeTabId: "tab1",
     visibleTerminals: ["t1"],
@@ -430,18 +423,16 @@ test("sidebar_shows_the_stream_id", async () => {
     ],
     panes: [{ pane: "p1", tab: "tab1", terminal: "t1", program: { agent: "pi" } }],
     agents: [{ address: "t1", agent: "pi" }],
-  });
+  };
+  await coord.observe(snap);
 
-  const view = tabSidebarView({
-    tabId: "tab1",
-    tabStreams: coord.tabStreams,
+  const live = indexLive(snap, { sessions: coord.sessions });
+  const view = resolveSidebarView({
+    sessions: coord.sessions,
     streams: coord.streams,
-    frames: coord.frames,
-    visibleTerminals: ["t1"],
-    focusedTerminal: "t1",
+    live,
   });
-  assert.equal(view.kind, "session");
-  assert.equal(view.streamIdDisplay, "8a9b0c1d-stream");
+  assert.equal(view.view, "session");
   assert.equal(view.stream.id, "8a9b0c1d-stream");
 });
 
@@ -559,7 +550,7 @@ test("opening_keeps_parked_sessions", async () => {
     [active.key, parked.key]
   );
   assert.deepEqual(result.missingDirectory, [noDir.key]);
-  assert.match(coord.lastError, /s-nodir/);
+  assert.match(coord.actionError?.message ?? "", /s-nodir/);
 });
 
 test("refresh_relabels_a_moved_session", async () => {
@@ -753,15 +744,17 @@ test("prepareNativeContent rejects binary content and truncates oversized text",
   assert.match(res.content, /file truncated/);
 });
 
-test("resolveTabRenameTarget, effectiveSessionStatus, filterHostStreams, unreadableNotice, and formatRelativeAge", () => {
-  const frames = new Map([
-    ["t1", { kind: "enrolled", session: { key: "h1/pi/s1", stream: "h1/st1", title: "CLI Work" } }],
+test("resolveTabRenameTarget, effectiveSessionStatus, unreadableNotice, formatRelativeAge, and indexLive", () => {
+  const sessions = new Map([
+    ["h1/pi/s1", { key: "h1/pi/s1", stream: "h1/st1", title: "CLI Work" }],
   ]);
+  const runningByTerm = new Map([["t1", "h1/pi/s1"]]);
   assert.deepEqual(
     resolveTabRenameTarget({
       activeTab: { id: "tb1", name: "Old" },
       visibleTerminals: ["t1"],
-      frames,
+      runningByTerm,
+      sessions,
       tabNaming: true,
     }),
     { tabId: "tb1", currentName: "Old", desiredName: "CLI Work" }
@@ -769,15 +762,6 @@ test("resolveTabRenameTarget, effectiveSessionStatus, filterHostStreams, unreada
 
   assert.equal(effectiveSessionStatus({ status: "active" }, { terminal: { state: "exited" } }), "offline");
   assert.equal(effectiveSessionStatus({ status: "done" }, { terminal: { state: "exited" } }), "done");
-
-  const filtered = filterHostStreams(
-    [
-      { id: "a", title: "Alpha", status: "active", last_activity_ms: 100 },
-      { id: "b", title: "Beta", status: "parked", last_activity_ms: 200 },
-    ],
-    { filter: "in_progress", sort: "recent" }
-  );
-  assert.deepEqual(filtered.map((s) => s.id), ["a"]);
 
   assert.equal(unreadableNotice([]), null);
   assert.equal(
@@ -789,17 +773,22 @@ test("resolveTabRenameTarget, effectiveSessionStatus, filterHostStreams, unreada
     "No Streams on this host."
   );
   assert.equal(formatRelativeAge(10_000, 15_000), "now");
-  assert.equal(
-    liveStreamIds({
+
+  const live = indexLive(
+    {
+      visibleTerminals: ["t1"],
+      focusedTerminal: "t1",
       terminalList: [
         { address: "t1", state: "live", labels: { [LABEL_SESSION]: "h1/pi/s1", [LABEL_STREAM]: "h1/st1" } },
       ],
-      panes: [{ terminal: "t1", program: { agent: "pi" } }],
+      panes: [{ pane: "p1", tab: "tb1", terminal: "t1", program: { agent: "pi" } }],
       agents: [{ address: "t1", agent: "pi" }],
-      frames,
-    }).has("h1/st1"),
-    true
+    },
+    { sessions }
   );
+  assert.equal(live.activeTerm, "t1");
+  assert.equal(live.activeSessionKey, "h1/pi/s1");
+  assert.equal(live.openCountByStream.get("h1/st1"), 1);
 
   const dispatches = [];
   const res = dispatchReferencePresentation(
@@ -808,7 +797,6 @@ test("resolveTabRenameTarget, effectiveSessionStatus, filterHostStreams, unreada
   );
   assert.equal(res.ok, true);
   assert.equal(dispatches[0].cmd, "tab.new");
-  assert.equal(activeTabSession({ visibleTerminals: ["t1"], focusedTerminal: "t1", frames }).terminal, "t1");
 });
 
 test("host-wide observation publishes generic terminal.marks and prunes exited terminals", async () => {
@@ -868,9 +856,11 @@ test("host-wide observation publishes generic terminal.marks and prunes exited t
       source: "streams",
     },
   });
-  assert.equal(coord.frames.has("t3"), false);
+  assert.equal(coord.sessions.has("h1/pi/deleted"), false);
+  // Off-tab omission must not permanently blacklist the key in staleSessionKeys.
+  assert.equal(coord.staleSessionKeys.has("h1/pi/deleted"), false);
 
-  // When t2 exits externally, next observe prunes it from frames and shared state.
+  // When t2 exits externally, next observe drops it from shared terminal marks.
   await coord.observe({
     activeSpace: { id: "sp1", machine: null },
     activeTabId: "tab1",
@@ -884,14 +874,13 @@ test("host-wide observation publishes generic terminal.marks and prunes exited t
     agents: [{ address: "t1", agent: "pi" }],
   });
 
-  assert.equal(coord.frames.has("t2"), false);
   assert.deepEqual(Object.keys(published.at(-1).val), ["t1"]);
 });
 
-test("findLivePaneForStream prefers target Space active Tab and countLiveTerminalsByStream counts open terminals", () => {
-  const frames = new Map([
-    ["t1", { kind: "enrolled", session: { key: "h1/pi/s1", stream: "h1/st1", status: "done" } }],
-    ["t2", { kind: "enrolled", session: { key: "h1/pi/s2", stream: "h1/st1", status: "active" } }],
+test("findLivePaneForStream prefers target Space active Tab and indexLive counts open terminals", () => {
+  const sessions = new Map([
+    ["h1/pi/s1", { key: "h1/pi/s1", stream: "h1/st1", status: "done" }],
+    ["h1/pi/s2", { key: "h1/pi/s2", stream: "h1/st1", status: "active" }],
   ]);
   const spaces = [
     { id: "sp1", tabs: [{ id: "tab-inactive", active: false }, { id: "tab-active", active: true }] },
@@ -909,16 +898,16 @@ test("findLivePaneForStream prefers target Space active Tab and countLiveTermina
     { address: "t2", agent: "pi" },
   ];
 
-  const counts = countLiveTerminalsByStream({ panes, terminalList, agents, frames });
-  assert.equal(counts.get("h1/st1"), 2);
+  const live = indexLive({ panes, terminalList, agents }, { sessions });
+  assert.equal(live.openCountByStream.get("h1/st1"), 2);
 
-  const preferred = findLivePaneForStream({ streamKey: "h1/st1", spaces, panes, terminalList, agents, frames });
+  const preferred = findLivePaneForStream({ streamKey: "h1/st1", spaces, panes, terminalList, agents, sessions });
   assert.deepEqual(preferred, { pane: "p2", terminal: "t2", tab: "tab-active" });
 
   const sessPane = findLivePaneForSession({ sessionKey: "h1/pi/s1", panes, terminalList, agents });
   assert.deepEqual(sessPane, { pane: "p1", terminal: "t1", tab: "tab-inactive" });
 
-  const shared = buildSharedTerminalMarks({ frames, running: new Map([["t1", "h1/pi/s1"]]) });
+  const shared = buildSharedTerminalMarks({ sessions, running: new Map([["t1", "h1/pi/s1"]]) });
   assert.deepEqual(shared.t1, statusToTerminalMark("done"));
 });
 
@@ -978,15 +967,15 @@ test("All -> Stream and Stream -> Session navigation separates activeView from p
   );
   assert.equal(resUnopened.focused, false);
   assert.equal(runCmds.length, 0);
+  const liveOnT1 = indexLive(
+    { visibleTerminals: ["t1"], focusedTerminal: "t1", panes, terminalList, agents },
+    { sessions: coord.sessions }
+  );
   const streamPreview = resolveSidebarView({
     preferredView: coord.preferredView,
-    tabId: "tab1",
-    tabStreams: coord.tabStreams,
+    sessions: coord.sessions,
     streams: coord.streams,
-    previewSessions: coord.previewSessions,
-    frames: coord.frames,
-    visibleTerminals: ["t1"],
-    focusedTerminal: "t1",
+    live: liveOnT1,
     previewStreamKey: coord.previewStreamKey,
     previewSessionKey: coord.previewSessionKey,
   });
@@ -1006,13 +995,9 @@ test("All -> Stream and Stream -> Session navigation separates activeView from p
   assert.equal(runCmds.length, 0);
   const sessPreview = resolveSidebarView({
     preferredView: coord.preferredView,
-    tabId: "tab1",
-    tabStreams: coord.tabStreams,
+    sessions: coord.sessions,
     streams: coord.streams,
-    previewSessions: coord.previewSessions,
-    frames: coord.frames,
-    visibleTerminals: ["t1"],
-    focusedTerminal: "t1",
+    live: liveOnT1,
     previewStreamKey: coord.previewStreamKey,
     previewSessionKey: coord.previewSessionKey,
   });
@@ -1126,25 +1111,26 @@ test("sticky preferredView falls back Session -> Space Stream -> All and restore
     panes,
     agents,
   });
-  const sp1StreamKey = resolveSpaceStreamKey({
-    space: spaces[0],
-    panes,
-    terminalList,
-    agents,
-    frames: coord.frames,
-    lastFocusedStreamBySpace: coord.lastFocusedStreamBySpace,
-  });
-  assert.equal(sp1StreamKey, stB.key);
+  const liveNewTab = indexLive(
+    {
+      activeSpace: spaces[0],
+      visibleTerminals: ["tNew"],
+      focusedTerminal: "tNew",
+      panes,
+      terminalList,
+      agents,
+    },
+    {
+      sessions: coord.sessions,
+      lastFocusedStreamBySpace: coord.lastFocusedStreamBySpace,
+    }
+  );
+  assert.equal(liveNewTab.spaceStreamKey, stB.key);
   const onNewTab = resolveSidebarView({
     preferredView: coord.preferredView,
-    tabId: "tabNew",
-    tabStreams: coord.tabStreams,
+    sessions: coord.sessions,
     streams: coord.streams,
-    previewSessions: coord.previewSessions,
-    frames: coord.frames,
-    visibleTerminals: ["tNew"],
-    focusedTerminal: "tNew",
-    spaceStreamKey: sp1StreamKey,
+    live: liveNewTab,
   });
   assert.equal(onNewTab.view, "stream");
   assert.equal(onNewTab.stream.key, stB.key);
@@ -1165,21 +1151,22 @@ test("sticky preferredView falls back Session -> Space Stream -> All and restore
   });
   const backOnTabA = resolveSidebarView({
     preferredView: coord.preferredView,
-    tabId: "tabA",
-    tabStreams: coord.tabStreams,
+    sessions: coord.sessions,
     streams: coord.streams,
-    previewSessions: coord.previewSessions,
-    frames: coord.frames,
-    visibleTerminals: ["tA"],
-    focusedTerminal: "tA",
-    spaceStreamKey: resolveSpaceStreamKey({
-      space: spaces[0],
-      panes,
-      terminalList,
-      agents,
-      frames: coord.frames,
-      lastFocusedStreamBySpace: coord.lastFocusedStreamBySpace,
-    }),
+    live: indexLive(
+      {
+        activeSpace: spaces[0],
+        visibleTerminals: ["tA"],
+        focusedTerminal: "tA",
+        panes,
+        terminalList,
+        agents,
+      },
+      {
+        sessions: coord.sessions,
+        lastFocusedStreamBySpace: coord.lastFocusedStreamBySpace,
+      }
+    ),
   });
   assert.equal(backOnTabA.view, "session");
   assert.equal(backOnTabA.session.key, sA.key);
@@ -1194,25 +1181,26 @@ test("sticky preferredView falls back Session -> Space Stream -> All and restore
     panes,
     agents,
   });
-  const sp2StreamKey = resolveSpaceStreamKey({
-    space: spaces[1],
-    panes,
-    terminalList,
-    agents,
-    frames: coord.frames,
-    lastFocusedStreamBySpace: coord.lastFocusedStreamBySpace,
-  });
-  assert.equal(sp2StreamKey, null);
+  const liveEmptySpace = indexLive(
+    {
+      activeSpace: spaces[1],
+      visibleTerminals: ["tEmpty"],
+      focusedTerminal: "tEmpty",
+      panes,
+      terminalList,
+      agents,
+    },
+    {
+      sessions: coord.sessions,
+      lastFocusedStreamBySpace: coord.lastFocusedStreamBySpace,
+    }
+  );
+  assert.equal(liveEmptySpace.spaceStreamKey, null);
   const onEmptySpace = resolveSidebarView({
     preferredView: coord.preferredView,
-    tabId: "tabEmpty",
-    tabStreams: coord.tabStreams,
+    sessions: coord.sessions,
     streams: coord.streams,
-    previewSessions: coord.previewSessions,
-    frames: coord.frames,
-    visibleTerminals: ["tEmpty"],
-    focusedTerminal: "tEmpty",
-    spaceStreamKey: sp2StreamKey,
+    live: liveEmptySpace,
   });
   assert.equal(onEmptySpace.view, "all");
   assert.equal(onEmptySpace.hasSessionAccess, false);
@@ -1232,13 +1220,19 @@ test("sticky preferredView falls back Session -> Space Stream -> All and restore
   });
   const stayAll = resolveSidebarView({
     preferredView: coord.preferredView,
-    tabId: "tabA",
-    tabStreams: coord.tabStreams,
+    sessions: coord.sessions,
     streams: coord.streams,
-    previewSessions: coord.previewSessions,
-    frames: coord.frames,
-    visibleTerminals: ["tA"],
-    focusedTerminal: "tA",
+    live: indexLive(
+      {
+        activeSpace: spaces[0],
+        visibleTerminals: ["tA"],
+        focusedTerminal: "tA",
+        panes,
+        terminalList,
+        agents,
+      },
+      { sessions: coord.sessions }
+    ),
   });
   assert.equal(stayAll.view, "all");
   assert.equal(stayAll.hasSessionAccess, true);
@@ -1306,7 +1300,7 @@ test("dropReference, setSessionStatus, convention-gated bulk actions, and only_a
   assert.equal(closeRes.ok, false);
   assert.deepEqual(closeRes.updated, [sAct.key]);
   assert.equal(closeRes.failed, sWait.key);
-  assert.match(coord.lastError, /disk full/);
+  assert.match(coord.actionError?.message ?? "", /disk full/);
 
   // Open all active sessions launches only `active` Pi Sessions (never `parked`)
   const openRes = await coord.openWork(
@@ -1329,14 +1323,14 @@ test("dropReference, setSessionStatus, convention-gated bulk actions, and only_a
     },
   });
   emptyCoord.recordHostMachine("h1", null);
-  emptyCoord.streams.set("h1/empty", { key: "h1/empty", id: "empty", title: "Empty", sessions: [] });
-  emptyCoord.hostStreams = [{ key: "h1/empty", id: "empty", title: "Empty", status: "active" }];
+  emptyCoord._upsertStream({ key: "h1/empty", id: "empty", title: "Empty", status: "active", sessions: [] }, { detail: true });
+  emptyCoord._getListEntry().keys = ["h1/empty"];
   emptyCoord.previewStreamKey = "h1/empty";
   emptyCoord.preferredView = "stream";
   const delRes = await emptyCoord.deleteStream("h1/empty");
   assert.equal(delRes.ok, true);
   assert.equal(emptyCoord.streams.has("h1/empty"), false);
-  assert.equal(emptyCoord.hostStreams.length, 0);
+  assert.equal(emptyCoord.getStreamList().items.length, 0);
   assert.equal(emptyCoord.previewStreamKey, null);
   assert.equal(emptyCoord.preferredView, "all");
 });
@@ -1379,9 +1373,9 @@ test("runningSessionTerminals matches real herdr-app AgentInfo and PaneInfo Prog
     ],
   });
 
-  assert.equal(coord.frames.get("t-pi")?.kind, "enrolled");
-  assert.equal(coord.frames.has("t-claude"), false);
-  assert.equal(coord.frames.has("t-zsh"), false);
+  assert.equal(coord.sessions.get(s1.key)?.key, s1.key);
+  assert.equal(coord.sessions.has("h1/pi/old-pi"), false);
+  assert.equal(coord.sessions.has("h1/pi/old-shell"), false);
   assert.equal(coord.streams.get(st.key)?.sessions[0]?.stream, st.key);
   assert.deepEqual(published.at(-1)?.v?.["t-pi"], statusToTerminalMark("active"));
 });
@@ -1498,7 +1492,7 @@ test("actionError parses hc stderr JSON, formats friendly missing-folder message
   // Explicit dismissal clears actionError.
   coord.clearActionError();
   assert.equal(coord.actionError, null);
-  assert.equal(coord.lastError, null);
+  assert.equal(coord.readError, null);
 });
 
 test("groupStreamSessions partitions by openness first and supports recent and alphabetical sorting", () => {
@@ -1580,7 +1574,7 @@ test("groupHostStreams partitions Open / Not open / Done & closed with recent an
   );
 });
 
-test("setSessionStatus performs targeted authoritative refresh across frames, streams, hostStreams, and terminal.marks", async () => {
+test("setSessionStatus performs targeted authoritative refresh across sessions, streams, lists, and terminal.marks", async () => {
   const s1 = makeSessionJson({ id: "s1", stream_id: "st1", title: "Herdr UI", status: "active" });
   const st1 = makeStreamJson({ id: "st1", title: "Streams", status: "active", sessions: [s1] });
 
@@ -1642,11 +1636,11 @@ test("setSessionStatus performs targeted authoritative refresh across frames, st
     calls.map((c) => `${c[1]} ${c[2]}`),
     ["session edit", "session show", "stream show"]
   );
-  // All caches and shared terminal.marks updated immediately in one tick:
-  assert.equal(coord.frames.get("t1")?.session?.status, "waiting");
+  // Normalized store and shared terminal.marks updated immediately in one tick:
+  assert.equal(coord.sessions.get(s1.key)?.status, "waiting");
   assert.equal(coord.streams.get(st1.key)?.status, "waiting");
   assert.equal(coord.streams.get(st1.key)?.sessions[0]?.status, "waiting");
-  assert.equal(coord.hostStreams[0]?.status, "waiting");
+  assert.equal(coord.getStreamList().items[0]?.status, "waiting");
   assert.deepEqual(published.at(-1)?.v?.t1, statusToTerminalMark("waiting"));
   assert.ok(notifyCount > 0);
 });
@@ -1749,8 +1743,8 @@ test("remote space observation routes CLI calls with { on }, keeps config local,
   });
 
   assert.equal(res?.kind, "stream");
-  assert.equal(coord.frames.get("retriever/t8p")?.session?.key, sRem.key);
-  assert.equal(coord.tabStreams.get("retriever/tab1"), stRem.key);
+  assert.equal(coord.sessions.get(sRem.key)?.key, sRem.key);
+  assert.equal(coord.sessions.get(sRem.key)?.stream, stRem.key);
   assert.equal(coord.machineForHost("h-rem"), "retriever");
   assert.deepEqual(published.at(-1)?.v?.["retriever/t8p"], statusToTerminalMark("active"));
 
@@ -1856,8 +1850,8 @@ test("cross-machine terminal.marks skip offline machines and survive active remo
   assert.match(coord.readError ?? "", /ssh transport reset/);
   // ...while offline-box was never called...
   assert.equal(calls.some((c) => c.on === "offline-box"), false);
-  // ...and the healthy local agent STILL acquired its frame and terminal.marks entry!
-  assert.equal(coord.frames.get("t1")?.session?.key, sLocal.key);
+  // ...and the healthy local agent STILL acquired its session and terminal.marks entry!
+  assert.equal(coord.sessions.get(sLocal.key)?.key, sLocal.key);
   assert.deepEqual(published.at(-1)?.v?.t1, statusToTerminalMark("waiting"));
 });
 
@@ -1912,7 +1906,7 @@ test("hostScope toggle, per-machine cache isolation, and out-of-order deferred r
   coord.activeMachine = "retriever";
   await coord.setHostScope("all");
   assert.deepEqual(
-    coord.hostStreams.map((s) => s.key),
+    coord.getStreamList().items.map((s) => s.key),
     [stRemOnly.key, stLocalOnly.key]
   );
 
@@ -1927,7 +1921,7 @@ test("hostScope toggle, per-machine cache isolation, and out-of-order deferred r
   assert.equal(coord.activeMachine, "retriever");
   assert.equal(coord.hostScope, "all");
   assert.deepEqual(
-    coord.hostStreams.map((s) => s.key),
+    coord.getStreamList().items.map((s) => s.key),
     [stRemOnly.key, stLocalOnly.key]
   );
 
@@ -1935,7 +1929,7 @@ test("hostScope toggle, per-machine cache isolation, and out-of-order deferred r
   coord.activeMachine = null;
   coord.hostScope = "local";
   assert.deepEqual(
-    coord.hostStreams.map((s) => s.key),
+    coord.getStreamList().items.map((s) => s.key),
     [stLocalOnly.key]
   );
   assert.equal(coord.machineForHost("h-loc"), null);
@@ -2340,7 +2334,7 @@ test("empty local host refuses owner-only actions on unmapped synced remote reco
   await coord.ensureHostStreams(true);
   await coord.setHostScope("all");
   assert.deepEqual(
-    coord.hostStreams.map((s) => s.key),
+    coord.getStreamList().items.map((s) => s.key),
     [stRem.key]
   );
   calls.length = 0;
@@ -2690,7 +2684,7 @@ test("_probeLocalOwner recovers on forced refresh, preserves deletions during pe
   await Promise.all(coordFail._localOwnerProbes.values());
   assert.equal(probeCalls, 1);
   assert.deepEqual(
-    coordFail.hostStreams.map((s) => s.key),
+    coordFail.getStreamList().items.map((s) => s.key),
     [stRem.key]
   );
   assert.equal(coordFail.machineForHost(stRem.host_id), undefined);
@@ -2892,7 +2886,7 @@ test("_probeLocalOwner recovers on forced refresh, preserves deletions during pe
   assert.notEqual(coordRace.lastCompletedKey, null);
   assert.equal(coordRace.inFlightKey, null);
   assert.deepEqual(
-    coordRace.hostStreams.map((s) => s.key),
+    coordRace.getStreamList().items.map((s) => s.key),
     [stRem.key, stDel.key]
   );
   // Before slowProbePromise finishes, stRem must NOT flash a false-positive unmapped chip,
@@ -2909,7 +2903,7 @@ test("_probeLocalOwner recovers on forced refresh, preserves deletions during pe
   const delRes = await coordRace.deleteStream(stDel.key);
   assert.equal(delRes.ok, true);
   assert.deepEqual(
-    coordRace.hostStreams.map((s) => s.key),
+    coordRace.getStreamList().items.map((s) => s.key),
     [stRem.key]
   );
   assert.equal(concurrentProbes, 1);
@@ -2925,7 +2919,7 @@ test("_probeLocalOwner recovers on forced refresh, preserves deletions during pe
   await Promise.all(coordRace._localOwnerProbes.values());
   assert.deepEqual(writeTarget, { ok: true, machine: "retriever" });
   assert.deepEqual(
-    coordRace.hostStreams.map((s) => s.key),
+    coordRace.getStreamList().items.map((s) => s.key),
     [stRem.key]
   );
   assert.equal(coordRace.foreignHostBadge(stRem), null);
@@ -2988,7 +2982,7 @@ test("_probeLocalOwner recovers on forced refresh, preserves deletions during pe
   const staleRes = await staleObserve;
   assert.equal(staleRes, null);
   assert.equal(coordListDel.lastCompletedKey, null);
-  assert.deepEqual(coordListDel.hostStreams, []);
+  assert.deepEqual(coordListDel.getStreamList().items, []);
 
   // A repeat observe() with the exact same snapshot must refetch and populate [stKept].
   const refetched = await coordListDel.observe(localSnap);
@@ -2996,12 +2990,12 @@ test("_probeLocalOwner recovers on forced refresh, preserves deletions during pe
   assert.equal(refetched?.kind, "listing");
   assert.notEqual(coordListDel.lastCompletedKey, null);
   assert.deepEqual(
-    coordListDel.hostStreams.map((s) => s.key),
+    coordListDel.getStreamList().items.map((s) => s.key),
     [stKept.key]
   );
 });
 
-test("pending mutation sets track in-flight status, bulk stream, and resume actions and clear on error", async () => {
+test("pending mutation map tracks in-flight status, bulk stream, and resume actions and clears on error", async () => {
   let resolveEdit;
   const editPromise = new Promise((r) => {
     resolveEdit = r;
@@ -3026,17 +3020,17 @@ test("pending mutation sets track in-flight status, bulk stream, and resume acti
 
   const pendingCall = coord.setSessionStatus("h1/pi/sess1", "parked", "h1/st1");
   await new Promise((r) => setTimeout(r, 0));
-  assert.equal(coord.pendingStatusSessions.has("h1/pi/sess1"), true);
+  assert.equal(coord.isPending("status:h1/pi/sess1"), true);
   assert.ok(notifyCount >= 1);
 
   resolveEdit({ code: 1, stdout: "", stderr: "boom" });
   const res = await pendingCall;
   assert.equal(res.ok, false);
-  assert.equal(coord.pendingStatusSessions.has("h1/pi/sess1"), false);
+  assert.equal(coord.isPending("status:h1/pi/sess1"), false);
 
   const delRes = await coord.deleteStream("h1/st1");
   assert.equal(delRes.ok, false);
-  assert.equal(coord.pendingStreamActions.has("h1/st1"), false);
+  assert.equal(coord.isPending("stream:h1/st1"), false);
 });
 test("renameSession and renameStream route to owning host, validate non-empty titles, and refresh caches", async () => {
   const calls = [];
@@ -3085,34 +3079,40 @@ test("renameSession and renameStream route to owning host, validate non-empty ti
   coord._hasMachineSnapshot = true;
   coord.machineLayouts = new Map([["retriever", "ready"]]);
   coord.recordHostMachine("h-rem", "retriever");
-  coord.streams.set("h-rem/st1", {
-    key: "h-rem/st1",
-    host_id: "h-rem",
-    id: "st1",
-    title: "Old stream",
-    status: "active",
-    sessions: [],
-  });
-  coord.previewSessions.set("h-rem/pi/s1", {
-    key: "h-rem/pi/s1",
-    host_id: "h-rem",
-    id: "s1",
-    stream: "h-rem/st1",
-    title: "Old session",
-    status: "active",
-  });
+  coord._upsertStream(
+    {
+      key: "h-rem/st1",
+      host_id: "h-rem",
+      id: "st1",
+      title: "Old stream",
+      status: "active",
+      sessions: [],
+    },
+    { detail: true }
+  );
+  coord._upsertSession(
+    {
+      key: "h-rem/pi/s1",
+      host_id: "h-rem",
+      id: "s1",
+      stream: "h-rem/st1",
+      title: "Old session",
+      status: "active",
+    },
+    { detail: true }
+  );
 
   // Empty title rejected without CLI call.
   const emptyRes = await coord.renameSession("h-rem/pi/s1", "   ", "h-rem/st1");
   assert.equal(emptyRes.ok, false);
   assert.equal(calls.length, 0);
 
-  // Remote session rename routes with { on: "retriever" } and refreshes preview + stream caches.
+  // Remote session rename routes with { on: "retriever" } and refreshes session + stream caches.
   const sessRes = await coord.renameSession("h-rem/pi/s1", "  New session  ", "h-rem/st1");
   assert.equal(sessRes.ok, true);
   assert.equal(sessRes.title, "New session");
-  assert.equal(coord.pendingRenames.has("h-rem/pi/s1"), false);
-  assert.equal(coord.previewSessions.get("h-rem/pi/s1").title, "New session");
+  assert.equal(coord.isPending("rename:h-rem/pi/s1"), false);
+  assert.equal(coord.sessions.get("h-rem/pi/s1").title, "New session");
   assert.equal(calls[0].on, "retriever");
   assert.deepEqual(calls[0].args, ["session", "edit", "h-rem/pi/s1", "--title", "New session"]);
 
@@ -3120,7 +3120,7 @@ test("renameSession and renameStream route to owning host, validate non-empty ti
   const stRes = await coord.renameStream("h-rem/st1", "Renamed stream");
   assert.equal(stRes.ok, true);
   assert.equal(stRes.title, "Renamed stream");
-  assert.equal(coord.pendingRenames.has("h-rem/st1"), false);
+  assert.equal(coord.isPending("rename:h-rem/st1"), false);
   assert.equal(coord.streams.get("h-rem/st1").title, "Renamed stream");
 
   // Offline remote refuses rename cleanly without invoking CLI.
@@ -3131,172 +3131,45 @@ test("renameSession and renameStream route to owning host, validate non-empty ti
   assert.equal(calls.length, prevCalls);
 });
 
-test("resolveMoveSpaceTarget and moveSessionToStream handle same-host move with and without live Space transfer", async () => {
-  const spaces = [
-    {
-      id: "sp1",
-      name: "Streams",
-      machine: null,
-      tabs: [{ id: "tb1", name: "Herdr UI", named: true }],
-    },
-    {
-      id: "sp2",
-      name: "Dev",
-      machine: null,
-      tabs: [{ id: "tb2", name: "Dotfiles", named: true }],
-    },
-  ];
+test("buildMoveCandidates and moveSessionToStream filter same-host targets, update catalog and label, and refresh both Streams", async () => {
+  const cands = buildMoveCandidates({
+    sourceStreamKey: "h1/st1",
+    hostId: "h1",
+    streams: [
+      { key: "h1/st1", host_id: "h1", title: "Source", status: "active", last_activity_ms: 100 },
+      { key: "h1/st-done", host_id: "h1", title: "Archived", status: "done", last_activity_ms: 90 },
+      { key: "h1/st-open", host_id: "h1", title: "Open Work", status: "active", last_activity_ms: 50 },
+      { key: "h1/st-idle", host_id: "h1", title: "Idle Work", status: "active", last_activity_ms: 80 },
+      { key: "h2/st-other", host_id: "h2", title: "Other Host", status: "active", last_activity_ms: 200 },
+    ],
+    openCounts: new Map([["h1/st-open", 2]]),
+  });
+  // Excludes source and other-host Streams; orders open active > idle active > archived.
+  assert.deepEqual(
+    cands.map((c) => c.stream.key),
+    ["h1/st-open", "h1/st-idle", "h1/st-done"]
+  );
+  assert.equal(cands[0].openCount, 2);
+  assert.equal(cands[2].isArchived, true);
+
   const terminalList = [
-    {
-      address: "t1",
-      state: "live",
-      labels: {
-        [LABEL_SESSION]: "h1/pi/s1",
-        [LABEL_STREAM]: "h1/st1",
-        [LABEL_HERDR_SPACE]: "sp1",
-        [LABEL_HERDR_TAB]: "tb1",
-      },
-    },
-    {
-      address: "t2",
-      state: "live",
-      labels: {
-        [LABEL_SESSION]: "h1/pi/s2",
-        [LABEL_STREAM]: "h1/st2",
-        [LABEL_HERDR_SPACE]: "sp2",
-        [LABEL_HERDR_TAB]: "tb2",
-      },
-    },
+    { address: "t1", state: "live", labels: { [LABEL_SESSION]: "h1/pi/s1", [LABEL_STREAM]: "h1/st1" } },
   ];
-  const panes = [
-    { pane: "p1", terminal: "t1", tab: "tb1", program: { key: "pi", agent: true } },
-    { pane: "p2", terminal: "t2", tab: "tb2", program: { key: "pi", agent: true } },
-  ];
-  const agents = [
-    { address: "t1", app: "pi", program: { key: "pi", agent: true } },
-    { address: "t2", app: "pi", program: { key: "pi", agent: true } },
-  ];
+  const panes = [{ pane: "p1", terminal: "t1", tab: "tb1", program: { key: "pi", agent: true } }];
+  const agents = [{ address: "t1", app: "pi", program: { key: "pi", agent: true } }];
 
-  // Live session moving to stream in another open space.
-  const canMove = resolveMoveSpaceTarget({
-    sessionKey: "h1/pi/s1",
-    targetStreamKey: "h1/st2",
-    machine: null,
-    terminalList,
-    panes,
-    spaces,
-    agents,
-  });
-  assert.equal(canMove.canMoveTab, true);
-  assert.equal(canMove.targetSpace.id, "sp2");
-  assert.equal(canMove.currentSpaceId, "sp1");
-  assert.equal(canMove.currentTabName, "Herdr UI");
-
-  // Bare shell pane with stale streams.session label (pi exited) is ignored,
-  // and if both a stale shell pane and a live pi pane share the label, the live pi pane wins.
-  const staleShellOnly = resolveMoveSpaceTarget({
-    sessionKey: "h1/pi/s1",
-    targetStreamKey: "h1/st2",
-    machine: null,
-    terminalList,
-    panes: [
-      { pane: "p1-shell", terminal: "t1", tab: "tb1", program: { key: "zsh", agent: false } },
-      panes[1],
-    ],
-    spaces,
-    agents: [agents[1]],
-  });
-  assert.equal(staleShellOnly.canMoveTab, false);
-  assert.equal(staleShellOnly.liveTerm, null);
-  assert.equal(staleShellOnly.reason, "Session is not open");
-
-  const staleAndLive = resolveMoveSpaceTarget({
-    sessionKey: "h1/pi/s1",
-    targetStreamKey: "h1/st2",
-    machine: null,
-    terminalList: [
-      {
-        address: "t-stale",
-        state: "live",
-        labels: { [LABEL_SESSION]: "h1/pi/s1", [LABEL_STREAM]: "h1/st1" },
-      },
-      ...terminalList,
-    ],
-    panes: [
-      { pane: "p-stale", terminal: "t-stale", tab: "tb1", program: { key: "zsh", agent: false } },
-      ...panes,
-    ],
-    spaces,
-    agents,
-  });
-  assert.equal(staleAndLive.canMoveTab, true);
-  assert.equal(staleAndLive.liveTerm?.address, "t1");
-  assert.equal(staleAndLive.livePane?.pane, "p1");
-
-  // Unopened session cannot move tab.
-  const unopened = resolveMoveSpaceTarget({
-    sessionKey: "h1/pi/s-unopened",
-    targetStreamKey: "h1/st2",
-    machine: null,
-    terminalList,
-    panes,
-    spaces,
-  });
-  assert.equal(unopened.canMoveTab, false);
-  assert.equal(unopened.reason, "Session is not open");
-
-  // Target stream with no open space cannot move tab.
-  const noSpace = resolveMoveSpaceTarget({
-    sessionKey: "h1/pi/s1",
-    targetStreamKey: "h1/st3",
-    machine: null,
-    terminalList,
-    panes,
-    spaces,
-  });
-  assert.equal(noSpace.canMoveTab, false);
-  assert.equal(noSpace.reason, "Target stream has no open space");
-
-  // Target stream already in the same space cannot move tab.
-  const sameSpace = resolveMoveSpaceTarget({
-    sessionKey: "h1/pi/s1",
-    targetStreamKey: "h1/st1",
-    machine: null,
-    terminalList,
-    panes,
-    spaces,
-  });
-  assert.equal(sameSpace.canMoveTab, false);
-  assert.equal(sameSpace.reason, "Already in this space");
-
-  // Coordinator moveSessionToStream with moveTab: true is event-driven via notifyLayoutSnapshot
-  // (never relies on sleep polling on the happy path), uses real PaneInfo (no pane.space),
-  // and renames the actual adopted tab ID in spaces().
   const execCalls = [];
-  const runCalls = [];
-  let livePanes = [...panes];
-  let liveSpaces = spaces.map((s) => ({ ...s, tabs: [...s.tabs] }));
+  let failLabel = false;
   const coord = new StreamsCoordinator({
     exec: async (bin, args, opts) => {
       execCalls.push({ bin, args, on: opts?.on ?? null });
-      if (bin === "hc" && args[0] === "label" && args.some((a) => a.startsWith("herdr.space="))) {
-        const adoptedTabId = "tb-herdr-adopted";
-        liveSpaces = [
-          { ...spaces[0], tabs: [] },
-          { ...spaces[1], tabs: [...spaces[1].tabs, { id: adoptedTabId, name: "2", named: false }] },
-        ];
-        livePanes = [
-          { pane: "p1-moved", terminal: "t1", tab: adoptedTabId },
-          panes[1],
-        ];
-        queueMicrotask(() => {
-          coord.notifyLayoutSnapshot({ panes: livePanes, spaces: liveSpaces, terminalList });
-        });
+      if (bin === "hc" && args[0] === "label" && failLabel) {
+        return { code: 1, stdout: "", stderr: "hc unavailable" };
       }
       if (args[0] === "session" && args[1] === "show") {
         return {
           code: 0,
-          stdout: JSON.stringify(makeSessionJson({ host: "h1", id: "s1", stream_id: "st2" })),
+          stdout: JSON.stringify(makeSessionJson({ host: "h1", id: "s1", stream_id: "st-open" })),
           stderr: "",
         };
       }
@@ -3323,258 +3196,37 @@ test("resolveMoveSpaceTarget and moveSessionToStream handle same-host move with 
   assert.equal(crossHost.ok, false);
   assert.equal(execCalls.length, 0);
 
-  // Move with tab transfer: pass a never-resolving timeout fuse to prove zero polling!
-  const movedWithTab = await coord.moveSessionToStream(
-    {
-      sessionKey: "h1/pi/s1",
-      sourceStreamKey: "h1/st1",
-      targetStreamKey: "h1/st2",
-      moveTab: true,
-      terminalList,
-      panes,
-      spaces,
-    },
-    {
-      run: (cmd, args) => {
-        runCalls.push({ cmd, args });
-        if (cmd === "terminal.park") {
-          livePanes = [panes[1]];
-          liveSpaces = [{ ...spaces[0], tabs: [] }, spaces[1]];
-          queueMicrotask(() => {
-            coord.notifyLayoutSnapshot({ panes: livePanes, spaces: liveSpaces, terminalList });
-          });
-        }
-      },
-      readPanes: () => livePanes,
-      readSpaces: () => liveSpaces,
-      sleep: () => new Promise(() => {}),
-    }
-  );
-  assert.equal(movedWithTab.ok, true);
-  assert.equal(movedWithTab.movedTab, true);
-  assert.equal(coord.actionError, null);
-  assert.equal(coord.pendingMoves.has("h1/pi/s1"), false);
-  assert.deepEqual(execCalls[0].args, ["session", "edit", "h1/pi/s1", "--stream", "h1/st2"]);
-  assert.equal(runCalls[0].cmd, "terminal.park");
-  assert.deepEqual(runCalls[0].args, { terminal: "t1" });
-  const hcLabelCall = execCalls.find((c) => c.bin === "hc" && c.args[0] === "label");
-  assert.ok(hcLabelCall);
-  assert.ok(hcLabelCall.args.includes("streams.stream=h1/st2"));
-  assert.ok(hcLabelCall.args.includes("herdr.space=sp2"));
-  assert.ok(hcLabelCall.args.some((a) => a.startsWith("herdr.tab=tb_mv_")));
-  assert.equal(runCalls[1].cmd, "tab.rename");
-  assert.deepEqual(runCalls[1].args, { id: "tb-herdr-adopted", name: "Herdr UI" });
-
-  // Move without tab transfer skips terminal.park and only updates streams.stream label.
-  const prevRuns = runCalls.length;
-  const prevExecs = execCalls.length;
-  const movedNoTab = await coord.moveSessionToStream(
-    {
-      sessionKey: "h1/pi/s1",
-      sourceStreamKey: "h1/st1",
-      targetStreamKey: "h1/st2",
-      moveTab: false,
-      terminalList,
-      panes,
-      spaces,
-    },
-    {
-      run: (cmd, args) => runCalls.push({ cmd, args }),
-      readPanes: () => panes,
-      readSpaces: () => spaces,
-      sleep: async () => {},
-    }
-  );
-  assert.equal(movedNoTab.ok, true);
-  assert.equal(movedNoTab.movedTab, false);
-  assert.equal(runCalls.length, prevRuns);
-  const labelOnlyCall = execCalls
-    .slice(prevExecs)
-    .find((c) => c.bin === "hc" && c.args[0] === "label");
-  assert.ok(labelOnlyCall);
-  assert.deepEqual(labelOnlyCall.args, ["label", "t1", "streams.stream=h1/st2"]);
-});
-
-test("buildMoveCandidates uses snapshot allSpaces and remote resolveMoveSpaceTarget never aliases local Spaces or exited terminals", () => {
-  const snapshot = {
-    allSpaces: [
-      { id: "sp1", name: "Local Streams", machine: null, tabs: [{ id: "tb1", name: "UI", named: true }] },
-      { id: "sp2", name: "Local Dev", machine: null, tabs: [{ id: "tb2", name: "Dot", named: true }] },
-      { id: "retriever/sp1", name: "Rem Streams", machine: "retriever", tabs: [{ id: "retriever/tb1", name: "Rem", named: true }] },
-    ],
-    panes: [
-      { pane: "p1", terminal: "t1", tab: "tb1", program: { key: "pi", agent: true } },
-      { pane: "p2", terminal: "t2", tab: "tb2", program: { key: "pi", agent: true } },
-      { pane: "retriever/p1", terminal: "retriever/t1", tab: "retriever/tb1", program: { key: "pi", agent: true } },
-    ],
-    agents: [
-      { address: "t1", app: "pi", program: { key: "pi", agent: true } },
-      { address: "t2", app: "pi", program: { key: "pi", agent: true } },
-      { address: "retriever/t1", app: "pi", program: { key: "pi", agent: true } },
-    ],
-    terminalList: [
-      { address: "t1", state: "live", labels: { [LABEL_SESSION]: "h1/pi/s1", [LABEL_STREAM]: "h1/st1", [LABEL_HERDR_SPACE]: "sp1" } },
-      { address: "t2", state: "live", labels: { [LABEL_SESSION]: "h1/pi/s2", [LABEL_STREAM]: "h1/st2", [LABEL_HERDR_SPACE]: "sp2" } },
-      { address: "retriever/t1", state: "live", labels: { [LABEL_SESSION]: "h-rem/pi/rs1", [LABEL_STREAM]: "h-rem/st1", [LABEL_HERDR_SPACE]: "sp1" } },
-      // Exited remote terminal retaining herdr.space=sp2 while retriever/sp2 is closed and local sp2 exists.
-      { address: "retriever/t2", state: "exited", labels: { [LABEL_SESSION]: "h-rem/pi/rs2", [LABEL_STREAM]: "h-rem/st2", [LABEL_HERDR_SPACE]: "sp2" } },
-    ],
-  };
-
-  const cands = buildMoveCandidates({
+  // Live session move updates catalog, relabels terminal, and refreshes both source and target streams.
+  const moved = await coord.moveSessionToStream({
     sessionKey: "h1/pi/s1",
     sourceStreamKey: "h1/st1",
-    hostId: "h1",
-    machine: null,
-    streams: [
-      { key: "h1/st1", host_id: "h1", title: "Streams", status: "active", last_activity_ms: 10 },
-      { key: "h1/st2", host_id: "h1", title: "Dev", status: "active", last_activity_ms: 5 },
-      { key: "h-rem/st2", host_id: "h-rem", title: "Remote", status: "active", last_activity_ms: 20 },
-    ],
-    snapshot,
+    targetStreamKey: "h1/st-open",
+    terminalList,
+    panes,
+    agents,
   });
-  assert.equal(cands.length, 1);
-  assert.equal(cands[0].stream.key, "h1/st2");
-  assert.equal(cands[0].spaceInfo.canMoveTab, true);
-  assert.equal(cands[0].spaceInfo.targetSpace.id, "sp2");
+  assert.equal(moved.ok, true);
+  assert.equal(coord.actionError, null);
+  assert.equal(coord.isPending("move:h1/pi/s1"), false);
+  assert.deepEqual(execCalls[0].args, ["session", "edit", "h1/pi/s1", "--stream", "h1/st-open"]);
+  assert.deepEqual(execCalls[1].args, ["label", "t1", "streams.stream=h1/st-open"]);
+  assert.equal(coord.sessions.get("h1/pi/s1")?.stream, "h1/st-open");
+  assert.equal(coord.streams.has("h1/st1"), true);
+  assert.equal(coord.streams.has("h1/st-open"), true);
 
-  // Remote lookup must NOT alias local sp2!
-  const remTarget = resolveMoveSpaceTarget({
-    sessionKey: "h-rem/pi/rs1",
-    targetStreamKey: "h-rem/st2",
-    machine: "retriever",
-    terminalList: snapshot.terminalList,
-    panes: snapshot.panes,
-    spaces: snapshot.allSpaces,
+  // Failed hc label surfaces a warning while still completing the catalog move.
+  failLabel = true;
+  const warned = await coord.moveSessionToStream({
+    sessionKey: "h1/pi/s1",
+    sourceStreamKey: "h1/st1",
+    targetStreamKey: "h1/st-idle",
+    terminalList,
+    panes,
+    agents,
   });
-  assert.equal(remTarget.canMoveTab, false);
-  assert.equal(remTarget.targetSpace, null);
-  assert.equal(remTarget.reason, "Target stream has no open space");
-});
-
-test("moveSessionToStream handles missing sleep, park detach timeout, and post-park hc label failure honestly", async () => {
-  const spaces = [
-    { id: "sp1", name: "Streams", machine: null, tabs: [{ id: "tb1", name: "Tab", named: true }] },
-    { id: "sp2", name: "Dev", machine: null, tabs: [{ id: "tb2", name: "Other", named: true }] },
-  ];
-  const terminalList = [
-    { address: "t1", state: "live", labels: { [LABEL_SESSION]: "h1/pi/s1", [LABEL_STREAM]: "h1/st1", [LABEL_HERDR_SPACE]: "sp1" } },
-    { address: "t2", state: "live", labels: { [LABEL_SESSION]: "h1/pi/s2", [LABEL_STREAM]: "h1/st2", [LABEL_HERDR_SPACE]: "sp2" } },
-  ];
-  const panes = [
-    { pane: "p1", terminal: "t1", tab: "tb1", program: { key: "pi", agent: true } },
-    { pane: "p2", terminal: "t2", tab: "tb2", program: { key: "pi", agent: true } },
-  ];
-
-  // Case 1: missing sleep skips terminal.park without crashing and still refreshes catalog move.
-  const runs1 = [];
-  const coord1 = new StreamsCoordinator({
-    exec: async (_bin, args) => {
-      if (args[0] === "session" && args[1] === "show") {
-        return { code: 0, stdout: JSON.stringify(makeSessionJson({ host: "h1", id: "s1", stream_id: "st2" })), stderr: "" };
-      }
-      if (args[0] === "stream" && args[1] === "show") {
-        return { code: 0, stdout: JSON.stringify(makeStreamJson({ host: "h1", id: args[2].split("/")[1], sessions: [] })), stderr: "" };
-      }
-      return { code: 0, stdout: "{}", stderr: "" };
-    },
-  });
-  coord1.configLoaded = true;
-  coord1.recordHostMachine("h1", null);
-  const resNoSleep = await coord1.moveSessionToStream(
-    { sessionKey: "h1/pi/s1", sourceStreamKey: "h1/st1", targetStreamKey: "h1/st2", moveTab: true, terminalList, panes, spaces },
-    { run: (cmd) => runs1.push(cmd), readPanes: () => panes, readSpaces: () => spaces }
-  );
-  assert.equal(resNoSleep.ok, true);
-  assert.equal(resNoSleep.movedTab, false);
-  assert.equal(runs1.length, 0);
-  assert.match(coord1.actionError?.title ?? "", /skipped tab transfer/i);
-
-  // Case 2: park never detaches -> safety fuse expires, no herdr.space placement label written, clear banner.
-  const hcArgs2 = [];
-  const coord2 = new StreamsCoordinator({
-    exec: async (bin, args) => {
-      if (bin === "hc") hcArgs2.push(args);
-      if (args[0] === "session" && args[1] === "show") {
-        return { code: 0, stdout: JSON.stringify(makeSessionJson({ host: "h1", id: "s1", stream_id: "st2" })), stderr: "" };
-      }
-      if (args[0] === "stream" && args[1] === "show") {
-        return { code: 0, stdout: JSON.stringify(makeStreamJson({ host: "h1", id: args[2].split("/")[1], sessions: [] })), stderr: "" };
-      }
-      return { code: 0, stdout: "{}", stderr: "" };
-    },
-  });
-  coord2.configLoaded = true;
-  coord2.recordHostMachine("h1", null);
-  const resTimeout = await coord2.moveSessionToStream(
-    { sessionKey: "h1/pi/s1", sourceStreamKey: "h1/st1", targetStreamKey: "h1/st2", moveTab: true, terminalList, panes, spaces },
-    { run: () => {}, readPanes: () => panes, readSpaces: () => spaces, sleep: async () => {} }
-  );
-  assert.equal(resTimeout.ok, true);
-  assert.equal(resTimeout.movedTab, false);
-  assert.equal(hcArgs2.some((a) => a.some((x) => x.startsWith("herdr.space="))), false);
-  assert.match(coord2.actionError?.title ?? "", /tab stayed put/i);
-
-  // Case 3: park detaches but hc label fails -> reports terminal was parked honestly.
-  let livePanes3 = [...panes];
-  const coord3 = new StreamsCoordinator({
-    exec: async (bin, args) => {
-      if (bin === "hc" && args[0] === "label") return { code: 1, stdout: "", stderr: "hc down" };
-      if (args[0] === "session" && args[1] === "show") {
-        return { code: 0, stdout: JSON.stringify(makeSessionJson({ host: "h1", id: "s1", stream_id: "st2" })), stderr: "" };
-      }
-      if (args[0] === "stream" && args[1] === "show") {
-        return { code: 0, stdout: JSON.stringify(makeStreamJson({ host: "h1", id: args[2].split("/")[1], sessions: [] })), stderr: "" };
-      }
-      return { code: 0, stdout: "{}", stderr: "" };
-    },
-  });
-  coord3.configLoaded = true;
-  coord3.recordHostMachine("h1", null);
-  const resParked = await coord3.moveSessionToStream(
-    { sessionKey: "h1/pi/s1", sourceStreamKey: "h1/st1", targetStreamKey: "h1/st2", moveTab: true, terminalList, panes, spaces },
-    {
-      run: (cmd) => {
-        if (cmd === "terminal.park") livePanes3 = [panes[1]];
-      },
-      readPanes: () => livePanes3,
-      readSpaces: () => spaces,
-      sleep: async () => {},
-    }
-  );
-  assert.equal(resParked.ok, true);
-  assert.equal(resParked.movedTab, false);
-  assert.match(coord3.actionError?.title ?? "", /terminal was parked/i);
-
-  // Case 4: park detaches and hc label succeeds, but Herdr never adopts into target Space -> honest timeout banner.
-  let livePanes4 = [...panes];
-  const coord4 = new StreamsCoordinator({
-    exec: async (_bin, args) => {
-      if (args[0] === "session" && args[1] === "show") {
-        return { code: 0, stdout: JSON.stringify(makeSessionJson({ host: "h1", id: "s1", stream_id: "st2" })), stderr: "" };
-      }
-      if (args[0] === "stream" && args[1] === "show") {
-        return { code: 0, stdout: JSON.stringify(makeStreamJson({ host: "h1", id: args[2].split("/")[1], sessions: [] })), stderr: "" };
-      }
-      return { code: 0, stdout: "{}", stderr: "" };
-    },
-  });
-  coord4.configLoaded = true;
-  coord4.recordHostMachine("h1", null);
-  const resUnconfirmed = await coord4.moveSessionToStream(
-    { sessionKey: "h1/pi/s1", sourceStreamKey: "h1/st1", targetStreamKey: "h1/st2", moveTab: true, terminalList, panes, spaces },
-    {
-      run: (cmd) => {
-        if (cmd === "terminal.park") livePanes4 = [panes[1]];
-      },
-      readPanes: () => livePanes4,
-      readSpaces: () => spaces,
-      sleep: async () => {},
-    }
-  );
-  assert.equal(resUnconfirmed.ok, true);
-  assert.equal(resUnconfirmed.movedTab, false);
-  assert.match(coord4.actionError?.title ?? "", /placement unconfirmed/i);
+  assert.equal(warned.ok, true);
+  assert.equal(coord.actionError?.level, "warning");
+  assert.match(coord.actionError?.title ?? "", /label unchanged/i);
 });
 
 test("refreshAfterMutation advances readGeneration so stale observations cannot revert fresh edits, and pending guards reject duplicates", async () => {
@@ -3658,9 +3310,530 @@ test("refreshAfterMutation advances readGeneration so stale observations cannot 
   });
   assert.equal(open2.ok, false);
   assert.equal(open2.duplicate, true);
-  assert.equal(coord.pendingResumeSessions.has("h1/pi/s1"), true);
+  assert.equal(coord.isPending("resume:h1/pi/s1"), true);
   releaseSecondOpen();
   await open1;
-  assert.equal(coord.pendingResumeSessions.has("h1/pi/s1"), false);
+  assert.equal(coord.isPending("resume:h1/pi/s1"), false);
   assert.equal(openListCalls, 1);
+});
+
+test("post-mutation refresh preserves lastCompletedAt and clears superseded inFlightKey", async () => {
+  let releaseSlowShow;
+  const slowShowGate = new Promise((r) => {
+    releaseSlowShow = r;
+  });
+  let notifySlowShowStarted;
+  const slowShowStarted = new Promise((r) => {
+    notifySlowShowStarted = r;
+  });
+  let streamShowCalls = 0;
+
+  const s1 = makeSessionJson({ host: "h1", id: "s1", stream_id: "st1", title: "Alpha", status: "active" });
+  const st1 = makeStreamJson({ host: "h1", id: "st1", title: "Work", status: "active", sessions: [s1] });
+  let currentStatus = "active";
+
+  const coord = new StreamsCoordinator({
+    exec: async (_bin, args) => {
+      if (args[0] === "config") {
+        return { code: 0, stdout: JSON.stringify({ herdr: {} }), stderr: "" };
+      }
+      if (args[0] === "session" && args[1] === "show") {
+        return {
+          code: 0,
+          stdout: JSON.stringify({ ...s1, status: currentStatus }),
+          stderr: "",
+        };
+      }
+      if (args[0] === "stream" && args[1] === "show") {
+        streamShowCalls += 1;
+        if (streamShowCalls === 2) {
+          notifySlowShowStarted();
+          await slowShowGate;
+        }
+        return {
+          code: 0,
+          stdout: JSON.stringify({
+            ...st1,
+            status: currentStatus,
+            sessions: [{ ...s1, status: currentStatus }],
+          }),
+          stderr: "",
+        };
+      }
+      if (args[0] === "session" && args[1] === "edit") {
+        currentStatus = args[args.indexOf("--status") + 1];
+        return { code: 0, stdout: "{}", stderr: "" };
+      }
+      return { code: 0, stdout: JSON.stringify({ items: [st1], unreadable: [] }), stderr: "" };
+    },
+  });
+
+  const snap = {
+    activeSpace: { id: "sp1", machine: null },
+    activeTabId: "tab1",
+    visibleTerminals: ["t1"],
+    focusedTerminal: "t1",
+    terminalList: [{ address: "t1", state: "live", labels: { [LABEL_SESSION]: s1.key, [LABEL_STREAM]: st1.key } }],
+    panes: [{ pane: "p1", tab: "tab1", terminal: "t1", program: { key: "pi", agent: true } }],
+    agents: [{ address: "t1", app: "pi", program: { key: "pi", agent: true } }],
+  };
+
+  assert.equal(coord.lastCompletedAt, 0);
+  await coord.observe(snap);
+  assert.ok(coord.lastCompletedAt > 0);
+  assert.equal(coord.inFlightKey, null);
+
+  // Start a slow background refresh, then trigger a mutation while it is in flight.
+  const slowRefresh = coord.observe({ ...snap, force: true });
+  await slowShowStarted;
+  assert.notEqual(coord.inFlightKey, null);
+
+  const editRes = await coord.setSessionStatus(s1.key, "waiting", st1.key);
+  assert.equal(editRes.ok, true);
+  // refreshAfterMutation cleared inFlightKey so the sidebar is never stuck on Loading Streams…,
+  // and lastCompletedAt remains > 0 even though lastCompletedKey was invalidated.
+  assert.equal(coord.inFlightKey, null);
+  assert.equal(coord.lastCompletedKey, null);
+  assert.ok(coord.lastCompletedAt > 0);
+
+  // Releasing the superseded refresh must leave inFlightKey null and keep the updated status.
+  releaseSlowShow();
+  await slowRefresh;
+  assert.equal(coord.inFlightKey, null);
+  assert.equal(coord.sessions.get(s1.key)?.status, "waiting");
+});
+
+test("unvisited tab and uncached enrolled tab resolve Session synchronously without view flip", async () => {
+  const s1 = makeSessionJson({ host: "h1", id: "s1", stream_id: "st1", title: "Tab One" });
+  const s2 = makeSessionJson({ host: "h1", id: "s2", stream_id: "st2", title: "Tab Two" });
+  const st1 = makeStreamJson({ host: "h1", id: "st1", title: "Stream One", sessions: [s1] });
+  const st2 = makeStreamJson({ host: "h1", id: "st2", title: "Stream Two", sessions: [s2] });
+
+  const runner = createFakeRunner({
+    sessions: { [s1.key]: s1, [s2.key]: s2 },
+    streams: { [st1.key]: st1, [st2.key]: st2 },
+    streamList: [st1, st2],
+  });
+  const coord = new StreamsCoordinator({ exec: runner.exec });
+
+  const terminalList = [
+    { address: "t1", state: "live", labels: { [LABEL_SESSION]: s1.key, [LABEL_STREAM]: st1.key } },
+    { address: "t2", state: "live", labels: { [LABEL_SESSION]: s2.key, [LABEL_STREAM]: st2.key } },
+  ];
+  const panes = [
+    { pane: "p1", tab: "tab1", terminal: "t1", program: { key: "pi", agent: true } },
+    { pane: "p2", tab: "tab2", terminal: "t2", program: { key: "pi", agent: true } },
+  ];
+  const agents = [
+    { address: "t1", app: "pi", program: { key: "pi", agent: true } },
+    { address: "t2", app: "pi", program: { key: "pi", agent: true } },
+  ];
+
+  // Even BEFORE any CLI call (empty sessions/streams maps), an enrolled tab resolves to Session
+  // synchronously from Herdr labels (never flipping to Stream or All!).
+  const coldLive = indexLive(
+    { activeSpace: { id: "sp1", machine: null }, activeTabId: "tab1", visibleTerminals: ["t1"], focusedTerminal: "t1", terminalList, panes, agents },
+    { sessions: coord.sessions }
+  );
+  const coldView = resolveSidebarView({
+    preferredView: "session",
+    sessions: coord.sessions,
+    streams: coord.streams,
+    live: coldLive,
+  });
+  assert.equal(coldView.view, "session");
+  assert.equal(coldView.isEnrolled, true);
+  assert.equal(coldView.sessionKey, s1.key);
+  assert.equal(coldView.session, null);
+
+  // Observe tab1 only — off-tab refresh populates sessions for t2.
+  await coord.observe({
+    activeSpace: { id: "sp1", machine: null },
+    activeTabId: "tab1",
+    visibleTerminals: ["t1"],
+    focusedTerminal: "t1",
+    terminalList,
+    panes,
+    agents,
+  });
+  assert.equal(coord.sessions.get(s2.key)?.key, s2.key);
+
+  // Immediately upon switching to tab2, resolveSidebarView renders Session directly from normalized store.
+  const v = resolveSidebarView({
+    preferredView: "session",
+    sessions: coord.sessions,
+    streams: coord.streams,
+    live: indexLive(
+      { activeSpace: { id: "sp1", machine: null }, activeTabId: "tab2", visibleTerminals: ["t2"], focusedTerminal: "t2", terminalList, panes, agents },
+      { sessions: coord.sessions }
+    ),
+  });
+  assert.equal(v.view, "session");
+  assert.equal(v.isEnrolled, true);
+  assert.equal(v.session.key, s2.key);
+  // streamTitle resolves from normalized streams map before stream show completes.
+  assert.equal(coord.streamTitle(st2.key), "Stream Two");
+
+  // Moving the active tab's session updates sessions and streams so Session view stays synced.
+  const moveRes = await coord.moveSessionToStream({
+    sessionKey: s1.key,
+    sourceStreamKey: st1.key,
+    targetStreamKey: st2.key,
+    terminalList,
+    panes,
+    agents,
+  });
+  assert.equal(moveRes.ok, true);
+  s1.stream_id = "st2";
+  await coord.refreshAfterMutation({ sessionKey: s1.key, streamKey: st2.key });
+  const afterMove = resolveSidebarView({
+    preferredView: "session",
+    sessions: coord.sessions,
+    streams: coord.streams,
+    live: indexLive(
+      { activeSpace: { id: "sp1", machine: null }, activeTabId: "tab1", visibleTerminals: ["t1"], focusedTerminal: "t1", terminalList, panes, agents },
+      { sessions: coord.sessions }
+    ),
+  });
+  assert.equal(afterMove.view, "session");
+  assert.equal(afterMove.stream?.key, st2.key);
+});
+
+test("invalid session show JSON preserves cached enrollment instead of flipping tab to unenrolled", async () => {
+  const s1 = makeSessionJson({ host: "h1", id: "s1", stream_id: "st1", title: "Live Session" });
+  const st1 = makeStreamJson({ host: "h1", id: "st1", title: "Live Stream", sessions: [s1] });
+  let corruptNextShow = false;
+
+  const coord = new StreamsCoordinator({
+    exec: async (_bin, args) => {
+      if (args[0] === "config") {
+        return { code: 0, stdout: JSON.stringify({ herdr: {} }), stderr: "" };
+      }
+      if (args[0] === "session" && args[1] === "show") {
+        if (corruptNextShow) {
+          return { code: 0, stdout: "", stderr: "" };
+        }
+        return { code: 0, stdout: JSON.stringify(s1), stderr: "" };
+      }
+      if (args[0] === "stream" && args[1] === "show") {
+        return { code: 0, stdout: JSON.stringify(st1), stderr: "" };
+      }
+      return { code: 0, stdout: JSON.stringify({ items: [st1], unreadable: [] }), stderr: "" };
+    },
+  });
+
+  const snap = {
+    activeSpace: { id: "sp1", machine: null },
+    activeTabId: "tab1",
+    visibleTerminals: ["t1"],
+    focusedTerminal: "t1",
+    terminalList: [{ address: "t1", state: "live", labels: { [LABEL_SESSION]: s1.key, [LABEL_STREAM]: st1.key } }],
+    panes: [{ pane: "p1", tab: "tab1", terminal: "t1", program: { key: "pi", agent: true } }],
+    agents: [{ address: "t1", app: "pi", program: { key: "pi", agent: true } }],
+  };
+
+  await coord.observe(snap);
+  assert.equal(coord.sessions.get(s1.key)?.stream, st1.key);
+
+  corruptNextShow = true;
+  await coord.observe({ ...snap, force: true });
+  assert.match(coord.readError ?? "", /invalid session show JSON/);
+  assert.equal(coord.sessions.get(s1.key)?.key, s1.key);
+});
+
+test("transient hostStreams failure preserves cached items and hostStreamsEmptyMessage handles unloaded state", async () => {
+  assert.equal(
+    hostStreamsEmptyMessage({ error: null, streams: [], shown: [], unreadable: [], loaded: false }),
+    "Loading Streams…"
+  );
+
+  const st1 = makeStreamJson({ host: "h1", id: "st1", title: "Cached Stream" });
+  let failList = false;
+  const coord = new StreamsCoordinator({
+    exec: async (_bin, args) => {
+      if (args[0] === "stream" && args[1] === "list") {
+        if (failList) {
+          return { code: 1, stdout: "", stderr: "temporary timeout" };
+        }
+        return { code: 0, stdout: JSON.stringify({ items: [st1], unreadable: [] }), stderr: "" };
+      }
+      return { code: 0, stdout: "{}", stderr: "" };
+    },
+  });
+
+  await coord.ensureHostStreams(true);
+  assert.equal(coord.getStreamList().items.length, 1);
+  assert.equal(coord.getStreamList().error, null);
+
+  failList = true;
+  await coord.ensureHostStreams(true);
+  const listAfterFail = coord.getStreamList();
+  assert.equal(listAfterFail.items.length, 1);
+  assert.equal(listAfterFail.items[0].key, st1.key);
+  assert.match(listAfterFail.error ?? "", /temporary timeout/);
+  assert.equal(
+    hostStreamsEmptyMessage({
+      error: listAfterFail.error,
+      streams: listAfterFail.items,
+      shown: listAfterFail.items,
+      unreadable: [],
+      loaded: listAfterFail.loaded,
+    }),
+    null
+  );
+});
+
+test("remote machine reconnect preserves cached remote sessions, syncContext clears previews synchronously, and summary upserts preserve detail", async () => {
+  const sRem = makeSessionJson({
+    host: "h-rem",
+    id: "s1",
+    stream_id: "st1",
+    title: "Remote Work",
+    recap: "Detailed recap",
+  });
+  const stRem = makeStreamJson({
+    host: "h-rem",
+    id: "st1",
+    title: "Remote Stream",
+    goal: "Full goal",
+    sessions: [sRem],
+  });
+  const runner = createFakeRunner({
+    sessions: { [sRem.key]: sRem },
+    streams: { [stRem.key]: stRem },
+    streamList: [stRem],
+  });
+
+  const prefChanges = [];
+  const coord = new StreamsCoordinator({
+    exec: runner.exec,
+    initialPreferredView: "stream",
+    initialHostScope: "all",
+    onPreferenceChange: (k, v) => prefChanges.push([k, v]),
+  });
+  assert.equal(coord.preferredView, "stream");
+  assert.equal(coord.hostScope, "all");
+
+  await coord.setView("all");
+  await coord.setView("all");
+  await coord.setHostScope("local");
+  assert.deepEqual(prefChanges, [
+    ["preferredView", "all"],
+    ["hostScope", "local"],
+  ]);
+
+  await coord.observe({
+    activeSpace: { id: "retriever/sp1", machine: "retriever" },
+    activeTabId: "retriever/tab1",
+    visibleTerminals: ["retriever/t1"],
+    focusedTerminal: "retriever/t1",
+    terminalList: [
+      {
+        address: "retriever/t1",
+        machine: "retriever",
+        state: "live",
+        labels: { [LABEL_SESSION]: sRem.key, [LABEL_STREAM]: stRem.key },
+      },
+    ],
+    panes: [{ pane: "retriever/p1", tab: "retriever/tab1", terminal: "retriever/t1", program: { key: "pi", agent: true } }],
+    agents: [{ address: "retriever/t1", app: "pi", program: { key: "pi", agent: true } }],
+    machineList: [
+      { name: null, layout: "ready" },
+      { name: "retriever", layout: "ready" },
+    ],
+  });
+  assert.equal(coord.sessions.get(sRem.key)?.detail, true);
+  assert.equal(coord.streams.get(stRem.key)?.detail, true);
+
+  // Normalized summary upserts (as returned by `session list --fields key,stream_id,title,status,state`)
+  // must preserve detail fields (`recap`, `directory`, `updated_at_ms`, `goal`, `sessions`).
+  const listSummary = normalizeSession({
+    key: sRem.key,
+    stream_id: "st1",
+    title: "Updated Title",
+    status: "waiting",
+    state: "Waiting on CI",
+  });
+  coord._upsertSession(listSummary, { detail: false });
+  assert.equal(coord.sessions.get(sRem.key)?.title, "Updated Title");
+  assert.equal(coord.sessions.get(sRem.key)?.state, "Waiting on CI");
+  assert.equal(coord.sessions.get(sRem.key)?.state_short, "Waiting on CI");
+  assert.equal(coord.sessions.get(sRem.key)?.recap, "Detailed recap");
+  assert.equal(coord.sessions.get(sRem.key)?.updated_at_ms, sRem.updated_at_ms);
+  assert.deepEqual(coord.sessions.get(sRem.key)?.directory, sRem.directory);
+  assert.equal(coord.sessions.get(sRem.key)?.detail, true);
+  // getStreamSessions resolves live status/title directly from `sessions`.
+  assert.equal(coord.getStreamSessions(stRem.key)[0]?.status, "waiting");
+  assert.equal(coord.getStreamSessions(stRem.key)[0]?.title, "Updated Title");
+
+  const streamSummary = normalizeStream({
+    key: stRem.key,
+    title: "Updated Stream",
+    status: "waiting",
+    active_sessions: 1,
+    total_sessions: 1,
+    last_activity_ms: 0,
+  });
+  coord._upsertStream(streamSummary, { detail: false });
+  assert.equal(coord.streams.get(stRem.key)?.title, "Updated Stream");
+  assert.equal(coord.streams.get(stRem.key)?.goal, "Full goal");
+  assert.equal(coord.streams.get(stRem.key)?.sessions.length, 1);
+
+  // syncContext preserves previews on same Space/Tab, and clears them on Space/Tab change.
+  coord.previewStreamKey = "h-rem/other";
+  coord.previewSessionKey = "h-rem/pi/other";
+  const sameLive = indexLive(
+    { activeSpace: { id: "retriever/sp1", machine: "retriever" }, activeTabId: "retriever/tab1", visibleTerminals: [] },
+    { sessions: coord.sessions }
+  );
+  coord.syncContext(sameLive);
+  assert.equal(coord.previewStreamKey, "h-rem/other");
+  assert.equal(coord.previewSessionKey, "h-rem/pi/other");
+
+  const nextLive = indexLive(
+    { activeSpace: { id: "sp-local", machine: null }, activeTabId: "local-tab", visibleTerminals: [] },
+    { sessions: coord.sessions }
+  );
+  coord.syncContext(nextLive);
+  assert.equal(coord.previewStreamKey, null);
+  assert.equal(coord.previewSessionKey, null);
+  assert.equal(coord.activeMachine, null);
+
+  // Temporarily disconnecting retriever keeps cached remote sessions intact.
+  await coord.observe({
+    activeSpace: { id: "sp-local", machine: null },
+    activeTabId: "local-tab",
+    visibleTerminals: [],
+    focusedTerminal: null,
+    terminalList: [],
+    panes: [],
+    agents: [],
+    machineList: [
+      { name: null, layout: "ready" },
+      { name: "retriever", layout: "loading" },
+    ],
+  });
+  assert.equal(coord.sessions.get(sRem.key)?.key, sRem.key);
+});
+
+test("Stage 1 edge cases: session survives stream show failure, force clears stale keys, in-flight list refetches on mutation, offline active remote sets list error", async () => {
+  // 1. Successful session show followed by failed stream show preserves Session detail.
+  const s1 = makeSessionJson({ host: "h1", id: "s1", stream_id: "st1", title: "Saved Sess" });
+  let failStreamShow = true;
+  let sessionNotFound = false;
+  const coord1 = new StreamsCoordinator({
+    exec: async (_bin, args) => {
+      if (args[0] === "config") return { code: 0, stdout: JSON.stringify({ herdr: {} }), stderr: "" };
+      if (args[0] === "session" && args[1] === "show") {
+        if (sessionNotFound) {
+          return {
+            code: 1,
+            stdout: "",
+            stderr: JSON.stringify({ error: { kind: "not-found", message: "missing" } }),
+          };
+        }
+        return { code: 0, stdout: JSON.stringify(s1), stderr: "" };
+      }
+      if (args[0] === "stream" && args[1] === "show" && failStreamShow) {
+        return { code: 1, stdout: "", stderr: "stream unreadable" };
+      }
+      return { code: 0, stdout: JSON.stringify({ items: [], unreadable: [] }), stderr: "" };
+    },
+  });
+  const snap1 = {
+    activeSpace: { id: "sp1", machine: null },
+    activeTabId: "tab1",
+    visibleTerminals: ["t1"],
+    focusedTerminal: "t1",
+    terminalList: [{ address: "t1", state: "live", labels: { [LABEL_SESSION]: s1.key, [LABEL_STREAM]: "h1/st1" } }],
+    panes: [{ pane: "p1", tab: "tab1", terminal: "t1", program: { key: "pi", agent: true } }],
+    agents: [{ address: "t1", app: "pi", program: { key: "pi", agent: true } }],
+  };
+  await coord1.observe(snap1);
+  assert.equal(coord1.sessions.get(s1.key)?.key, s1.key);
+  assert.equal(coord1.sessions.get(s1.key)?.detail, true);
+  assert.match(coord1.readError ?? "", /stream unreadable/);
+
+  // 2. Stale key marked by session show not-found recovers on force refresh.
+  sessionNotFound = true;
+  coord1.sessions.clear();
+  await coord1.observe({ ...snap1, force: true });
+  assert.equal(coord1.staleSessionKeys.has(s1.key), true);
+  sessionNotFound = false;
+  failStreamShow = false;
+  await coord1.observe({ ...snap1, force: true });
+  assert.equal(coord1.staleSessionKeys.has(s1.key), false);
+  assert.equal(coord1.sessions.get(s1.key)?.key, s1.key);
+
+  // 3. Label-only enrolled tab (uncached session, streams.stream label present) resolves Stream access.
+  const coldLive = indexLive(snap1, { sessions: new Map() });
+  const coldStreamView = resolveSidebarView({
+    preferredView: "stream",
+    sessions: new Map(),
+    streams: new Map(),
+    live: coldLive,
+  });
+  assert.equal(coldStreamView.view, "stream");
+  assert.equal(coldStreamView.currentStreamKey, "h1/st1");
+  assert.equal(coldStreamView.streamKey, "h1/st1");
+
+  // 4. Mutation while setView("all") list fetch is in flight refetches so loaded does not deadlock.
+  let releaseFirstList;
+  const firstListGate = new Promise((r) => {
+    releaseFirstList = r;
+  });
+  let listCalls = 0;
+  const st2 = makeStreamJson({ host: "h1", id: "st2", title: "Ready Stream" });
+  const coord2 = new StreamsCoordinator({
+    exec: async (_bin, args) => {
+      if (args[0] === "stream" && args[1] === "list") {
+        listCalls += 1;
+        if (listCalls === 1) return firstListGate;
+        return { code: 0, stdout: JSON.stringify({ items: [st2], unreadable: [] }), stderr: "" };
+      }
+      if (args[0] === "session" && args[1] === "edit") return { code: 0, stdout: "{}", stderr: "" };
+      return { code: 0, stdout: JSON.stringify(st2), stderr: "" };
+    },
+  });
+  coord2.recordHostMachine("h1", null);
+  const firstFetch = coord2.setView("all");
+  await coord2.setSessionStatus("h1/pi/s1", "waiting", st2.key);
+  releaseFirstList({ code: 0, stdout: JSON.stringify({ items: [], unreadable: [] }), stderr: "" });
+  await firstFetch;
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(listCalls, 2);
+  assert.equal(coord2.getStreamList().loaded, true);
+  assert.equal(coord2.getStreamList().items[0]?.key, st2.key);
+
+  // 5. Offline active remote sets bucket error instead of leaving loaded:false, error:null forever.
+  const coord3 = new StreamsCoordinator({
+    exec: async () => ({ code: 0, stdout: JSON.stringify({ herdr: {} }), stderr: "" }),
+  });
+  await coord3.observe({
+    activeSpace: { id: "offline/sp1", machine: "offline" },
+    activeTabId: "offline/tab1",
+    visibleTerminals: [],
+    terminalList: [],
+    panes: [],
+    agents: [],
+    machineList: [
+      { name: null, layout: "ready" },
+      { name: "offline", layout: "unavailable" },
+    ],
+  });
+  assert.match(coord3.getStreamList("offline", "local").error ?? "", /offline is unavailable/);
+
+  // 6. contextSynced: true prevents a late observe() with a stale Space/Tab from clobbering a new preview.
+  coord3.previewStreamKey = "h1/preview";
+  coord3.lastSpaceTabKey = "sp-new:tab-new";
+  await coord3.observe({
+    activeSpace: { id: "sp-old", machine: null },
+    activeTabId: "tab-old",
+    visibleTerminals: [],
+    terminalList: [],
+    panes: [],
+    agents: [],
+    contextSynced: true,
+  });
+  assert.equal(coord3.previewStreamKey, "h1/preview");
 });
