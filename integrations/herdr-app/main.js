@@ -2,7 +2,17 @@
 // Preserves the single 30 px pane header, explicit pane controls, and Files/Changes panels.
 
 import { View, div, svg, image } from "gpui-kit";
-import { h_flex, v_flex, ScrollHandle, Editor, EditorState, TextView, Input, InputState } from "gpui-base";
+import {
+  h_flex,
+  v_flex,
+  ScrollHandle,
+  Popover,
+  Editor,
+  EditorState,
+  TextView,
+  Input,
+  InputState,
+} from "gpui-base";
 import {
   spaces,
   panes,
@@ -49,8 +59,6 @@ import {
   StreamsCoordinator,
 } from "./state.js";
 
-const pendingSidebarActions = [];
-let sidebarActionSeq = 0;
 let viewRev = 0;
 let lastWindowActive = false;
 
@@ -58,16 +66,6 @@ function bumpViewRev() {
   if (checking()) return;
   try {
     setShared("streams.viewRev", ++viewRev);
-  } catch {
-    // Non-fatal in check/test mode
-  }
-}
-
-function dispatchSidebarAction(fn) {
-  pendingSidebarActions.push(fn);
-  if (checking()) return;
-  try {
-    setShared("streams.actionSeq", ++sidebarActionSeq);
   } catch {
     // Non-fatal in check/test mode
   }
@@ -172,7 +170,7 @@ function statusBadge(status, t) {
     .child(s.label);
 }
 
-function statusDropdownBadge(status, t) {
+function statusDropdownBadge(status, t, { open = false } = {}) {
   const s = statusStyle(status, t);
   return h_flex()
     .flex_none()
@@ -181,12 +179,13 @@ function statusDropdownBadge(status, t) {
     .py(2)
     .items_center()
     .rounded(5)
-    .bg(t.raised)
+    .bg(open ? t.hover : t.raised)
     .border(1)
-    .border_color(t.border)
+    .border_color(open ? t.accent : t.border)
     .text_size(11)
     .font_medium()
     .text_color(s.color)
+    .cursor_pointer()
     .hover((st) => st.bg(t.hover))
     .child(div().text_size(9).child(s.symbol))
     .child(s.label)
@@ -363,6 +362,9 @@ export default class StreamsMod extends View {
       done_closed: null,
     };
     this.hoveredSessionKey = null;
+    this.openMenu = null;
+    this.menuIndex = -1;
+    this.menuFocus = null;
     this.sessionSort = "recent";
     this.streamSort = "recent";
     this.streamQuery = "";
@@ -378,6 +380,7 @@ export default class StreamsMod extends View {
     const role = resolveRole(rawProps);
     this._role = role;
     if (role === "sidebar") {
+      this.menuFocus = cx.focus_handle();
       this.searchInput = InputState.new({ placeholder: "Filter streams…" });
       this.searchInput.on("change", (_e, changeCx) => {
         this.streamQuery = this.searchInput.value();
@@ -797,346 +800,179 @@ export default class StreamsMod extends View {
       );
   }
 
+  renderMenuPopover({
+    id,
+    trigger,
+    items,
+    width = 185,
+    anchor = "top_right",
+    mouseButton = "left",
+    stopRowPropagation = false,
+    t,
+  }) {
+    const isOpen = this.openMenu === id;
+    const selectable = [];
+    for (let i = 0; i < items.length; i += 1) {
+      if (!items[i].type && !items[i].disabled) selectable.push(i);
+    }
+    const firstIndex = selectable.length > 0 ? selectable[0] : -1;
+    const activeIndex = selectable.includes(this.menuIndex) ? this.menuIndex : firstIndex;
+
+    const closeMenu = (closeCx) => {
+      this.openMenu = null;
+      this.menuIndex = -1;
+      closeCx?.notify?.();
+    };
+
+    const runSelected = (idx, actCx) => {
+      const item = items[idx];
+      if (!item || item.type || item.disabled) return;
+      this.openMenu = null;
+      this.menuIndex = -1;
+      try {
+        item.onSelect?.(actCx);
+      } finally {
+        actCx?.notify?.();
+      }
+    };
+
+    const menuContent = v_flex()
+      .id(`${id}-content`)
+      .w(width)
+      .p(5)
+      .rounded(8)
+      .border_1()
+      .border_color(t.border)
+      .bg(t.popover)
+      .shadow_lg()
+      .text_size(12)
+      .text_color(t.foreground)
+      .when(Boolean(this.menuFocus), (el) => el.track_focus(this.menuFocus))
+      .on_mouse_down("left", (_e, downCx) => downCx.stop_propagation())
+      .on_key_down((e, keyCx) => {
+        if (e.modifiers?.control || e.modifiers?.platform || e.modifiers?.alt) return;
+        const key = String(e.key ?? "").toLowerCase();
+        if (key === "escape") {
+          keyCx.stop_propagation();
+          closeMenu(keyCx);
+          return;
+        }
+        if (selectable.length === 0) return;
+        if (key === "down" || key === "arrowdown" || key === "j") {
+          keyCx.stop_propagation();
+          const pos = selectable.indexOf(activeIndex);
+          this.menuIndex = selectable[(pos + 1) % selectable.length];
+          keyCx.notify();
+          return;
+        }
+        if (key === "up" || key === "arrowup" || key === "k") {
+          keyCx.stop_propagation();
+          const pos = selectable.indexOf(activeIndex);
+          this.menuIndex =
+            pos <= 0 ? selectable[selectable.length - 1] : selectable[pos - 1];
+          keyCx.notify();
+          return;
+        }
+        if (key === "enter" || key === "return") {
+          keyCx.stop_propagation();
+          runSelected(activeIndex, keyCx);
+        }
+      })
+      .children(
+        items.map((item, idx) => {
+          if (item.type === "divider") {
+            return div().my(3).h(1).w_full().bg(t.border);
+          }
+          if (item.type === "label") {
+            return div()
+              .px(10)
+              .py(3)
+              .text_size(10.5)
+              .font_medium()
+              .text_color(t.dim)
+              .child(item.text);
+          }
+          const highlighted = !item.disabled && idx === activeIndex;
+          return h_flex()
+            .id(`${id}-${item.id}`)
+            .h(28)
+            .px(10)
+            .gap(8)
+            .items_center()
+            .justify_between()
+            .rounded(5)
+            .text_size(12)
+            .when(item.disabled, (el) => el.text_color(t.dim))
+            .when(!item.disabled, (el) =>
+              el
+                .cursor_pointer()
+                .text_color(item.danger ? t.blocked : t.foreground)
+                .when(highlighted, (row) => row.bg(t.hover))
+                .hover((s) => s.bg(t.hover))
+                .on_hover((hovered, hoverCx) => {
+                  if (hovered && this.menuIndex !== idx) {
+                    this.menuIndex = idx;
+                    hoverCx.notify();
+                  }
+                })
+                .on_mouse_down("left", (_e, downCx) => downCx.stop_propagation())
+                .on_click((_e, clickCx) => {
+                  clickCx.stop_propagation();
+                  runSelected(idx, clickCx);
+                })
+            )
+            .when(Boolean(item.icon), (el) =>
+              el.child(
+                div()
+                  .flex_none()
+                  .w(10)
+                  .text_size(9)
+                  .text_color(item.disabled ? t.dim : item.icon.color)
+                  .child(item.icon.symbol)
+              )
+            )
+            .child(div().flex_1().min_w(0).truncate().child(item.label))
+            .when(Boolean(item.checked), (el) =>
+              el.child(div().flex_none().text_size(11).text_color(t.dim).child("✓"))
+            );
+        })
+      );
+
+    let pop = Popover.new(id)
+      .anchor(anchor)
+      .open(isOpen)
+      .on_open_change((open, openCx) => {
+        if (open) {
+          this.openMenu = id;
+          this.menuIndex = firstIndex;
+          this.menuFocus?.focus?.();
+          openCx.notify();
+        } else if (this.openMenu === id) {
+          this.openMenu = null;
+          this.menuIndex = -1;
+          openCx.notify();
+        }
+      })
+      .trigger(trigger);
+    if (mouseButton !== "left") {
+      pop = pop.mouse_button(mouseButton);
+    }
+    if (this.menuFocus) {
+      pop = pop.track_focus(this.menuFocus);
+    }
+    pop = pop.when(isOpen, (el) => el.content(menuContent));
+
+    if (!stopRowPropagation) return pop;
+    return div()
+      .flex_none()
+      .on_mouse_down("left", (_e, downCx) => downCx.stop_propagation())
+      .on_click((_e, clickCx) => clickCx.stop_propagation())
+      .child(pop);
+  }
+
   renderPopup() {
     const t = theme();
     const rawProps = props() ?? {};
-    const closeSelf = () => {
-      if (rawProps.overlay) closeOverlay(rawProps.overlay);
-    };
-    const menuRow = ({
-      id,
-      label,
-      icon = null,
-      disabled = false,
-      danger = false,
-      checked = false,
-      onClick,
-    }) =>
-      h_flex()
-        .id(id)
-        .h(28)
-        .px(10)
-        .gap(8)
-        .items_center()
-        .justify_between()
-        .rounded(5)
-        .text_size(12)
-        .when(disabled, (el) => el.text_color(t.dim))
-        .when(!disabled, (el) =>
-          el
-            .text_color(danger ? t.blocked : t.foreground)
-            .hover((s) => s.bg(t.hover))
-            .on_click((e, clickCx) => {
-              clickCx.stop_propagation();
-              try {
-                onClick?.(e, clickCx);
-              } finally {
-                closeSelf();
-              }
-            })
-        )
-        .when(Boolean(icon), (el) =>
-          el.child(
-            div()
-              .flex_none()
-              .w(10)
-              .text_size(9)
-              .text_color(disabled ? t.dim : icon.color)
-              .child(icon.symbol)
-          )
-        )
-        .child(div().flex_1().min_w(0).truncate().child(label))
-        .when(checked, (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child("✓")));
-
-    const menuDivider = () => div().my(3).h(1).w_full().bg(t.border);
-    const menuLabel = (text) =>
-      div().px(10).py(3).text_size(10.5).font_medium().text_color(t.dim).child(text);
-
-    if (rawProps.kind === "stream-menu") {
-      const streamKey = rawProps.stream_id;
-      const stream = streamKey ? coordinator.streams.get(streamKey) ?? null : null;
-      const bulk = streamBulkActionState(stream);
-      return v_flex()
-        .w_full()
-        .p(5)
-        .bg(t.popover)
-        .text_color(t.foreground)
-        .child(
-          menuRow({
-            id: "stream-menu-open-active",
-            label: "Open all active sessions",
-            disabled: !bulk.canOpenActive,
-            onClick: () => {
-              if (!streamKey) return;
-              const snap = collectSnapshot();
-              dispatchSidebarAction(async () => {
-                await coordinator.openWork(
-                  {
-                    stream: streamKey,
-                    sessions: { kind: "only_active" },
-                    terminalList: snap.terminalList,
-                    panes: snap.panes,
-                    agents: snap.agents,
-                  },
-                  { run }
-                );
-              });
-            },
-          })
-        )
-        .child(menuDivider())
-        .child(
-          menuRow({
-            id: "stream-menu-park-all",
-            label: "Park all",
-            disabled: !bulk.canParkAll,
-            onClick: () => {
-              if (!streamKey) return;
-              dispatchSidebarAction(async () => {
-                await coordinator.parkAllSessions(streamKey);
-              });
-            },
-          })
-        )
-        .child(
-          menuRow({
-            id: "stream-menu-close-all",
-            label: "Close all",
-            disabled: !bulk.canCloseAll,
-            danger: bulk.canCloseAll,
-            onClick: () => {
-              if (!streamKey) return;
-              dispatchSidebarAction(async () => {
-                await coordinator.closeAllSessions(streamKey);
-              });
-            },
-          })
-        )
-        .child(menuDivider())
-        .child(
-          menuRow({
-            id: "stream-menu-copy-id",
-            label: "Copy stream ID",
-            disabled: !stream?.id,
-            onClick: (_e, clickCx) => {
-              if (stream?.id) clickCx.write_to_clipboard(stream.id);
-            },
-          })
-        )
-        .child(menuDivider())
-        .child(
-          menuRow({
-            id: "stream-menu-delete",
-            label: "Delete empty stream",
-            disabled: !bulk.canDelete,
-            danger: bulk.canDelete,
-            onClick: () => {
-              if (!streamKey) return;
-              dispatchSidebarAction(async () => {
-                await coordinator.deleteStream(streamKey);
-              });
-            },
-          })
-        );
-    }
-
-    if (rawProps.kind === "status-menu") {
-      const sessionKey = rawProps.session_key;
-      const streamKey = rawProps.stream_key ?? null;
-      const currentStatus = rawProps.status ?? null;
-      const statusLabel = (s) => s.charAt(0).toUpperCase() + s.slice(1);
-      return v_flex()
-        .w_full()
-        .p(5)
-        .bg(t.popover)
-        .text_color(t.foreground)
-        .children(
-          SESSION_STATUSES.map((st) => {
-            const style = statusStyle(st, t);
-            return menuRow({
-              id: `status-menu-${st}`,
-              label: statusLabel(st),
-              icon: { symbol: style.symbol, color: style.color },
-              disabled: currentStatus === st,
-              checked: currentStatus === st,
-              onClick: () => {
-                if (!sessionKey) return;
-                dispatchSidebarAction(async () => {
-                  await coordinator.setSessionStatus(sessionKey, st, streamKey);
-                });
-              },
-            });
-          })
-        );
-    }
-
-    if (rawProps.kind === "session-menu") {
-      const sessionKey = rawProps.session_key;
-      const streamKey = rawProps.stream_key ?? null;
-      const currentStatus = rawProps.status ?? null;
-      const livePane = rawProps.live_pane ?? null;
-      const isOpen = Boolean(livePane);
-      const statusLabel = (s) => s.charAt(0).toUpperCase() + s.slice(1);
-      return v_flex()
-        .w_full()
-        .p(5)
-        .bg(t.popover)
-        .text_color(t.foreground)
-        .when(isOpen, (el) =>
-          el
-            .child(
-              menuRow({
-                id: "session-menu-switch",
-                label: "Switch to",
-                onClick: () => {
-                  const snap = collectSnapshot();
-                  dispatchSidebarAction(async () => {
-                    await coordinator.selectSessionFromStream(sessionKey, streamKey, snap, { run });
-                  });
-                },
-              })
-            )
-            .child(
-              menuRow({
-                id: "session-menu-close-term",
-                label: "Close terminal",
-                onClick: () => {
-                  run("pane.close", { pane: livePane });
-                },
-              })
-            )
-            .child(menuDivider())
-        )
-        .when(!isOpen, (el) =>
-          el
-            .child(
-              menuRow({
-                id: "session-menu-resume",
-                label: "Resume",
-                onClick: () => {
-                  if (!streamKey || !sessionKey) return;
-                  const snap = collectSnapshot();
-                  dispatchSidebarAction(async () => {
-                    await coordinator.openWork(
-                      {
-                        stream: streamKey,
-                        sessions: { kind: "selected", session_ids: [sessionKey] },
-                        terminalList: snap.terminalList,
-                        panes: snap.panes,
-                        agents: snap.agents,
-                      },
-                      { run }
-                    );
-                  });
-                },
-              })
-            )
-            .child(
-              menuRow({
-                id: "session-menu-inspect",
-                label: "Inspect",
-                onClick: () => {
-                  dispatchSidebarAction(async () => {
-                    await coordinator.previewSession(sessionKey, streamKey);
-                  });
-                },
-              })
-            )
-            .child(menuDivider())
-        )
-        .child(menuLabel("Set status"))
-        .children(
-          SESSION_STATUSES.map((st) => {
-            const style = statusStyle(st, t);
-            return menuRow({
-              id: `session-menu-status-${st}`,
-              label: statusLabel(st),
-              icon: { symbol: style.symbol, color: style.color },
-              disabled: currentStatus === st,
-              checked: currentStatus === st,
-              onClick: () => {
-                if (!sessionKey) return;
-                dispatchSidebarAction(async () => {
-                  await coordinator.setSessionStatus(sessionKey, st, streamKey);
-                });
-              },
-            });
-          })
-        );
-    }
-
-    if (rawProps.kind === "reference-menu") {
-      const item = rawProps.item;
-      if (!item) return div().p(10).text_color(t.dim).child("No reference.");
-      const isDoc = item.kind === "document";
-      const isArtifact = item.kind === "artifact";
-      const copyLabel = isDoc ? "Copy path" : isArtifact ? "Copy artifact key" : "Copy URL";
-      return v_flex()
-        .w_full()
-        .p(5)
-        .bg(t.popover)
-        .text_color(t.foreground)
-        .when(isDoc, (el) =>
-          el.child(
-            menuRow({
-              id: "ref-menu-open-editor",
-              label: "Open in editor",
-              disabled: Boolean(item.disabled),
-              onClick: () => {
-                const snap = collectSnapshot();
-                const focusNow = focused();
-                const targetPaneId =
-                  focusNow?.pane ??
-                  snap.panes.find((p) => p.tab === snap.activeTabId && p.focused)?.pane ??
-                  snap.panes.find((p) => p.tab === snap.activeTabId)?.pane ??
-                  null;
-                dispatchSidebarAction(async (asyncCx) => {
-                  await coordinator.openReference(item.reference, {
-                    activeSpaceId: snap.activeSpace?.id ?? null,
-                    activeTabId: snap.activeTabId,
-                    targetPaneId,
-                    mode: "editor",
-                    run,
-                    openOverlay,
-                    openUrl: (u) => asyncCx?.open_url?.(u),
-                  });
-                });
-              },
-            })
-          )
-        )
-        .child(
-          menuRow({
-            id: "ref-menu-copy",
-            label: copyLabel,
-            disabled: !item.copyText,
-            onClick: (_e, clickCx) => {
-              if (item.copyText) {
-                clickCx.write_to_clipboard(item.copyText);
-              }
-            },
-          })
-        )
-        .when(!isArtifact, (el) =>
-          el
-            .child(menuDivider())
-            .child(
-              menuRow({
-                id: "ref-menu-drop",
-                label: "Drop",
-                danger: true,
-                disabled: !item.sessionKey || !item.refKey,
-                onClick: () => {
-                  if (!item.sessionKey || !item.refKey) return;
-                  dispatchSidebarAction(async () => {
-                    await coordinator.dropReference(item.sessionKey, item.refKey, item.streamKey ?? null);
-                  });
-                },
-              })
-            )
-        );
-    }
-
     const session = rawProps.session;
     const streamTitle = rawProps.stream_title ?? null;
     if (!session) return div().p(12).text_color(t.dim).child("No Session selected.");
@@ -1193,18 +1029,6 @@ export default class StreamsMod extends View {
   }
 
   renderSidebar(cx) {
-    if (pendingSidebarActions.length > 0 && cx?.spawn) {
-      const batch = pendingSidebarActions.splice(0);
-      cx.spawn(async (asyncCx) => {
-        for (const fn of batch) {
-          try {
-            await fn(asyncCx);
-          } finally {
-            asyncCx.notify();
-          }
-        }
-      });
-    }
     const t = theme();
     const snap = collectSnapshot();
     this.scheduleObserve(cx, snap);
@@ -1265,6 +1089,8 @@ export default class StreamsMod extends View {
       return btn
         .on_click((_e, clickCx) => {
           clickCx.stop_propagation();
+          this.openMenu = null;
+          this.menuIndex = -1;
           clickCx.spawn(async () => {
             await coordinator.setView(targetView);
           });
@@ -1496,73 +1322,226 @@ export default class StreamsMod extends View {
           )
         );
 
-    const openReferenceMenu = (item) => {
-      const height = item.kind === "document" ? 104 : item.kind === "artifact" ? 40 : 76;
-      openOverlay({
-        mod: "streams",
-        kind: "popup",
-        at: "pointer",
-        width: 185,
-        height,
-        props: {
-          kind: "reference-menu",
-          item,
-        },
+    const spawnSidebarWork = (actCx, work) => {
+      if (!actCx?.spawn) return;
+      actCx.spawn(async (asyncCx) => {
+        try {
+          await work(asyncCx);
+        } finally {
+          asyncCx.notify();
+        }
       });
     };
 
-    const openStatusMenu = ({ sessionKey, streamKey, status }) => {
-      openOverlay({
-        mod: "streams",
-        kind: "popup",
-        at: "pointer",
-        width: 155,
-        height: 12 + SESSION_STATUSES.length * 28,
-        props: {
-          kind: "status-menu",
-          session_key: sessionKey,
-          stream_key: streamKey,
-          status,
-        },
+    const statusLabel = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+
+    const buildStatusMenuItems = ({ sessionKey, streamKey, status }) =>
+      SESSION_STATUSES.map((st) => {
+        const style = statusStyle(st, t);
+        return {
+          id: `status-${st}`,
+          label: statusLabel(st),
+          icon: { symbol: style.symbol, color: style.color },
+          disabled: status === st,
+          checked: status === st,
+          onSelect: (actCx) => {
+            if (!sessionKey) return;
+            spawnSidebarWork(actCx, async () => {
+              await coordinator.setSessionStatus(sessionKey, st, streamKey);
+            });
+          },
+        };
       });
+
+    const buildStreamMenuItems = (stream) => {
+      const streamKey = stream?.key ?? null;
+      const bulk = streamBulkActionState(stream);
+      return [
+        {
+          id: "open-active",
+          label: "Open all active sessions",
+          disabled: !bulk.canOpenActive,
+          onSelect: (actCx) => {
+            if (!streamKey) return;
+            const snapNow = collectSnapshot();
+            spawnSidebarWork(actCx, async () => {
+              await coordinator.openWork(
+                {
+                  stream: streamKey,
+                  sessions: { kind: "only_active" },
+                  terminalList: snapNow.terminalList,
+                  panes: snapNow.panes,
+                  agents: snapNow.agents,
+                },
+                { run }
+              );
+            });
+          },
+        },
+        { type: "divider" },
+        {
+          id: "park-all",
+          label: "Park all",
+          disabled: !bulk.canParkAll,
+          onSelect: (actCx) => {
+            if (!streamKey) return;
+            spawnSidebarWork(actCx, async () => {
+              await coordinator.parkAllSessions(streamKey);
+            });
+          },
+        },
+        {
+          id: "close-all",
+          label: "Close all",
+          disabled: !bulk.canCloseAll,
+          danger: bulk.canCloseAll,
+          onSelect: (actCx) => {
+            if (!streamKey) return;
+            spawnSidebarWork(actCx, async () => {
+              await coordinator.closeAllSessions(streamKey);
+            });
+          },
+        },
+        { type: "divider" },
+        {
+          id: "copy-id",
+          label: "Copy stream ID",
+          disabled: !stream?.id,
+          onSelect: (actCx) => {
+            if (stream?.id) actCx.write_to_clipboard(stream.id);
+          },
+        },
+        { type: "divider" },
+        {
+          id: "delete",
+          label: "Delete empty stream",
+          disabled: !bulk.canDelete,
+          danger: bulk.canDelete,
+          onSelect: (actCx) => {
+            if (!streamKey) return;
+            spawnSidebarWork(actCx, async () => {
+              await coordinator.deleteStream(streamKey);
+            });
+          },
+        },
+      ];
     };
 
-    const openSessionMenu = ({ sessionKey, streamKey, status, livePane = null }) => {
-      const height = 12 + 2 * 28 + 7 + 22 + SESSION_STATUSES.length * 28;
-      openOverlay({
-        mod: "streams",
-        kind: "popup",
-        at: "pointer",
-        width: 190,
-        height,
-        props: {
-          kind: "session-menu",
-          session_key: sessionKey,
-          stream_key: streamKey,
-          status,
-          live_pane: livePane,
-        },
-      });
+    const buildSessionMenuItems = ({ sessionKey, streamKey, status, livePane = null }) => {
+      const isOpen = Boolean(livePane);
+      const items = isOpen
+        ? [
+            {
+              id: "switch",
+              label: "Switch to",
+              onSelect: (actCx) => {
+                const snapNow = collectSnapshot();
+                spawnSidebarWork(actCx, async () => {
+                  await coordinator.selectSessionFromStream(sessionKey, streamKey, snapNow, {
+                    run,
+                  });
+                });
+              },
+            },
+            {
+              id: "close-term",
+              label: "Close terminal",
+              onSelect: () => {
+                run("pane.close", { pane: livePane });
+              },
+            },
+            { type: "divider" },
+          ]
+        : [
+            {
+              id: "resume",
+              label: "Resume",
+              onSelect: (actCx) => {
+                resumeSingleSession(actCx, streamKey, sessionKey);
+              },
+            },
+            {
+              id: "inspect",
+              label: "Inspect",
+              onSelect: (actCx) => {
+                spawnSidebarWork(actCx, async () => {
+                  await coordinator.previewSession(sessionKey, streamKey);
+                });
+              },
+            },
+            { type: "divider" },
+          ];
+      items.push({ type: "label", text: "Set status" });
+      items.push(...buildStatusMenuItems({ sessionKey, streamKey, status }));
+      return items;
     };
 
-    const openStreamMenu = (streamKey) => {
-      openOverlay({
-        mod: "streams",
-        kind: "popup",
-        at: "pointer",
-        width: 215,
-        height: 174,
-        props: {
-          kind: "stream-menu",
-          stream_id: streamKey,
+    const buildReferenceMenuItems = (item) => {
+      const isDoc = item.kind === "document";
+      const isArtifact = item.kind === "artifact";
+      const copyLabel = isDoc ? "Copy path" : isArtifact ? "Copy artifact key" : "Copy URL";
+      const items = [];
+      if (isDoc) {
+        items.push({
+          id: "open-editor",
+          label: "Open in editor",
+          disabled: Boolean(item.disabled),
+          onSelect: (actCx) => {
+            const snapNow = collectSnapshot();
+            const focusNow = focused();
+            const targetPaneId =
+              focusNow?.pane ??
+              snapNow.panes.find((p) => p.tab === snapNow.activeTabId && p.focused)?.pane ??
+              snapNow.panes.find((p) => p.tab === snapNow.activeTabId)?.pane ??
+              null;
+            spawnSidebarWork(actCx, async (asyncCx) => {
+              await coordinator.openReference(item.reference, {
+                activeSpaceId: snapNow.activeSpace?.id ?? null,
+                activeTabId: snapNow.activeTabId,
+                targetPaneId,
+                mode: "editor",
+                run,
+                openOverlay,
+                openUrl: (u) => asyncCx?.open_url?.(u),
+              });
+            });
+          },
+        });
+      }
+      items.push({
+        id: "copy",
+        label: copyLabel,
+        disabled: !item.copyText,
+        onSelect: (actCx) => {
+          if (item.copyText) actCx.write_to_clipboard(item.copyText);
         },
       });
+      if (!isArtifact) {
+        items.push({ type: "divider" });
+        items.push({
+          id: "drop",
+          label: "Drop",
+          danger: true,
+          disabled: !item.sessionKey || !item.refKey,
+          onSelect: (actCx) => {
+            if (!item.sessionKey || !item.refKey) return;
+            spawnSidebarWork(actCx, async () => {
+              await coordinator.dropReference(
+                item.sessionKey,
+                item.refKey,
+                item.streamKey ?? null
+              );
+            });
+          },
+        });
+      }
+      return items;
     };
 
     const resumeSingleSession = (clickCx, streamKey, sessionKey) => {
       if (!streamKey || !sessionKey) return;
       const snapNow = collectSnapshot();
-      const work = async () => {
+      spawnSidebarWork(clickCx, async () => {
         await coordinator.openWork(
           {
             stream: streamKey,
@@ -1573,18 +1552,7 @@ export default class StreamsMod extends View {
           },
           { run }
         );
-      };
-      if (clickCx?.spawn) {
-        clickCx.spawn(async (asyncCx) => {
-          try {
-            await work();
-          } finally {
-            asyncCx.notify();
-          }
-        });
-      } else {
-        dispatchSidebarAction(work);
-      }
+      });
     };
 
     const renderReferencesSection = (references) =>
@@ -1626,17 +1594,17 @@ export default class StreamsMod extends View {
               .border(1)
               .border_color(t.border)
               .children(
-                references.map((item, idx) =>
-                  v_flex()
+                references.map((item, idx) => {
+                  const refMenuItems = buildReferenceMenuItems(item);
+                  const refBtnMenuId = `ref-menu-${item.id}`;
+                  const refCtxMenuId = `ref-ctx-${item.id}`;
+                  const refBtnOpen = this.openMenu === refBtnMenuId;
+                  const card = v_flex()
                     .id(item.id)
                     .px(9)
                     .py(7)
                     .gap(3)
                     .when(idx > 0, (row) => row.border_t(1).border_color(t.border))
-                    .on_mouse_down("right", (_e, downCx) => {
-                      downCx.stop_propagation();
-                      openReferenceMenu(item);
-                    })
                     .when(!item.disabled, (row) =>
                       row
                         .hover((s) => s.bg(t.hover))
@@ -1701,20 +1669,25 @@ export default class StreamsMod extends View {
                           )
                         )
                         .child(
-                          div()
-                            .id(`ref-menu-btn-${idx}`)
-                            .flex_none()
-                            .px(4)
-                            .py(1)
-                            .rounded(4)
-                            .text_color(t.dim)
-                            .hover((s) => s.bg(t.hover).text_color(t.foreground))
-                            .on_mouse_down("left", (_e, downCx) => downCx.stop_propagation())
-                            .on_click((_e, clickCx) => {
-                              clickCx.stop_propagation();
-                              openReferenceMenu(item);
-                            })
-                            .child("⋮")
+                          this.renderMenuPopover({
+                            id: refBtnMenuId,
+                            width: 185,
+                            anchor: "top_right",
+                            stopRowPropagation: true,
+                            t,
+                            items: refMenuItems,
+                            trigger: div()
+                              .id(`ref-menu-btn-${idx}`)
+                              .flex_none()
+                              .px(4)
+                              .py(1)
+                              .rounded(4)
+                              .cursor_pointer()
+                              .text_color(refBtnOpen ? t.foreground : t.dim)
+                              .when(refBtnOpen, (el) => el.bg(t.hover))
+                              .hover((s) => s.bg(t.hover).text_color(t.foreground))
+                              .child("⋮"),
+                          })
                         )
                     )
                     .when(Boolean(item.location), (row) =>
@@ -1731,8 +1704,17 @@ export default class StreamsMod extends View {
                       row.child(
                         div().text_size(11).text_color(t.muted).child(item.description)
                       )
-                    )
-                )
+                    );
+                  return this.renderMenuPopover({
+                    id: refCtxMenuId,
+                    width: 185,
+                    anchor: "top_left",
+                    mouseButton: "right",
+                    t,
+                    items: refMenuItems,
+                    trigger: card,
+                  });
+                })
               )
           )
         );
@@ -2191,19 +2173,28 @@ export default class StreamsMod extends View {
                         .tooltip("Derived from sessions")
                     )
                     .child(
-                      div()
-                        .id("streams-menu-btn")
-                        .flex_none()
-                        .px(5)
-                        .py(2)
-                        .rounded(4)
-                        .text_color(t.muted)
-                        .hover((s) => s.bg(t.hover).text_color(t.foreground))
-                        .on_click((_e, clickCx) => {
-                          clickCx.stop_propagation();
-                          openStreamMenu(stream.key);
-                        })
-                        .child("⋮")
+                      (() => {
+                        const streamMenuId = `stream-actions-${stream.key}`;
+                        const streamMenuOpen = this.openMenu === streamMenuId;
+                        return this.renderMenuPopover({
+                          id: streamMenuId,
+                          width: 215,
+                          anchor: "top_right",
+                          t,
+                          items: buildStreamMenuItems(stream),
+                          trigger: div()
+                            .id("streams-menu-btn")
+                            .flex_none()
+                            .px(5)
+                            .py(2)
+                            .rounded(4)
+                            .cursor_pointer()
+                            .text_color(streamMenuOpen ? t.foreground : t.muted)
+                            .when(streamMenuOpen, (el) => el.bg(t.hover))
+                            .hover((s) => s.bg(t.hover).text_color(t.foreground))
+                            .child("⋮"),
+                        });
+                      })()
                     )
                 )
                 .when(Boolean(stream.goal), (el) =>
@@ -2308,7 +2299,18 @@ export default class StreamsMod extends View {
                       ? icon(livePaneObj?.program, 13, t.foreground) ??
                         div().flex_none().text_size(10).text_color(t.foreground).child("●")
                       : div().flex_none().text_size(10).text_color(t.dim).child("○");
-                    return v_flex()
+                    const rowStatusMenuId = `row-status-${sess.key}`;
+                    const rowActionMenuId = `row-menu-${sess.key}`;
+                    const rowCtxMenuId = `row-ctx-${sess.key}`;
+                    const rowStatusOpen = this.openMenu === rowStatusMenuId;
+                    const rowActionOpen = this.openMenu === rowActionMenuId;
+                    const rowMenuItems = buildSessionMenuItems({
+                      sessionKey: sess.key,
+                      streamKey: stream.key,
+                      status: sess.status,
+                      livePane: liveMatch?.pane ?? null,
+                    });
+                    const rowEl = v_flex()
                       .id(`stream-session-${sess.id}`)
                       .px(9)
                       .py(7)
@@ -2326,15 +2328,6 @@ export default class StreamsMod extends View {
                           this.hoveredSessionKey = next;
                           hoverCx.notify();
                         }
-                      })
-                      .on_mouse_down("right", (_e, downCx) => {
-                        downCx.stop_propagation();
-                        openSessionMenu({
-                          sessionKey: sess.key,
-                          streamKey: stream.key,
-                          status: sess.status,
-                          livePane: liveMatch?.pane ?? null,
-                        });
                       })
                       .on_click((_e, clickCx) => {
                         clickCx.spawn(async () => {
@@ -2370,24 +2363,29 @@ export default class StreamsMod extends View {
                               ? statusBadge(sess.status, t)
                                   .id(`stream-session-status-ro-${sess.id}`)
                                   .tooltip(streamForeignHost.tooltip)
-                              : div()
-                                  .id(`stream-session-status-${sess.id}`)
-                                  .flex_none()
-                                  .px(5)
-                                  .py(1)
-                                  .rounded(4)
-                                  .hover((s) => s.bg(t.raised))
-                                  .tooltip("Change status")
-                                  .on_mouse_down("left", (_e, downCx) => downCx.stop_propagation())
-                                  .on_click((_e, clickCx) => {
-                                    clickCx.stop_propagation();
-                                    openStatusMenu({
-                                      sessionKey: sess.key,
-                                      streamKey: stream.key,
-                                      status: sess.status,
-                                    });
-                                  })
-                                  .child(statusBadge(sess.status, t))
+                              : this.renderMenuPopover({
+                                  id: rowStatusMenuId,
+                                  width: 155,
+                                  anchor: "top_right",
+                                  stopRowPropagation: true,
+                                  t,
+                                  items: buildStatusMenuItems({
+                                    sessionKey: sess.key,
+                                    streamKey: stream.key,
+                                    status: sess.status,
+                                  }),
+                                  trigger: div()
+                                    .id(`stream-session-status-${sess.id}`)
+                                    .flex_none()
+                                    .px(5)
+                                    .py(1)
+                                    .rounded(4)
+                                    .cursor_pointer()
+                                    .when(rowStatusOpen, (el) => el.bg(t.raised))
+                                    .hover((s) => s.bg(t.raised))
+                                    .tooltip("Change status")
+                                    .child(statusBadge(sess.status, t)),
+                                })
                           )
                           .when(isOpen && isRowHovered && Boolean(liveMatch?.pane), (row) =>
                             row.child(
@@ -2430,25 +2428,25 @@ export default class StreamsMod extends View {
                             )
                           )
                           .child(
-                            div()
-                              .id(`stream-session-menu-${sess.id}`)
-                              .flex_none()
-                              .px(4)
-                              .py(1)
-                              .rounded(4)
-                              .text_color(t.dim)
-                              .hover((s) => s.bg(t.hover).text_color(t.foreground))
-                              .on_mouse_down("left", (_e, downCx) => downCx.stop_propagation())
-                              .on_click((_e, clickCx) => {
-                                clickCx.stop_propagation();
-                                openSessionMenu({
-                                  sessionKey: sess.key,
-                                  streamKey: stream.key,
-                                  status: sess.status,
-                                  livePane: liveMatch?.pane ?? null,
-                                });
-                              })
-                              .child("⋮")
+                            this.renderMenuPopover({
+                              id: rowActionMenuId,
+                              width: 190,
+                              anchor: "top_right",
+                              stopRowPropagation: true,
+                              t,
+                              items: rowMenuItems,
+                              trigger: div()
+                                .id(`stream-session-menu-${sess.id}`)
+                                .flex_none()
+                                .px(4)
+                                .py(1)
+                                .rounded(4)
+                                .cursor_pointer()
+                                .text_color(rowActionOpen ? t.foreground : t.dim)
+                                .when(rowActionOpen, (el) => el.bg(t.hover))
+                                .hover((s) => s.bg(t.hover).text_color(t.foreground))
+                                .child("⋮"),
+                            })
                           )
                       )
                       .when(Boolean(sess.state_short), (row) =>
@@ -2461,6 +2459,15 @@ export default class StreamsMod extends View {
                             .child(sess.state_short)
                         )
                       );
+                    return this.renderMenuPopover({
+                      id: rowCtxMenuId,
+                      width: 190,
+                      anchor: "top_left",
+                      mouseButton: "right",
+                      t,
+                      items: rowMenuItems,
+                      trigger: rowEl,
+                    });
                   };
 
                   return el.child(
@@ -2726,17 +2733,23 @@ export default class StreamsMod extends View {
                           .id("session-header-status-ro")
                           .tooltip(sessionForeignHost.tooltip);
                       }
-                      return statusDropdownBadge(effectiveStatus, t)
-                        .id("session-header-status-btn")
-                        .tooltip("Change status")
-                        .on_click((_e, clickCx) => {
-                          clickCx.stop_propagation();
-                          openStatusMenu({
-                            sessionKey: session.key,
-                            streamKey,
-                            status: session.status,
-                          });
-                        });
+                      const statusMenuId = `session-status-${session.key}`;
+                      return this.renderMenuPopover({
+                        id: statusMenuId,
+                        width: 155,
+                        anchor: "top_right",
+                        t,
+                        items: buildStatusMenuItems({
+                          sessionKey: session.key,
+                          streamKey,
+                          status: session.status,
+                        }),
+                        trigger: statusDropdownBadge(effectiveStatus, t, {
+                          open: this.openMenu === statusMenuId,
+                        })
+                          .id("session-header-status-btn")
+                          .tooltip("Change status"),
+                      });
                     })()
                   )
               )

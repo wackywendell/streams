@@ -216,8 +216,6 @@ test("resolveRole selects popup, frame, viewer, and sidebar roles deterministica
   assert.equal(resolveRole({ role: "sidebar", pane: "p1" }), "sidebar");
   assert.equal(resolveRole({ kind: "reference-viewer", filename: "a.md" }), "viewer");
   assert.equal(resolveRole({ kind: "session-popup" }), "popup");
-  assert.equal(resolveRole({ kind: "stream-menu" }), "popup");
-  assert.equal(resolveRole({ kind: "status-menu" }), "popup");
   assert.equal(resolveRole({ pane: "p1", terminal: "t1" }), "frame");
   assert.equal(resolveRole({ terminal: "t1" }), "frame");
   assert.equal(resolveRole({}), "sidebar");

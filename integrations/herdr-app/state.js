@@ -794,13 +794,7 @@ export function resolveRole(rawProps) {
   if (rawProps?.kind === "reference-viewer") {
     return "viewer";
   }
-  if (
-    rawProps?.kind === "session-popup" ||
-    rawProps?.kind === "stream-menu" ||
-    rawProps?.kind === "session-menu" ||
-    rawProps?.kind === "status-menu" ||
-    rawProps?.kind === "reference-menu"
-  ) {
+  if (rawProps?.kind === "session-popup") {
     return "popup";
   }
   if (rawProps?.pane || rawProps?.terminal) return "frame";
