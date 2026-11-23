@@ -151,8 +151,7 @@ impl App {
                     let mut output = Output::value(
                         json!({"display": display_name(display), "native": engine.status()?}),
                     );
-                    output.accepted_save = true;
-                    output.wrote = true;
+                    output.notify_ui = true;
                     Ok(output)
                 })();
                 result.map_err(|error| {
@@ -191,8 +190,7 @@ impl App {
                     )?;
                     engine.close_display()?;
                     let mut output = Output::value(json!({"closed": true}));
-                    output.accepted_save = true;
-                    output.wrote = true;
+                    output.notify_ui = true;
                     Ok(output)
                 })();
                 result.map_err(|error| {

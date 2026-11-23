@@ -868,4 +868,42 @@ fn git_sync_cli_end_to_end_configure_and_background_auto_sync() {
         second_sync["attempted_at_ms"],
         first_sync["attempted_at_ms"]
     );
+
+    // 6. Host-local writes (`config set`, `card mode`) never trigger background catalog sync.
+    let host_d = make_host();
+    host_d.ok_json(&["config", "set", "frontend.mode", "none"], None);
+    host_d.ok_json(
+        &["catalog", "init", "--sync", "git", "--remote", remote_str],
+        None,
+    );
+    let host_d_last_sync = host_d.root().join(".catalog-local/last-sync.json");
+    assert!(!host_d_last_sync.exists());
+    host_d.ok_json(&["config", "set", "pi.reporting.frequency", "2"], None);
+    host_d.ok_json(&["card", "mode", "pi/01dd0001", "manual"], None);
+    std::thread::sleep(std::time::Duration::from_millis(250));
+    assert!(
+        !host_d_last_sync.exists(),
+        "host-local config/card writes must not trigger catalog sync"
+    );
+
+    // 7. `--if-configured` is a clean no-op when uninitialized or `--sync none` (without scanning),
+    //    and invalid `--timeout` exits with usage code 2.
+    let uninit = make_host();
+    let noop = uninit.ok_json(&["catalog", "sync", "--if-configured"], None);
+    assert_eq!(noop["local"], "unchanged");
+    assert_eq!(noop["sharing"], "local-only");
+    let (code, _, timeout_err) = uninit.run_raw(&["catalog", "sync", "--timeout", "0"], None);
+    assert_eq!(code, 2);
+    assert!(timeout_err.contains("--timeout"), "{timeout_err}");
+
+    uninit.ok_json(&["catalog", "init", "--sync", "none"], None);
+    let corrupt = uninit.root().join("hosts/corrupt/streams/bad.json");
+    fs::create_dir_all(corrupt.parent().unwrap()).unwrap();
+    fs::write(&corrupt, b"not json").unwrap();
+    let none_noop = uninit.ok_json(&["catalog", "sync", "--if-configured"], None);
+    assert_eq!(none_noop["sharing"], "local-only");
+    // Explicit `catalog sync` on `none` still validates the catalog.
+    let (code, none_explicit, _) = uninit.run_json(&["catalog", "sync"], None);
+    assert_eq!(code, 3);
+    assert_eq!(none_explicit["local"], "repair-required");
 }

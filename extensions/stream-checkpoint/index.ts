@@ -85,21 +85,21 @@ export function createStreamExtension(options: ExtensionOptions = {}) {
     let cardState: CardState = emptyCardState();
     let currentCtx: ExtensionContext | undefined;
     let native: NativeController | undefined;
-    let startupSyncController: AbortController | undefined;
-
-    const cancelStartupSync = () => {
-      startupSyncController?.abort();
-      startupSyncController = undefined;
-    };
+    let lifecycleGeneration = 0;
 
     const runLifecycleSync = async (
       ctx: ExtensionContext,
       event: "start" | "shutdown",
-      signal?: AbortSignal
+      background: boolean,
+      generation?: number
     ): Promise<void> => {
+      const stillCurrent = () => generation === undefined || lifecycleGeneration === generation;
       try {
-        const outcome = await client(ctx).sync(signal, LIFECYCLE_SYNC_TIMEOUT_MS);
-        if (signal?.aborted) return;
+        const outcome = await client(ctx).sync(undefined, LIFECYCLE_SYNC_TIMEOUT_MS, {
+          ifConfigured: true,
+          background,
+        });
+        if (!stillCurrent()) return;
         if (outcome.needs_attention) {
           const entry = {
             event,
@@ -120,7 +120,7 @@ export function createStreamExtension(options: ExtensionOptions = {}) {
           }
         }
       } catch (error) {
-        if (signal?.aborted) return;
+        if (!stillCurrent()) return;
         const message = error instanceof Error ? error.message : String(error);
         try {
           pi.appendEntry("stream-catalog-sync", { event, error: message });
@@ -255,24 +255,20 @@ export function createStreamExtension(options: ExtensionOptions = {}) {
 
     pi.on("session_start", async (_event, ctx) => {
       await syncAttachedSession(ctx, true);
-      cancelStartupSync();
-      const controller = new AbortController();
-      startupSyncController = controller;
-      void runLifecycleSync(ctx, "start", controller.signal).finally(() => {
-        if (startupSyncController === controller) {
-          startupSyncController = undefined;
-        }
-      });
+      const generation = ++lifecycleGeneration;
+      // Do not abort-kill an in-flight sync on session switch/shutdown; Rust owns the deadline
+      // and serializes concurrent sync runs through `.catalog-local/transport.lock`.
+      void runLifecycleSync(ctx, "start", true, generation);
     });
 
     pi.on("session_switch", async (_event, ctx) => {
-      cancelStartupSync();
+      lifecycleGeneration += 1;
       reporter.invalidate();
       await syncAttachedSession(ctx, true);
     });
 
     pi.on("session_shutdown", async (_event, ctx) => {
-      cancelStartupSync();
+      lifecycleGeneration += 1;
       reporter.scope.stop();
       const nativeId = ctx.sessionManager.getSessionId();
       native?.stop();
@@ -282,7 +278,7 @@ export function createStreamExtension(options: ExtensionOptions = {}) {
       } catch {
         // Best-effort park on shutdown
       }
-      await runLifecycleSync(ctx, "shutdown");
+      await runLifecycleSync(ctx, "shutdown", false);
     });
 
     pi.on("agent_end", (_event, ctx) => {

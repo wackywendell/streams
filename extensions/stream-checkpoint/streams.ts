@@ -172,22 +172,34 @@ export function createProcessRunner(env: NodeJS.ProcessEnv = process.env): Proce
       let stdout = "";
       let stderr = "";
       let settled = false;
+      let killTimer: ReturnType<typeof setTimeout> | undefined;
+      const terminateChild = () => {
+        if (child.killed || child.exitCode !== null || child.signalCode !== null) return;
+        child.kill("SIGTERM");
+        killTimer = setTimeout(() => {
+          if (child.exitCode === null && child.signalCode === null) {
+            child.kill("SIGKILL");
+          }
+        }, 500);
+        killTimer.unref?.();
+      };
       const done = (fn: () => void) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        if (killTimer) clearTimeout(killTimer);
         signal?.removeEventListener("abort", onAbort);
         fn();
       };
       const onAbort = () => {
-        child.kill("SIGKILL");
+        terminateChild();
         done(() =>
           reject(signal?.reason instanceof Error ? signal.reason : new Error("Command cancelled"))
         );
       };
       const timeout = options.timeout ?? 30_000;
       const timer = setTimeout(() => {
-        child.kill("SIGKILL");
+        terminateChild();
         done(() =>
           reject(new Error(`${program} ${args.slice(0, 2).join(" ")} timed out after ${timeout}ms`))
         );
@@ -564,16 +576,42 @@ export class StreamCli {
     return this.getConfig(signal);
   }
 
-  async sync(signal?: AbortSignal, timeoutMs = 30_000): Promise<SyncResult> {
-    const { value, code } = await this.runJson(["catalog", "sync", "--json"], {
-      timeout: timeoutMs,
+  async sync(
+    signal?: AbortSignal,
+    timeoutMs = 30_000,
+    options: { ifConfigured?: boolean; background?: boolean } = {}
+  ): Promise<SyncResult> {
+    const timeoutSeconds = Math.max(1, Math.floor(timeoutMs / 1000));
+    const args = ["catalog", "sync", "--json", "--timeout", String(timeoutSeconds)];
+    if (options.ifConfigured) args.push("--if-configured");
+    if (options.background) args.push("--background");
+    // Give the Rust CLI ownership of the deadline so it reaps child Git process groups,
+    // persists last-sync.json, and releases locks before Node's backstop fires.
+    const runnerTimeoutMs = timeoutMs + 5_000;
+    const output = await this.runner("streams", args, {
+      cwd: this.cwd,
+      timeout: runnerTimeoutMs,
       signal,
-      allowExit3: true,
     });
+    if (output.code !== 0 && output.code !== 3) {
+      throwCliError(output, `streams catalog sync failed (exit ${output.code})`);
+    }
+    if (options.background && output.code === 0 && output.stdout.trim() === "") {
+      return {
+        local: "unchanged",
+        sharing: "local-only",
+        detail: "",
+        needs_attention: false,
+      };
+    }
+    const value = parseJson(output.stdout);
     if (!object(value) || typeof value.local !== "string") {
       throw new StreamsCliError("Invalid catalog sync response from CLI");
     }
-    return { ...(value as SyncResult), needs_attention: code === 3 || syncNeedsAttention(value as SyncResult) };
+    return {
+      ...(value as SyncResult),
+      needs_attention: output.code === 3 || syncNeedsAttention(value as SyncResult),
+    };
   }
 
   async artifact(

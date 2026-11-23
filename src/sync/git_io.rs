@@ -66,6 +66,8 @@ pub struct Git {
     root: PathBuf,
     /// Per-subprocess timeout in seconds; commands reject nonpositive or invalid values.
     pub timeout: f64,
+    /// Optional total deadline capping every command issued through this handle.
+    deadline: Option<Instant>,
     blobs: Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
     hook: Option<GitHook>,
 }
@@ -81,7 +83,19 @@ impl Git {
         if args.is_empty() {
             return Err(GitError::new("Git requires at least one argument", None));
         }
-        process::deadline(self.timeout, "Git").map_err(|e| GitError::new(e.message, None))
+        let command_deadline =
+            process::deadline(self.timeout, "Git").map_err(|e| GitError::new(e.message, None))?;
+        if let Some(total) = self.deadline {
+            if Instant::now() >= total {
+                return Err(GitError::new(
+                    format!("Git {} timed out (sync deadline exceeded)", args[0]),
+                    None,
+                ));
+            }
+            Ok(command_deadline.min(total))
+        } else {
+            Ok(command_deadline)
+        }
     }
 
     /// Binds empty caches to `root`; repository access and timeout checks are deferred.
@@ -89,9 +103,16 @@ impl Git {
         Self {
             root: root.as_ref().to_path_buf(),
             timeout,
+            deadline: None,
             blobs: Arc::new(Mutex::new(BTreeMap::new())),
             hook: None,
         }
+    }
+
+    /// Caps every command run through this handle by a shared total deadline.
+    pub fn with_deadline(mut self, deadline: Instant) -> Self {
+        self.deadline = Some(deadline);
+        self
     }
 
     /// Returns the configured root, without resolving or validating the path.

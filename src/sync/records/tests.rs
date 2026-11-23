@@ -664,3 +664,45 @@ fn git_instead_of_rewrites_work_for_sync_and_surface_effective_remote_in_check()
     let result = sync.sync();
     assert_eq!(result.sharing, SharingStatus::Confirmed, "{result:?}");
 }
+
+#[test]
+fn sync_with_timeout_bounds_slow_git_and_persists_last_sync() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("catalog");
+    setup(&root, "host");
+    // Use an ssh remote with a sleeping `core.sshCommand` so real `git ls-remote` blocks past
+    // the Rust-owned sync deadline, gets reaped, and writes `last-sync.json` cleanly.
+    initialize(
+        &root,
+        "host",
+        Strategy::Git,
+        Some("ssh://example.invalid/repo.git".into()),
+        "records-v2",
+    )
+    .unwrap();
+    let sync = RecordSync::open(&root, "host").unwrap();
+    sync.git
+        .run(
+            &["config", "--local", "core.sshCommand", "sleep 30"],
+            None,
+            None,
+            &[0],
+        )
+        .unwrap();
+    let start = std::time::Instant::now();
+    let result = sync.sync_with_timeout(Some(0.3));
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(5),
+        "sync_with_timeout must bound slow Git promptly"
+    );
+    assert_eq!(result.sharing, SharingStatus::Failed, "{result:?}");
+    let last = read_last_sync(&root).unwrap().unwrap();
+    assert!(last.needs_attention);
+    assert_eq!(last.sharing, SharingStatus::Failed);
+    // Lock must be released after reaping the slow Git command.
+    assert!(
+        crate::file_io::try_lock(&root.join(TRANSPORT_LOCK))
+            .unwrap()
+            .is_some()
+    );
+}

@@ -56,12 +56,27 @@ pub struct LastSyncState {
     pub detail: String,
 }
 
+/// Single-read schedule check result for automatic post-write catalog sync.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutoSyncStatus {
+    pub due: bool,
+    pub last_sync: Option<LastSyncState>,
+}
+
 /// Interchangeable catalog sync backend behind `.catalog-local/transport.json`.
 pub trait SyncBackend {
     fn strategy(&self) -> Strategy;
-    fn sync(&self) -> outcomes::Result;
+    fn sync(&self) -> outcomes::Result {
+        self.sync_with_timeout(None)
+    }
+    /// Blocking sync with an optional total deadline in seconds.
+    fn sync_with_timeout(&self, timeout_seconds: Option<f64>) -> outcomes::Result;
     /// Non-blocking sync for background triggers; returns `None` if a sync is already in flight.
-    fn try_sync(&self) -> Option<outcomes::Result>;
+    fn try_sync(&self) -> Option<outcomes::Result> {
+        self.try_sync_with_timeout(None)
+    }
+    /// Non-blocking sync with an optional total deadline in seconds.
+    fn try_sync_with_timeout(&self, timeout_seconds: Option<f64>) -> Option<outcomes::Result>;
     /// Inspect backend configuration and repository health without contacting the network.
     fn check(&self) -> BackendHealth;
 }
@@ -86,7 +101,7 @@ impl SyncBackend for NoneBackend {
         Strategy::None
     }
 
-    fn sync(&self) -> outcomes::Result {
+    fn sync_with_timeout(&self, _timeout_seconds: Option<f64>) -> outcomes::Result {
         match FileRecordStore::new(&self.root, &self.host).and_then(|store| store.inventory()) {
             Ok(_) => outcomes::Result::new(
                 outcomes::SharingStatus::LocalOnly,
@@ -100,8 +115,8 @@ impl SyncBackend for NoneBackend {
         }
     }
 
-    fn try_sync(&self) -> Option<outcomes::Result> {
-        Some(self.sync())
+    fn try_sync_with_timeout(&self, timeout_seconds: Option<f64>) -> Option<outcomes::Result> {
+        Some(self.sync_with_timeout(timeout_seconds))
     }
 
     fn check(&self) -> BackendHealth {
@@ -156,6 +171,16 @@ pub fn read_last_sync(root: &Path) -> Result<Option<LastSyncState>, StorageError
     records::read_last_sync(root)
 }
 
+/// Inspect transport configuration and `last-sync.json` once to decide whether automatic
+/// post-write sync is due and surface any prior `needs_attention` state.
+pub fn auto_sync_status(
+    root: &Path,
+    interval_minutes: u32,
+    now_ms: u64,
+) -> Result<AutoSyncStatus, StorageError> {
+    records::auto_sync_status(root, interval_minutes, now_ms)
+}
+
 /// Return true when automatic post-write sync is enabled, the catalog uses a non-`none`
 /// backend, and at least `interval_minutes` have elapsed since the last sync attempt.
 pub fn is_auto_sync_due(
@@ -163,5 +188,5 @@ pub fn is_auto_sync_due(
     interval_minutes: u32,
     now_ms: u64,
 ) -> Result<bool, StorageError> {
-    records::is_auto_sync_due(root, interval_minutes, now_ms)
+    Ok(records::auto_sync_status(root, interval_minutes, now_ms)?.due)
 }

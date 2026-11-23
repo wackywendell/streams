@@ -782,9 +782,14 @@ test('/streams sync formats outcome and lifecycle hooks run async start sync and
     },
   };
 
-  // session_start triggers async sync; wait a tick for it to settle and log/warn.
+  // session_start triggers async sync with --if-configured --background --timeout 10.
   await handlers.get('session_start')({}, ctx);
   await new Promise((r) => setTimeout(r, 20));
+  const startSyncCall = calls.find((c) => c.args[0] === 'catalog' && c.args[1] === 'sync');
+  assert.ok(startSyncCall, `expected start sync call in ${JSON.stringify(calls)}`);
+  assert.ok(startSyncCall.args.includes('--if-configured'), JSON.stringify(startSyncCall.args));
+  assert.ok(startSyncCall.args.includes('--background'), JSON.stringify(startSyncCall.args));
+  assert.ok(startSyncCall.args.includes('--timeout'), JSON.stringify(startSyncCall.args));
   assert.equal(entries.length, 1);
   assert.equal(entries[0][0], 'stream-catalog-sync');
   assert.equal(entries[0][1].event, 'start');
@@ -810,7 +815,7 @@ test('/streams sync formats outcome and lifecycle hooks run async start sync and
   assert.equal(notices[0].level, 'info');
   assert.equal(notices[0].text, 'Catalog sync: confirmed (local: committed)');
 
-  // session_shutdown awaits catalog sync AFTER marking park.
+  // session_shutdown awaits catalog sync with --if-configured (blocking, no --background) AFTER marking park.
   calls.length = 0;
   await handlers.get('session_shutdown')({}, ctx);
   const parkIdx = calls.findIndex(
@@ -819,4 +824,7 @@ test('/streams sync formats outcome and lifecycle hooks run async start sync and
   const syncIdx = calls.findIndex((c) => c.args[0] === 'catalog' && c.args[1] === 'sync');
   assert.ok(parkIdx !== -1, `expected park call in ${JSON.stringify(calls)}`);
   assert.ok(syncIdx > parkIdx, `expected shutdown sync after park: ${JSON.stringify(calls)}`);
+  assert.ok(calls[syncIdx].args.includes('--if-configured'), JSON.stringify(calls[syncIdx].args));
+  assert.ok(!calls[syncIdx].args.includes('--background'), JSON.stringify(calls[syncIdx].args));
+  assert.ok(calls[syncIdx].args.includes('--timeout'), JSON.stringify(calls[syncIdx].args));
 });

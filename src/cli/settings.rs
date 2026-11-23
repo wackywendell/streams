@@ -41,8 +41,7 @@ impl App {
         self.conversation_card_settings(&records, conversation)?
             .set(mode)?;
         let mut output = self.card_settings(conversation)?;
-        output.accepted_save = true;
-        output.wrote = true;
+        output.notify_ui = true;
         Ok(output)
     }
 }

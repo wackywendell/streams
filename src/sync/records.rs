@@ -1,8 +1,8 @@
 //! Transport-only publication of host-partitioned records. No operation/history replay.
 
 use super::{
-    BackendHealth, COMMAND_TIMEOUT_SECONDS, LastSyncState, RemoteUpdate, SyncBackend,
-    TransportConfig,
+    AutoSyncStatus, BackendHealth, COMMAND_TIMEOUT_SECONDS, LastSyncState, RemoteUpdate,
+    SyncBackend, TransportConfig,
     git_io::{Git, GitError},
     outcomes::{LocalStatus, Result as SyncResult, SharingStatus},
 };
@@ -262,7 +262,7 @@ pub(crate) fn configure(
                 current_branch.to_owned(),
             );
             // Verify repository health before modifying transport configuration.
-            current.local_head()?;
+            current.local_head(&current.git)?;
             let remote_changed = next_remote != existing.remote;
             let selection = Selection {
                 version: 2,
@@ -403,11 +403,12 @@ impl RecordSync {
     }
     fn checkpoint(
         &self,
+        git: &Git,
         local: &str,
         working: &Tree,
         status: &mut LocalStatus,
     ) -> Result<String, StorageError> {
-        let previous = Self::tree(&self.git, local)?;
+        let previous = Self::tree(git, local)?;
         for path in changed(&previous, working) {
             if catalog_path_host(&path)? != self.host {
                 return Err(invalid(
@@ -421,26 +422,22 @@ impl RecordSync {
         let temporary =
             tempfile::tempdir_in(self.root.join(".catalog-staging")).map_err(invalid)?;
         let index = temporary.path().join("index");
-        self.git
-            .run(&["read-tree", local], None, Some(&index), &[0])
+        git.run(&["read-tree", local], None, Some(&index), &[0])
             .map_err(git_error)?;
-        self.git
-            .run(
-                &["add", "--force", "-A", "--", "hosts"],
-                None,
-                Some(&index),
-                &[0],
-            )
-            .map_err(git_error)?;
-        let tree = self
-            .git
+        git.run(
+            &["add", "--force", "-A", "--", "hosts"],
+            None,
+            Some(&index),
+            &[0],
+        )
+        .map_err(git_error)?;
+        let tree = git
             .text(&["write-tree"], None, Some(&index), &[0])
             .map_err(git_error)?;
-        if Self::tree(&self.git, &tree)? != *working {
+        if Self::tree(git, &tree)? != *working {
             return Err(invalid("Git filters changed record bytes"));
         }
-        let commit = self
-            .git
+        let commit = git
             .text(
                 &["commit-tree", &tree, "-p", local],
                 Some(b"Save producer records\n"),
@@ -449,34 +446,36 @@ impl RecordSync {
             )
             .map_err(git_error)?;
         *status = LocalStatus::RepairRequired;
-        self.advance(&commit, local)?;
+        self.advance(git, &commit, local)?;
         *status = LocalStatus::Committed;
         Ok(commit)
     }
-    fn advance(&self, next: &str, previous: &str) -> Result<(), StorageError> {
-        self.git
-            .run(
-                &[
-                    "update-ref",
-                    &format!("refs/heads/{}", self.branch),
-                    next,
-                    previous,
-                ],
-                None,
-                None,
-                &[0],
-            )
-            .map_err(git_error)?;
-        self.git
-            .run(&["read-tree", next], None, None, &[0])
+    fn advance(&self, git: &Git, next: &str, previous: &str) -> Result<(), StorageError> {
+        git.run(
+            &[
+                "update-ref",
+                &format!("refs/heads/{}", self.branch),
+                next,
+                previous,
+            ],
+            None,
+            None,
+            &[0],
+        )
+        .map_err(git_error)?;
+        git.run(&["read-tree", next], None, None, &[0])
             .map_err(git_error)?;
         Ok(())
     }
-    fn combine(&self, local: &str, remote: &str) -> Result<(String, Tree), StorageError> {
-        let current = Self::tree(&self.git, local)?;
-        let incoming = Self::tree(&self.git, remote)?;
-        let base = self
-            .git
+    fn combine(
+        &self,
+        git: &Git,
+        local: &str,
+        remote: &str,
+    ) -> Result<(String, Tree), StorageError> {
+        let current = Self::tree(git, local)?;
+        let incoming = Self::tree(git, remote)?;
+        let base = git
             .text(&["merge-base", local, remote], None, None, &[0, 1])
             .map_err(git_error)?;
         if base == remote {
@@ -486,17 +485,16 @@ impl RecordSync {
             return Ok((remote.into(), incoming));
         }
         let base_oid = if base.is_empty() {
-            self.git
-                .text(&["mktree"], Some(b""), None, &[0])
+            git.text(&["mktree"], Some(b""), None, &[0])
                 .map_err(git_error)?
         } else {
             base
         };
         // Compare changed paths by blob OID so historical merge-base commits are never
         // decoded against current record validation rules.
-        let base_oids = self.git.tree_oids(&base_oid)?;
-        let local_oids = self.git.tree_oids(local)?;
-        let remote_oids = self.git.tree_oids(remote)?;
+        let base_oids = git.tree_oids(&base_oid)?;
+        let local_oids = git.tree_oids(local)?;
+        let remote_oids = git.tree_oids(remote)?;
         let local_changes = changed_oids(&base_oids, &local_oids);
         let remote_changes = changed_oids(&base_oids, &remote_oids);
         if !local_changes.is_disjoint(&remote_changes) {
@@ -519,25 +517,22 @@ impl RecordSync {
         let temporary =
             tempfile::tempdir_in(self.root.join(".catalog-staging")).map_err(invalid)?;
         let index = temporary.path().join("index");
-        self.git
-            .run(
-                &["read-tree", "-m", "--aggressive", &base_oid, local, remote],
-                None,
-                Some(&index),
-                &[0],
-            )
-            .map_err(git_error)?;
-        let tree = self
-            .git
+        git.run(
+            &["read-tree", "-m", "--aggressive", &base_oid, local, remote],
+            None,
+            Some(&index),
+            &[0],
+        )
+        .map_err(git_error)?;
+        let tree = git
             .text(&["write-tree"], None, Some(&index), &[0])
             .map_err(git_error)?;
-        if Self::tree(&self.git, &tree)? != combined {
+        if Self::tree(git, &tree)? != combined {
             return Err(invalid(
                 "Git tree differs from disjoint-file transport plan",
             ));
         }
-        let commit = self
-            .git
+        let commit = git
             .text(
                 &["commit-tree", &tree, "-p", local, "-p", remote],
                 Some(b"Sync host partitions\n"),
@@ -576,7 +571,7 @@ impl RecordSync {
         }
         Ok(())
     }
-    fn local_head(&self) -> Result<String, StorageError> {
+    fn local_head(&self, git: &Git) -> Result<String, StorageError> {
         for path in ["MERGE_HEAD", "rebase-merge", "rebase-apply", "index.lock"] {
             if self.root.join(".git").join(path).exists() {
                 return Err(invalid(
@@ -588,9 +583,8 @@ impl RecordSync {
         if self.root.join(".git/commondir").exists() {
             return Err(invalid("record transport requires its own repository"));
         }
-        self.git.check_target(&self.branch).map_err(invalid)?;
-        let actual = self
-            .git
+        git.check_target(&self.branch).map_err(invalid)?;
+        let actual = git
             .text(&["rev-parse", "--show-toplevel"], None, None, &[0])
             .map_err(git_error)?;
         if fs::canonicalize(actual).map_err(invalid)?
@@ -598,12 +592,12 @@ impl RecordSync {
         {
             return Err(invalid("Git worktree is outside catalog root"));
         }
-        self.git.head().map_err(git_error)
+        git.head().map_err(git_error)
     }
 
     pub fn check(&self) -> BackendHealth {
         let mut issues = Vec::new();
-        if let Err(error) = self.local_head() {
+        if let Err(error) = self.local_head(&self.git) {
             issues.push(error.to_string());
         }
         let effective_remote =
@@ -626,15 +620,35 @@ impl RecordSync {
     }
 
     pub fn sync(&self) -> SyncResult {
-        self.sync_impl(true)
+        self.sync_with_timeout(None)
+    }
+
+    pub fn sync_with_timeout(&self, timeout_seconds: Option<f64>) -> SyncResult {
+        self.sync_impl(true, timeout_seconds)
             .expect("blocking sync always produces a result")
     }
 
     pub fn try_sync(&self) -> Option<SyncResult> {
-        self.sync_impl(false)
+        self.try_sync_with_timeout(None)
     }
 
-    fn sync_impl(&self, blocking: bool) -> Option<SyncResult> {
+    pub fn try_sync_with_timeout(&self, timeout_seconds: Option<f64>) -> Option<SyncResult> {
+        self.sync_impl(false, timeout_seconds)
+    }
+
+    fn sync_impl(&self, blocking: bool, timeout_seconds: Option<f64>) -> Option<SyncResult> {
+        let git = match timeout_seconds {
+            Some(secs) => match crate::process::deadline(secs, "catalog sync") {
+                Ok(deadline) => self.git.clone().with_deadline(deadline),
+                Err(error) => {
+                    return Some(
+                        SyncResult::new(SharingStatus::Blocked, LocalStatus::Unchanged)
+                            .with_detail(error.message),
+                    );
+                }
+            },
+            None => self.git.clone(),
+        };
         let lock_path = self.root.join(TRANSPORT_LOCK);
         let _transport = if blocking {
             match crate::file_io::lock(&lock_path) {
@@ -664,16 +678,15 @@ impl RecordSync {
         let result = (|| -> Result<SharingStatus, StorageError> {
             let local = {
                 let _catalog = existing_write_lock(&self.root.join(".catalog.lock"))?;
-                let head = self.local_head()?;
-                self.checkpoint(&head, &self.working()?, &mut local_status)?
+                let head = self.local_head(&git)?;
+                self.checkpoint(&git, &head, &self.working()?, &mut local_status)?
             };
             let Some(remote_url) = self.remote.as_deref() else {
                 return Ok(SharingStatus::LocalOnly);
             };
             failure = SharingStatus::Failed;
             let reference = format!("refs/heads/{}", self.branch);
-            let advertised = self
-                .git
+            let advertised = git
                 .text(
                     &["ls-remote", "--exit-code", "--", remote_url, &reference],
                     None,
@@ -692,36 +705,34 @@ impl RecordSync {
                     local.clone()
                 } else {
                     let fetch = format!("+{reference}:refs/streams/incoming");
-                    self.git
-                        .run(
-                            &["fetch", "--quiet", "--no-tags", "--", remote_url, &fetch],
-                            None,
-                            None,
-                            &[0],
-                        )
-                        .map_err(git_error)?;
-                    self.git
-                        .text(&["rev-parse", "refs/streams/incoming"], None, None, &[0])
+                    git.run(
+                        &["fetch", "--quiet", "--no-tags", "--", remote_url, &fetch],
+                        None,
+                        None,
+                        &[0],
+                    )
+                    .map_err(git_error)?;
+                    git.text(&["rev-parse", "refs/streams/incoming"], None, None, &[0])
                         .map_err(git_error)?
                 })
             };
             failure = SharingStatus::Blocked;
             let next = {
                 let _catalog = existing_write_lock(&self.root.join(".catalog.lock"))?;
-                if self.local_head()? != local {
+                if self.local_head(&git)? != local {
                     return Err(invalid(
                         "catalog Git tip changed while sync awaited the remote",
                     ));
                 }
                 let working = self.working()?;
-                let local = self.checkpoint(&local, &working, &mut local_status)?;
+                let local = self.checkpoint(&git, &local, &working, &mut local_status)?;
                 match &remote {
                     Some(remote) if remote != &local => {
-                        let (next, tree) = self.combine(&local, remote)?;
+                        let (next, tree) = self.combine(&git, &local, remote)?;
                         if next != local {
                             local_status = LocalStatus::RepairRequired;
                             self.install(&working, &tree)?;
-                            self.advance(&next, &local)?;
+                            self.advance(&git, &next, &local)?;
                             local_status = LocalStatus::Committed;
                         }
                         next
@@ -737,20 +748,19 @@ impl RecordSync {
             // `Failed`; only an exit-less failure (timeout or signal) during push is `Uncertain`.
             failure = SharingStatus::Failed;
             in_push = true;
-            self.git
-                .run(
-                    &[
-                        "push",
-                        "--quiet",
-                        "--",
-                        remote_url,
-                        &format!("{next}:{reference}"),
-                    ],
-                    None,
-                    None,
-                    &[0],
-                )
-                .map_err(git_error)?;
+            git.run(
+                &[
+                    "push",
+                    "--quiet",
+                    "--",
+                    remote_url,
+                    &format!("{next}:{reference}"),
+                ],
+                None,
+                None,
+                &[0],
+            )
+            .map_err(git_error)?;
             Ok(SharingStatus::Confirmed)
         })();
         let mut outcome = match result {
@@ -784,12 +794,12 @@ impl SyncBackend for RecordSync {
         RecordSync::strategy(self)
     }
 
-    fn sync(&self) -> SyncResult {
-        RecordSync::sync(self)
+    fn sync_with_timeout(&self, timeout_seconds: Option<f64>) -> SyncResult {
+        RecordSync::sync_with_timeout(self, timeout_seconds)
     }
 
-    fn try_sync(&self) -> Option<SyncResult> {
-        RecordSync::try_sync(self)
+    fn try_sync_with_timeout(&self, timeout_seconds: Option<f64>) -> Option<SyncResult> {
+        RecordSync::try_sync_with_timeout(self, timeout_seconds)
     }
 
     fn check(&self) -> BackendHealth {
@@ -829,26 +839,48 @@ fn record_last_sync(root: &Path, outcome: &SyncResult, at_ms: u64) -> Result<(),
     write_json(&root.join(LAST_SYNC), &state)
 }
 
+pub(crate) fn auto_sync_status(
+    root: &Path,
+    interval_minutes: u32,
+    now_ms: u64,
+) -> Result<AutoSyncStatus, StorageError> {
+    let Some(bytes) = read_bytes(&root.join(CONFIG))? else {
+        return Ok(AutoSyncStatus {
+            due: false,
+            last_sync: None,
+        });
+    };
+    let selection: Selection = decode_json(&bytes)?;
+    if selection.version != 2 || matches!(selection.mode, Mode::None) {
+        return Ok(AutoSyncStatus {
+            due: false,
+            last_sync: None,
+        });
+    }
+    let last_sync = read_last_sync(root)?;
+    if interval_minutes == 0 {
+        return Ok(AutoSyncStatus {
+            due: false,
+            last_sync,
+        });
+    }
+    let due = match &last_sync {
+        None => true,
+        Some(last) => {
+            let interval_ms = u64::from(interval_minutes).saturating_mul(60_000);
+            now_ms.saturating_sub(last.attempted_at_ms) >= interval_ms
+        }
+    };
+    Ok(AutoSyncStatus { due, last_sync })
+}
+
+#[cfg(test)]
 pub(crate) fn is_auto_sync_due(
     root: &Path,
     interval_minutes: u32,
     now_ms: u64,
 ) -> Result<bool, StorageError> {
-    if interval_minutes == 0 {
-        return Ok(false);
-    }
-    let Some(bytes) = read_bytes(&root.join(CONFIG))? else {
-        return Ok(false);
-    };
-    let selection: Selection = decode_json(&bytes)?;
-    if selection.version != 2 || matches!(selection.mode, Mode::None) {
-        return Ok(false);
-    }
-    let Some(last) = read_last_sync(root)? else {
-        return Ok(true);
-    };
-    let interval_ms = u64::from(interval_minutes).saturating_mul(60_000);
-    Ok(now_ms.saturating_sub(last.attempted_at_ms) >= interval_ms)
+    Ok(auto_sync_status(root, interval_minutes, now_ms)?.due)
 }
 fn changed(before: &Tree, after: &Tree) -> BTreeSet<PathBuf> {
     before

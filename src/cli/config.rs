@@ -58,9 +58,7 @@ impl App {
                     format_plain(&toml_val, &json_val)?
                 };
                 let mut output = Output::plain(json_val, plain);
-                let has_catalog = has_catalog();
-                output.accepted_save = has_catalog;
-                output.wrote = has_catalog;
+                output.notify_ui = has_catalog();
                 Ok(output)
             }
             ConfigCommand::Unset { key } => {
@@ -69,9 +67,7 @@ impl App {
                     .map_err(|_| CliError::message(format!("unknown config key {key:?}")))?;
                 self.config.unset(parsed)?;
                 let mut output = Output::plain(Value::Null, format!("unset {key}"));
-                let has_catalog = has_catalog();
-                output.accepted_save = has_catalog;
-                output.wrote = has_catalog;
+                output.notify_ui = has_catalog();
                 Ok(output)
             }
             ConfigCommand::Path => {

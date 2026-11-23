@@ -224,8 +224,7 @@ impl App {
             json!({ "key": key, "deleted": true }),
             format!("deleted {key}"),
         );
-        output.accepted_save = true;
-        output.wrote = true;
+        output.wrote_catalog = true;
         Ok(output)
     }
 

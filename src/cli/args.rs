@@ -612,9 +612,17 @@ pub(super) enum CatalogCommand {
 
     /// Synchronize the catalog with its configured sync backend
     Sync {
-        /// Non-blocking background sync invoked by automatic post-write trigger
+        /// Non-blocking background sync invoked by automatic post-write or lifecycle triggers
         #[arg(long, hide = true)]
         background: bool,
+
+        /// Exit cleanly without scanning when the catalog is uninitialized or uses `--sync none`
+        #[arg(long, hide = true)]
+        if_configured: bool,
+
+        /// Total deadline for the sync operation in seconds
+        #[arg(long)]
+        timeout: Option<f64>,
     },
 
     /// Check catalog records and sync state

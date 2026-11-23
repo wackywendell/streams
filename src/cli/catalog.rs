@@ -8,11 +8,15 @@ use std::{
 use serde_json::json;
 use streams::{
     application::{self, OpenedRecords},
+    config::Strategy,
     model::{Record, ValidationError},
-    sync::{self, RemoteUpdate, outcomes::LocalStatus},
+    sync::{
+        self, RemoteUpdate,
+        outcomes::{LocalStatus, Result as SyncResult, SharingStatus},
+    },
 };
 
-use super::{App, Output, Result, args::CatalogCommand, result_data, select};
+use super::{App, CliError, Output, Result, args::CatalogCommand, result_data, select};
 
 fn now_ms() -> u64 {
     SystemTime::now()
@@ -46,8 +50,7 @@ impl App {
                     opened.host().as_str(),
                     sync
                 );
-                let mut output = Output::plain(value, plain);
-                output.trigger_auto_sync = false;
+                let output = Output::plain(value, plain);
                 Ok(output)
             }
             CatalogCommand::Configure {
@@ -91,13 +94,34 @@ impl App {
                         opened.root().display()
                     ),
                 };
-                let mut output = Output::plain(value, plain);
-                output.trigger_auto_sync = false;
+                let output = Output::plain(value, plain);
                 Ok(output)
             }
-            CatalogCommand::Sync { background } => {
+            CatalogCommand::Sync {
+                background,
+                if_configured,
+                timeout,
+            } => {
+                if let Some(secs) = timeout
+                    && (!secs.is_finite() || secs <= 0.0)
+                {
+                    return Err(CliError::Usage(
+                        "--timeout must be a positive number of seconds".into(),
+                    ));
+                }
+                if background || if_configured {
+                    let settings = self.config.load()?;
+                    if !self.config.host_path().exists()
+                        || !settings
+                            .catalog_root
+                            .join(".catalog-local/records.json")
+                            .exists()
+                    {
+                        return noop_sync_output(background);
+                    }
+                }
                 let opened = application::open_records(&self.config)?;
-                sync_catalog(&opened, background)
+                sync_catalog(&opened, background, if_configured, timeout)
             }
             CatalogCommand::Check { stream } => {
                 let opened = application::open_records(&self.config)?;
@@ -120,9 +144,7 @@ impl App {
                     }),
                     plain,
                 );
-                let wrote = summary.closed_sessions > 0;
-                output.accepted_save = wrote;
-                output.wrote = wrote;
+                output.wrote_catalog = summary.closed_sessions > 0;
                 if !summary.errors.is_empty() {
                     output.code = 3;
                     output.notices.extend(summary.errors);
@@ -133,20 +155,36 @@ impl App {
     }
 }
 
-pub(super) fn sync_catalog(opened: &OpenedRecords, background: bool) -> Result<Output> {
+fn noop_sync_output(background: bool) -> Result<Output> {
+    if background {
+        return Ok(Output::silent());
+    }
+    let result = SyncResult::new(SharingStatus::LocalOnly, LocalStatus::Unchanged);
+    let value = result_data(&result)?;
+    Ok(Output::plain(
+        value,
+        "sync skipped (catalog uninitialized or local-only)".to_owned(),
+    ))
+}
+
+pub(super) fn sync_catalog(
+    opened: &OpenedRecords,
+    background: bool,
+    if_configured: bool,
+    timeout: Option<f64>,
+) -> Result<Output> {
     let backend = sync::open_backend(opened.root(), opened.host().as_str())
         .map_err(application::ApplicationError::from)?;
+    if (background || if_configured) && backend.strategy() == Strategy::None {
+        return noop_sync_output(background);
+    }
     let result = if background {
-        match backend.try_sync() {
+        match backend.try_sync_with_timeout(timeout) {
             Some(result) => result,
-            None => {
-                let mut output = Output::silent();
-                output.trigger_auto_sync = false;
-                return Ok(output);
-            }
+            None => return Ok(Output::silent()),
         }
     } else {
-        backend.sync()
+        backend.sync_with_timeout(timeout)
     };
     let ok = !result.needs_attention();
     let value = result_data(&result)?;
@@ -170,9 +208,7 @@ pub(super) fn sync_catalog(opened: &OpenedRecords, background: bool) -> Result<O
     if !ok {
         output.code = 3;
     }
-    output.accepted_save = true;
-    output.wrote = result.local == LocalStatus::Committed;
-    output.trigger_auto_sync = false;
+    output.notify_ui = result.local == LocalStatus::Committed;
     Ok(output)
 }
 

@@ -198,9 +198,11 @@ pub(super) struct Output {
     pub raw_bytes: Option<Vec<u8>>,
     pub silent: bool,
     pub notices: Vec<String>,
-    pub accepted_save: bool,
-    pub wrote: bool,
-    pub trigger_auto_sync: bool,
+    /// Update the Herdr `streams.saved` label for local UI refresh.
+    pub notify_ui: bool,
+    /// Portable `hosts/` catalog record or artifact change was written (implies `notify_ui` and
+    /// checks automatic background sync).
+    pub wrote_catalog: bool,
 }
 
 impl Output {
@@ -212,9 +214,8 @@ impl Output {
             raw_bytes: None,
             silent: false,
             notices: Vec::new(),
-            accepted_save: false,
-            wrote: false,
-            trigger_auto_sync: true,
+            notify_ui: false,
+            wrote_catalog: false,
         }
     }
 
@@ -226,9 +227,8 @@ impl Output {
             raw_bytes: None,
             silent: false,
             notices: Vec::new(),
-            accepted_save: false,
-            wrote: false,
-            trigger_auto_sync: true,
+            notify_ui: false,
+            wrote_catalog: false,
         }
     }
 
@@ -240,9 +240,8 @@ impl Output {
             raw_bytes: Some(bytes),
             silent: false,
             notices: Vec::new(),
-            accepted_save: false,
-            wrote: false,
-            trigger_auto_sync: true,
+            notify_ui: false,
+            wrote_catalog: false,
         }
     }
 
@@ -254,9 +253,8 @@ impl Output {
             raw_bytes: None,
             silent: true,
             notices: Vec::new(),
-            accepted_save: false,
-            wrote: false,
-            trigger_auto_sync: true,
+            notify_ui: false,
+            wrote_catalog: false,
         }
     }
 }
@@ -295,15 +293,15 @@ fn run_code() -> i32 {
 
     match app.dispatch(cli.command, json_mode) {
         Ok(mut output) => {
-            if output.accepted_save && output.wrote {
-                if let Some(warning) = app.notify_saved() {
-                    output.notices.push(warning);
-                }
-                if output.trigger_auto_sync
-                    && let Some(warning) = app.maybe_trigger_auto_sync()
-                {
-                    output.notices.push(warning);
-                }
+            if (output.notify_ui || output.wrote_catalog)
+                && let Some(warning) = app.notify_saved()
+            {
+                output.notices.push(warning);
+            }
+            if output.wrote_catalog
+                && let Some(warning) = app.maybe_trigger_auto_sync()
+            {
+                output.notices.push(warning);
             }
             if let Some(bytes) = output.raw_bytes {
                 if let Err(error) = io::stdout().write_all(&bytes) {
@@ -393,9 +391,20 @@ impl App {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
-        let prior_attention = streams::sync::read_last_sync(root)
-            .ok()
-            .flatten()
+        let status = match streams::sync::auto_sync_status(
+            root,
+            settings.sync.auto_interval_minutes,
+            now_ms,
+        ) {
+            Ok(status) => status,
+            Err(error) => {
+                return Some(format!(
+                    "warning: could not check catalog sync schedule: {error}"
+                ));
+            }
+        };
+        let prior_attention = status
+            .last_sync
             .filter(|state| state.needs_attention)
             .map(|state| {
                 if state.detail.is_empty() {
@@ -407,19 +416,7 @@ impl App {
                     )
                 }
             });
-        let due = match streams::sync::is_auto_sync_due(
-            root,
-            settings.sync.auto_interval_minutes,
-            now_ms,
-        ) {
-            Ok(due) => due,
-            Err(error) => {
-                return Some(format!(
-                    "warning: could not check catalog sync schedule: {error}"
-                ));
-            }
-        };
-        if !due {
+        if !status.due {
             return prior_attention.map(|detail| {
                 format!(
                     "warning: last catalog sync needs attention ({detail}); run `streams catalog sync` to inspect"
@@ -602,8 +599,7 @@ impl App {
             format!("unchanged {key}")
         };
         let mut output = Output::plain(json!({ "key": key, "files": file_strings }), plain);
-        output.accepted_save = true;
-        output.wrote = wrote;
+        output.wrote_catalog = wrote;
         output
     }
 
@@ -631,8 +627,7 @@ impl App {
         if !complete {
             output.code = 3;
         }
-        output.accepted_save = true;
-        output.wrote = result.written;
+        output.wrote_catalog = result.written;
         output
     }
 }
