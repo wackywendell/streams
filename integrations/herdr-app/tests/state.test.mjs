@@ -2708,22 +2708,44 @@ test("_probeLocalOwner recovers on forced refresh, preserves deletions during pe
   assert.equal(coordFail.foreignHostBadge(stRem), null);
   assert.equal(coordFail.foreignHostBadge("deadbeef-9999/st-o")?.state, "unmapped");
 
-  // (b) Initially empty --local probe recovers on a forced All hosts refresh once a local Stream exists,
-  //     without re-probing once the host ID has been learned.
+  // (b) Initially empty --local probe notifies views when the first empty check settles,
+  //     suppresses unknown-owner pills while a forced re-probe is pending so the first local
+  //     Stream never flashes as foreign, and does not re-probe once ownership is learned.
   const stSynced = makeStreamJson({ host: "0abb3ca7-mac", id: "st-mac", title: "Synced Mac" });
+  const stKnownForeign = makeStreamJson({
+    host: "11112222-box",
+    id: "st-box",
+    title: "Known Foreign",
+  });
   let localCreated = false;
   let emptyProbeCalls = 0;
+  let emptyNotifyCount = 0;
+  let resolveInitialEmptyProbe;
+  const initialEmptyProbe = new Promise((r) => {
+    resolveInitialEmptyProbe = r;
+  });
+  let resolveForcedReprobe;
+  const forcedReprobe = new Promise((r) => {
+    resolveForcedReprobe = r;
+  });
   const coordEmpty = new StreamsCoordinator({
+    notify: () => {
+      emptyNotifyCount += 1;
+    },
     exec: async (_bin, args, opts) => {
       const on = opts?.on ?? null;
       if (args[0] === "stream" && args[1] === "list") {
         if (on === "retriever" && args.includes("--local")) {
           emptyProbeCalls += 1;
+          if (emptyProbeCalls === 1) return initialEmptyProbe;
+          if (emptyProbeCalls === 2) return forcedReprobe;
           const items = localCreated ? [stRem] : [];
           return { code: 0, stdout: JSON.stringify({ items, unreadable: [] }), stderr: "" };
         }
         if (on === "retriever" && !args.includes("--local")) {
-          const items = localCreated ? [stRem, stSynced] : [stSynced];
+          const items = localCreated
+            ? [stRem, stSynced, stKnownForeign]
+            : [stSynced, stKnownForeign];
           return { code: 0, stdout: JSON.stringify({ items, unreadable: [] }), stderr: "" };
         }
       }
@@ -2732,12 +2754,25 @@ test("_probeLocalOwner recovers on forced refresh, preserves deletions during pe
   });
   coordEmpty._hasMachineSnapshot = true;
   coordEmpty.machineLayouts.set("retriever", "ready");
+  coordEmpty.machineLayouts.set("buildbox", "ready");
+  coordEmpty.recordHostMachine(stKnownForeign.host_id, "buildbox");
   coordEmpty.activeMachine = "retriever";
 
   await coordEmpty.setHostScope("all");
+  // While the first empty probe is pending, unmapped rows stay null (no false-positive flash),
+  // while already-mapped foreign hosts still show their badge.
+  assert.equal(coordEmpty.foreignHostBadge(stSynced), null);
+  assert.equal(coordEmpty.foreignHostBadge(stKnownForeign)?.label, "buildbox");
+
+  const notifiesBeforeEmptyResolve = emptyNotifyCount;
+  resolveInitialEmptyProbe({ code: 0, stdout: JSON.stringify({ items: [], unreadable: [] }), stderr: "" });
   await Promise.all(coordEmpty._localOwnerProbes.values());
   assert.equal(emptyProbeCalls, 1);
   assert.equal(coordEmpty.machineForHost(stRem.host_id), undefined);
+  // First empty check completion MUST notify views and reveal unmapped foreign rows.
+  assert.equal(emptyNotifyCount, notifiesBeforeEmptyResolve + 1);
+  assert.equal(coordEmpty.foreignHostBadge(stSynced)?.state, "unmapped");
+
   // Non-forced write refusal on foreign synced Stream does not re-probe while empty.
   const foreignDel = await coordEmpty.deleteStream(stSynced.key);
   assert.equal(foreignDel.ok, false);
@@ -2753,6 +2788,7 @@ test("_probeLocalOwner recovers on forced refresh, preserves deletions during pe
     machineList: [
       { name: null, layout: "ready" },
       { name: "retriever", layout: "ready" },
+      { name: "buildbox", layout: "ready" },
     ],
   });
   await coordEmpty.observe({
@@ -2763,11 +2799,14 @@ test("_probeLocalOwner recovers on forced refresh, preserves deletions during pe
     machineList: [
       { name: null, layout: "ready" },
       { name: "retriever", layout: "ready" },
+      { name: "buildbox", layout: "ready" },
     ],
   });
   assert.equal(emptyProbeCalls, 1);
 
-  // Later, first local Stream is created on retriever; forced observe() re-probes and learns it.
+  // Later, first local Stream is created on retriever; forced observe() starts a deferred re-probe.
+  // While the forced re-probe is pending, the new local Stream must NOT flash an unmapped pill,
+  // while mapped foreign host buildbox keeps its badge.
   localCreated = true;
   await coordEmpty.observe({
     activeSpace: emptySpace,
@@ -2777,13 +2816,25 @@ test("_probeLocalOwner recovers on forced refresh, preserves deletions during pe
     machineList: [
       { name: null, layout: "ready" },
       { name: "retriever", layout: "ready" },
+      { name: "buildbox", layout: "ready" },
     ],
     force: true,
   });
-  await Promise.all(coordEmpty._localOwnerProbes.values());
   assert.equal(emptyProbeCalls, 2);
+  assert.equal(coordEmpty.foreignHostBadge(stRem), null);
+  assert.equal(coordEmpty.foreignHostBadge(stKnownForeign)?.label, "buildbox");
+
+  const notifiesBeforeForcedResolve = emptyNotifyCount;
+  resolveForcedReprobe({
+    code: 0,
+    stdout: JSON.stringify({ items: [stRem], unreadable: [] }),
+    stderr: "",
+  });
+  await Promise.all(coordEmpty._localOwnerProbes.values());
+  assert.equal(emptyNotifyCount, notifiesBeforeForcedResolve + 1);
   assert.equal(coordEmpty.machineForHost(stRem.host_id), "retriever");
   assert.equal(coordEmpty.foreignHostBadge(stRem), null);
+  assert.equal(coordEmpty.foreignHostBadge(stSynced)?.state, "unmapped");
 
   // Once learned, another forced refresh does not re-probe.
   await coordEmpty.ensureHostStreams(true);

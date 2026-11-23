@@ -1848,6 +1848,9 @@ export class StreamsCoordinator {
       return this._localOwnerProbes.get(mKey);
     }
     const promise = (async () => {
+      const hadHostBefore = this.machineToHost.has(mKey);
+      const wasCheckedBefore = this._localOwnerChecked.has(mKey);
+      let shouldNotify = force && !hadHostBefore && wasCheckedBefore;
       try {
         const probe = await this.runExec(
           this.streamsBinFor(targetMachine),
@@ -1855,15 +1858,14 @@ export class StreamsCoordinator {
           { on: targetMachine }
         );
         if (probe.code === 0) {
-          const hadHost = this.machineToHost.has(mKey);
           this._localOwnerChecked.add(mKey);
           const parsed = parseJsonSafe(probe.stdout);
           for (const item of parsed?.items ?? []) {
             const foundHost = item?.host_id ?? recordHostId(item?.key);
             if (foundHost) this.recordHostMachine(foundHost, targetMachine);
           }
-          if (!hadHost && this.machineToHost.has(mKey)) {
-            this.notifyViews();
+          if (!hadHostBefore && (this.machineToHost.has(mKey) || !wasCheckedBefore)) {
+            shouldNotify = true;
           }
           return { ok: true };
         }
@@ -1876,6 +1878,9 @@ export class StreamsCoordinator {
         return { ok: true };
       } finally {
         this._localOwnerProbes.delete(mKey);
+        if (shouldNotify) {
+          this.notifyViews();
+        }
       }
     })();
     this._localOwnerProbes.set(mKey, promise);
@@ -1924,7 +1929,7 @@ export class StreamsCoordinator {
       };
     }
 
-    if (activeHostId || this._localOwnerChecked.has(mKey)) {
+    if (activeHostId || (this._localOwnerChecked.has(mKey) && !this._localOwnerProbes.has(mKey))) {
       const short = hostId.slice(0, 8);
       return {
         label: short,
