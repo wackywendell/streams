@@ -10,21 +10,33 @@ owns this contract; [RecordSync](../src/sync/records.rs) transports files.
 streams catalog init --sync none
 # Or choose Git:
 streams catalog init --sync git
-streams catalog init --sync git --remote git@example.org:me/catalog.git --branch main
+streams catalog init --sync git --remote git@example.org:me/catalog.git --branch main --label laptop
 # Or enable Git / update remote on an existing catalog:
 streams catalog configure --sync git --remote git@example.org:me/catalog.git --branch main
 streams catalog configure --sync git --clear-remote
+# Show or update this host's human-readable label:
+streams catalog label
+streams catalog label work-laptop
 ```
 
-Choose one setup. Git without a remote records local commits only when sync runs.
-A remote must already exist and be dedicated to Streams. An absent branch can be
+Choose one setup. Initialization writes `hosts/<host>/host.json` (defaulting `label` to
+the machine's hostname unless `--label` is given), and in `--sync git` mode records an
+initial local commit containing it. Git without a remote records local commits only when
+sync runs. A remote must already exist and be dedicated to Streams. An absent branch can be
 created; an existing branch must contain supported host-partitioned records.
 Authentication uses Git's normal credential mechanisms. Do not put secrets in
 records or remote URLs.
 
+`.catalog-local/transport.json` is the sole owner of the configured Git remote URL;
+Streams does not create an `origin` remote in `.git/config` and passes the URL directly
+to Git commands. `streams catalog check` checks backend health and runs offline
+`git ls-remote --get-url` to report both `remote` and `effective_remote` when Git
+`url.<base>.insteadOf` rules rewrite the URL.
+
 Ordinary commands never initialize, convert or adopt a catalog. `streams catalog configure`
 transitions an existing single-host `none` catalog to `git` (committing existing local
-records) and updates or clears the remote on a `git` catalog; switching `git -> none`
+records) and updates or clears the remote on a `git` catalog (clearing
+`.catalog-local/last-sync.json` when the remote changes); switching `git -> none`
 is not implemented. Keep the host identity stable across processes.
 
 ## Save locally
@@ -39,33 +51,38 @@ accepted Stream; there is no rollback transaction.
 
 Each record carries its `revision` and `updated_at_ms`. The save path sets both,
 and only when the record changes, so a save that changes nothing writes nothing.
-A captured edit names the revision it read: a user edit applies only to that
-revision, and an automatic report refuses fields changed since then. A retried
-save that already landed is recognised from the record itself and returns no
-change. There are no operation IDs or retry receipts.
+A compare-and-save edit passes per-field `before` snapshots alongside `changes`:
+each field is written only if its current stored value still matches `before`,
+and any changed field is reported in `not_written` with its current value. A
+retried save that already landed is recognised from the record itself and returns
+no change. There are no operation IDs or retry receipts.
 
 ## Sync explicitly, at Pi lifecycle boundaries, or after writes
 
 ```sh
 streams catalog sync --json
+streams catalog sync --timeout 15 --json
 streams catalog check
 ```
 
 Ordinary reads always use saved local records.
 
-When a non-`none` sync backend is configured, any catalog write checks
-`.catalog-local/last-sync.json` and spawns a detached background
+When a non-`none` sync backend is configured, portable catalog writes under `hosts/`
+(not host-local `config` or `card` preference writes) check
+`.catalog-local/last-sync.json` and spawn a detached background
 `streams catalog sync --background` if at least `sync.auto_interval_minutes`
 (default `10`; `0` disables) have elapsed since the previous sync attempt.
 Background sync uses a non-blocking lock on `.catalog-local/transport.lock` so
-concurrent triggers never pile up. Sync outcomes are persisted to
-`.catalog-local/last-sync.json`, and attention-needed failures are surfaced on
-subsequent writes and by `streams catalog check`.
+concurrent triggers never pile up, and exits cleanly without scanning when the
+catalog is uninitialized or configured with `--sync none`. Sync outcomes are
+persisted to `.catalog-local/last-sync.json`, and attention-needed failures are
+surfaced on subsequent writes and by `streams catalog check`.
 
-Pi startup triggers an asynchronous sync (cancelled on switch/shutdown), and Pi
-shutdown awaits sync after parking the Session. Each lifecycle sync uses a
-10-second deadline. Ordinary Git subprocesses use the fixed 30-second library
-deadline.
+Pi startup triggers a non-blocking background sync (`--if-configured --background`),
+and Pi shutdown awaits a blocking sync (`--if-configured`) after parking the Session.
+Each lifecycle sync passes `--timeout 10` so Rust owns the total deadline, subprocess
+cleanup, and lock release. Ordinary Git subprocesses use the fixed 30-second library
+deadline unless bounded by `--timeout`.
 
 With `none`, sync validates local records without Git or network access. With Git
 and no remote, it checkpoints this host's changed files and reports local-only
@@ -83,15 +100,21 @@ Domain decisions, local persistence and sharing have different meanings:
 - `local-only` means there is no publication destination.
 - `committed` describes local Git progress, not remote confirmation.
 - `confirmed` establishes the push outcome, not fresh verification of report prose.
-- `failed` or `uncertain` sharing leaves accepted local records intact.
+- `failed` covers definite pre-push errors (including timeouts during fetch or
+  ls-remote) and clean non-zero `git push` exits (such as non-fast-forward or
+  authentication errors); `uncertain` is reserved for `git push` ending without
+  an exit code (timeout or signal), where remote state cannot be established.
+  Both leave accepted local records intact.
 - `blocked` or `repair-required` needs inspection, not a blind overwrite or retry.
 
-Exit code 2 is a CLI usage error. Exit code 3 means attention is needed: a sync,
-check, or tidy warning or failure, or an accepted save with a later failure. A timeout
-does not prove whether a push succeeded. Lifecycle
-failures produce a warning and a durable `stream-catalog-sync` Pi entry.
-A later explicit sync observes the current state; it does not resume a saved
-publication phase or retry a captured native effect.
+Exit code `1` is a runtime or operational error (for example an unreadable catalog
+or uninitialized root). Exit code `2` is a CLI usage error. Exit code `3` means
+the usual structured result was printed, but attention is needed: a sync, check,
+or tidy warning or failure, or a partial edit with units listed in `not_written`.
+A push timeout does not prove whether the push succeeded. Lifecycle failures produce
+a warning and a durable `stream-catalog-sync` Pi entry. A later explicit sync
+observes the current state; it does not resume a saved publication phase or retry
+a captured native effect.
 
 ## Inspecting interrupted saves and manual changes
 

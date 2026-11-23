@@ -24,16 +24,19 @@ Both storage modes require explicit setup:
 ```sh
 streams catalog init --sync none
 streams catalog init --sync git
-streams catalog init --sync git --remote git@github.com:you/work-catalog.git --branch main
+streams catalog init --sync git --remote git@github.com:you/work-catalog.git --branch main --label laptop
 ```
 
-Git without `--remote` records local commits without fetching or pushing. If you select a remote, it must already exist and its branch must be empty or contain a supported format-5 Streams catalog. Setup records the sync strategy and a persistent local host identity. Ordinary commands never initialise a catalog or fall back to another storage mode.
+Git without `--remote` records local commits without fetching or pushing. If you select a remote, it must already exist and its branch must be empty or contain a supported format-5 Streams catalog. Setup records the sync strategy, a persistent local host identity, and `hosts/<host>/host.json` (`{ id, label }`, defaulting `label` to the machine's hostname). Ordinary commands never initialise a catalog or fall back to another storage mode.
 
-To enable Git sync on an existing `none` catalog (preserving existing local records) or update the configured remote on a `git` catalog:
+To enable Git sync on an existing `none` catalog (preserving existing local records), update the configured remote on a `git` catalog, or show/update this host's label:
 
 ```sh
 streams catalog configure --sync git --remote git@github.com:you/work-catalog.git --branch main
 streams catalog configure --sync git --clear-remote
+streams catalog label
+streams catalog label work-laptop
+streams catalog sync --timeout 15
 ```
 
 Inspect or change host-local settings:
@@ -51,7 +54,7 @@ Core settings live in `$XDG_CONFIG_HOME/streams/config.toml` and include `catalo
 
 Format-5 catalog records use host-partitioned JSON files:
 
-- `hosts/<host>/host.json`
+- `hosts/<host>/host.json` (`{ "id", "label" }`)
 - `hosts/<host>/streams/<id>.json`
 - `hosts/<host>/sessions/<harness>/<id>/session.json`
 - `hosts/<host>/sessions/<harness>/<id>/artifacts/<name>`
@@ -123,15 +126,16 @@ A Session's ID is its harness session ID (`HOST/HARNESS/ID`). `session create` r
 Each Session owns its `references` map, keyed by HTTP(S) URL (`pr`, `issue`, `link`) or path relative to `session.directory.path` (`document`). Roles are `deliverable`, `dependency`, `brief`, and `background`; statuses are `active`, `fulfilled`, and `dropped`.
 
 ```sh
-streams session edit SESSION --add-reference docs/design.md --ref-kind document --ref-name Design --ref-purpose "Guide implementation" --ref-role brief
-streams session edit SESSION --add-reference https://example.org/org/repo/pull/43 --ref-kind pr --ref-name "PR #43" --ref-purpose "Deliver change" --ref-role deliverable
+streams session edit SESSION --add-document docs/design.md --name Design --purpose "Guide implementation" --role brief
+streams session edit SESSION --add-pr https://example.org/org/repo/pull/43 --name "PR #43" --purpose "Deliver change" --role deliverable
+streams session edit SESSION --add-issue https://example.org/org/repo/issues/12 --name "Issue #12" --purpose "Track bug" --role background
+streams session edit SESSION --add-link https://example.org/docs --name Docs --purpose "Reference" --role background
 streams session edit SESSION --drop-reference https://example.org/org/repo/pull/43
-streams session edit SESSION --restore-reference https://example.org/org/repo/pull/43
 streams session document read SESSION docs/design.md
 streams session document view SESSION docs/design.md
 ```
 
-Dropped entries stay in the Session record so automatic reports do not re-add them. People can restore them explicitly via `--restore-reference` or Pi's Session panel.
+Dropped entries stay in the Session record so automatic reports do not re-add them. People can restore them explicitly by re-adding with `--add-document` / `--add-pr` / `--add-issue` / `--add-link` (or via Pi's Session panel).
 
 Both `stream edit` and `session edit` also accept `--input -` with `{"changes": {...}, "before": {...}?}` for compare-and-save edits (see `skills/streams/references/reporting.md`). Exit codes: `0` done, `1` failed, `2` usage error, `3` printed usual result with partial failure (such as units listed in `not_written` or a sync sharing warning).
 
