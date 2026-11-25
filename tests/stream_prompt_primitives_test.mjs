@@ -209,13 +209,13 @@ test('saved requests round-trip, use exact rendered input across reruns, and ret
         runtime(async (_m, payload) => {
           seen.push(structuredClone(payload));
           payload.systemPrompt = 'Mutation from provider';
-          return response({ state });
+          return response({ state: { text: state, short: null } });
         }),
         model,
         signal()
       );
       assert.equal(result.status, 'completed');
-      assert.equal(result.value.changes.state, state);
+      assert.deepEqual(result.value.changes.state, { text: state, short: null });
     }
     assert.deepEqual(seen, [prepared.model_request, prepared.model_request]);
     assert.deepEqual(loaded, before);
@@ -245,7 +245,7 @@ test('capture/prepare/run/inspect adapters need no UI, preserve recordings, and 
       current: f.manager,
       runtime: runtime(async () => {
         calls++;
-        return response({ state: 'After' });
+        return response({ state: { text: 'After', short: null } });
       }),
     };
     const before = readFileSync(join(f.root, 'captures', f.capture.id, 'capture.json'), 'utf8');

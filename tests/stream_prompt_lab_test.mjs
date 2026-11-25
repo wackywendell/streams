@@ -82,8 +82,8 @@ test('executeLab capture -> prepare -> run -> replay -> list -> inspect end to e
         complete: async (_m, payload) => {
           const req = JSON.parse(payload.messages.at(-1).content);
           return req.task === 'session'
-            ? response({ state: 'Lab verified', state_short: 'Verified' })
-            : response({ goal: 'Lab goal verified' });
+            ? response({ state: { text: 'Lab verified', short: 'Verified' } })
+            : response({ goal: { text: 'Lab goal verified', short: null } });
         },
       },
     },

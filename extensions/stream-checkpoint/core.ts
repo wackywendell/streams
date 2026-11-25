@@ -2,6 +2,9 @@ import { isDeepStrictEqual } from "node:util";
 import {
   isReferenceText,
   normalizeDocumentKey,
+  REFERENCE_KINDS,
+  REFERENCE_ROLES,
+  REFERENCE_STATUSES,
   referenceUrl,
   sessionKeyOf,
   streamKeyOf,
@@ -10,44 +13,19 @@ import {
   type Goal,
   type LocalContext,
   type NamingSettings,
+  type RawReferenceProposal,
   type ReferenceEntry,
-  type ReferenceKind,
-  type ReferenceRole,
-  type ReferenceStatus,
+  type SessionModelChanges,
   type SessionWire,
-  type Status,
+  type StreamModelChanges,
   type StreamWire,
   type TextPair,
+  type TextPairInput,
   type Title,
 } from "./wire.ts";
 import { referenceText, type StreamCli } from "./streams.ts";
 
-export type RawReferenceProposal = {
-  key: string;
-  kind: ReferenceKind;
-  name: string;
-  purpose: string;
-  role: ReferenceRole;
-  status: ReferenceStatus;
-};
-
-export type SessionModelChanges = {
-  title?: string;
-  status?: Status;
-  recap?: string | null;
-  recap_short?: string | null;
-  state?: string | null;
-  state_short?: string | null;
-  remaining?: string | null;
-  remaining_short?: string | null;
-  branch?: string | null;
-};
-
-export type StreamModelChanges = {
-  title?: string;
-  goal?: string | null;
-  goal_short?: string | null;
-};
+export type { RawReferenceProposal, SessionModelChanges, StreamModelChanges, TextPairInput };
 
 export function canAutoEditStreamTitle(stream: StreamWire, naming: NamingSettings): boolean {
   return !stream.title.manual && naming.stream === "automatic";
@@ -61,21 +39,19 @@ export function canAutoEditSessionTitle(session: SessionWire, naming: NamingSett
   return !session.title.manual && naming.session === "automatic";
 }
 
-export function automaticStreamFieldNames(context: LocalContext): string[] {
+export function automaticStreamFieldNames(context: LocalContext): (keyof StreamModelChanges)[] {
   if (!context.stream) return [];
-  const fields: string[] = [];
+  const fields: (keyof StreamModelChanges)[] = [];
   if (canAutoEditStreamTitle(context.stream, context.naming)) fields.push("title");
-  if (canAutoEditStreamGoal(context.stream)) {
-    fields.push("goal", "goal_short");
-  }
+  if (canAutoEditStreamGoal(context.stream)) fields.push("goal");
   return fields;
 }
 
-export function automaticSessionFieldNames(context: LocalContext): string[] {
+export function automaticSessionFieldNames(context: LocalContext): (keyof SessionModelChanges)[] {
   if (!context.session) return [];
-  const fields: string[] = [];
+  const fields: (keyof SessionModelChanges)[] = [];
   if (canAutoEditSessionTitle(context.session, context.naming)) fields.push("title");
-  fields.push("status", "recap", "recap_short", "state", "state_short", "remaining", "remaining_short");
+  fields.push("status", "recap", "state", "remaining");
   if (context.session.directory?.repository) fields.push("branch");
   return fields;
 }
@@ -86,24 +62,21 @@ function cleanText(value: unknown): string | null {
   return trimmed.length > 0 && isReferenceText(trimmed) ? trimmed : null;
 }
 
-function pairFromDelta(
+function textPairFromInput(
   current: TextPair | null,
-  rawText: unknown,
-  rawShort: unknown,
-  hasText: boolean,
-  hasShort: boolean
+  input: TextPairInput | null | undefined,
+  clearable: boolean
 ): TextPair | null | undefined {
-  if (!hasText && !hasShort) return undefined;
-  const nextText = hasText ? cleanText(rawText) : current?.text ?? null;
-  if (!nextText) return null;
-  let nextShort: string | null;
-  if (hasShort) {
-    nextShort = cleanText(rawShort);
-  } else if (hasText && nextText !== current?.text) {
-    nextShort = null;
-  } else {
-    nextShort = current?.short ?? null;
-  }
+  if (input === undefined) return undefined;
+  if (input === null) return clearable ? null : undefined;
+  const nextText = cleanText(input.text);
+  if (!nextText) return clearable ? null : undefined;
+  const hasShort = Object.hasOwn(input, "short") && input.short !== undefined;
+  const nextShort = hasShort
+    ? cleanText(input.short)
+    : nextText !== current?.text
+      ? null
+      : (current?.short ?? null);
   return { text: nextText, short: nextShort };
 }
 
@@ -141,26 +114,20 @@ export function buildSessionReportEdit(
     before.status = session.status;
   }
 
-  // TextPair fields: recap, state, remaining
+  // TextPair fields: recap and state cannot be cleared by automatic reports; remaining can.
   for (const field of ["recap", "state", "remaining"] as const) {
-    const shortKey = `${field}_short` as `${typeof field}_short`;
-    const next = pairFromDelta(
-      session[field],
-      rawChanges[field],
-      rawChanges[shortKey],
-      Object.hasOwn(rawChanges, field),
-      Object.hasOwn(rawChanges, shortKey)
-    );
+    if (!Object.hasOwn(rawChanges, field)) continue;
+    const next = textPairFromInput(session[field], rawChanges[field], field === "remaining");
     if (next !== undefined && !isDeepStrictEqual(next, session[field])) {
       changes[field] = next;
       before[field] = structuredClone(session[field]);
     }
   }
 
-  // Branch update inside directory.repository
+  // Branch update inside directory.repository (non-clearable: omit if unchanged)
   if (Object.hasOwn(rawChanges, "branch") && session.directory?.repository) {
-    const nextBranch = rawChanges.branch === null ? null : cleanText(rawChanges.branch);
-    if (nextBranch !== session.directory.repository.branch) {
+    const nextBranch = cleanText(rawChanges.branch);
+    if (nextBranch && nextBranch !== session.directory.repository.branch) {
       changes.directory = {
         path: session.directory.path,
         repository: {
@@ -182,7 +149,7 @@ export function buildSessionReportEdit(
       if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
       const proposal = raw as Partial<RawReferenceProposal>;
       const kind = proposal.kind;
-      if (!kind || !["document", "pr", "issue", "link"].includes(kind)) continue;
+      if (!kind || !(REFERENCE_KINDS as readonly string[]).includes(kind)) continue;
       if (typeof proposal.key !== "string" || !proposal.key.trim()) continue;
       const name = cleanText(proposal.name);
       const purpose = cleanText(proposal.purpose);
@@ -192,9 +159,9 @@ export function buildSessionReportEdit(
         !name ||
         !purpose ||
         !role ||
-        !["deliverable", "dependency", "brief", "background"].includes(role) ||
+        !(REFERENCE_ROLES as readonly string[]).includes(role) ||
         !status ||
-        !["active", "fulfilled", "dropped"].includes(status)
+        !(REFERENCE_STATUSES as readonly string[]).includes(status)
       ) {
         continue;
       }
@@ -282,27 +249,14 @@ export function buildStreamReportEdit(
     }
   }
 
-  const hasGoal = Object.hasOwn(rawChanges, "goal");
-  const hasGoalShort = Object.hasOwn(rawChanges, "goal_short");
-  if ((hasGoal || hasGoalShort) && canAutoEditStreamGoal(stream)) {
-    const nextText = hasGoal ? cleanText(rawChanges.goal) : stream.goal?.text ?? null;
-    let nextGoal: Goal | null;
-    if (!nextText) {
-      nextGoal = null;
-    } else {
-      let nextShort: string | null;
-      if (hasGoalShort) {
-        nextShort = cleanText(rawChanges.goal_short);
-      } else if (hasGoal && nextText !== stream.goal?.text) {
-        nextShort = null;
-      } else {
-        nextShort = stream.goal?.short ?? null;
+  if (Object.hasOwn(rawChanges, "goal") && canAutoEditStreamGoal(stream)) {
+    const pair = textPairFromInput(stream.goal, rawChanges.goal, false);
+    if (pair) {
+      const nextGoal: Goal = { ...pair, manual: false };
+      if (!isDeepStrictEqual(nextGoal, stream.goal)) {
+        changes.goal = nextGoal;
+        before.goal = structuredClone(stream.goal);
       }
-      nextGoal = { text: nextText, short: nextShort, manual: false };
-    }
-    if (!isDeepStrictEqual(nextGoal, stream.goal)) {
-      changes.goal = nextGoal;
-      before.goal = structuredClone(stream.goal);
     }
   }
 

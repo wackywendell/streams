@@ -136,17 +136,66 @@ test('buildInferencePayload respects manual fields, naming policy, and Session-o
   assert.ok(streamProps.includes('goal'));
 });
 
-test('parseInferenceResponse strips disallowed fields and rejects invalid enums', () => {
+test('parseInferenceResponse strips disallowed fields, drops non-clearable nulls, and formats errors cleanly', () => {
   const req = { type: 'session', catalog: makeCatalog(), messages: [] };
   const parsed = parseInferenceResponse(
     req,
-    toolReply({ changes: { state: 'Working', unknown_field: 'ignored', remaining: '   ' } })
+    toolReply({
+      changes: {
+        title: null,
+        recap: null,
+        state: { text: 'Working', short: '   ' },
+        branch: null,
+        unknown_field: 'ignored',
+        remaining: { text: '   ', short: null },
+      },
+    })
   );
-  assert.deepEqual(parsed.changes, { state: 'Working', remaining: null });
+  assert.deepEqual(parsed.changes, {
+    state: { text: 'Working', short: null },
+    remaining: null,
+  });
 
+  // Explicit null on remaining is preserved (clearable); null on stream goal is dropped.
+  const clearRem = parseInferenceResponse(req, toolReply({ changes: { remaining: null } }));
+  assert.deepEqual(clearRem.changes, { remaining: null });
+
+  const streamReq = { type: 'stream', catalog: makeCatalog(), messages: [] };
+  const streamParsed = parseInferenceResponse(
+    streamReq,
+    toolReply({ changes: { title: null, goal: null, status: 'done' } })
+  );
+  assert.deepEqual(streamParsed.changes, {});
+
+  // Invalid enum produces a single deduplicated summary without anyOf spam.
   assert.throws(
     () => parseInferenceResponse(req, toolReply({ changes: { status: 'bogus' } })),
-    /invalid structured card fields/
+    (err) => {
+      assert.match(err.message, /invalid structured card fields/);
+      assert.match(err.message, /changes\.status: expected active \| waiting \| blocked \| parked \| done/);
+      assert.doesNotMatch(err.message, /anyOf/);
+      return true;
+    }
+  );
+
+  // Plain-string recap (old flat format) is rejected cleanly.
+  assert.throws(
+    () => parseInferenceResponse(req, toolReply({ changes: { recap: 'Old flat string' } })),
+    (err) => {
+      assert.match(err.message, /changes\.recap: expected object/);
+      assert.doesNotMatch(err.message, /anyOf/);
+      return true;
+    }
+  );
+
+  // Nested leaf error suppresses parent anyOf/null noise.
+  assert.throws(
+    () => parseInferenceResponse(req, toolReply({ changes: { remaining: { text: 'ok', short: 42 } } })),
+    (err) => {
+      assert.match(err.message, /changes\.remaining\.short: expected string or null/);
+      assert.doesNotMatch(err.message, /anyOf/);
+      return true;
+    }
   );
 });
 
@@ -179,10 +228,8 @@ test('buildSessionReportEdit enforces manual/dropped protection, document contai
     {
       title: 'Attempted overwrite',
       status: 'waiting',
-      recap: 'Implement format-5 CLI',
-      recap_short: 'Format-5 CLI',
-      state: 'Waiting on review',
-      state_short: 'In review',
+      recap: { text: 'Implement format-5 CLI', short: 'Format-5 CLI' },
+      state: { text: 'Waiting on review', short: 'In review' },
       branch: 'cli-by-entity',
     },
     [
@@ -267,7 +314,7 @@ test('buildStreamReportEdit respects manual flags and naming.stream policy', () 
   const body = buildStreamReportEdit(
     stream,
     { stream: 'automatic', session: 'automatic' },
-    { title: 'Streams CLI', goal: 'Attempted overwrite' }
+    { title: 'Streams CLI', goal: { text: 'Attempted overwrite', short: 'Overwrite' } }
   );
   assert.ok(body);
   assert.deepEqual(body.changes, { title: { text: 'Streams CLI', manual: false } });
@@ -278,6 +325,29 @@ test('buildStreamReportEdit respects manual flags and naming.stream policy', () 
     buildStreamReportEdit(stream, { stream: 'manual', session: 'automatic' }, { title: 'Blocked' }),
     null
   );
+});
+
+test('buildSessionReportEdit never wipes saved recap, state, or branch on null/blank input, while remaining clears', () => {
+  const session = makeSession({
+    recap: { text: 'Existing recap', short: 'Recap' },
+    state: { text: 'Existing state', short: 'State' },
+    remaining: { text: 'Next step', short: 'Next' },
+  });
+  const body = buildSessionReportEdit(
+    session,
+    { stream: 'automatic', session: 'automatic' },
+    {
+      recap: { text: '   ', short: null },
+      state: { text: '   ', short: null },
+      remaining: null,
+      branch: '   ',
+    },
+    []
+  );
+  assert.ok(body);
+  assert.deepEqual(Object.keys(body.changes), ['remaining']);
+  assert.equal(body.changes.remaining, null);
+  assert.deepEqual(body.before.remaining, { text: 'Next step', short: 'Next' });
 });
 
 test('runReport executes enroll -> session -> stream and logs partial not_written without retrying', async () => {
@@ -303,9 +373,9 @@ test('runReport executes enroll -> session -> stream and logs partial not_writte
           return { meaningful: true, stream: { title: 'Streams' }, session: { title: 'CLI' } };
         }
         if (req.type === 'session') {
-          return { changes: { state: 'Working on Phase 3' }, reference_proposals: [] };
+          return { changes: { state: { text: 'Working on Phase 3', short: null } }, reference_proposals: [] };
         }
-        return { changes: { goal: 'Simplify Streams CLI' } };
+        return { changes: { goal: { text: 'Simplify Streams CLI', short: null } } };
       },
       createStream: async (input) => {
         state.stream = makeStream({ title: { text: input.title, manual: false }, goal: null });
@@ -414,7 +484,7 @@ test('runReport enroll attaches to an existing candidate Stream via stream_key w
           return parsed;
         }
         if (req.type === 'session') {
-          return { changes: { state: 'Migrating tab marks' }, reference_proposals: [] };
+          return { changes: { state: { text: 'Migrating tab marks', short: null } }, reference_proposals: [] };
         }
         return { changes: {} };
       },
@@ -560,7 +630,7 @@ test('Reporter skips Stream edit if Session moves during Stream inference while 
     }),
     infer: async (_ctx, req) => {
       if (req.type === 'session') {
-        return { changes: { state: 'Updated state' }, reference_proposals: [] };
+        return { changes: { state: { text: 'Updated state', short: null } }, reference_proposals: [] };
       }
       if (req.type === 'stream') {
         // Session moves to another Stream while Stream inference is in flight.
@@ -726,6 +796,172 @@ test('createStreamExtension registers tools and /streams command and reads real 
   assert.equal(readRes.details.session.directory.path, realpathSync(workDir));
 
   await handlers.get('session_shutdown')({}, ctx);
+});
+
+test('Reporter surfaces automatic failures as info and forced failures as warning', async () => {
+  const manager = SessionManager.inMemory('/repo/work', { id: 'sess-err' });
+  manager.appendMessage({ role: 'user', content: 'hi', timestamp: 1 });
+  const ctx = { cwd: '/repo/work', sessionManager: manager };
+  const notices = [];
+  const reporter = new Reporter({
+    cli: () => ({
+      context: async () => makeCatalog({ session: makeSession({ id: 'sess-err' }) }),
+      editSession: async (k) => ({ key: k, not_written: {} }),
+      editStream: async (k) => ({ key: k, not_written: {} }),
+    }),
+    settings: () => ({
+      reporting: 'automatic',
+      enrollment: 'automatic',
+      frequency: 1,
+      context: 'trimmed',
+      session_logging: false,
+      debug_commands: false,
+      pi_name_edits: true,
+    }),
+    infer: async () => {
+      throw new Error('Reporting model returned invalid structured card fields; nothing was saved (changes.recap: expected object)');
+    },
+    notice: (text, level) => notices.push({ text, level }),
+  });
+
+  reporter.response(ctx);
+  await reporter.idle();
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0].level, 'info');
+  assert.match(notices[0].text, /^Automatic report skipped: /);
+
+  reporter.request(ctx, true);
+  await reporter.idle();
+  assert.equal(notices.length, 2);
+  assert.equal(notices[1].level, 'warning');
+  assert.doesNotMatch(notices[1].text, /^Automatic report skipped: /);
+});
+
+test('derived wire and tool schemas round-trip cleanly against real Rust format-5 CLI', async (t) => {
+  const { Check } = await import('typebox/value');
+  const { SessionWireSchema, StreamWireSchema } = await load('wire');
+
+  const root = mkdtempSync(join(tmpdir(), 'streams-schema-parity-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const workDir = join(root, 'work');
+  mkdirSync(workDir, { recursive: true });
+  const cli = testCli(workDir);
+
+  const createdStream = await cli.createStream({
+    title: 'Parity Effort',
+    titleMode: 'automatic',
+    goal: 'Keep schemas aligned',
+    goalMode: 'automatic',
+  });
+  const createdSession = await cli.createSession('parity-sess', {
+    stream: createdStream.key,
+    title: 'Parity Lane',
+    titleMode: 'automatic',
+    directory: workDir,
+  });
+
+  const beforeCtx = await cli.context('parity-sess');
+  assert.equal(Check(StreamWireSchema, beforeCtx.stream), true);
+  assert.equal(Check(SessionWireSchema, beforeCtx.session), true);
+
+  // Run a session report payload through parseInferenceResponse -> buildSessionReportEdit -> Rust CLI.
+  const sessReq = { type: 'session', catalog: beforeCtx, messages: [] };
+  const sessPayload = buildInferencePayload(sessReq);
+  const sessParsed = parseInferenceResponse(
+    sessReq,
+    toolReply({
+      changes: {
+        title: null,
+        status: 'waiting',
+        recap: { text: 'Verified schema parity end to end.', short: 'Schema parity' },
+        state: { text: 'Waiting on review.', short: 'In review' },
+        remaining: { text: 'Merge once approved.', short: 'Merge' },
+      },
+      reference_proposals: [
+        {
+          key: 'https://example.test/pr/1',
+          kind: 'pr',
+          name: 'Parity PR',
+          purpose: 'Tracks schema unification',
+          role: 'deliverable',
+          status: 'active',
+        },
+      ],
+    }),
+    sessPayload
+  );
+  const sessEdit = buildSessionReportEdit(
+    beforeCtx.session,
+    beforeCtx.naming,
+    sessParsed.changes,
+    sessParsed.reference_proposals
+  );
+  const sessRes = await cli.editSession(createdSession.key, sessEdit);
+  assert.deepEqual(sessRes.not_written, {});
+
+  // Run a stream report payload through parseInferenceResponse -> buildStreamReportEdit -> Rust CLI.
+  const midCtx = await cli.context('parity-sess');
+  const streamReq = { type: 'stream', catalog: midCtx, messages: [] };
+  const streamPayload = buildInferencePayload(streamReq);
+  const streamParsed = parseInferenceResponse(
+    streamReq,
+    toolReply({
+      changes: {
+        goal: { text: 'Keep wire and model schemas derived from one source.', short: 'Single schema' },
+      },
+    }),
+    streamPayload
+  );
+  const streamEdit = buildStreamReportEdit(midCtx.stream, midCtx.naming, streamParsed.changes);
+  const streamRes = await cli.editStream(createdStream.key, streamEdit);
+  assert.deepEqual(streamRes.not_written, {});
+
+  // Verify discussion reference edit schema matches Rust's ReferenceEntry (no bogus `key` field).
+  const discussReq = { type: 'discussion', catalog: midCtx, messages: [], discussion: [] };
+  const discussPayload = buildInferencePayload(discussReq);
+  const discussParsed = parseInferenceResponse(
+    discussReq,
+    toolReply({
+      reply: 'Added link.',
+      edit: {
+        kind: 'session',
+        changes: {
+          references: {
+            'https://example.test/doc': {
+              kind: 'link',
+              name: 'Spec',
+              purpose: 'Reference spec',
+              role: 'brief',
+              status: 'active',
+              manual: true,
+            },
+          },
+        },
+      },
+    }),
+    discussPayload
+  );
+  const { buildBeforeForChanges } = await load('core');
+  const discussRes = await cli.editSession(createdSession.key, {
+    changes: discussParsed.edit.changes,
+    before: buildBeforeForChanges(midCtx.session, discussParsed.edit.changes),
+  });
+  assert.deepEqual(discussRes.not_written, {});
+
+  // Live records read back from Rust still validate against canonical wire schemas.
+  const afterCtx = await cli.context('parity-sess');
+  assert.equal(Check(StreamWireSchema, afterCtx.stream), true);
+  assert.equal(Check(SessionWireSchema, afterCtx.session), true);
+  assert.deepEqual(afterCtx.session.recap, {
+    text: 'Verified schema parity end to end.',
+    short: 'Schema parity',
+  });
+  assert.deepEqual(afterCtx.stream.goal, {
+    text: 'Keep wire and model schemas derived from one source.',
+    short: 'Single schema',
+    manual: false,
+  });
+  assert.equal(afterCtx.session.references['https://example.test/doc'].name, 'Spec');
 });
 
 test('/streams sync formats outcome and lifecycle hooks run async start sync and shutdown sync after park', async () => {

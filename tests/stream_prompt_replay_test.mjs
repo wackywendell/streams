@@ -106,9 +106,9 @@ test('replay reset --auto clears manual marks before regenerating', async (t) =>
       const req = JSON.parse(payload.messages.at(-1).content);
       tasks.push(req.task);
       if (req.task === 'session') {
-        return response({ changes: { title: 'Fresh CLI', state: 'Regenerated state' } });
+        return response({ changes: { title: 'Fresh CLI', state: { text: 'Regenerated state', short: null } } });
       }
-      return response({ changes: { title: 'Fresh Effort', goal: 'Fresh goal' } });
+      return response({ changes: { title: 'Fresh Effort', goal: { text: 'Fresh goal', short: null } } });
     }),
     model,
     { kind: 'reset', target: 'all', auto: true },
@@ -137,7 +137,7 @@ test('replay skips stream task when stream title and goal are both manual (witho
     runtime(async (_m, payload) => {
       const req = JSON.parse(payload.messages.at(-1).content);
       tasks.push(req.task);
-      return response({ changes: { state: 'Session updated' } });
+      return response({ changes: { state: { text: 'Session updated', short: null } } });
     }),
     model,
     { kind: 'report', force: true },
@@ -159,7 +159,7 @@ test('replay respects --reset session targeting without touching stream', async 
     runtime(async (_m, payload) => {
       const req = JSON.parse(payload.messages.at(-1).content);
       tasks.push(req.task);
-      return response({ changes: { state: 'Only session' } });
+      return response({ changes: { state: { text: 'Only session', short: null } } });
     }),
     model,
     { kind: 'reset', target: 'session', auto: false },

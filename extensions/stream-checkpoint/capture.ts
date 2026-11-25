@@ -198,6 +198,7 @@ export const digest = (value: string): string =>
 export function sourceFiles(): Record<string, string> {
   return Object.fromEntries(
     [
+      "wire.ts",
       "agent.ts",
       "core.ts",
       "report-workflow.ts",

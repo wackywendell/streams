@@ -134,7 +134,12 @@ export class Reporter {
         completed = await this.report(pending, fence);
       } catch (error) {
         if (fence.current()) {
-          this.options.notice(error instanceof Error ? error.message : String(error));
+          const message = error instanceof Error ? error.message : String(error);
+          if (pending.force) {
+            this.options.notice(message, "warning");
+          } else {
+            this.options.notice(`Automatic report skipped: ${message}`, "info");
+          }
         }
       } finally {
         if (fence.live()) {

@@ -3,6 +3,12 @@ import test from 'node:test';
 import { createJiti } from 'jiti';
 
 const {
+  SessionModelChangesSchema,
+  SessionWireSchema,
+  StreamModelChangesSchema,
+  StreamWireSchema,
+  ReferenceEntrySchema,
+  ReferenceProposalSchema,
   isReferenceEntry,
   isReferenceText,
   isSession,
@@ -153,4 +159,32 @@ test('isStream and isSession validate format-5 records', () => {
   );
   assert.equal(isStream({ ...stream(), title: 'old' }), false);
   assert.equal(isSession({ ...session(), title: 'old' }), false);
+});
+
+test('derived model-change and proposal schemas match canonical wire schemas by construction', async () => {
+  const { Check } = await import('typebox/value');
+  assert.equal(Check(StreamWireSchema, stream()), true);
+  assert.equal(Check(SessionWireSchema, session()), true);
+
+  // ReferenceProposalSchema has every ReferenceEntry field except manual, plus key.
+  const entryKeys = Object.keys(ReferenceEntrySchema.properties).filter((k) => k !== 'manual').sort();
+  const proposalKeys = Object.keys(ReferenceProposalSchema.properties).filter((k) => k !== 'key').sort();
+  assert.deepEqual(proposalKeys, entryKeys);
+
+  // Report change schemas use TextPair objects (no legacy *_short flat keys) and only allow null on remaining.
+  assert.deepEqual(Object.keys(SessionModelChangesSchema.properties).sort(), [
+    'branch',
+    'recap',
+    'remaining',
+    'state',
+    'status',
+    'title',
+  ]);
+  assert.deepEqual(Object.keys(StreamModelChangesSchema.properties).sort(), ['goal', 'title']);
+  assert.equal(Check(SessionModelChangesSchema, { recap: { text: 'Built', short: 'Built' } }), true);
+  assert.equal(Check(SessionModelChangesSchema, { recap: 'flat string' }), false);
+  assert.equal(Check(SessionModelChangesSchema, { recap: null }), false);
+  assert.equal(Check(SessionModelChangesSchema, { remaining: null }), true);
+  assert.equal(Check(StreamModelChangesSchema, { goal: { text: 'Purpose', short: null } }), true);
+  assert.equal(Check(StreamModelChangesSchema, { goal: null }), false);
 });

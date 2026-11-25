@@ -141,10 +141,10 @@ export async function runReport(
       const created = await environment.createStream({
         title: streamTitle!,
         titleMode: "automatic",
-        ...(enrolled.stream?.goal?.trim()
+        ...(enrolled.stream?.goal?.text?.trim()
           ? {
-              goal: enrolled.stream.goal.trim(),
-              goalShort: enrolled.stream.goal_short?.trim() || undefined,
+              goal: enrolled.stream.goal.text.trim(),
+              goalShort: enrolled.stream.goal.short?.trim() || undefined,
               goalMode: "automatic" as const,
             }
           : {}),

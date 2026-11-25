@@ -1,92 +1,259 @@
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { realpathSync } from "node:fs";
+import { Type, type Static, type TObject, type TSchema } from "typebox";
 
-export type Status = "active" | "waiting" | "blocked" | "parked" | "done" | "closed";
-export type Mode = "automatic" | "manual";
-export type NamingSettings = { stream: Mode; session: Mode };
+export const REPORT_STATUSES = ["active", "waiting", "blocked", "parked", "done"] as const;
+export const STATUSES = [...REPORT_STATUSES, "closed"] as const;
+export const MODES = ["automatic", "manual"] as const;
+export const REFERENCE_KINDS = ["document", "pr", "issue", "link"] as const;
+export const REFERENCE_ROLES = ["deliverable", "dependency", "brief", "background"] as const;
+export const REFERENCE_STATUSES = ["active", "fulfilled", "dropped"] as const;
 
-export type Title = { text: string; manual: boolean };
-export type Goal = { text: string; short: string | null; manual: boolean };
-export type TextPair = { text: string; short: string | null };
+export function literalUnion<const T extends readonly string[]>(
+  values: T,
+  options?: Record<string, unknown>
+) {
+  return Type.Union(
+    values.map((v) => Type.Literal(v)),
+    options
+  );
+}
 
-export type RepositoryInfo = {
-  url: string | null;
-  within: string | null;
-  branch: string | null;
-};
+const nullable = <T extends TSchema>(schema: T) => Type.Union([schema, Type.Null()]);
 
-export type SessionDirectory = {
-  path: string;
-  repository: RepositoryInfo | null;
-};
+export const ReportStatusSchema = literalUnion(REPORT_STATUSES);
+export const StatusSchema = literalUnion(STATUSES);
+export const ModeSchema = literalUnion(MODES);
+export const NamingSettingsSchema = Type.Object(
+  {
+    stream: ModeSchema,
+    session: ModeSchema,
+  },
+  { additionalProperties: false }
+);
 
-export type ReferenceKind = "document" | "pr" | "issue" | "link";
-export type ReferenceRole = "deliverable" | "dependency" | "brief" | "background";
-export type ReferenceStatus = "active" | "fulfilled" | "dropped";
+export const TitleSchema = Type.Object(
+  {
+    text: Type.String(),
+    manual: Type.Boolean(),
+  },
+  { additionalProperties: false }
+);
 
-export type ReferenceEntry = {
-  kind: ReferenceKind;
-  name: string;
-  purpose: string;
-  role: ReferenceRole;
-  status: ReferenceStatus;
-  manual: boolean;
-};
+export const TextPairSchema = Type.Object(
+  {
+    text: Type.String(),
+    short: nullable(Type.String()),
+  },
+  { additionalProperties: false }
+);
 
-export type ArtifactEntry = {
-  description: string;
-};
+export const GoalSchema = Type.Object(
+  {
+    text: Type.String(),
+    short: nullable(Type.String()),
+    manual: Type.Boolean(),
+  },
+  { additionalProperties: false }
+);
 
-export type DocumentFileState =
-  | { status: "available"; path: string }
-  | { status: "unavailable"; reason: string };
+export const RepositoryInfoSchema = Type.Object(
+  {
+    url: nullable(Type.String()),
+    within: nullable(Type.String()),
+    branch: nullable(Type.String()),
+  },
+  { additionalProperties: false }
+);
 
-export type UnreadableRecord = {
-  kind: "host" | "stream" | "session";
-  host: string;
-  path: string;
-  cause: string;
-  repair: string;
-};
+export const SessionDirectorySchema = Type.Object(
+  {
+    path: Type.String(),
+    repository: nullable(RepositoryInfoSchema),
+  },
+  { additionalProperties: false }
+);
 
-export type StreamWire = {
+export const ReferenceKindSchema = literalUnion(REFERENCE_KINDS);
+export const ReferenceRoleSchema = literalUnion(REFERENCE_ROLES);
+export const ReferenceStatusSchema = literalUnion(REFERENCE_STATUSES);
+
+export const ReferenceEntrySchema = Type.Object(
+  {
+    kind: ReferenceKindSchema,
+    name: Type.String(),
+    purpose: Type.String(),
+    role: ReferenceRoleSchema,
+    status: ReferenceStatusSchema,
+    manual: Type.Boolean(),
+  },
+  { additionalProperties: false }
+);
+
+export const ArtifactEntrySchema = Type.Object(
+  {
+    description: Type.String(),
+  },
+  { additionalProperties: false }
+);
+
+export const DocumentFileStateSchema = Type.Union([
+  Type.Object({ path: Type.String() }, { additionalProperties: false }),
+  Type.Object({ reason: Type.String() }, { additionalProperties: false }),
+]);
+
+export const UnreadableRecordSchema = Type.Object({
+  kind: literalUnion(["host", "stream", "session"] as const),
+  host: Type.String(),
+  path: Type.String(),
+  cause: Type.String(),
+  repair: Type.String(),
+});
+
+export const SessionWireSchema = Type.Object({
+  key: Type.Optional(Type.String()),
+  host_id: Type.String(),
+  harness: Type.String(),
+  id: Type.String(),
+  stream_id: Type.String(),
+  title: TitleSchema,
+  status: StatusSchema,
+  recap: nullable(TextPairSchema),
+  state: nullable(TextPairSchema),
+  remaining: nullable(TextPairSchema),
+  directory: nullable(SessionDirectorySchema),
+  references: Type.Record(Type.String(), ReferenceEntrySchema),
+  artifacts: Type.Record(Type.String(), ArtifactEntrySchema),
+  document_files: Type.Optional(Type.Record(Type.String(), DocumentFileStateSchema)),
+  revision: Type.Integer({ minimum: 0 }),
+  updated_at_ms: Type.Integer({ minimum: 0 }),
+});
+
+export const StreamSessionSummarySchema = Type.Object({
+  key: Type.Optional(Type.String()),
+  harness: SessionWireSchema.properties.harness,
+  title: SessionWireSchema.properties.title,
+  status: SessionWireSchema.properties.status,
+  state: Type.Optional(SessionWireSchema.properties.state),
+});
+
+export const StreamWireSchema = Type.Object({
+  key: Type.Optional(Type.String()),
+  host_id: Type.String(),
+  id: Type.String(),
+  title: TitleSchema,
+  goal: nullable(GoalSchema),
+  status: Type.Optional(StatusSchema),
+  sessions: Type.Optional(Type.Array(StreamSessionSummarySchema)),
+  unreadable: Type.Optional(Type.Array(UnreadableRecordSchema)),
+  last_activity_ms: Type.Optional(Type.Integer({ minimum: 0 })),
+  revision: Type.Integer({ minimum: 0 }),
+  updated_at_ms: Type.Integer({ minimum: 0 }),
+});
+
+export const LocalContextSchema = Type.Object({
+  session: nullable(SessionWireSchema),
+  stream: nullable(StreamWireSchema),
+  naming: NamingSettingsSchema,
+});
+
+/** Model-facing `{ text, short? }` input derived directly from `TextPairSchema`. */
+export function textPairInputSchema(descriptions?: { text?: string; short?: string }) {
+  return Type.Object(
+    {
+      text: descriptions?.text
+        ? Type.String({ description: descriptions.text })
+        : TextPairSchema.properties.text,
+      short: Type.Optional(
+        descriptions?.short
+          ? nullable(Type.String({ description: descriptions.short }))
+          : TextPairSchema.properties.short
+      ),
+    },
+    { additionalProperties: false }
+  );
+}
+
+export const TextPairInputSchema = textPairInputSchema();
+
+/** Model-facing reference proposal derived directly from `ReferenceEntrySchema` (omits `manual`, adds `key`). */
+export function referenceProposalSchema(descriptions?: {
   key?: string;
-  host_id: string;
-  id: string;
-  title: Title;
-  goal: Goal | null;
-  status?: Status;
-  sessions?: SessionWire[];
-  unreadable?: UnreadableRecord[];
-  last_activity_ms?: number;
-  revision: number;
-  updated_at_ms: number;
-};
+  name?: string;
+  purpose?: string;
+}) {
+  const { manual: _manual, ...entryProps } = ReferenceEntrySchema.properties;
+  return Type.Object(
+    {
+      key: Type.String(descriptions?.key ? { description: descriptions.key } : undefined),
+      ...entryProps,
+      ...(descriptions?.name ? { name: Type.String({ description: descriptions.name }) } : {}),
+      ...(descriptions?.purpose
+        ? { purpose: Type.String({ description: descriptions.purpose }) }
+        : {}),
+    },
+    { additionalProperties: false }
+  );
+}
 
-export type SessionWire = {
-  key?: string;
-  host_id: string;
-  harness: string;
-  id: string;
-  stream_id: string;
-  title: Title;
-  status: Status;
-  recap: TextPair | null;
-  state: TextPair | null;
-  remaining: TextPair | null;
-  directory: SessionDirectory | null;
-  references: Record<string, ReferenceEntry>;
-  artifacts: Record<string, ArtifactEntry>;
-  document_files?: Record<string, DocumentFileState>;
-  revision: number;
-  updated_at_ms: number;
-};
+export const ReferenceProposalSchema = referenceProposalSchema();
 
-export type LocalContext = {
-  session: SessionWire | null;
-  stream: StreamWire | null;
-  naming: NamingSettings;
-};
+/**
+ * Automatic Session report delta schema, derived from `SessionWireSchema` / `TitleSchema` /
+ * `TextPairSchema` / `RepositoryInfoSchema`. Only `remaining` is nullable (clearable).
+ */
+export const SessionModelChangesSchema = Type.Object(
+  {
+    title: Type.Optional(TitleSchema.properties.text),
+    status: Type.Optional(ReportStatusSchema),
+    recap: Type.Optional(TextPairInputSchema),
+    state: Type.Optional(TextPairInputSchema),
+    remaining: Type.Optional(nullable(TextPairInputSchema)),
+    branch: Type.Optional(Type.String()),
+  },
+  { additionalProperties: false }
+);
+
+/**
+ * Automatic Stream report delta schema, derived from `StreamWireSchema` / `TitleSchema` /
+ * `GoalSchema` (without `manual`). Non-nullable: omit unchanged fields.
+ */
+export const StreamModelChangesSchema = Type.Object(
+  {
+    title: Type.Optional(TitleSchema.properties.text),
+    goal: Type.Optional(TextPairInputSchema),
+  },
+  { additionalProperties: false }
+);
+
+export type ReportStatus = Static<typeof ReportStatusSchema>;
+export type Status = Static<typeof StatusSchema>;
+export type Mode = Static<typeof ModeSchema>;
+export type NamingSettings = Static<typeof NamingSettingsSchema>;
+
+export type Title = Static<typeof TitleSchema>;
+export type Goal = Static<typeof GoalSchema>;
+export type TextPair = Static<typeof TextPairSchema>;
+export type TextPairInput = Static<typeof TextPairInputSchema>;
+
+export type RepositoryInfo = Static<typeof RepositoryInfoSchema>;
+export type SessionDirectory = Static<typeof SessionDirectorySchema>;
+
+export type ReferenceKind = Static<typeof ReferenceKindSchema>;
+export type ReferenceRole = Static<typeof ReferenceRoleSchema>;
+export type ReferenceStatus = Static<typeof ReferenceStatusSchema>;
+export type ReferenceEntry = Static<typeof ReferenceEntrySchema>;
+export type RawReferenceProposal = Static<typeof ReferenceProposalSchema>;
+
+export type ArtifactEntry = Static<typeof ArtifactEntrySchema>;
+export type DocumentFileState = Static<typeof DocumentFileStateSchema>;
+export type UnreadableRecord = Static<typeof UnreadableRecordSchema>;
+export type StreamWire = Static<typeof StreamWireSchema>;
+export type SessionWire = Static<typeof SessionWireSchema>;
+export type LocalContext = Static<typeof LocalContextSchema>;
+
+export type SessionModelChanges = Static<typeof SessionModelChangesSchema>;
+export type StreamModelChanges = Static<typeof StreamModelChangesSchema>;
 
 export type EditBody = {
   changes: Record<string, unknown>;
@@ -99,6 +266,15 @@ export type EditResult = {
   partial?: boolean;
 };
 
+const schemaFields = (schema: TObject): readonly string[] => Object.keys(schema.properties);
+const TITLE_FIELDS = schemaFields(TitleSchema);
+const GOAL_FIELDS = schemaFields(GoalSchema);
+const TEXT_PAIR_FIELDS = schemaFields(TextPairSchema);
+const REPOSITORY_INFO_FIELDS = schemaFields(RepositoryInfoSchema);
+const SESSION_DIRECTORY_FIELDS = schemaFields(SessionDirectorySchema);
+const REFERENCE_ENTRY_FIELDS = schemaFields(ReferenceEntrySchema);
+const ARTIFACT_ENTRY_FIELDS = schemaFields(ArtifactEntrySchema);
+
 const object = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === "object" && !Array.isArray(value);
 const text = (value: unknown): value is string =>
@@ -108,14 +284,13 @@ const identity = (value: unknown): value is string =>
 const nullableText = (value: unknown): value is string | null =>
   value === null || text(value);
 const mode = (value: unknown): value is Mode =>
-  value === "automatic" || value === "manual";
+  typeof value === "string" && (MODES as readonly string[]).includes(value);
 const count = (value: unknown): value is number =>
   Number.isSafeInteger(value) && (value as number) >= 0;
 const stamped = (value: Record<string, unknown>) =>
   count(value.revision) && count(value.updated_at_ms);
 const status = (value: unknown): value is Status =>
-  typeof value === "string" &&
-  ["active", "waiting", "blocked", "parked", "done", "closed"].includes(value);
+  typeof value === "string" && (STATUSES as readonly string[]).includes(value);
 
 export function isReferenceText(value: unknown): value is string {
   return (
@@ -161,7 +336,7 @@ export function referenceUrl(value: string): URL | undefined {
 export function isTitle(value: unknown): value is Title {
   return (
     object(value) &&
-    onlyFields(value, ["text", "manual"]) &&
+    onlyFields(value, TITLE_FIELDS) &&
     isReferenceText(value.text) &&
     typeof value.manual === "boolean"
   );
@@ -170,7 +345,7 @@ export function isTitle(value: unknown): value is Title {
 export function isGoal(value: unknown): value is Goal {
   return (
     object(value) &&
-    onlyFields(value, ["text", "short", "manual"]) &&
+    onlyFields(value, GOAL_FIELDS) &&
     isReferenceText(value.text) &&
     (value.short === null || isReferenceText(value.short)) &&
     typeof value.manual === "boolean"
@@ -180,7 +355,7 @@ export function isGoal(value: unknown): value is Goal {
 export function isTextPair(value: unknown): value is TextPair {
   return (
     object(value) &&
-    onlyFields(value, ["text", "short"]) &&
+    onlyFields(value, TEXT_PAIR_FIELDS) &&
     isReferenceText(value.text) &&
     (value.short === null || isReferenceText(value.short))
   );
@@ -189,7 +364,7 @@ export function isTextPair(value: unknown): value is TextPair {
 export function isRepositoryInfo(value: unknown): value is RepositoryInfo {
   return (
     object(value) &&
-    onlyFields(value, ["url", "within", "branch"]) &&
+    onlyFields(value, REPOSITORY_INFO_FIELDS) &&
     (value.url === null || isReferenceText(value.url)) &&
     (value.within === null || isReferenceText(value.within)) &&
     (value.branch === null || isReferenceText(value.branch))
@@ -199,7 +374,7 @@ export function isRepositoryInfo(value: unknown): value is RepositoryInfo {
 export function isSessionDirectory(value: unknown): value is SessionDirectory {
   return (
     object(value) &&
-    onlyFields(value, ["path", "repository"]) &&
+    onlyFields(value, SESSION_DIRECTORY_FIELDS) &&
     isReferenceText(value.path) &&
     (value.repository === null || isRepositoryInfo(value.repository))
   );
@@ -208,12 +383,12 @@ export function isSessionDirectory(value: unknown): value is SessionDirectory {
 export function isReferenceEntry(value: unknown): value is ReferenceEntry {
   return (
     object(value) &&
-    onlyFields(value, ["kind", "name", "purpose", "role", "status", "manual"]) &&
-    ["document", "pr", "issue", "link"].includes(value.kind as string) &&
+    onlyFields(value, REFERENCE_ENTRY_FIELDS) &&
+    (REFERENCE_KINDS as readonly string[]).includes(value.kind as string) &&
     isReferenceText(value.name) &&
     isReferenceText(value.purpose) &&
-    ["deliverable", "dependency", "brief", "background"].includes(value.role as string) &&
-    ["active", "fulfilled", "dropped"].includes(value.status as string) &&
+    (REFERENCE_ROLES as readonly string[]).includes(value.role as string) &&
+    (REFERENCE_STATUSES as readonly string[]).includes(value.status as string) &&
     typeof value.manual === "boolean"
   );
 }
@@ -226,7 +401,7 @@ export function isValidReferencePair(key: string, entry: ReferenceEntry): boolea
 export function isArtifactEntry(value: unknown): value is ArtifactEntry {
   return (
     object(value) &&
-    onlyFields(value, ["description"]) &&
+    onlyFields(value, ARTIFACT_ENTRY_FIELDS) &&
     isReferenceText(value.description)
   );
 }

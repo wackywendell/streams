@@ -96,10 +96,10 @@ test('capture from real format-5 CLI and in-memory replay never modify live cata
     runtime((input) => {
       tasks.push(input.task);
       if (input.task === 'session') {
-        return response({ changes: { state: 'Simulated session state', state_short: 'Simulated' } });
+        return response({ changes: { state: { text: 'Simulated session state', short: 'Simulated' } } });
       }
       assert.equal(input.catalog.sessions[0].state.text, 'Simulated session state');
-      return response({ changes: { goal: 'Simulated effort goal', goal_short: 'Sim goal' } });
+      return response({ changes: { goal: { text: 'Simulated effort goal', short: 'Sim goal' } } });
     }),
     model,
     { kind: 'report', force: true },
@@ -238,8 +238,8 @@ test('unattached replay runs enroll before session and stream in memory', async 
       if (input.task === 'enroll') {
         return response({ meaningful: true, stream: { title: 'Effort' }, session: { title: 'Lane' } });
       }
-      if (input.task === 'session') return response({ changes: { state: 'New state' } });
-      return response({ changes: { goal: 'New goal' } });
+      if (input.task === 'session') return response({ changes: { state: { text: 'New state', short: null } } });
+      return response({ changes: { goal: { text: 'New goal', short: null } } });
     }),
     model,
     { kind: 'report', force: true },
