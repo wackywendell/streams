@@ -255,37 +255,21 @@ pub(super) struct SessionProgressArgs {
     #[arg(long, help_heading = "Advanced")]
     pub recap_short: Option<String>,
 
-    /// Set Session state text
-    #[arg(long, conflicts_with_all = ["state_file", "clear_state"])]
-    pub state: Option<String>,
+    /// Set Session next-step text
+    #[arg(long, conflicts_with_all = ["next_file", "clear_next"])]
+    pub next: Option<String>,
 
-    /// Read Session state text from FILE
-    #[arg(long, conflicts_with_all = ["state", "clear_state"])]
-    pub state_file: Option<PathBuf>,
+    /// Read Session next-step text from FILE
+    #[arg(long, conflicts_with_all = ["next", "clear_next"])]
+    pub next_file: Option<PathBuf>,
 
-    /// Clear Session state
-    #[arg(long, conflicts_with_all = ["state", "state_file", "state_short"])]
-    pub clear_state: bool,
+    /// Clear Session next-step text
+    #[arg(long, conflicts_with_all = ["next", "next_file", "next_short"])]
+    pub clear_next: bool,
 
-    /// Short state for narrow displays (only with --state or --state-file)
+    /// Short next-step text for narrow displays (only with --next or --next-file)
     #[arg(long, help_heading = "Advanced")]
-    pub state_short: Option<String>,
-
-    /// Set Session remaining work text
-    #[arg(long, conflicts_with_all = ["remaining_file", "clear_remaining"])]
-    pub remaining: Option<String>,
-
-    /// Read Session remaining work text from FILE
-    #[arg(long, conflicts_with_all = ["remaining", "clear_remaining"])]
-    pub remaining_file: Option<PathBuf>,
-
-    /// Clear Session remaining work
-    #[arg(long, conflicts_with_all = ["remaining", "remaining_file", "remaining_short"])]
-    pub clear_remaining: bool,
-
-    /// Short remaining work for narrow displays (only with --remaining or --remaining-file)
-    #[arg(long, help_heading = "Advanced")]
-    pub remaining_short: Option<String>,
+    pub next_short: Option<String>,
 }
 
 impl SessionProgressArgs {
@@ -294,14 +278,10 @@ impl SessionProgressArgs {
             || self.recap_file.is_some()
             || self.clear_recap
             || self.recap_short.is_some()
-            || self.state.is_some()
-            || self.state_file.is_some()
-            || self.clear_state
-            || self.state_short.is_some()
-            || self.remaining.is_some()
-            || self.remaining_file.is_some()
-            || self.clear_remaining
-            || self.remaining_short.is_some()
+            || self.next.is_some()
+            || self.next_file.is_some()
+            || self.clear_next
+            || self.next_short.is_some()
     }
 }
 

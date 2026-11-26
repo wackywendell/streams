@@ -58,8 +58,7 @@ function makeCapture(t, opts = {}) {
     title: { text: 'CLI', manual: opts.sessionTitleManual ?? false },
     status: 'active',
     recap: { text: 'Old recap', short: null },
-    state: { text: 'Old state', short: null },
-    remaining: { text: 'Old remaining', short: null },
+    next: { text: 'Old next', short: null },
     directory: { path: dir, repository: null },
     references: {},
     artifacts: {},
@@ -106,7 +105,7 @@ test('replay reset --auto clears manual marks before regenerating', async (t) =>
       const req = JSON.parse(payload.messages.at(-1).content);
       tasks.push(req.task);
       if (req.task === 'session') {
-        return response({ changes: { title: 'Fresh CLI', state: { text: 'Regenerated state', short: null } } });
+        return response({ changes: { title: 'Fresh CLI', next: { text: 'Regenerated next', short: null } } });
       }
       return response({ changes: { title: 'Fresh Effort', goal: { text: 'Fresh goal', short: null } } });
     }),
@@ -137,7 +136,7 @@ test('replay skips stream task when stream title and goal are both manual (witho
     runtime(async (_m, payload) => {
       const req = JSON.parse(payload.messages.at(-1).content);
       tasks.push(req.task);
-      return response({ changes: { state: { text: 'Session updated', short: null } } });
+      return response({ changes: { next: { text: 'Session updated', short: null } } });
     }),
     model,
     { kind: 'report', force: true },
@@ -159,7 +158,7 @@ test('replay respects --reset session targeting without touching stream', async 
     runtime(async (_m, payload) => {
       const req = JSON.parse(payload.messages.at(-1).content);
       tasks.push(req.task);
-      return response({ changes: { state: { text: 'Only session', short: null } } });
+      return response({ changes: { next: { text: 'Only session', short: null } } });
     }),
     model,
     { kind: 'reset', target: 'session', auto: false },
@@ -168,6 +167,6 @@ test('replay respects --reset session targeting without touching stream', async 
 
   assert.equal(run.samples[0].status, 'completed');
   assert.deepEqual(tasks, ['session']);
-  assert.equal(run.samples[0].after.session.state.text, 'Only session');
+  assert.equal(run.samples[0].after.session.next.text, 'Only session');
   assert.equal(run.samples[0].after.stream.goal.text, 'Old goal');
 });

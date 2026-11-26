@@ -120,8 +120,8 @@ fn fixture() -> (FakeStore, RecordAddress, RecordAddress) {
 
     let mut session =
         Session::new("host", "pi", "sess1", "s1", Title::new("Session", false)).unwrap();
-    session.state = Some(TextPair::new("Drafting", Some("draft".into())));
-    session.remaining = Some(TextPair::new("Finish tests", None));
+    session.recap = Some(TextPair::new("Drafting", Some("draft".into())));
+    session.next = Some(TextPair::new("Finish tests", None));
     session.directory = Some(SessionDirectory {
         path: "/tmp/work".into(),
         repository: Some(RepositoryInfo {
@@ -198,8 +198,8 @@ fn edit_with_before_merges_rfc7386_preserving_explicit_nulls() {
 
     let req = EditRequest::parse(&json!({
         "changes": {
-            "state": { "short": null },
-            "remaining": null,
+            "recap": { "short": null },
+            "next": null,
             "directory": { "repository": { "branch": null } },
             "references": {
                 "https://github.com/o/r/pull/43": { "status": "fulfilled" },
@@ -214,8 +214,8 @@ fn edit_with_before_merges_rfc7386_preserving_explicit_nulls() {
             }
         },
         "before": {
-            "state": { "text": "Drafting", "short": "draft" },
-            "remaining": { "text": "Finish tests", "short": null },
+            "recap": { "text": "Drafting", "short": "draft" },
+            "next": { "text": "Finish tests", "short": null },
             "directory": {
                 "path": "/tmp/work",
                 "repository": {
@@ -246,8 +246,8 @@ fn edit_with_before_merges_rfc7386_preserving_explicit_nulls() {
     let Record::Session(after) = store.get(&session_addr).unwrap() else {
         unreachable!()
     };
-    assert_eq!(after.state, Some(TextPair::new("Drafting", None)));
-    assert_eq!(after.remaining, None);
+    assert_eq!(after.recap, Some(TextPair::new("Drafting", None)));
+    assert_eq!(after.next, None);
     let repo = after
         .directory
         .as_ref()
@@ -362,7 +362,7 @@ fn concurrent_edit_writes_unchanged_units_and_reports_not_written_with_current_v
     let report = EditRequest::parse(&json!({
         "changes": {
             "title": { "text": "Auto Title" },
-            "state": { "text": "In review", "short": "review" },
+            "recap": { "text": "In review", "short": "review" },
             "references": {
                 "https://github.com/o/r/pull/43": { "status": "fulfilled" },
                 "https://github.com/o/r/issues/9": {
@@ -377,7 +377,7 @@ fn concurrent_edit_writes_unchanged_units_and_reports_not_written_with_current_v
         },
         "before": {
             "title": { "text": "Session", "manual": false },
-            "state": { "text": "Drafting", "short": "draft" },
+            "recap": { "text": "Drafting", "short": "draft" },
             "references": {
                 "https://github.com/o/r/pull/43": {
                     "kind": "pr",
@@ -397,8 +397,8 @@ fn concurrent_edit_writes_unchanged_units_and_reports_not_written_with_current_v
     assert!(!res.is_complete());
     assert!(res.written);
 
-    // `state` and `issues/9` landed; `title` and `pull/43` were not written and report current saved values.
-    assert!(res.not_written.get("state").is_none());
+    // `recap` and `issues/9` landed; `title` and `pull/43` were not written and report current saved values.
+    assert!(res.not_written.get("recap").is_none());
     assert_eq!(
         res.not_written["title"],
         json!({ "text": "Human Title", "manual": true })
@@ -418,7 +418,7 @@ fn concurrent_edit_writes_unchanged_units_and_reports_not_written_with_current_v
     };
     assert_eq!(after.title, Title::new("Human Title", true));
     assert_eq!(
-        after.state,
+        after.recap,
         Some(TextPair::new("In review", Some("review".into())))
     );
     assert!(

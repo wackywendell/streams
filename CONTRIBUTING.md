@@ -10,7 +10,7 @@ npm ci
 just build
 ```
 
-Rust owns the CLI, format-5 catalog storage, edit engine, VCS inspection, and classic Herdr card projection. TypeScript owns the in-process Pi extension (`extensions/stream-checkpoint/`) and its reporting, naming, and prompt-lab helpers. JavaScript under `integrations/herdr-app/` owns the `herdr-app` mod talking directly to the public `streams` CLI and `hc`.
+Rust owns the CLI, format-6 catalog storage, edit engine, VCS inspection, and classic Herdr card projection. TypeScript owns the in-process Pi extension (`extensions/stream-checkpoint/`) and its reporting, naming, and prompt-lab helpers. JavaScript under `integrations/herdr-app/` owns the `herdr-app` mod talking directly to the public `streams` CLI and `hc`.
 
 ## Test
 

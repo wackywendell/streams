@@ -51,7 +51,7 @@ export function automaticSessionFieldNames(context: LocalContext): (keyof Sessio
   if (!context.session) return [];
   const fields: (keyof SessionModelChanges)[] = [];
   if (canAutoEditSessionTitle(context.session, context.naming)) fields.push("title");
-  fields.push("status", "recap", "state", "remaining");
+  fields.push("status", "recap", "next");
   if (context.session.directory?.repository) fields.push("branch");
   return fields;
 }
@@ -81,7 +81,7 @@ function textPairFromInput(
 }
 
 /**
- * Filter model Session proposals against format-5 rules (`docs/session-references.md`),
+ * Filter model Session proposals against format-6 rules (`docs/session-card-fields.md`),
  * producing a single `session edit --input -` body with exact `before` values.
  */
 export function buildSessionReportEdit(
@@ -114,10 +114,10 @@ export function buildSessionReportEdit(
     before.status = session.status;
   }
 
-  // TextPair fields: recap and state cannot be cleared by automatic reports; remaining can.
-  for (const field of ["recap", "state", "remaining"] as const) {
+  // TextPair fields: recap cannot be cleared by automatic reports; next can.
+  for (const field of ["recap", "next"] as const) {
     if (!Object.hasOwn(rawChanges, field)) continue;
-    const next = textPairFromInput(session[field], rawChanges[field], field === "remaining");
+    const next = textPairFromInput(session[field], rawChanges[field], field === "next");
     if (next !== undefined && !isDeepStrictEqual(next, session[field])) {
       changes[field] = next;
       before[field] = structuredClone(session[field]);
@@ -230,7 +230,7 @@ export function buildSessionReportEdit(
 }
 
 /**
- * Filter model Stream proposals against format-5 rules, producing a single
+ * Filter model Stream proposals against format-6 rules, producing a single
  * `stream edit --input -` body with exact `before` values.
  */
 export function buildStreamReportEdit(
@@ -331,7 +331,7 @@ function mergeValue(base: unknown, patch: unknown): unknown {
 }
 
 /**
- * Pure in-memory format-5 edit simulation (used by prompt-lab replay).
+ * Pure in-memory format-6 edit simulation (used by prompt-lab replay).
  * Applies each unit whose saved value matches `before` and reports refused units in `not_written`.
  */
 export function applyEditLocally<T extends StreamWire | SessionWire>(

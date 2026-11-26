@@ -27,9 +27,9 @@ use crate::{
 
 const FORMAT: &str = ".catalog-local/records.json";
 /// Bumped whenever record files change shape. Older catalogs are reset, never read.
-const FORMAT_VERSION: u32 = 5;
+const FORMAT_VERSION: u32 = 6;
 
-/// Canonical relative paths for format 5; callers never probe legacy locations.
+/// Canonical relative paths for format 6; callers never probe legacy locations.
 pub fn relative_record_path(address: &RecordAddress) -> Result<PathBuf, StorageError> {
     address.validate()?;
     Ok(record_path(address))

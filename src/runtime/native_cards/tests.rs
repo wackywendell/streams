@@ -389,18 +389,14 @@ fn an_invalid_caption_is_rejected_before_opening_a_card() {
 }
 
 #[test]
-fn projection_owns_combined_caption_and_all_three_pi_short_forms() {
+fn projection_owns_combined_caption_and_both_pi_short_forms() {
     let f = Fixture::new();
     f.world.lock().unwrap().row("pane", "card")["label"] = json!("Old caption");
     let mut engine = f.engine().unwrap();
-    let set_short = |engine: &mut NativeCardEngine,
-                     recap: Option<String>,
-                     state: Option<String>,
-                     remaining: Option<String>| {
+    let set_short = |engine: &mut NativeCardEngine, recap: Option<String>, next: Option<String>| {
         let mut session = engine.card.session().clone();
         session.recap = recap.map(|s| TextPair::new("Recap", Some(s)));
-        session.state = state.map(|s| TextPair::new("State", Some(s)));
-        session.remaining = remaining.map(|s| TextPair::new("Remaining", Some(s)));
+        session.next = next.map(|s| TextPair::new("Next", Some(s)));
         engine.card = CardRecords::new(
             engine.card.stream().clone(),
             session,
@@ -409,36 +405,24 @@ fn projection_owns_combined_caption_and_all_three_pi_short_forms() {
         )
         .unwrap();
     };
-    set_short(
-        &mut engine,
-        Some("Card text".into()),
-        Some("Review".into()),
-        Some("Land".into()),
-    );
+    set_short(&mut engine, Some("Card text".into()), Some("Land".into()));
     engine.project().unwrap();
     {
         let mut world = f.world.lock().unwrap();
         assert_eq!(world.row("pane", "card")["label"], "Effort: Conversation");
         let tokens = &world.row("pane", "owner")["tokens"];
         assert_eq!(tokens["strm_recap_short"], "Card text");
-        assert_eq!(tokens["strm_state_short"], "Review");
-        assert_eq!(tokens["strm_remaining_short"], "Land");
+        assert_eq!(tokens["strm_next_short"], "Land");
         assert_eq!(world.row("workspace", "w")["label"], "Effort");
         assert_eq!(world.row("tab", "t")["label"], "Conversation");
     }
     let mut engine = f.engine().unwrap();
-    set_short(
-        &mut engine,
-        Some("x".repeat(25)),
-        Some("x".repeat(24)),
-        None,
-    );
+    set_short(&mut engine, Some("x".repeat(25)), Some("x".repeat(24)));
     engine.project().unwrap();
     let mut world = f.world.lock().unwrap();
     let tokens = &world.row("pane", "owner")["tokens"];
     assert!(tokens.get("strm_recap_short").is_none());
-    assert_eq!(tokens["strm_state_short"], "x".repeat(24));
-    assert!(tokens.get("strm_remaining_short").is_none());
+    assert_eq!(tokens["strm_next_short"], "x".repeat(24));
 }
 
 #[test]

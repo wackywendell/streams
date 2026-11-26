@@ -1,4 +1,4 @@
-//! Format-5 typed records with strict wire field mapping.
+//! Format-6 typed records with strict wire field mapping.
 //! Every absent value is `null`, never empty text and never omitted.
 
 use std::collections::BTreeMap;
@@ -375,7 +375,7 @@ impl Goal {
     }
 }
 
-/// A progress text and its optional short form (`state`, `recap`, `remaining`).
+/// A progress text and its optional short form (`recap`, `next`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TextPair {
@@ -553,11 +553,9 @@ pub struct Session {
     pub title: Title,
     pub status: Status,
     #[serde(deserialize_with = "optional_object")]
-    pub state: Option<TextPair>,
-    #[serde(deserialize_with = "optional_object")]
     pub recap: Option<TextPair>,
     #[serde(deserialize_with = "optional_object")]
-    pub remaining: Option<TextPair>,
+    pub next: Option<TextPair>,
     #[serde(deserialize_with = "optional_object")]
     pub directory: Option<SessionDirectory>,
     #[serde(deserialize_with = "object_map")]
@@ -583,9 +581,8 @@ impl Session {
             stream_id: stream_id.into(),
             title,
             status: Status::Active,
-            state: None,
             recap: None,
-            remaining: None,
+            next: None,
             directory: None,
             references: BTreeMap::new(),
             artifacts: BTreeMap::new(),
@@ -606,14 +603,11 @@ impl Session {
         check_token(&self.id, "session.id")?;
         check_token(&self.stream_id, "session.stream_id")?;
         self.title.validate("session.title")?;
-        if let Some(state) = &self.state {
-            state.validate("session.state")?;
-        }
         if let Some(recap) = &self.recap {
             recap.validate("session.recap")?;
         }
-        if let Some(remaining) = &self.remaining {
-            remaining.validate("session.remaining")?;
+        if let Some(next) = &self.next {
+            next.validate("session.next")?;
         }
         if let Some(directory) = &self.directory {
             directory.validate()?;

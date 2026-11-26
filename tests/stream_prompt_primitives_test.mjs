@@ -61,9 +61,8 @@ function fixture() {
     stream_id: 'effort',
     title: { text: 'Lane', manual: false },
     status: 'active',
-    recap: null,
-    state: { text: 'Before', short: null },
-    remaining: { text: 'Next', short: null },
+    recap: { text: 'Before', short: null },
+    next: { text: 'Next', short: null },
     directory: { path: directory, repository: null },
     references: {},
     artifacts: {},
@@ -203,19 +202,19 @@ test('saved requests round-trip, use exact rendered input across reruns, and ret
     const loaded = loadPrepared(f.root, artifact.id);
     const before = structuredClone(loaded);
     const seen = [];
-    for (const state of ['First', 'Second']) {
+    for (const nextText of ['First', 'Second']) {
       const result = await run(
         loaded,
         runtime(async (_m, payload) => {
           seen.push(structuredClone(payload));
           payload.systemPrompt = 'Mutation from provider';
-          return response({ state: { text: state, short: null } });
+          return response({ next: { text: nextText, short: null } });
         }),
         model,
         signal()
       );
       assert.equal(result.status, 'completed');
-      assert.deepEqual(result.value.changes.state, { text: state, short: null });
+      assert.deepEqual(result.value.changes.next, { text: nextText, short: null });
     }
     assert.deepEqual(seen, [prepared.model_request, prepared.model_request]);
     assert.deepEqual(loaded, before);
@@ -245,7 +244,7 @@ test('capture/prepare/run/inspect adapters need no UI, preserve recordings, and 
       current: f.manager,
       runtime: runtime(async () => {
         calls++;
-        return response({ state: { text: 'After', short: null } });
+        return response({ next: { text: 'After', short: null } });
       }),
     };
     const before = readFileSync(join(f.root, 'captures', f.capture.id, 'capture.json'), 'utf8');

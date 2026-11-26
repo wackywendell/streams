@@ -105,24 +105,21 @@ export function renderPopup() {
     .when(Boolean(streamTitle), (el) =>
       el.child(div().text_color(t.dim).child(`≋ ${streamTitle}`))
     )
-    .child(
-      h_flex()
-        .gap(8)
-        .items_center()
-        .child(statusBadge(session.status, t))
-        .when(Boolean(session.state), (el) =>
-          el.child(div().text_color(t.muted).truncate().child(session.state))
-        )
-    )
+    .child(h_flex().gap(8).items_center().child(statusBadge(session.status, t)))
     .when(Boolean(session.recap), (el) =>
-      el.child(div().text_color(t.foreground).child(session.recap))
-    )
-    .when(Boolean(session.remaining), (el) =>
       el.child(
         v_flex()
           .gap(4)
-          .child(div().font_medium().text_color(t.muted).child("Remaining"))
-          .child(div().text_color(t.foreground).child(session.remaining))
+          .child(div().font_medium().text_color(t.dim).child("Recap"))
+          .child(div().text_color(t.foreground).child(session.recap))
+      )
+    )
+    .when(Boolean(session.next), (el) =>
+      el.child(
+        v_flex()
+          .gap(4)
+          .child(div().font_medium().text_color(t.dim).child("Next"))
+          .child(div().text_color(t.muted).child(session.next))
       )
     );
 }

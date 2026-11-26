@@ -137,8 +137,7 @@ fn reference_minima_reserve_later_headers_before_earlier_purpose_continuations()
     let mut snapshot = snapshot();
     snapshot.records.stream.goal = Some(Goal::new("Goal", None, false));
     snapshot.records.session.recap = None;
-    snapshot.records.session.state = None;
-    snapshot.records.session.remaining = None;
+    snapshot.records.session.next = None;
     snapshot.context.documents.clear();
     snapshot.records.session.references.clear();
     for (index, name) in ["First", "Second", "Third"].into_iter().enumerate() {
@@ -285,8 +284,7 @@ fn card_text_cases() -> Vec<CardCase> {
         "Built naming settings and Pi name import.",
         None,
     ));
-    card.records.session.state = Some(TextPair::new("Waiting on Argon review.", None));
-    card.records.session.remaining = Some(TextPair::new("Deploy and reload.", None));
+    card.records.session.next = Some(TextPair::new("Deploy and reload.", None));
     card.records.session.references.clear();
     card.context.documents.clear();
     card.records.session.references.insert(
@@ -320,17 +318,15 @@ fn card_text_cases() -> Vec<CardCase> {
         card.records.session.status = status;
         cases.push((format!("card-text-{status}"), Some(card), 44, 14, None));
     }
-    for field in ["recap", "state", "remaining", "all", "goal"] {
+    for field in ["recap", "next", "all", "goal"] {
         let mut card = card.clone();
         match field {
             "recap" => card.records.session.recap = None,
-            "state" => card.records.session.state = None,
-            "remaining" => card.records.session.remaining = None,
+            "next" => card.records.session.next = None,
             "goal" => card.records.stream.goal = None,
             _ => {
                 card.records.session.recap = None;
-                card.records.session.state = None;
-                card.records.session.remaining = None;
+                card.records.session.next = None;
             }
         }
         cases.push((format!("card-text-empty-{field}"), Some(card), 44, 14, None));
@@ -605,8 +601,7 @@ fn artifacts_switch_to_aligned_name_columns_only_when_description_rows_do_not_fi
     let mut snapshot = snapshot();
     snapshot.records.stream.goal = Some(Goal::new("Goal", None, false));
     snapshot.records.session.recap = None;
-    snapshot.records.session.state = None;
-    snapshot.records.session.remaining = None;
+    snapshot.records.session.next = None;
     snapshot
         .records
         .session
@@ -667,17 +662,11 @@ fn artifacts_switch_to_aligned_name_columns_only_when_description_rows_do_not_fi
         }
     }
     snapshot.records.session.recap = Some(TextPair::new("Contribution", None));
-    snapshot.records.session.state = Some(TextPair::new("Current position", None));
-    snapshot.records.session.remaining = Some(TextPair::new("Next action", None));
-    for (height, descriptions) in [(10, false), (13, true)] {
+    snapshot.records.session.next = Some(TextPair::new("Next action", None));
+    for (height, descriptions) in [(9, false), (12, true)] {
         let rendered = super::render::render(Some(&snapshot), Rect::new(0, 0, 100, height), None);
         let text = lines(&rendered.buffer).join("\n");
-        for row in [
-            "Goal",
-            "Session: Contribution",
-            "Status: Current position",
-            "Remaining: Next action",
-        ] {
+        for row in ["Goal", "Recap: Contribution", "Next: Next action"] {
             assert!(text.contains(row));
         }
         assert_eq!(text.contains("Detail 0"), descriptions);
@@ -848,7 +837,7 @@ fn every_repaint_geometry_notice_and_target_change_invalidates_old_actions() {
                 changed.records.session.references.clear();
                 changed.context.documents.clear();
             }
-            _ => changed.records.session.state = Some(TextPair::new("Fresh progress", None)),
+            _ => changed.records.session.next = Some(TextPair::new("Fresh progress", None)),
         }
         let token = view.begin_refresh();
         assert!(!view.is_current(&action));

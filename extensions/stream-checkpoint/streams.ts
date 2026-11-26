@@ -429,7 +429,7 @@ export class StreamCli {
         streamKey,
         "--all",
         "--fields",
-        "key,host_id,harness,id,stream_id,title,status,recap,state,remaining,directory,references,artifacts,revision,updated_at_ms",
+        "key,host_id,harness,id,stream_id,title,status,recap,next,directory,references,artifacts,revision,updated_at_ms",
         "--json",
       ],
       { signal }

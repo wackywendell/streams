@@ -1,4 +1,4 @@
-//! Pure record-local edit rules for format-5 Streams and Sessions.
+//! Pure record-local edit rules for format-6 Streams and Sessions.
 //!
 //! One request is `{"changes": {...}, "before": {...}?}`.
 //! - Without `before`, every value in `changes` must be complete and overwrites the field.
@@ -26,8 +26,7 @@ pub const SESSION_EDITABLE_FIELDS: &[&str] = &[
     "stream_id",
     "status",
     "recap",
-    "state",
-    "remaining",
+    "next",
     "directory",
     "references",
 ];
@@ -250,8 +249,7 @@ pub fn apply_session(
     let mut desired_stream_id: Option<(String, Value)> = None;
     let mut desired_status: Option<(Status, Value)> = None;
     let mut desired_recap: Option<(Option<TextPair>, Value)> = None;
-    let mut desired_state: Option<(Option<TextPair>, Value)> = None;
-    let mut desired_remaining: Option<(Option<TextPair>, Value)> = None;
+    let mut desired_next: Option<(Option<TextPair>, Value)> = None;
     let mut desired_directory: Option<(Option<SessionDirectory>, Value)> = None;
     let mut desired_references: Option<Vec<DesiredReference>> = None;
 
@@ -323,21 +321,13 @@ pub fn apply_session(
                 let canonical = serde_json::to_value(&pair).expect("recap json");
                 desired_recap = Some((pair, canonical));
             }
-            "state" => {
-                let pair: Option<TextPair> = decode_optional_strict(&merged, "state")?;
+            "next" => {
+                let pair: Option<TextPair> = decode_optional_strict(&merged, "next")?;
                 if let Some(p) = &pair {
-                    p.validate("session.state")?;
+                    p.validate("session.next")?;
                 }
-                let canonical = serde_json::to_value(&pair).expect("state json");
-                desired_state = Some((pair, canonical));
-            }
-            "remaining" => {
-                let pair: Option<TextPair> = decode_optional_strict(&merged, "remaining")?;
-                if let Some(p) = &pair {
-                    p.validate("session.remaining")?;
-                }
-                let canonical = serde_json::to_value(&pair).expect("remaining json");
-                desired_remaining = Some((pair, canonical));
+                let canonical = serde_json::to_value(&pair).expect("next json");
+                desired_next = Some((pair, canonical));
             }
             "directory" => {
                 let dir: Option<SessionDirectory> = decode_optional_strict(&merged, "directory")?;
@@ -423,33 +413,18 @@ pub fn apply_session(
         }
     }
 
-    if let Some((state, desired_val)) = desired_state {
-        let current_val = serde_json::to_value(&current.state).expect("state json");
+    if let Some((next, desired_val)) = desired_next {
+        let current_val = serde_json::to_value(&current.next).expect("next json");
         if request
             .before
             .as_ref()
-            .is_none_or(|b| current_val == b["state"])
+            .is_none_or(|b| current_val == b["next"])
         {
-            after.state = state;
+            after.next = next;
         }
-        let final_val = serde_json::to_value(&after.state).expect("state json");
+        let final_val = serde_json::to_value(&after.next).expect("next json");
         if final_val != desired_val {
-            not_written.insert("state".into(), final_val);
-        }
-    }
-
-    if let Some((remaining, desired_val)) = desired_remaining {
-        let current_val = serde_json::to_value(&current.remaining).expect("remaining json");
-        if request
-            .before
-            .as_ref()
-            .is_none_or(|b| current_val == b["remaining"])
-        {
-            after.remaining = remaining;
-        }
-        let final_val = serde_json::to_value(&after.remaining).expect("remaining json");
-        if final_val != desired_val {
-            not_written.insert("remaining".into(), final_val);
+            not_written.insert("next".into(), final_val);
         }
     }
 

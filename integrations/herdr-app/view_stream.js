@@ -7,6 +7,7 @@ import {
   unreadableNotice,
   formatRelativeAge,
   groupStreamSessions,
+  sessionRowSubtitle,
 } from "./state.js";
 import { coordinator } from "./runtime.js";
 import {
@@ -475,7 +476,7 @@ export function renderStreamView({
                           .text_size(11)
                           .text_color(t.dim)
                           .truncate()
-                          .child(sess.state_short ?? "")
+                          .child(sessionRowSubtitle(sess))
                       )
                       .child(
                         isRowMoving

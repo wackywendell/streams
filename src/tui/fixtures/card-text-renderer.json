@@ -29,8 +29,7 @@
     "lines": [
       "Ship library | client                                                                       ● active",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
-      "Status: Implement | verify",
-      "Remaining: 界😀é | release",
+      "Next: 界😀é | release",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
       "[1] PR Review · Deliverable · Active",
       "    Review",
@@ -38,6 +37,7 @@
       "    Track work",
       "[a] Document Design · Brief · Active",
       "    Design",
+      "",
       "                                                                                           [q] close"
     ],
     "links": [
@@ -76,8 +76,7 @@
     "lines": [
       "Ship library | client                                                                      ○ waiting",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
-      "Status: Implement | verify",
-      "Remaining: 界😀é | release",
+      "Next: 界😀é | release",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
       "[1] PR Review · Deliverable · Active",
       "    Review",
@@ -85,6 +84,7 @@
       "    Track work",
       "[a] Document Design · Brief · Active",
       "    Design",
+      "",
       "                                                                                           [q] close"
     ],
     "links": [
@@ -123,8 +123,7 @@
     "lines": [
       "Ship library | client                                                                      ! blocked",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
-      "Status: Implement | verify",
-      "Remaining: 界😀é | release",
+      "Next: 界😀é | release",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
       "[1] PR Review · Deliverable · Active",
       "    Review",
@@ -132,6 +131,7 @@
       "    Track work",
       "[a] Document Design · Brief · Active",
       "    Design",
+      "",
       "                                                                                           [q] close"
     ],
     "links": [
@@ -170,8 +170,7 @@
     "lines": [
       "Ship library | client                                                                       ○ parked",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
-      "Status: Implement | verify",
-      "Remaining: 界😀é | release",
+      "Next: 界😀é | release",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
       "[1] PR Review · Deliverable · Active",
       "    Review",
@@ -179,6 +178,7 @@
       "    Track work",
       "[a] Document Design · Brief · Active",
       "    Design",
+      "",
       "                                                                                           [q] close"
     ],
     "links": [
@@ -217,8 +217,7 @@
     "lines": [
       "Ship library | client                                                                         ✓ done",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
-      "Status: Implement | verify",
-      "Remaining: 界😀é | release",
+      "Next: 界😀é | release",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
       "[1] PR Review · Deliverable · Active",
       "    Review",
@@ -226,6 +225,7 @@
       "    Track work",
       "[a] Document Design · Brief · Active",
       "    Design",
+      "",
       "                                                                                           [q] close"
     ],
     "links": [
@@ -264,8 +264,7 @@
     "lines": [
       "Ship library | client                                                                      ! blocked",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
-      "Status: Other stage",
-      "Remaining: Other todo",
+      "Next: Other todo",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
       "[1] PR Review · Deliverable · Active",
       "    Review",
@@ -273,6 +272,7 @@
       "    Track work",
       "[a] Document Design · Brief · Active",
       "    Design",
+      "",
       "                                                                                           [q] close"
     ],
     "links": [
@@ -297,9 +297,9 @@
       "links": []
     },
     "lines": [
-      "Ship…",
-      "Stat…",
-      "Rema…",
+      "Ship",
+      "libr…",
+      "Next…",
       "─────",
       "… [q]"
     ],
@@ -322,9 +322,9 @@
       "links": []
     },
     "lines": [
-      "Ship…",
-      "Stat…",
-      "Rema…",
+      "Ship",
+      "libr…",
+      "Next…",
       "─────",
       "… [q]"
     ],
@@ -347,9 +347,9 @@
       "links": []
     },
     "lines": [
-      "Ship…",
-      "Stat…",
-      "Rema…",
+      "Ship",
+      "libr…",
+      "Next…",
       "─────",
       "… [q]"
     ],
@@ -372,9 +372,9 @@
       "links": []
     },
     "lines": [
-      "Ship…",
-      "Stat…",
-      "Rema…",
+      "Ship",
+      "libr…",
+      "Next…",
       "─────",
       "… [q]"
     ],
@@ -397,9 +397,9 @@
       "links": []
     },
     "lines": [
-      "Ship…",
-      "Stat…",
-      "Rema…",
+      "Ship",
+      "libr…",
+      "Next…",
       "─────",
       "… [q]"
     ],
@@ -548,7 +548,7 @@
       "links": []
     },
     "lines": [
-      "…",
+      "S",
       "…",
       "…",
       "─",
@@ -575,7 +575,7 @@
     },
     "lines": [
       "S",
-      "…",
+      "h",
       "…",
       "…",
       "…",
@@ -664,9 +664,9 @@
       "links": []
     },
     "lines": [
-      "S…",
-      "S…",
-      "R…",
+      "Sh",
+      "i…",
+      "N…",
       "──",
       "…"
     ],
@@ -691,9 +691,9 @@
     },
     "lines": [
       "Sh",
-      "i…",
-      "S…",
-      "R…",
+      "ip",
+      "l…",
+      "N…",
       "[…",
       "",
       "",
@@ -784,9 +784,9 @@
       "links": []
     },
     "lines": [
-      "Sh…",
-      "St…",
-      "Re…",
+      "Shi",
+      "p…",
+      "Ne…",
       "───",
       "[q]"
     ],
@@ -815,9 +815,9 @@
     },
     "lines": [
       "Shi",
-      "p…",
-      "St…",
-      "Re…",
+      "p",
+      "li…",
+      "Ne…",
       "[1…",
       "",
       "",
@@ -908,9 +908,9 @@
       "links": []
     },
     "lines": [
-      "Ship…",
-      "Stat…",
-      "Rema…",
+      "Ship",
+      "libr…",
+      "Next…",
       "─────",
       "… [q]"
     ],
@@ -939,9 +939,9 @@
     },
     "lines": [
       "Ship",
-      "libr…",
-      "Stat…",
-      "Rema…",
+      "libra",
+      "ry |…",
+      "Next…",
       "[1] …",
       "    R",
       "    …",
@@ -1032,9 +1032,9 @@
       "links": []
     },
     "lines": [
-      "Ship…",
-      "Status:…",
-      "Remaini…",
+      "Ship",
+      "library…",
+      "Next:…",
       "────────",
       "… 30 [q]"
     ],
@@ -1063,9 +1063,9 @@
     },
     "lines": [
       "Ship",
-      "library…",
-      "Status:…",
-      "Remaini…",
+      "library",
+      "| client",
+      "Next:…",
       "[1] PR …",
       "    Revi",
       "    ew",
@@ -1156,9 +1156,9 @@
       "links": []
     },
     "lines": [
-      "Ship…",
-      "Status:…",
-      "Remainin…",
+      "Ship",
+      "library…",
+      "Next:…",
       "─────────",
       "[q] close"
     ],
@@ -1187,9 +1187,9 @@
     },
     "lines": [
       "Ship",
-      "library…",
-      "Status:…",
-      "Remainin…",
+      "library |",
+      "client",
+      "Next:…",
       "[1] PR R…",
       "    Revie",
       "    w",
@@ -1280,9 +1280,9 @@
       "links": []
     },
     "lines": [
-      "Ship…     ● active",
-      "Status: Implement…",
-      "Remaining: 界😀é…",
+      "Ship      ● active",
+      "library | client",
+      "Next: 界😀é |…",
       "──────────────────",
       "… 30 more[q] close"
     ],
@@ -1312,8 +1312,8 @@
     "lines": [
       "Ship      ● active",
       "library | client",
-      "Status: Implement…",
-      "Remaining: 界😀é…",
+      "Next: 界😀é |",
+      "  release",
       "──────────────────",
       "[1] PR Review · D…",
       "    Review",
@@ -1404,9 +1404,9 @@
       "links": []
     },
     "lines": [
-      "Ship library |…     ● active",
-      "Status: Implement | verify",
-      "Remaining: 界😀é | release",
+      "Ship library |      ● active",
+      "client",
+      "Next: 界😀é | release",
       "────────────────────────────",
       "… 30 more; enlarge [q] close"
     ],
@@ -1436,15 +1436,16 @@
     "lines": [
       "Ship library |      ● active",
       "client",
-      "Status: Implement | verify",
-      "Remaining: 界😀é | release",
-      "────────────────────────────",
+      "Next: 界😀é | release",
       "[1] PR Review · Deliverable…",
       "    Review",
-      "… 29 more; enlarge [q] close"
+      "[2] Issue Track work · Depe…",
+      "    Track work",
+      "… 28 more; enlarge [q] close"
     ],
     "links": [
-      "https://example.com/org/repo/pull/51"
+      "https://example.com/org/repo/pull/51",
+      "https://example.com/org/repo/issues/42"
     ],
     "name": "geometry-28-8"
   },
@@ -1531,12 +1532,14 @@
     },
     "lines": [
       "Ship library | client      ● active",
-      "Status: Implement | verify",
-      "Remaining: 界😀é | release",
-      "───────────────────────────────────",
-      "… 30 more; enlarge pane   [q] close"
+      "Next: 界😀é | release",
+      "[1] PR Review · Deliverable · Acti…",
+      "    Review",
+      "… 29 more; enlarge pane   [q] close"
     ],
-    "links": [],
+    "links": [
+      "https://example.com/org/repo/pull/51"
+    ],
     "name": "geometry-35-5"
   },
   {
@@ -1566,8 +1569,8 @@
     },
     "lines": [
       "Ship library | client      ● active",
-      "Status: Implement | verify",
-      "Remaining: 界😀é | release",
+      "Next: 界😀é | release",
+      "───────────────────────────────────",
       "[1] PR Review · Deliverable · Acti…",
       "    Review",
       "[2] Issue Track work · Dependency …",
@@ -1663,12 +1666,14 @@
     },
     "lines": [
       "Ship library | client                     ● active",
-      "Status: Implement | verify",
-      "Remaining: 界😀é | release",
-      "──────────────────────────────────────────────────",
-      "… 30 more; enlarge pane                  [q] close"
+      "Next: 界😀é | release",
+      "[1] PR Review · Deliverable · Active",
+      "    Review",
+      "… 29 more; enlarge pane                  [q] close"
     ],
-    "links": [],
+    "links": [
+      "https://example.com/org/repo/pull/51"
+    ],
     "name": "geometry-50-5"
   },
   {
@@ -1698,8 +1703,8 @@
     },
     "lines": [
       "Ship library | client                     ● active",
-      "Status: Implement | verify",
-      "Remaining: 界😀é | release",
+      "Next: 界😀é | release",
+      "──────────────────────────────────────────────────",
       "[1] PR Review · Deliverable · Active",
       "    Review",
       "[2] Issue Track work · Dependency · Active",
@@ -1801,12 +1806,14 @@
     },
     "lines": [
       "Ship library | client                                                                       ● active",
-      "Status: Implement | verify",
-      "Remaining: 界😀é | release",
-      "────────────────────────────────────────────────────────────────────────────────────────────────────",
-      "… 30 more; enlarge pane                                                                    [q] close"
+      "Next: 界😀é | release",
+      "[1] PR Review · Deliverable · Active",
+      "    Review",
+      "… 29 more; enlarge pane                                                                    [q] close"
     ],
-    "links": [],
+    "links": [
+      "https://example.com/org/repo/pull/51"
+    ],
     "name": "geometry-100-5"
   },
   {
@@ -1848,8 +1855,8 @@
     },
     "lines": [
       "Ship library | client                                                                       ● active",
-      "Status: Implement | verify",
-      "Remaining: 界😀é | release",
+      "Next: 界😀é | release",
+      "────────────────────────────────────────────────────────────────────────────────────────────────────",
       "[1] PR Review · Deliverable · Active",
       "    Review",
       "[2] Issue Track work · Dependency · Active",
@@ -4053,7 +4060,9 @@
     "name": "unicode-aൎaൎaൎaൎaൎaൎ-80"
   },
   {
-    "documents": [],
+    "documents": [
+      "a"
+    ],
     "historical": {
       "documents": [
         "a",
@@ -4071,10 +4080,10 @@
     },
     "lines": [
       "Purpose                                   ● active",
-      "Status: Stage",
-      "Remaining: Next work",
-      "──────────────────────────────────────────────────",
-      "… 8 more; enlarge pane                   [q] close"
+      "Next: Next work",
+      "[a] Document docs/a.md · Brief · Active",
+      "    Guide the work",
+      "… 7 more; enlarge pane                   [q] close"
     ],
     "links": [],
     "name": "quiet-grid-5"
@@ -4098,7 +4107,7 @@
     },
     "lines": [
       "Purpose                                   ● active",
-      "Status: Stage…",
+      "Next: Next work",
       "──────────────────────────────────────────────────",
       "… 8 more; enlarge pane",
       "Notice 界😀é                             [q] close"
@@ -4133,8 +4142,8 @@
     },
     "lines": [
       "Purpose                                   ● active",
-      "Status: Stage",
-      "Remaining: Next work",
+      "Next: Next work",
+      "──────────────────────────────────────────────────",
       "[a] Document docs/a.md · Brief · Active",
       "    Guide the work",
       "… 7 more; enlarge pane                   [q] close"
@@ -4143,7 +4152,9 @@
     "name": "quiet-grid-6"
   },
   {
-    "documents": [],
+    "documents": [
+      "a"
+    ],
     "historical": {
       "documents": [
         "a",
@@ -4162,10 +4173,10 @@
     },
     "lines": [
       "Purpose                                   ● active",
-      "Status: Stage",
-      "Remaining: Next work",
-      "──────────────────────────────────────────────────",
-      "… 8 more; enlarge pane",
+      "Next: Next work",
+      "[a] Document docs/a.md · Brief · Active",
+      "    Guide the work",
+      "… 7 more; enlarge pane",
       "Notice 界😀é                             [q] close"
     ],
     "links": [],
@@ -4173,7 +4184,8 @@
   },
   {
     "documents": [
-      "a"
+      "a",
+      "b"
     ],
     "historical": {
       "documents": [
@@ -4199,12 +4211,12 @@
     },
     "lines": [
       "Purpose                                   ● active",
-      "Status: Stage",
-      "Remaining: Next work",
-      "──────────────────────────────────────────────────",
+      "Next: Next work",
       "[a] Document docs/a.md · Brief · Active",
       "    Guide the work",
-      "… 7 more; enlarge pane                   [q] close"
+      "[b] Document docs/b.md · Brief · Active",
+      "    Guide the work",
+      "… 6 more; enlarge pane                   [q] close"
     ],
     "links": [],
     "name": "quiet-grid-7"
@@ -4237,8 +4249,8 @@
     },
     "lines": [
       "Purpose                                   ● active",
-      "Status: Stage",
-      "Remaining: Next work",
+      "Next: Next work",
+      "──────────────────────────────────────────────────",
       "[a] Document docs/a.md · Brief · Active",
       "    Guide the work",
       "… 7 more; enlarge pane",
@@ -4277,8 +4289,8 @@
     },
     "lines": [
       "Purpose                                   ● active",
-      "Status: Stage",
-      "Remaining: Next work",
+      "Next: Next work",
+      "──────────────────────────────────────────────────",
       "[a] Document docs/a.md · Brief · Active",
       "    Guide the work",
       "[b] Document docs/b.md · Brief · Active",
@@ -4290,7 +4302,8 @@
   },
   {
     "documents": [
-      "a"
+      "a",
+      "b"
     ],
     "historical": {
       "documents": [
@@ -4317,12 +4330,12 @@
     },
     "lines": [
       "Purpose                                   ● active",
-      "Status: Stage",
-      "Remaining: Next work",
-      "──────────────────────────────────────────────────",
+      "Next: Next work",
       "[a] Document docs/a.md · Brief · Active",
       "    Guide the work",
-      "… 7 more; enlarge pane",
+      "[b] Document docs/b.md · Brief · Active",
+      "    Guide the work",
+      "… 6 more; enlarge pane",
       "Notice 界😀é                             [q] close"
     ],
     "links": [],
@@ -4331,7 +4344,8 @@
   {
     "documents": [
       "a",
-      "b"
+      "b",
+      "c"
     ],
     "historical": {
       "documents": [
@@ -4359,14 +4373,14 @@
     },
     "lines": [
       "Purpose                                   ● active",
-      "Status: Stage",
-      "Remaining: Next work",
-      "──────────────────────────────────────────────────",
+      "Next: Next work",
       "[a] Document docs/a.md · Brief · Active",
       "    Guide the work",
       "[b] Document docs/b.md · Brief · Active",
       "    Guide the work",
-      "… 6 more; enlarge pane                   [q] close"
+      "[c] Document docs/c.md · Brief · Active",
+      "    Guide the work",
+      "… 5 more; enlarge pane                   [q] close"
     ],
     "links": [],
     "name": "quiet-grid-9"
@@ -4402,8 +4416,8 @@
     },
     "lines": [
       "Purpose                                   ● active",
-      "Status: Stage",
-      "Remaining: Next work",
+      "Next: Next work",
+      "──────────────────────────────────────────────────",
       "[a] Document docs/a.md · Brief · Active",
       "    Guide the work",
       "[b] Document docs/b.md · Brief · Active",
@@ -4432,9 +4446,9 @@
       "links": []
     },
     "lines": [
-      "goalgoalgoalgoalgoalgoal…  ● active",
-      "Status:…",
-      "Remaining:…",
+      "goalgoalgoalgoalgoalgoalg  ● active",
+      "oalgoalgoalgoalgoalgoalgoalgoalgoa…",
+      "Next:…",
       "───────────────────────────────────",
       "… 11 more; enlarge pane   [q] close"
     ],
@@ -4474,8 +4488,7 @@
     "lines": [
       "Ship library | client                                                                                                                                                       ● active",
       "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
-      "Status: Implement | verify",
-      "Remaining: 界😀é | release",
+      "Next: 界😀é | release",
       "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
       "[1] PR Review · Deliverable · Active",
       "    Review",
@@ -4483,6 +4496,7 @@
       "    Track work",
       "[a] Document docs/design.md · Brief · Active",
       "    Guide the work",
+      "",
       "                                                                                                                                                                           [q] close"
     ],
     "links": [
@@ -4518,8 +4532,8 @@
     },
     "lines": [
       "Ship library | client                                                                       ● active",
-      "Status: Implement | verify",
-      "Remaining: 界😀é | release",
+      "────────────────────────────────────────────────────────────────────────────────────────────────────",
+      "Next: 界😀é | release",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
       "[1] PR Review · Deliverable · Active",
       "    Review",
@@ -4561,8 +4575,8 @@
     },
     "lines": [
       "Ship library | client                                                                       ● active",
-      "Status: Implement | verify",
-      "Remaining: 界😀é | release",
+      "────────────────────────────────────────────────────────────────────────────────────────────────────",
+      "Next: 界😀é | release",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
       "[1] PR Review · Deliverable · Active",
       "    Review",
@@ -4604,8 +4618,8 @@
     },
     "lines": [
       "Ship library | client                                                                       ● active",
-      "Status: Implement | verify",
-      "Remaining: 界😀é | release",
+      "────────────────────────────────────────────────────────────────────────────────────────────────────",
+      "Next: 界😀é | release",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
       "[1] PR Review · Deliverable · Active",
       "    Review",
@@ -4621,7 +4635,9 @@
     "name": "No registered checkout"
   },
   {
-    "documents": [],
+    "documents": [
+      "a"
+    ],
     "historical": {
       "documents": [
         "a"
@@ -4649,8 +4665,7 @@
     },
     "lines": [
       "Ship library | client                                                                       ● active",
-      "Status: Implement | verify",
-      "Remaining: 界😀é | release",
+      "Next: 界😀é | release",
       "[1] PR Duplicate · Deliverable · Active",
       "    Duplicate",
       "[2] PR https://example.com/19?pull=20#21 · Deliverable · Active",
@@ -4659,7 +4674,8 @@
       "    Duplicate",
       "[4] Issue Duplicate · Dependency · Active",
       "    Duplicate",
-      "… 1 more; enlarge pane                                                                     [q] close"
+      "[a] Document Design · Brief · Active",
+      "    Design                                                                                 [q] close"
     ],
     "links": [
       "https://github.enterprise.test/team/repo/pull/7/files",
@@ -4696,13 +4712,13 @@
     "lines": [
       "Ship library | client                                                                       ● active",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
-      "Status: Implement | verify",
-      "Remaining: 界😀é | release",
+      "Next: 界😀é | release",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
       "[1] Issue Unsafe or canonicalized · Dependency · Active",
       "    Unsafe or canonicalized",
       "[a] Document Design · Brief · Active",
       "    Design",
+      "",
       "                                                                                           [q] close"
     ],
     "links": [
@@ -4737,13 +4753,13 @@
     "lines": [
       "Ship library | client                                                                       ● active",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
-      "Status: Implement | verify",
-      "Remaining: 界😀é | release",
+      "Next: 界😀é | release",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
       "[1] Issue Unsafe or canonicalized · Dependency · Active",
       "    Unsafe or canonicalized",
       "[a] Document Design · Brief · Active",
       "    Design",
+      "",
       "                                                                                           [q] close"
     ],
     "links": [
@@ -4804,8 +4820,7 @@
     "lines": [
       "Ship library | client                                                                       ● active",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
-      "Status: Implement | verify",
-      "Remaining: 界😀é | release",
+      "Next: 界😀é | release",
       "────────────────────────────────────────────────────────────────────────────────────────────────────",
       "[1] PR Review · Deliverable · Active",
       "    Review",
@@ -4813,6 +4828,7 @@
       "    Track work",
       "[a] Document Design · Brief · Active",
       "    Design",
+      "",
       "Refreshing…                                                                                [q] close"
     ],
     "links": [
@@ -4864,13 +4880,13 @@
       "Help people track work across       ● active",
       "sessions and use their cards.",
       "────────────────────────────────────────────",
-      "Session: Built naming settings and Pi name",
+      "Recap: Built naming settings and Pi name",
       "  import.",
-      "Status: Waiting on Argon review.",
-      "Remaining: Deploy and reload.",
+      "Next: Deploy and reload.",
       "────────────────────────────────────────────",
       "[1] PR Naming settings · Deliverable · Acti…",
       "    Naming settings",
+      "",
       "",
       "",
       "",
@@ -4913,10 +4929,10 @@
       "across sessions and",
       "use their cards.",
       "────────────────────",
-      "Session: Built",
-      "  naming settings…",
-      "Status: Waiting on…",
-      "Remaining: Deploy…",
+      "Recap: Built naming",
+      "  settings and Pi",
+      "  name import.",
+      "Next: Deploy and…",
       "────────────────────",
       "[1] PR Naming setti…",
       "    Naming settings",
@@ -4980,7 +4996,7 @@
     },
     "lines": [
       "Help people track work across…      ● active",
-      "Session: Built naming settings and Pi name…",
+      "Recap: Built naming settings and Pi name…",
       "[1] PR Naming settings · Deliverable · Acti…",
       "    Naming settings                [q] close"
     ],
@@ -5007,9 +5023,9 @@
     },
     "lines": [
       "Help people track work across…      ● active",
-      "Session: Built naming settings and Pi name…",
-      "Status: Waiting on Argon review.",
-      "Remaining: Deploy and reload.",
+      "Recap: Built naming settings and Pi name…",
+      "Next: Deploy and reload.",
+      "────────────────────────────────────────────",
       "[1] PR Naming settings · Deliverable · Acti…",
       "    Naming settings                [q] close"
     ],
@@ -5046,13 +5062,13 @@
       "Help people track work across       ● active",
       "sessions and use their cards.",
       "────────────────────────────────────────────",
-      "Session: Built naming settings and Pi name",
+      "Recap: Built naming settings and Pi name",
       "  import.",
-      "Status: Waiting on Argon review.",
-      "Remaining: Deploy and reload.",
+      "Next: Deploy and reload.",
       "────────────────────────────────────────────",
       "[1] PR Naming settings · Deliverable · Acti…",
       "    Naming settings",
+      "",
       "",
       "",
       "",
@@ -5091,13 +5107,13 @@
       "Help people track work across      ○ waiting",
       "sessions and use their cards.",
       "────────────────────────────────────────────",
-      "Session: Built naming settings and Pi name",
+      "Recap: Built naming settings and Pi name",
       "  import.",
-      "Status: Waiting on Argon review.",
-      "Remaining: Deploy and reload.",
+      "Next: Deploy and reload.",
       "────────────────────────────────────────────",
       "[1] PR Naming settings · Deliverable · Acti…",
       "    Naming settings",
+      "",
       "",
       "",
       "",
@@ -5136,13 +5152,13 @@
       "Help people track work across      ! blocked",
       "sessions and use their cards.",
       "────────────────────────────────────────────",
-      "Session: Built naming settings and Pi name",
+      "Recap: Built naming settings and Pi name",
       "  import.",
-      "Status: Waiting on Argon review.",
-      "Remaining: Deploy and reload.",
+      "Next: Deploy and reload.",
       "────────────────────────────────────────────",
       "[1] PR Naming settings · Deliverable · Acti…",
       "    Naming settings",
+      "",
       "",
       "",
       "",
@@ -5181,13 +5197,13 @@
       "Help people track work across       ○ parked",
       "sessions and use their cards.",
       "────────────────────────────────────────────",
-      "Session: Built naming settings and Pi name",
+      "Recap: Built naming settings and Pi name",
       "  import.",
-      "Status: Waiting on Argon review.",
-      "Remaining: Deploy and reload.",
+      "Next: Deploy and reload.",
       "────────────────────────────────────────────",
       "[1] PR Naming settings · Deliverable · Acti…",
       "    Naming settings",
+      "",
       "",
       "",
       "",
@@ -5226,13 +5242,13 @@
       "Help people track work across         ✓ done",
       "sessions and use their cards.",
       "────────────────────────────────────────────",
-      "Session: Built naming settings and Pi name",
+      "Recap: Built naming settings and Pi name",
       "  import.",
-      "Status: Waiting on Argon review.",
-      "Remaining: Deploy and reload.",
+      "Next: Deploy and reload.",
       "────────────────────────────────────────────",
       "[1] PR Naming settings · Deliverable · Acti…",
       "    Naming settings",
+      "",
       "",
       "",
       "",
@@ -5271,11 +5287,11 @@
       "Help people track work across       ● active",
       "sessions and use their cards.",
       "────────────────────────────────────────────",
-      "Status: Waiting on Argon review.",
-      "Remaining: Deploy and reload.",
+      "Next: Deploy and reload.",
       "────────────────────────────────────────────",
       "[1] PR Naming settings · Deliverable · Acti…",
       "    Naming settings",
+      "",
       "",
       "",
       "",
@@ -5316,12 +5332,12 @@
       "Help people track work across       ● active",
       "sessions and use their cards.",
       "────────────────────────────────────────────",
-      "Session: Built naming settings and Pi name",
+      "Recap: Built naming settings and Pi name",
       "  import.",
-      "Remaining: Deploy and reload.",
       "────────────────────────────────────────────",
       "[1] PR Naming settings · Deliverable · Acti…",
       "    Naming settings",
+      "",
       "",
       "",
       "",
@@ -5331,52 +5347,7 @@
     "links": [
       "https://example.com/org/repo/pull/12"
     ],
-    "name": "card-text-empty-state"
-  },
-  {
-    "documents": [],
-    "historical": {
-      "documents": [],
-      "lines": [
-        "Help people track work across       ● active",
-        "sessions and use their cards.",
-        "────────────────────────────────────────────",
-        "Session: Built naming settings and Pi name",
-        "  import.",
-        "Status: Waiting on Argon review.",
-        "────────────────────────────────────────────",
-        "[1] PR #12: Naming settings",
-        "",
-        "",
-        "",
-        "",
-        "",
-        "                                   [q] close"
-      ],
-      "links": [
-        "https://example.com/org/repo/pull/12"
-      ]
-    },
-    "lines": [
-      "Help people track work across       ● active",
-      "sessions and use their cards.",
-      "────────────────────────────────────────────",
-      "Session: Built naming settings and Pi name",
-      "  import.",
-      "Status: Waiting on Argon review.",
-      "────────────────────────────────────────────",
-      "[1] PR Naming settings · Deliverable · Acti…",
-      "    Naming settings",
-      "",
-      "",
-      "",
-      "",
-      "                                   [q] close"
-    ],
-    "links": [
-      "https://example.com/org/repo/pull/12"
-    ],
-    "name": "card-text-empty-remaining"
+    "name": "card-text-empty-next"
   },
   {
     "documents": [],
@@ -5450,13 +5421,13 @@
     "lines": [
       "                                    ● active",
       "────────────────────────────────────────────",
-      "Session: Built naming settings and Pi name",
+      "Recap: Built naming settings and Pi name",
       "  import.",
-      "Status: Waiting on Argon review.",
-      "Remaining: Deploy and reload.",
+      "Next: Deploy and reload.",
       "────────────────────────────────────────────",
       "[1] PR Naming settings · Deliverable · Acti…",
       "    Naming settings",
+      "",
       "",
       "",
       "",

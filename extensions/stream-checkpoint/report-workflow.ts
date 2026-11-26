@@ -68,7 +68,7 @@ export type ReportEnvironment = {
   notice(text: string, level?: "info" | "warning"): void;
 };
 
-/** Shared report ordering and format-5 admission rules; the environment owns I/O and liveness. */
+/** Shared report ordering and format-6 admission rules; the environment owns I/O and liveness. */
 export async function runReport(
   action: ReportAction,
   environment: ReportEnvironment

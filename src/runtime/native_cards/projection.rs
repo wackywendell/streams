@@ -15,12 +15,9 @@ pub struct SessionView {
     pub recap: String,
     #[serde(deserialize_with = "required_nullable")]
     pub recap_short: Option<String>,
-    pub state: String,
+    pub next: String,
     #[serde(deserialize_with = "required_nullable")]
-    pub state_short: Option<String>,
-    pub remaining: String,
-    #[serde(deserialize_with = "required_nullable")]
-    pub remaining_short: Option<String>,
+    pub next_short: Option<String>,
 }
 impl From<&Session> for SessionView {
     fn from(value: &Session) -> Self {
@@ -35,18 +32,12 @@ impl From<&Session> for SessionView {
                 .map(|p| p.text.clone())
                 .unwrap_or_default(),
             recap_short: value.recap.as_ref().and_then(|p| p.short.clone()),
-            state: value
-                .state
+            next: value
+                .next
                 .as_ref()
                 .map(|p| p.text.clone())
                 .unwrap_or_default(),
-            state_short: value.state.as_ref().and_then(|p| p.short.clone()),
-            remaining: value
-                .remaining
-                .as_ref()
-                .map(|p| p.text.clone())
-                .unwrap_or_default(),
-            remaining_short: value.remaining.as_ref().and_then(|p| p.short.clone()),
+            next_short: value.next.as_ref().and_then(|p| p.short.clone()),
         }
     }
 }
@@ -320,12 +311,8 @@ impl NativeCardEngine {
                     compact(session.view.recap_short.as_deref()),
                 ),
                 (
-                    "strm_state_short".into(),
-                    compact(session.view.state_short.as_deref()),
-                ),
-                (
-                    "strm_remaining_short".into(),
-                    compact(session.view.remaining_short.as_deref()),
+                    "strm_next_short".into(),
+                    compact(session.view.next_short.as_deref()),
                 ),
             ],
         );

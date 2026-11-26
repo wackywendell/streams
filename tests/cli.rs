@@ -346,11 +346,11 @@ fn cuj3_and_cuj6_agent_report_partial_exit_3_fields_and_not_found() {
     let report = json!({
         "changes": {
             "title": { "text": "Model Title" },
-            "state": { "text": "Done implementing", "short": "done" }
+            "next": { "text": "Done implementing", "short": "done" }
         },
         "before": {
             "title": before["title"],
-            "state": before["state"]
+            "next": before["next"]
         }
     })
     .to_string();
@@ -363,7 +363,7 @@ fn cuj3_and_cuj6_agent_report_partial_exit_3_fields_and_not_found() {
         result["not_written"]["title"],
         json!({ "text": "Human Title", "manual": true })
     );
-    assert!(result["not_written"].get("state").is_none());
+    assert!(result["not_written"].get("next").is_none());
 
     // Replaying exact same request gives same result and exits 3 without bumping revision.
     let rev_before = f.ok_json(&["session", "show", sess_key], None)["revision"].clone();
@@ -1001,4 +1001,98 @@ fn host_label_is_written_at_init_editable_and_shown_across_hosts() {
 
     let listed_sessions = host_b.ok_json(&["session", "list", "--all"], None);
     assert_eq!(listed_sessions["items"][0]["host_label"], "work-mac");
+}
+
+#[test]
+fn session_next_flags_and_stream_show_summaries_roundtrip() {
+    let f = Fixture::new();
+    let stream = f.ok_json(&["stream", "create", "--title", "Card Fields"], None);
+    let stream_key = stream["key"].as_str().unwrap();
+    let session = f.ok_json(
+        &[
+            "session",
+            "create",
+            "pi/s-next",
+            "--stream",
+            stream_key,
+            "--title",
+            "CLI lane",
+        ],
+        None,
+    );
+    let sess_key = session["key"].as_str().unwrap();
+
+    // --next-short without --next or --next-file is a usage error.
+    let (code, _, stderr) = f.run_raw(
+        &["session", "edit", sess_key, "--next-short", "Only short"],
+        None,
+    );
+    assert_eq!(code, 2, "{stderr}");
+    assert!(
+        stderr.contains("--next-short requires --next or --next-file"),
+        "{stderr}"
+    );
+
+    // Set recap and next with short forms.
+    f.ok_json(
+        &[
+            "session",
+            "edit",
+            sess_key,
+            "--recap",
+            "Collapsed card fields into recap and next.",
+            "--recap-short",
+            "Card fields",
+            "--next",
+            "Run migration on both hosts.",
+            "--next-short",
+            "Run migration",
+        ],
+        None,
+    );
+    let shown = f.ok_json(&["session", "show", sess_key], None);
+    assert_eq!(
+        shown["recap"]["text"],
+        "Collapsed card fields into recap and next."
+    );
+    assert_eq!(shown["recap"]["short"], "Card fields");
+    assert_eq!(shown["next"]["text"], "Run migration on both hosts.");
+    assert_eq!(shown["next"]["short"], "Run migration");
+
+    // stream show embeds both recap and next on StreamSessionSummary.
+    let shown_stream = f.ok_json(&["stream", "show", stream_key], None);
+    assert_eq!(shown_stream["sessions"][0]["recap"]["short"], "Card fields");
+    assert_eq!(
+        shown_stream["sessions"][0]["next"]["short"],
+        "Run migration"
+    );
+
+    // --next-file updates next from disk, and --clear-next sets next to null.
+    let next_file = f.home().join("next.txt");
+    fs::write(&next_file, "Merge branch to main.\n").unwrap();
+    f.ok_json(
+        &[
+            "session",
+            "edit",
+            sess_key,
+            "--next-file",
+            next_file.to_str().unwrap(),
+            "--next-short",
+            "Merge main",
+        ],
+        None,
+    );
+    let after_file = f.ok_json(&["session", "show", sess_key], None);
+    assert_eq!(after_file["next"]["text"], "Merge branch to main.");
+    assert_eq!(after_file["next"]["short"], "Merge main");
+
+    f.ok_json(&["session", "edit", sess_key, "--clear-next"], None);
+    let after_clear = f.ok_json(&["session", "show", sess_key], None);
+    assert!(after_clear["next"].is_null());
+    let stream_after_clear = f.ok_json(&["stream", "show", stream_key], None);
+    assert!(stream_after_clear["sessions"][0]["next"].is_null());
+    assert_eq!(
+        stream_after_clear["sessions"][0]["recap"]["short"],
+        "Card fields"
+    );
 }

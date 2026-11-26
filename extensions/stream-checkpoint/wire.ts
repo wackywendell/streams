@@ -119,8 +119,7 @@ export const SessionWireSchema = Type.Object({
   title: TitleSchema,
   status: StatusSchema,
   recap: nullable(TextPairSchema),
-  state: nullable(TextPairSchema),
-  remaining: nullable(TextPairSchema),
+  next: nullable(TextPairSchema),
   directory: nullable(SessionDirectorySchema),
   references: Type.Record(Type.String(), ReferenceEntrySchema),
   artifacts: Type.Record(Type.String(), ArtifactEntrySchema),
@@ -134,7 +133,8 @@ export const StreamSessionSummarySchema = Type.Object({
   harness: SessionWireSchema.properties.harness,
   title: SessionWireSchema.properties.title,
   status: SessionWireSchema.properties.status,
-  state: Type.Optional(SessionWireSchema.properties.state),
+  recap: Type.Optional(SessionWireSchema.properties.recap),
+  next: Type.Optional(SessionWireSchema.properties.next),
 });
 
 export const StreamWireSchema = Type.Object({
@@ -200,15 +200,14 @@ export const ReferenceProposalSchema = referenceProposalSchema();
 
 /**
  * Automatic Session report delta schema, derived from `SessionWireSchema` / `TitleSchema` /
- * `TextPairSchema` / `RepositoryInfoSchema`. Only `remaining` is nullable (clearable).
+ * `TextPairSchema` / `RepositoryInfoSchema`. Only `next` is nullable (clearable).
  */
 export const SessionModelChangesSchema = Type.Object(
   {
     title: Type.Optional(TitleSchema.properties.text),
     status: Type.Optional(ReportStatusSchema),
     recap: Type.Optional(TextPairInputSchema),
-    state: Type.Optional(TextPairInputSchema),
-    remaining: Type.Optional(nullable(TextPairInputSchema)),
+    next: Type.Optional(nullable(TextPairInputSchema)),
     branch: Type.Optional(Type.String()),
   },
   { additionalProperties: false }
@@ -436,9 +435,12 @@ export function isStream(value: unknown): value is StreamWire {
       !value.sessions.every(
         (item) =>
           object(item) &&
+          (item.key === undefined || identity(item.key)) &&
           identity(item.harness) &&
           isTitle(item.title) &&
-          status(item.status)
+          status(item.status) &&
+          (item.recap === undefined || item.recap === null || isTextPair(item.recap)) &&
+          (item.next === undefined || item.next === null || isTextPair(item.next))
       ))
   ) {
     return false;
@@ -465,8 +467,7 @@ export function isSession(value: unknown): value is SessionWire {
     !isTitle(value.title) ||
     !status(value.status) ||
     !(value.recap === null || isTextPair(value.recap)) ||
-    !(value.state === null || isTextPair(value.state)) ||
-    !(value.remaining === null || isTextPair(value.remaining)) ||
+    !(value.next === null || isTextPair(value.next)) ||
     !(value.directory === null || isSessionDirectory(value.directory)) ||
     !object(value.references) ||
     !object(value.artifacts) ||

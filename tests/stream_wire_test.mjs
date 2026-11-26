@@ -40,8 +40,7 @@ const session = () => ({
   title: { text: 'Catalog', manual: false },
   status: 'active',
   recap: null,
-  state: null,
-  remaining: null,
+  next: null,
   directory: { path: '/repo/work', repository: null },
   references: {},
   artifacts: {},
@@ -159,6 +158,37 @@ test('isStream and isSession validate format-5 records', () => {
   );
   assert.equal(isStream({ ...stream(), title: 'old' }), false);
   assert.equal(isSession({ ...session(), title: 'old' }), false);
+  assert.equal(
+    isStream({
+      ...stream(),
+      sessions: [
+        {
+          key: 'host/pi/s1',
+          harness: 'pi',
+          title: { text: 'Lane', manual: false },
+          status: 'active',
+          recap: { text: 'Built card fields', short: 'Card fields' },
+          next: null,
+        },
+      ],
+    }),
+    true
+  );
+  assert.equal(
+    isStream({
+      ...stream(),
+      sessions: [
+        {
+          key: 'host/pi/s1',
+          harness: 'pi',
+          title: { text: 'Lane', manual: false },
+          status: 'active',
+          next: 'not-a-text-pair',
+        },
+      ],
+    }),
+    false
+  );
 });
 
 test('derived model-change and proposal schemas match canonical wire schemas by construction', async () => {
@@ -171,12 +201,11 @@ test('derived model-change and proposal schemas match canonical wire schemas by 
   const proposalKeys = Object.keys(ReferenceProposalSchema.properties).filter((k) => k !== 'key').sort();
   assert.deepEqual(proposalKeys, entryKeys);
 
-  // Report change schemas use TextPair objects (no legacy *_short flat keys) and only allow null on remaining.
+  // Report change schemas use TextPair objects (no legacy *_short flat keys) and only allow null on next.
   assert.deepEqual(Object.keys(SessionModelChangesSchema.properties).sort(), [
     'branch',
+    'next',
     'recap',
-    'remaining',
-    'state',
     'status',
     'title',
   ]);
@@ -184,7 +213,7 @@ test('derived model-change and proposal schemas match canonical wire schemas by 
   assert.equal(Check(SessionModelChangesSchema, { recap: { text: 'Built', short: 'Built' } }), true);
   assert.equal(Check(SessionModelChangesSchema, { recap: 'flat string' }), false);
   assert.equal(Check(SessionModelChangesSchema, { recap: null }), false);
-  assert.equal(Check(SessionModelChangesSchema, { remaining: null }), true);
+  assert.equal(Check(SessionModelChangesSchema, { next: null }), true);
   assert.equal(Check(StreamModelChangesSchema, { goal: { text: 'Purpose', short: null } }), true);
   assert.equal(Check(StreamModelChangesSchema, { goal: null }), false);
 });

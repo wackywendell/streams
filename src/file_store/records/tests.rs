@@ -161,21 +161,21 @@ fn format_marker_requires_strict_json_and_the_configured_producer() {
     let (_dir, store) = setup();
     let key = RecordAddress::for_record(&stream("work", "Work"));
     for bytes in [
-        "version: 5\nhost: host\n",
-        r#"[5,"host"]"#,
-        r#"{"version":5,"version":5,"host":"host"}"#,
-        r#"{"version":5,"host":"host","unknown":true}"#,
-        r#"{"version":"5","host":"host"}"#,
-        r#"{"version":5,"host":"other"}"#,
+        "version: 6\nhost: host\n",
+        r#"[6,"host"]"#,
+        r#"{"version":6,"version":6,"host":"host"}"#,
+        r#"{"version":6,"host":"host","unknown":true}"#,
+        r#"{"version":"6","host":"host"}"#,
+        r#"{"version":6,"host":"other"}"#,
     ] {
         fs::write(store.root.join(FORMAT), bytes).unwrap();
         assert!(read(&store, &key).is_err(), "{bytes}");
     }
     // A catalog from an older Streams version names the reset step.
-    fs::write(store.root.join(FORMAT), r#"{"version":4,"host":"host"}"#).unwrap();
+    fs::write(store.root.join(FORMAT), r#"{"version":5,"host":"host"}"#).unwrap();
     let error = read(&store, &key).unwrap_err().to_string();
     assert!(error.contains(RESET_HINT), "{error}");
-    fs::write(store.root.join(FORMAT), r#"{"version":5,"host":"host"}"#).unwrap();
+    fs::write(store.root.join(FORMAT), r#"{"version":6,"host":"host"}"#).unwrap();
     assert!(read(&store, &key).unwrap().is_none());
 }
 

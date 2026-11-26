@@ -197,10 +197,10 @@ test("UI smoke: sidebar renders All, Stream, and Session views without Reference
     stream: "h1/st1",
     title: "Refactor UI",
     status: "active",
-    state: "Splitting main.js",
-    state_short: "Splitting main.js",
     recap: "Split modules cleanly",
-    remaining: "Run final checks",
+    recap_short: "Split modules",
+    next: "Run final checks",
+    next_short: "Run checks",
     references: [{ kind: "link", url: "https://example.com", title: "Spec" }],
     artifacts: [],
     updated_at_ms: Date.now() - 60_000,
@@ -266,16 +266,38 @@ test("UI smoke: sidebar renders All, Stream, and Session views without Reference
   const sidebar = new StreamsMod();
   sidebar.init(mockEnv.props, cx);
 
-  // Session view
+  // Session view: Recap renders before Next.
   coordinator.preferredView = "session";
   const sessTree = sidebar.render(cx);
   assert.ok(findEl(sessTree, "session-header-title"));
+  const collectText = (node, out = []) => {
+    if (typeof node === "string") out.push(node);
+    else if (node && Array.isArray(node._children)) {
+      for (const child of node._children) collectText(child, out);
+    }
+    return out;
+  };
+  const texts = collectText(sessTree);
+  const recapIdx = texts.indexOf("Recap");
+  const nextIdx = texts.indexOf("Next");
+  assert.ok(recapIdx >= 0 && nextIdx > recapIdx, `expected Recap before Next in ${JSON.stringify(texts)}`);
+  assert.ok(texts.includes("Split modules cleanly"));
+  assert.ok(texts.includes("Run final checks"));
 
-  // Stream view
+  // Stream view: Session row subtitle prefers next_short and falls back to recap_short.
   coordinator.preferredView = "stream";
   const streamTree = sidebar.render(cx);
   assert.ok(findEl(streamTree, "stream-header-title"));
-  assert.ok(findEl(streamTree, "stream-session-s1"));
+  const rowEl = findEl(streamTree, "stream-session-s1");
+  assert.ok(rowEl);
+  const rowTexts = collectText(rowEl);
+  assert.ok(rowTexts.includes("Run checks"), `expected next_short subtitle in ${JSON.stringify(rowTexts)}`);
+  s1.next = null;
+  s1.next_short = null;
+  const fallbackRowTexts = collectText(findEl(sidebar.render(cx), "stream-session-s1"));
+  assert.ok(fallbackRowTexts.includes("Split modules"), `expected recap_short fallback in ${JSON.stringify(fallbackRowTexts)}`);
+  s1.next = "Run final checks";
+  s1.next_short = "Run checks";
 
   // All view (including when currentStream is null -> verifies Stage 1 spaceStreamKey fix!)
   coordinator.preferredView = "all";
@@ -290,7 +312,7 @@ test("UI smoke: frame pill click (panel & popup fallback), viewer, popup, visibi
   mockEnv.runs.length = 0;
   mockEnv.overlays.length = 0;
 
-  // Frame role with NO sidebar panel -> clicking session pill opens popup overlay (catches Stage 2 `snap` bug!).
+  // Frame role with NO sidebar panel -> clicking session pill opens popup overlay with live Session data.
   mockEnv.layout = { id: "root", type: "row", children: [] };
   mockEnv.props = { pane: "p1", terminal: "t1" };
   const frame = new StreamsMod();
@@ -298,10 +320,15 @@ test("UI smoke: frame pill click (panel & popup fallback), viewer, popup, visibi
   const frameTree = frame.render(cx);
   const pill = findEl(frameTree, "ph-stream-p1");
   assert.ok(pill, "enrolled multi-pane tab should render session pill");
+  // Update prose in coordinator without re-rendering frame; pill click must read fresh prose.
+  const updated = { ...coordinator.sessions.get("h1/pi/s1"), recap: "Updated recap prose", next: "Updated next step" };
+  coordinator.sessions.set("h1/pi/s1", updated);
   pill.handlers.click({}, cx);
   assert.equal(mockEnv.overlays.length, 1);
   assert.equal(mockEnv.overlays[0].props.kind, "session-popup");
   assert.equal(mockEnv.overlays[0].props.space_id, "sp1");
+  assert.equal(mockEnv.overlays[0].props.session.recap, "Updated recap prose");
+  assert.equal(mockEnv.overlays[0].props.session.next, "Updated next step");
   await frame.close();
 
   // Popup role

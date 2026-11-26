@@ -132,14 +132,14 @@ fn invalid_enum_fields_are_rejected_at_record_decode() {
             "title": {"text": "Work", "manual": false},
             "status": "active",
             "recap": null,
-            "state": null,
-            "remaining": null,
+            "next": null,
             "directory": null,
             "references": {},
             "artifacts": {},
             "revision": 1,
             "updated_at_ms": 0
         });
+        assert!(record_from_data(RecordKind::Session, &wire).is_ok());
         wire["status"] = invalid;
         assert!(record_from_data(RecordKind::Session, &wire).is_err());
     }

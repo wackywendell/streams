@@ -1,4 +1,4 @@
-//! Record-local edit application service for format-5 Streams and Sessions.
+//! Record-local edit application service for format-6 Streams and Sessions.
 //!
 //! Comparison, merge, destination Stream lookup, and `not_written` calculation all execute
 //! inside `RecordStore::save`'s locked callback.

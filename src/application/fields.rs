@@ -156,12 +156,7 @@ pub const SESSION_FIELDS: &[FieldSpec] = &[
         is_collection: false,
     },
     FieldSpec {
-        name: "state",
-        class: FieldClass::Editable,
-        is_collection: false,
-    },
-    FieldSpec {
-        name: "remaining",
+        name: "next",
         class: FieldClass::Editable,
         is_collection: false,
     },
@@ -346,7 +341,8 @@ pub struct StreamSessionSummary {
     pub title: crate::model::Title,
     pub status: Status,
     pub harness: String,
-    pub state: Option<crate::model::TextPair>,
+    pub recap: Option<crate::model::TextPair>,
+    pub next: Option<crate::model::TextPair>,
 }
 
 /// Artifact row inside `Stream.artifacts` and `artifact list`.
@@ -436,7 +432,8 @@ pub fn project_stream(
                         title: session.title.clone(),
                         status: session.status,
                         harness: session.harness.clone(),
-                        state: session.state.clone(),
+                        recap: session.recap.clone(),
+                        next: session.next.clone(),
                     })
                     .collect();
                 serde_json::to_value(rows).expect("sessions json")
@@ -493,8 +490,7 @@ pub fn project_session(
             "title" => serde_json::to_value(&session.title).expect("title json"),
             "status" => serde_json::to_value(session.status).expect("status json"),
             "recap" => serde_json::to_value(&session.recap).expect("recap json"),
-            "state" => serde_json::to_value(&session.state).expect("state json"),
-            "remaining" => serde_json::to_value(&session.remaining).expect("remaining json"),
+            "next" => serde_json::to_value(&session.next).expect("next json"),
             "directory" => serde_json::to_value(&session.directory).expect("directory json"),
             "references" => serde_json::to_value(&session.references).expect("references json"),
             "artifacts" => serde_json::to_value(&session.artifacts).expect("artifacts json"),
@@ -532,7 +528,7 @@ pub fn format_cell(field: &str, value: &Value) -> String {
         Value::Bool(b) => b.to_string(),
         Value::Number(n) => n.to_string(),
         Value::Object(map) => match field {
-            "title" | "goal" | "recap" | "state" | "remaining" => map
+            "title" | "goal" | "recap" | "next" => map
                 .get("text")
                 .and_then(Value::as_str)
                 .unwrap_or("-")
@@ -607,8 +603,7 @@ mod tests {
             title: Title::new("Sess", false),
             status: Status::Active,
             recap: Some(TextPair::new("Recap", None)),
-            state: Some(TextPair::new("State", Some("st".into()))),
-            remaining: None,
+            next: Some(TextPair::new("Next", Some("nx".into()))),
             directory: Some(SessionDirectory {
                 path: "/tmp/work".into(),
                 repository: Some(RepositoryInfo {

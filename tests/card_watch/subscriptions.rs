@@ -443,7 +443,7 @@ fn card_close_keeps_watch_from_reopening() {
             "session",
             "edit",
             f.session["key"].as_str().unwrap(),
-            "--state",
+            "--next",
             "Updated after close",
         ],
         None,

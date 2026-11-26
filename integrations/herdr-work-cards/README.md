@@ -6,7 +6,7 @@ The source was imported with its original history through `e7d74ce22f95893fa8eed
 
 ## Saved records and native ownership
 
-The card shows the shared Stream goal and non-Dropped Document, PR, Issue and Link references alongside the viewing Session's title, status, current state and remaining work. Reference headers show saved names, roles and states, followed by purpose text. It reads these through the Streams CLI, not scratch notes or standalone Work Cards YAML files.
+The card shows the shared Stream goal and non-Dropped Document, PR, Issue and Link references alongside the viewing Session's title, status, recap and next step. Reference headers show saved names, roles and states, followed by purpose text. It reads these through the Streams CLI, not scratch notes or standalone Work Cards YAML files.
 
 Each card is scoped to a catalog, host, Session and native Pi conversation. The Session supplies current Stream membership. Native effects use current observed pane, tab and workspace identity, not stored attestation. Missing or contradictory identity stops affected actions rather than guessing from labels.
 

@@ -374,7 +374,7 @@ export async function editField(
           if (next === undefined) return;
           edit.value = next.trim() ? { text: next.trim(), short: null, manual: true } : null;
         } else {
-          // TextPair: recap, state, remaining
+          // TextPair: recap, next
           const currentText = (edit.value as { text?: string } | null)?.text ?? "";
           const next = await ctx.ui.editor(
             `session ${field} (blank to clear)${edit.error ? `\n${edit.error}` : ""}`,
@@ -487,7 +487,7 @@ export async function openCard(
     });
 
     const sessionItems: SelectItem[] = session
-      ? (["title", "status", "recap", "state", "remaining"] as const).map((field) => ({
+      ? (["title", "status", "recap", "next"] as const).map((field) => ({
           value: `field:session:${field}`,
           label: `${field}…${state.edits.has(`session:${field}`) ? " *" : ""}`,
           description: `${formatFieldPreview(session[field])}${state.edits.has(`session:${field}`) ? " · retained unsaved edit" : ""}`,
@@ -604,9 +604,8 @@ export async function openCard(
               ` ${section("Session")} · ${clean(session?.title.text ?? "Not yet enrolled")} ${session ? theme.fg("muted", `[${session.status} · title:${session.title.manual ? "manual" : "auto"}]`) : ""}`,
               ...(session
                 ? [
-                    ...line(`Session: ${session.recap?.text || "—"}`, 2),
-                    ...line(`Status: ${session.state?.text || "—"}`, 2),
-                    ...line(`Remaining: ${session.remaining?.text || "—"}`, 1),
+                    ...line(`Recap: ${session.recap?.text || "—"}`, 2),
+                    ...line(`Next: ${session.next?.text || "—"}`, 2),
                   ]
                 : []),
             ].map((l) => truncateToWidth(l, width));

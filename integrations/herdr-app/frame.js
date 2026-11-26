@@ -196,6 +196,10 @@ export function renderFrame(view, cx) {
                   run("layout.hide", { id: "panel" });
                 }
               } else {
+                const liveSession = coordinator.sessions.get(enrolled.key) ?? enrolled;
+                const liveStreamTitle = liveSession.stream
+                  ? coordinator.streamTitle(liveSession.stream)
+                  : streamTitle;
                 openOverlay({
                   mod: "streams",
                   kind: "popup",
@@ -204,8 +208,8 @@ export function renderFrame(view, cx) {
                   height: 320,
                   props: {
                     kind: "session-popup",
-                    session: enrolled,
-                    stream_title: streamTitle,
+                    session: liveSession,
+                    stream_title: liveStreamTitle,
                     space_id: activeSpace?.id ?? null,
                   },
                 });

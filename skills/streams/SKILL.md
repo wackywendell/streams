@@ -12,7 +12,7 @@ Streams records whole efforts separately from their sessions. Read the relevant 
 ## Record semantics
 
 - A Stream has a stable ID, a title (`{ text, manual }`), and an optional goal (`{ text, short, manual } | null`). Stream status is derived from its Sessions (`active > waiting > blocked > parked > done > closed`, or `active` when empty) and is not stored or edited directly.
-- Each Session belongs to one Stream and host, keyed as `HOST/HARNESS/ID` where `ID` is the harness's real session ID. It owns its title (`{ text, manual }`), status, progress text pairs (`recap`, `state`, `remaining`, each `{ text, short } | null`), working `directory` (`{ path, repository } | null`), `references` (keyed by HTTP(S) URL or path relative to `directory.path`), and `artifacts` (keyed by filename).
+- Each Session belongs to one Stream and host, keyed as `HOST/HARNESS/ID` where `ID` is the harness's real session ID. It owns its title (`{ text, manual }`), status, progress text pairs (`recap` and `next`, each `{ text, short } | null`), working `directory` (`{ path, repository } | null`), `references` (keyed by HTTP(S) URL or path relative to `directory.path`), and `artifacts` (keyed by filename).
 - Session status is `active` (work underway), `waiting` (paused waiting for the user: decision, answer, review, approval, or manual step), `blocked` (stopped on an external event or dependency such as CI, another person's review or reply, another team, or an external service), `parked` (deliberately paused), `done` (contribution finished) or `closed`. Marking work `done` or `closed` does not close running agents or terminals.
 - Automatic reports may update Session progress, Session references (without restoring `dropped` entries or rewriting manual names/purposes/roles), `directory.repository.branch`, and Session status (`active`, `waiting`, `blocked`, `parked` or `done`, never `closed`). Setting `closed` requires explicit user direction or `streams catalog tidy`.
 - Manual marks on `title`, `goal`, and `references` protect user edits from automatic refinement.
@@ -36,7 +36,7 @@ The CLI does not read Pi env vars, `hc` labels, or frontend state to select reco
 | List Sessions | `streams session list [--stream STREAM] [--all] [--json]` |
 | Show a Session | `streams session show SESSION [--json]` |
 | Create (enroll) a Session | `streams session create HARNESS/ID --stream STREAM --title "Lane" [--directory PATH]` |
-| Edit a Session | `streams session edit SESSION --status done [--state "..."]` |
+| Edit a Session | `streams session edit SESSION --status done [--recap "..."] [--clear-next]` |
 | Move a Session to another Stream | `streams session edit SESSION --stream NEW_STREAM` |
 | Add a Session reference | `streams session edit SESSION --add-reference URL_OR_PATH --ref-kind pr\|issue\|link\|document --ref-name NAME --ref-purpose PURPOSE --ref-role deliverable\|dependency\|brief\|background` |
 | Drop / restore a reference | `streams session edit SESSION --drop-reference URL_OR_PATH` / `--restore-reference URL_OR_PATH` |

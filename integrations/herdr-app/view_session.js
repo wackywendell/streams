@@ -1,4 +1,4 @@
-// Sidebar "Session" view: Session header, breadcrumb, status dropdown, state/recap/remaining,
+// Sidebar "Session" view: Session header, breadcrumb, status dropdown, recap/next,
 // and collapsible References section.
 
 import { div } from "gpui-kit";
@@ -313,9 +313,8 @@ export function renderSessionView({
               !isRefreshing &&
               session.status !== "done" &&
               session.status !== "closed" &&
-              !session.state &&
               !session.recap &&
-              !session.remaining &&
+              !session.next &&
               references.length === 0,
             (el) =>
               el.child(
@@ -325,28 +324,20 @@ export function renderSessionView({
                   .child("Waiting for first checkpoint…")
               )
           )
-          .when(Boolean(session.state), (el) =>
-            el.child(
-              v_flex()
-                .gap(2)
-                .child(div().text_size(10.5).font_medium().text_color(t.dim).child("State"))
-                .child(div().text_size(12).text_color(t.foreground).child(session.state))
-            )
-          )
           .when(Boolean(session.recap), (el) =>
             el.child(
               v_flex()
                 .gap(2)
                 .child(div().text_size(10.5).font_medium().text_color(t.dim).child("Recap"))
-                .child(div().text_size(11.5).text_color(t.muted).child(session.recap))
+                .child(div().text_size(12).text_color(t.foreground).child(session.recap))
             )
           )
-          .when(Boolean(session.remaining), (el) =>
+          .when(Boolean(session.next), (el) =>
             el.child(
               v_flex()
                 .gap(2)
-                .child(div().text_size(10.5).font_medium().text_color(t.dim).child("Remaining"))
-                .child(div().text_size(11.5).text_color(t.muted).child(session.remaining))
+                .child(div().text_size(10.5).font_medium().text_color(t.dim).child("Next"))
+                .child(div().text_size(11.5).text_color(t.muted).child(session.next))
             )
           )
       )

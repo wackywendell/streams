@@ -222,17 +222,11 @@ impl App {
             progress.clear_recap,
             progress.recap_short,
         )?;
-        session.state = self.build_text_pair(
-            progress.state,
-            progress.state_file,
-            progress.clear_state,
-            progress.state_short,
-        )?;
-        session.remaining = self.build_text_pair(
-            progress.remaining,
-            progress.remaining_file,
-            progress.clear_remaining,
-            progress.remaining_short,
+        session.next = self.build_text_pair(
+            progress.next,
+            progress.next_file,
+            progress.clear_next,
+            progress.next_short,
         )?;
 
         let address = RecordAddress::for_session(&session);
@@ -382,33 +376,18 @@ impl App {
             );
         }
 
-        if progress.clear_state {
-            changes.insert("state".into(), Value::Null);
-        } else if progress.state.is_some() || progress.state_file.is_some() {
+        if progress.clear_next {
+            changes.insert("next".into(), Value::Null);
+        } else if progress.next.is_some() || progress.next_file.is_some() {
             let pair = self.build_text_pair(
-                progress.state,
-                progress.state_file,
+                progress.next,
+                progress.next_file,
                 false,
-                progress.state_short,
+                progress.next_short,
             )?;
             changes.insert(
-                "state".into(),
-                serde_json::to_value(pair).expect("state json"),
-            );
-        }
-
-        if progress.clear_remaining {
-            changes.insert("remaining".into(), Value::Null);
-        } else if progress.remaining.is_some() || progress.remaining_file.is_some() {
-            let pair = self.build_text_pair(
-                progress.remaining,
-                progress.remaining_file,
-                false,
-                progress.remaining_short,
-            )?;
-            changes.insert(
-                "remaining".into(),
-                serde_json::to_value(pair).expect("remaining json"),
+                "next".into(),
+                serde_json::to_value(pair).expect("next json"),
             );
         }
 
@@ -575,17 +554,9 @@ fn check_progress_short_flags(progress: &SessionProgressArgs) -> Result<()> {
             "--recap-short requires --recap or --recap-file".into(),
         ));
     }
-    if progress.state_short.is_some() && progress.state.is_none() && progress.state_file.is_none() {
+    if progress.next_short.is_some() && progress.next.is_none() && progress.next_file.is_none() {
         return Err(CliError::Usage(
-            "--state-short requires --state or --state-file".into(),
-        ));
-    }
-    if progress.remaining_short.is_some()
-        && progress.remaining.is_none()
-        && progress.remaining_file.is_none()
-    {
-        return Err(CliError::Usage(
-            "--remaining-short requires --remaining or --remaining-file".into(),
+            "--next-short requires --next or --next-file".into(),
         ));
     }
     Ok(())

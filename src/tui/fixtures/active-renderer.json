@@ -41,14 +41,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -85,7 +77,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -196,14 +192,6 @@
         },
         "status": "waiting",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -240,7 +228,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -351,14 +343,6 @@
         },
         "status": "blocked",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -395,7 +379,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -506,14 +494,6 @@
         },
         "status": "parked",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -550,7 +530,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -661,14 +645,6 @@
         },
         "status": "done",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -705,7 +681,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -816,14 +796,6 @@
         },
         "status": "blocked",
         "recap": null,
-        "state": {
-          "text": "Other stage",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "Other todo",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -860,7 +832,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "Other todo",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -971,14 +947,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -1015,7 +983,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -1109,14 +1081,6 @@
         },
         "status": "waiting",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -1153,7 +1117,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -1247,14 +1215,6 @@
         },
         "status": "blocked",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -1291,7 +1251,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -1385,14 +1349,6 @@
         },
         "status": "parked",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -1429,7 +1385,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -1523,14 +1483,6 @@
         },
         "status": "done",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -1567,7 +1519,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -1661,14 +1617,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -1921,7 +1869,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -2144,14 +2096,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -2404,7 +2348,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -2627,14 +2575,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -2887,7 +2827,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -3110,14 +3054,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -3370,7 +3306,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -3593,14 +3533,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -3853,7 +3785,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -4076,14 +4012,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -4336,7 +4264,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -4559,14 +4491,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -4819,7 +4743,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -5042,14 +4970,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -5302,7 +5222,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -5529,14 +5453,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -5789,7 +5705,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -6018,14 +5938,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -6278,7 +6190,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -6509,14 +6425,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -6769,7 +6677,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -7004,14 +6916,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -7264,7 +7168,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -7505,14 +7413,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -7765,7 +7665,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -7988,14 +7892,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -8248,7 +8144,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -8475,14 +8375,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -8735,7 +8627,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -8964,14 +8860,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -9224,7 +9112,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -9455,14 +9347,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -9715,7 +9599,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -9950,14 +9838,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -10210,7 +10090,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -10451,14 +10335,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -10711,7 +10587,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -10934,14 +10814,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -11194,7 +11066,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -11421,14 +11297,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -11681,7 +11549,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -11910,14 +11782,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -12170,7 +12034,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -12422,14 +12290,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -12682,7 +12542,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -12938,14 +12802,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -13198,7 +13054,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -13500,14 +13360,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -13760,7 +13612,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -13983,14 +13839,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -14243,7 +14091,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -14470,14 +14322,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -14730,7 +14574,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -14959,14 +14807,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -15219,7 +15059,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -15471,14 +15315,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -15731,7 +15567,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -15987,14 +15827,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -16247,7 +16079,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -16549,14 +16385,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -16809,7 +16637,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -17032,14 +16864,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -17292,7 +17116,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -17519,14 +17347,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -17779,7 +17599,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -18008,14 +17832,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -18268,7 +18084,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -18520,14 +18340,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -18780,7 +18592,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -19036,14 +18852,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -19296,7 +19104,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -19598,14 +19410,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -19858,7 +19662,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -20081,14 +19889,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -20341,7 +20141,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -20568,14 +20372,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -20828,7 +20624,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -21057,14 +20857,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -21317,7 +21109,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -21569,14 +21365,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -21829,7 +21617,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -22085,14 +21877,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -22345,7 +22129,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -22647,14 +22435,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -22907,7 +22687,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -23130,14 +22914,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -23390,7 +23166,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -23617,14 +23397,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -23877,7 +23649,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -24106,14 +23882,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -24366,7 +24134,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -24618,14 +24390,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -24878,7 +24642,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -25134,14 +24902,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -25394,7 +25154,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -25696,14 +25460,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -25956,7 +25712,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -26179,14 +25939,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -26439,7 +26191,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -26666,14 +26422,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -26926,7 +26674,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -27155,14 +26907,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -27415,7 +27159,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -27667,14 +27415,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -27927,7 +27667,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -28183,14 +27927,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -28443,7 +28179,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -28745,14 +28485,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -29005,7 +28737,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -29228,14 +28964,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -29488,7 +29216,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -29715,14 +29447,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -29975,7 +29699,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -30204,14 +29932,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -30464,7 +30184,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -30736,14 +30460,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -30996,7 +30712,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -31272,14 +30992,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -31532,7 +31244,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -31894,14 +31610,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -32154,7 +31862,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -32377,14 +32089,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -32637,7 +32341,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -32864,14 +32572,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -33124,7 +32824,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -33353,14 +33057,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -33613,7 +33309,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -33885,14 +33585,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -34145,7 +33837,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -34421,14 +34117,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -34681,7 +34369,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -35083,14 +34775,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -35343,7 +35027,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -35566,14 +35254,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -35826,7 +35506,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -36053,14 +35737,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -36313,7 +35989,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -36542,14 +36222,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -36802,7 +36474,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -37134,14 +36810,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -37394,7 +37062,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -37730,14 +37402,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -37990,7 +37654,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -38632,8 +38300,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": null,
-        "remaining": null,
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -38645,7 +38311,8 @@
         "references": {},
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": null
       },
       "documentLocations": []
     },
@@ -38761,8 +38428,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": null,
-        "remaining": null,
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -38774,7 +38439,8 @@
         "references": {},
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": null
       },
       "documentLocations": []
     },
@@ -38890,8 +38556,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": null,
-        "remaining": null,
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -38903,7 +38567,8 @@
         "references": {},
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": null
       },
       "documentLocations": []
     },
@@ -39019,8 +38684,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": null,
-        "remaining": null,
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -39032,7 +38695,8 @@
         "references": {},
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": null
       },
       "documentLocations": []
     },
@@ -39148,8 +38812,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": null,
-        "remaining": null,
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -39161,7 +38823,8 @@
         "references": {},
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": null
       },
       "documentLocations": []
     },
@@ -39277,8 +38940,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": null,
-        "remaining": null,
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -39290,7 +38951,8 @@
         "references": {},
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": null
       },
       "documentLocations": []
     },
@@ -39406,8 +39068,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": null,
-        "remaining": null,
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -39419,7 +39079,8 @@
         "references": {},
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": null
       },
       "documentLocations": []
     },
@@ -39535,8 +39196,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": null,
-        "remaining": null,
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -39548,7 +39207,8 @@
         "references": {},
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": null
       },
       "documentLocations": []
     },
@@ -39664,8 +39324,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": null,
-        "remaining": null,
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -39677,7 +39335,8 @@
         "references": {},
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": null
       },
       "documentLocations": []
     },
@@ -39793,8 +39452,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": null,
-        "remaining": null,
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -39806,7 +39463,8 @@
         "references": {},
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": null
       },
       "documentLocations": []
     },
@@ -39922,8 +39580,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": null,
-        "remaining": null,
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -39935,7 +39591,8 @@
         "references": {},
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": null
       },
       "documentLocations": []
     },
@@ -40051,8 +39708,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": null,
-        "remaining": null,
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -40064,7 +39719,8 @@
         "references": {},
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": null
       },
       "documentLocations": []
     },
@@ -40180,8 +39836,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": null,
-        "remaining": null,
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -40193,7 +39847,8 @@
         "references": {},
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": null
       },
       "documentLocations": []
     },
@@ -40309,8 +39964,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": null,
-        "remaining": null,
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -40322,7 +39975,8 @@
         "references": {},
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": null
       },
       "documentLocations": []
     },
@@ -40438,8 +40092,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": null,
-        "remaining": null,
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -40451,7 +40103,8 @@
         "references": {},
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": null
       },
       "documentLocations": []
     },
@@ -40567,8 +40220,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": null,
-        "remaining": null,
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -40580,7 +40231,8 @@
         "references": {},
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": null
       },
       "documentLocations": []
     },
@@ -40696,8 +40348,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": null,
-        "remaining": null,
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -40709,7 +40359,8 @@
         "references": {},
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": null
       },
       "documentLocations": []
     },
@@ -40825,8 +40476,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": null,
-        "remaining": null,
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -40838,7 +40487,8 @@
         "references": {},
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": null
       },
       "documentLocations": []
     },
@@ -40954,8 +40604,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": null,
-        "remaining": null,
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -40967,7 +40615,8 @@
         "references": {},
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": null
       },
       "documentLocations": []
     },
@@ -41083,8 +40732,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": null,
-        "remaining": null,
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -41096,7 +40743,8 @@
         "references": {},
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": null
       },
       "documentLocations": []
     },
@@ -41212,8 +40860,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": null,
-        "remaining": null,
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -41225,7 +40871,8 @@
         "references": {},
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": null
       },
       "documentLocations": []
     },
@@ -41341,8 +40988,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": null,
-        "remaining": null,
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -41354,7 +40999,8 @@
         "references": {},
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": null
       },
       "documentLocations": []
     },
@@ -41470,8 +41116,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": null,
-        "remaining": null,
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -41483,7 +41127,8 @@
         "references": {},
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": null
       },
       "documentLocations": []
     },
@@ -41599,8 +41244,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": null,
-        "remaining": null,
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -41612,7 +41255,8 @@
         "references": {},
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": null
       },
       "documentLocations": []
     },
@@ -41728,8 +41372,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": null,
-        "remaining": null,
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -41741,7 +41383,8 @@
         "references": {},
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": null
       },
       "documentLocations": []
     },
@@ -41857,8 +41500,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": null,
-        "remaining": null,
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -41870,7 +41511,8 @@
         "references": {},
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": null
       },
       "documentLocations": []
     },
@@ -41986,8 +41628,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": null,
-        "remaining": null,
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -41999,7 +41639,8 @@
         "references": {},
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": null
       },
       "documentLocations": []
     },
@@ -42115,8 +41756,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": null,
-        "remaining": null,
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -42128,7 +41767,8 @@
         "references": {},
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": null
       },
       "documentLocations": []
     },
@@ -42244,8 +41884,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": null,
-        "remaining": null,
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -42257,7 +41895,8 @@
         "references": {},
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": null
       },
       "documentLocations": []
     },
@@ -42373,8 +42012,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": null,
-        "remaining": null,
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -42386,7 +42023,8 @@
         "references": {},
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": null
       },
       "documentLocations": []
     },
@@ -42502,14 +42140,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Stage",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "Next work",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -42586,7 +42216,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "Next work",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -42762,14 +42396,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Stage",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "Next work",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -42846,7 +42472,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "Next work",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -43022,14 +42652,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Stage",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "Next work",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -43106,7 +42728,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "Next work",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -43384,14 +43010,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Stage",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "Next work",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -43468,7 +43086,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "Next work",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -43646,14 +43268,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Stage",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "Next work",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -43730,7 +43344,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "Next work",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -44010,14 +43628,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Stage",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "Next work",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -44094,7 +43704,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "Next work",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -44374,14 +43988,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Stage",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "Next work",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -44458,7 +44064,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "Next work",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -44740,14 +44350,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Stage",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "Next work",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -44824,7 +44426,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "Next work",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -45106,14 +44712,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Stage",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "Next work",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -45190,7 +44788,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "Next work",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -45474,14 +45076,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Stage",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "Next work",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -45558,7 +45152,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "Next work",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -45842,14 +45440,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "now\nnow\nnow\nnow\nnow\nnow\nnow\nnow\nnow\nnow\nnow\nnow\nnow\nnow\nnow\nnow\nnow\nnow\nnow\nnow\nnow\nnow\nnow\nnow\nnow\nnow\nnow\nnow\nnow\nnow\n",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "next\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\n",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -45950,7 +45540,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "next\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\nnext\n",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -46132,14 +45726,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/backend/common",
           "repository": {
@@ -46176,7 +45762,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -46351,14 +45941,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -46395,7 +45977,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -46502,14 +46088,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -46546,7 +46124,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -46653,14 +46235,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": null,
         "references": {
           "docs/design.md": {
@@ -46690,7 +46264,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -46797,14 +46375,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -46857,7 +46427,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -46970,14 +46544,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -47006,7 +46572,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -47112,14 +46682,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -47148,7 +46710,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {
@@ -47277,14 +46843,6 @@
         },
         "status": "active",
         "recap": null,
-        "state": {
-          "text": "Implement | verify",
-          "short": "Implement"
-        },
-        "remaining": {
-          "text": "界😀é | release",
-          "short": null
-        },
         "directory": {
           "path": "/code/library",
           "repository": {
@@ -47321,7 +46879,11 @@
         },
         "artifacts": {},
         "revision": 1,
-        "updated_at_ms": 0
+        "updated_at_ms": 0,
+        "next": {
+          "text": "界😀é | release",
+          "short": null
+        }
       },
       "documentLocations": [
         {

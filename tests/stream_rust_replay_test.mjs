@@ -96,9 +96,9 @@ test('capture from real format-5 CLI and in-memory replay never modify live cata
     runtime((input) => {
       tasks.push(input.task);
       if (input.task === 'session') {
-        return response({ changes: { state: { text: 'Simulated session state', short: 'Simulated' } } });
+        return response({ changes: { next: { text: 'Simulated next step', short: 'Simulated' } } });
       }
-      assert.equal(input.catalog.sessions[0].state.text, 'Simulated session state');
+      assert.equal(input.catalog.sessions[0].next.text, 'Simulated next step');
       return response({ changes: { goal: { text: 'Simulated effort goal', short: 'Sim goal' } } });
     }),
     model,
@@ -108,12 +108,12 @@ test('capture from real format-5 CLI and in-memory replay never modify live cata
 
   assert.equal(run.samples[0].status, 'completed', run.samples[0].error);
   assert.deepEqual(tasks, ['session', 'stream']);
-  assert.equal(run.samples[0].after.session.state.text, 'Simulated session state');
+  assert.equal(run.samples[0].after.session.next.text, 'Simulated next step');
   assert.equal(run.samples[0].after.stream.goal.text, 'Simulated effort goal');
 
   // Verify live catalog was NOT modified by replay!
   const live = await cli.context(id);
-  assert.equal(live.session.state, null);
+  assert.equal(live.session.next, null);
   assert.equal(live.stream.goal.text, 'Old goal');
 });
 
@@ -238,7 +238,7 @@ test('unattached replay runs enroll before session and stream in memory', async 
       if (input.task === 'enroll') {
         return response({ meaningful: true, stream: { title: 'Effort' }, session: { title: 'Lane' } });
       }
-      if (input.task === 'session') return response({ changes: { state: { text: 'New state', short: null } } });
+      if (input.task === 'session') return response({ changes: { next: { text: 'New next', short: null } } });
       return response({ changes: { goal: { text: 'New goal', short: null } } });
     }),
     model,
@@ -248,7 +248,7 @@ test('unattached replay runs enroll before session and stream in memory', async 
 
   assert.equal(run.samples[0].status, 'completed', run.samples[0].error);
   assert.deepEqual(tasks, ['enroll', 'session', 'stream']);
-  assert.equal(run.samples[0].after.session.state.text, 'New state');
+  assert.equal(run.samples[0].after.session.next.text, 'New next');
   assert.equal(run.samples[0].after.stream.goal.text, 'New goal');
   assert.equal(readdirSync(root).includes('data'), false);
 });

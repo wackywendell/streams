@@ -58,7 +58,7 @@ export function namingCompletions(
   return matches.length ? matches : null;
 }
 
-/** Save captured naming intent using format-5 `{ title: { text, manual } }`. */
+/** Save captured naming intent using format-6 `{ title: { text, manual } }`. */
 export async function saveNamingEdit(
   client: Pick<StreamCli, "context" | "editSession" | "editStream">,
   nativeId: string,

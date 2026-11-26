@@ -24,14 +24,14 @@ const ROLE_ORDER = {
   background: 3,
 };
 
-/** Extract plain text from a format-5 Title/Goal/TextPair object or a plain string. */
+/** Extract plain text from a format-6 Title/Goal/TextPair object or a plain string. */
 export function textOf(value) {
   if (typeof value === "string") return value;
   if (value && typeof value === "object" && typeof value.text === "string") return value.text;
   return "";
 }
 
-/** Extract short text (falling back to full text) from a format-5 Goal/TextPair object or string. */
+/** Extract short text (falling back to full text) from a format-6 Goal/TextPair object or string. */
 export function shortOf(value) {
   if (typeof value === "string") return value;
   if (value && typeof value === "object") {
@@ -41,7 +41,7 @@ export function shortOf(value) {
   return "";
 }
 
-/** Normalize a format-5 Stream record (from `stream show` or `stream list`) into a consistent shape. */
+/** Normalize a format-6 Stream record (from `stream show` or `stream list`) into a consistent shape. */
 export function normalizeStream(raw) {
   if (!raw || typeof raw !== "object") return null;
   const key =
@@ -87,7 +87,17 @@ export function normalizeStream(raw) {
   };
 }
 
-/** Normalize a format-5 Session record (from `session show`, `session list`, or `stream.sessions`). */
+/** Subtitle for a Session row in the Stream roster: actionable next step first, falling back to recap. */
+export function sessionRowSubtitle(session) {
+  if (!session) return "";
+  return session.next_short || session.recap_short || "";
+}
+
+/**
+ * Normalize a format-6 Session record (from `session show`, `session list`, or `stream.sessions`).
+ * Omitted `recap`/`next` keys stay `undefined` so summary upserts preserve cached detail fields
+ * without confusing an omitted projection with an explicit `null` clear.
+ */
 export function normalizeSession(raw) {
   if (!raw || typeof raw !== "object") return null;
   const key =
@@ -102,6 +112,8 @@ export function normalizeSession(raw) {
   const id = typeof raw.id === "string" ? raw.id : parts.length === 3 ? parts[2] : key;
   const streamId = typeof raw.stream_id === "string" ? raw.stream_id : "";
   const streamKey = hostId && streamId ? `${hostId}/${streamId}` : streamId;
+  const hasRecap = Object.hasOwn(raw, "recap") && raw.recap !== undefined;
+  const hasNext = Object.hasOwn(raw, "next") && raw.next !== undefined;
   return {
     key,
     host_id: hostId,
@@ -112,12 +124,10 @@ export function normalizeSession(raw) {
     title: textOf(raw.title),
     title_manual: Boolean(raw.title?.manual),
     status: raw.status ?? "parked",
-    recap: raw.recap ? textOf(raw.recap) : null,
-    recap_short: raw.recap ? shortOf(raw.recap) : null,
-    state: raw.state ? textOf(raw.state) : null,
-    state_short: raw.state ? shortOf(raw.state) : null,
-    remaining: raw.remaining ? textOf(raw.remaining) : null,
-    remaining_short: raw.remaining ? shortOf(raw.remaining) : null,
+    recap: hasRecap ? (raw.recap ? textOf(raw.recap) : null) : undefined,
+    recap_short: hasRecap ? (raw.recap ? shortOf(raw.recap) : null) : undefined,
+    next: hasNext ? (raw.next ? textOf(raw.next) : null) : undefined,
+    next_short: hasNext ? (raw.next ? shortOf(raw.next) : null) : undefined,
     directory: raw.directory ?? null,
     references: raw.references && typeof raw.references === "object" ? raw.references : {},
     artifacts: raw.artifacts && typeof raw.artifacts === "object" ? raw.artifacts : {},
@@ -820,7 +830,7 @@ export function formatHostStreamMeta({
 }
 
 /**
- * Compute convention-gated bulk actions for a format-5 Stream header menu.
+ * Compute convention-gated bulk actions for a format-6 Stream header menu.
  */
 export function streamBulkActionState(stream) {
   const sessions = Array.isArray(stream?.sessions) ? stream.sessions : [];
@@ -1080,7 +1090,7 @@ function formatHostPath(url) {
 }
 
 /**
- * Build the sidebar References list from the **focused Session's** format-5 `references` map
+ * Build the sidebar References list from the **focused Session's** format-6 `references` map
  * (hiding `status === "dropped"`) and its `artifacts` map.
  * Returns `[]` when no Session is focused.
  */
@@ -1353,7 +1363,7 @@ export function formatMissingDirectoryError({ session, cwd, homeDir = null }) {
 }
 
 /**
- * Stateful coordinator that reads format-5 records through the public `streams` CLI,
+ * Stateful coordinator that reads format-6 records through the public `streams` CLI,
  * reconciles `streams.stream` labels via `hc`, opens Streams via `hc run ... streams session resume`,
  * and opens references via `openUrl` / `session document read|view` / `artifact read|view`.
  */
@@ -1578,9 +1588,13 @@ export class StreamsCoordinator {
     if (!session?.key) return null;
     this.staleSessionKeys.delete(session.key);
     const prev = this.sessions.get(session.key);
-    if (detail || !prev?.detail) {
+    if (detail || !prev) {
       const stored = {
         ...session,
+        recap: session.recap ?? null,
+        recap_short: session.recap_short ?? null,
+        next: session.next ?? null,
+        next_short: session.next_short ?? null,
         detail: Boolean(detail),
         fetchedToken: token ?? prev?.fetchedToken ?? null,
         detailToken: detail ? token : prev?.detailToken ?? null,
@@ -1588,30 +1602,26 @@ export class StreamsCoordinator {
       this.sessions.set(session.key, stored);
       return stored;
     }
-    // Preserve full detail fields and `detailToken` when a summary arrives from `session list`
-    // or `stream.sessions` so switching to this Session later still refetches stale details.
+    // Preserve omitted fields and `detailToken` when a summary arrives from `session list`
+    // or `stream.sessions` so switching to this Session later still refetches stale details
+    // and partial projections do not wipe cached fields.
+    const hasRecap = session.recap !== undefined;
+    const hasNext = session.next !== undefined;
     const merged = {
       ...prev,
       title: session.title || prev.title,
       title_manual: session.title_manual || prev.title_manual,
       status: session.status || prev.status,
-      state: session.state !== null && session.state !== undefined ? session.state : prev.state,
-      state_short:
-        session.state_short !== null && session.state_short !== undefined
-          ? session.state_short
-          : session.state !== null && session.state !== undefined
-            ? session.state
-            : prev.state_short,
-      recap_short:
-        session.recap_short !== null && session.recap_short !== undefined
-          ? session.recap_short
-          : prev.recap_short,
+      recap: hasRecap ? session.recap : prev.recap,
+      recap_short: hasRecap ? (session.recap_short ?? session.recap) : prev.recap_short,
+      next: hasNext ? session.next : prev.next,
+      next_short: hasNext ? (session.next_short ?? session.next) : prev.next_short,
       stream: session.stream || prev.stream,
       stream_id: session.stream_id || prev.stream_id,
       host_id: session.host_id || prev.host_id,
       updated_at_ms: session.updated_at_ms > 0 ? session.updated_at_ms : prev.updated_at_ms,
       directory: session.directory ?? prev.directory,
-      detail: true,
+      detail: Boolean(prev.detail),
       fetchedToken: token ?? prev.fetchedToken ?? null,
       detailToken: prev.detailToken ?? null,
     };
@@ -2700,7 +2710,7 @@ export class StreamsCoordinator {
       const sess = this.sessions.get(sk);
       const stTitle = sess?.stream ? this.streamTitle(sess.stream) : "";
       parts.push(
-        `${term}:${sk}:${sess?.title ?? ""}:${sess?.status ?? ""}:${sess?.state ?? ""}:${sess?.stream ?? ""}:${stTitle}`
+        `${term}:${sk}:${sess?.title ?? ""}:${sess?.status ?? ""}:${sess?.stream ?? ""}:${stTitle}`
       );
     }
     parts.sort();
@@ -2816,7 +2826,7 @@ export class StreamsCoordinator {
       for (const sk of keyTokens.keys()) {
         listArgs.push("--key", sk);
       }
-      listArgs.push("--all", "--fields", "key,stream_id,title,status,state", "--json");
+      listArgs.push("--all", "--fields", "key,stream_id,title,status,recap,next", "--json");
       const listOut = await this.runExec(this.streamsBinFor(termMachine), listArgs, {
         on: termMachine,
       });

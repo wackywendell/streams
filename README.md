@@ -1,6 +1,6 @@
 # streams
 
-Streams keeps a personal catalog of ongoing work. Each Stream has a stable identity, a title, and an optional goal. Sessions belong to a Stream and own their progress (`recap`, `state`, `remaining`), working directory, references to documents, PRs, issues and links, and named artifacts. A Stream's status is derived from its Sessions. Plans and design decisions stay in project repositories, not in scratch notes.
+Streams keeps a personal catalog of ongoing work. Each Stream has a stable identity, a title, and an optional goal. Sessions belong to a Stream and own their progress (`recap` and `next`), working directory, references to documents, PRs, issues and links, and named artifacts. A Stream's status is derived from its Sessions. Plans and design decisions stay in project repositories, not in scratch notes.
 
 This checkout includes the Rust CLI (`streams`), the Pi work-card extension, the `herdr-app` mod, and the bundled agent skill.
 
@@ -27,7 +27,7 @@ streams catalog init --sync git
 streams catalog init --sync git --remote git@github.com:you/work-catalog.git --branch main --label laptop
 ```
 
-Git without `--remote` records local commits without fetching or pushing. If you select a remote, it must already exist and its branch must be empty or contain a supported format-5 Streams catalog. Setup records the sync strategy, a persistent local host identity, and `hosts/<host>/host.json` (`{ id, label }`, defaulting `label` to the machine's hostname). Ordinary commands never initialise a catalog or fall back to another storage mode.
+Git without `--remote` records local commits without fetching or pushing. If you select a remote, it must already exist and its branch must be empty or contain a supported format-6 Streams catalog. Setup records the sync strategy, a persistent local host identity, and `hosts/<host>/host.json` (`{ id, label }`, defaulting `label` to the machine's hostname). Ordinary commands never initialise a catalog or fall back to another storage mode.
 
 To enable Git sync on an existing `none` catalog (preserving existing local records), update the configured remote on a `git` catalog, or show/update this host's label:
 
@@ -63,7 +63,7 @@ Each record carries its own `revision` and `updated_at_ms`, which change only wh
 
 ### Resetting the catalog
 
-Streams reads only catalog format 5 and never migrates old formats at runtime. Commands against an older catalog fail with an error pointing to these steps. To reset:
+Streams reads only catalog format 6 and never migrates old formats at runtime. Commands against an older catalog fail with an error pointing to these steps. To reset:
 
 1. Stop Pi sessions running the Streams extension, classic Herdr card viewers, and the `herdr-app` mod.
 2. Move the catalog directory aside:
@@ -116,7 +116,7 @@ Setting a Stream's title or goal via CLI flags marks that field `manual: true`. 
 streams session create pi/$PI_SESSION_ID --stream STREAM --title "CLI tests" --directory "$PWD"
 streams session list --stream STREAM
 streams session show pi/$PI_SESSION_ID --json
-streams session edit pi/$PI_SESSION_ID --recap "Added entity CLI" --state "Running tests" --remaining "Update docs"
+streams session edit pi/$PI_SESSION_ID --recap "Added entity CLI" --next "Update docs after tests pass"
 streams session edit pi/$PI_SESSION_ID --status done
 streams session edit pi/$PI_SESSION_ID --stream OTHER_STREAM
 ```

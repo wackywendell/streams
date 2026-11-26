@@ -95,7 +95,7 @@ fn one_record_creation_reads_only_its_target_and_membership_and_a_retry_writes_n
             panic!("created a Session")
         };
         let req = EditRequest::parse(&json!({
-            "changes": {"state": {"text": "Later progress", "short": null}}
+            "changes": {"next": {"text": "Later progress", "short": null}}
         }))
         .unwrap();
         application::edit_session(&store, &RecordAddress::for_session(created), &req).unwrap();

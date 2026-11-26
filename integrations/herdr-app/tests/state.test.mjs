@@ -10,6 +10,7 @@ import {
   SESSION_STATUSES,
   normalizeSession,
   normalizeStream,
+  sessionRowSubtitle,
   resolveRole,
   parseTerminalAddress,
   recordHostId,
@@ -49,8 +50,7 @@ function makeSessionJson({
   title = "Implement CLI",
   status = "active",
   recap = "Drafted parser",
-  state = "Running tests",
-  remaining = "Finish docs",
+  next = "Finish docs",
   directory = { path: "/work/repo", repository: null },
   references = {},
   artifacts = {},
@@ -66,8 +66,7 @@ function makeSessionJson({
     title: { text: title, manual: false },
     status,
     recap: recap ? { text: recap, short: null } : null,
-    state: state ? { text: state, short: null } : null,
-    remaining: remaining ? { text: remaining, short: null } : null,
+    next: next ? { text: next, short: null } : null,
     directory,
     references,
     artifacts,
@@ -1341,7 +1340,7 @@ test("runningSessionTerminals matches real herdr-app AgentInfo and PaneInfo Prog
   const st = makeStreamJson({
     id: "st1",
     title: "Real Stream",
-    sessions: [{ key: s1.key, harness: "pi", title: s1.title, status: "active", state: s1.state }],
+    sessions: [{ key: s1.key, harness: "pi", title: s1.title, status: "active", recap: s1.recap, next: s1.next }],
   });
   const runner = createFakeRunner({
     sessions: { [s1.key]: s1 },
@@ -3593,23 +3592,74 @@ test("remote machine reconnect preserves cached remote sessions, syncContext cle
   assert.equal(coord.sessions.get(sRem.key)?.detail, true);
   assert.equal(coord.streams.get(stRem.key)?.detail, true);
 
-  // Normalized summary upserts (as returned by `session list --fields key,stream_id,title,status,state`)
-  // must preserve detail fields (`recap`, `directory`, `updated_at_ms`, `goal`, `sessions`).
+  // Normalized summary upserts (as returned by `session list --fields key,stream_id,title,status,recap,next`)
+  // must preserve omitted detail fields (`recap`, `directory`, `updated_at_ms`, `goal`, `sessions`)
+  // while honoring explicit `next: null` clears.
   const listSummary = normalizeSession({
     key: sRem.key,
     stream_id: "st1",
     title: "Updated Title",
     status: "waiting",
-    state: "Waiting on CI",
+    next: "Waiting on CI",
   });
   coord._upsertSession(listSummary, { detail: false });
   assert.equal(coord.sessions.get(sRem.key)?.title, "Updated Title");
-  assert.equal(coord.sessions.get(sRem.key)?.state, "Waiting on CI");
-  assert.equal(coord.sessions.get(sRem.key)?.state_short, "Waiting on CI");
+  assert.equal(coord.sessions.get(sRem.key)?.next, "Waiting on CI");
+  assert.equal(coord.sessions.get(sRem.key)?.next_short, "Waiting on CI");
   assert.equal(coord.sessions.get(sRem.key)?.recap, "Detailed recap");
   assert.equal(coord.sessions.get(sRem.key)?.updated_at_ms, sRem.updated_at_ms);
   assert.deepEqual(coord.sessions.get(sRem.key)?.directory, sRem.directory);
   assert.equal(coord.sessions.get(sRem.key)?.detail, true);
+  // Explicit `next: null` from a summary clears stale `next` / `next_short` while keeping `recap`,
+  // even after shallow copying `{ ...summary }` (no non-enumerable Symbol dependency).
+  const clearedSummary = {
+    ...normalizeSession({
+      key: sRem.key,
+      stream_id: "st1",
+      title: "Updated Title",
+      status: "done",
+      next: null,
+    }),
+  };
+  coord._upsertSession(clearedSummary, { detail: false });
+  assert.equal(coord.sessions.get(sRem.key)?.next, null);
+  assert.equal(coord.sessions.get(sRem.key)?.next_short, null);
+  assert.equal(coord.sessions.get(sRem.key)?.recap, "Detailed recap");
+  // Summary-to-summary upsert also preserves cached fields omitted by a partial projection.
+  const sumKey = "h2/pi/s-sum-only";
+  coord._upsertSession(
+    normalizeSession({
+      key: sumKey,
+      stream_id: "st1",
+      title: "Summary Only",
+      status: "active",
+      recap: { text: "Cached recap", short: "Cached" },
+      next: { text: "Initial next", short: "Init" },
+    }),
+    { detail: false }
+  );
+  coord._upsertSession(
+    normalizeSession({
+      key: sumKey,
+      stream_id: "st1",
+      title: "Summary Only",
+      status: "waiting",
+      next: { text: "Updated next", short: "Next" },
+    }),
+    { detail: false }
+  );
+  assert.equal(coord.sessions.get(sumKey)?.recap, "Cached recap");
+  assert.equal(coord.sessions.get(sumKey)?.recap_short, "Cached");
+  assert.equal(coord.sessions.get(sumKey)?.next, "Updated next");
+  assert.equal(coord.sessions.get(sumKey)?.next_short, "Next");
+  assert.equal(coord.sessions.get(sumKey)?.detail, false);
+  coord.sessions.delete(sumKey);
+  // Restore waiting status for downstream assertions.
+  coord._upsertSession(listSummary, { detail: false });
+  // sessionRowSubtitle prefers next_short, falling back to recap_short.
+  assert.equal(sessionRowSubtitle({ next_short: "Review PR", recap_short: "CLI parser" }), "Review PR");
+  assert.equal(sessionRowSubtitle({ next_short: null, recap_short: "CLI parser" }), "CLI parser");
+  assert.equal(sessionRowSubtitle({ next_short: null, recap_short: null }), "");
   // getStreamSessions resolves live status/title directly from `sessions`.
   assert.equal(coord.getStreamSessions(stRem.key)[0]?.status, "waiting");
   assert.equal(coord.getStreamSessions(stRem.key)[0]?.title, "Updated Title");
@@ -3813,7 +3863,7 @@ test("Stage 2: scoped fetchers skip unchanged scopes, role-scoped notify wakes f
         return {
           code: 0,
           stdout: JSON.stringify({
-            items: [{ key: s2.key, stream_id: "st2", title: s2.title, status: s2.status, state: s2.state }],
+            items: [{ key: s2.key, stream_id: "st2", title: s2.title, status: s2.status, recap: s2.recap, next: s2.next }],
           }),
           stderr: "",
         };
@@ -3930,7 +3980,7 @@ test("Stage 2 review fixes: sibling save, non-Pi shell save, cold Space fallback
         return {
           code: 0,
           stdout: JSON.stringify({
-            items: list.map((s) => ({ key: s.key, stream_id: "st1", title: s.title, status: s.status, state: s.state })),
+            items: list.map((s) => ({ key: s.key, stream_id: "st1", title: s.title, status: s.status, recap: s.recap, next: s.next })),
           }),
           stderr: "",
         };

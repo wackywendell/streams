@@ -48,8 +48,7 @@ const makeSession = (overrides = {}) => ({
   title: { text: 'CLI', manual: false },
   status: 'active',
   recap: null,
-  state: null,
-  remaining: null,
+  next: null,
   directory: {
     path: '/repo/work',
     repository: { url: 'git@example.test:streams.git', within: '.', branch: 'main' },
@@ -143,22 +142,21 @@ test('parseInferenceResponse strips disallowed fields, drops non-clearable nulls
     toolReply({
       changes: {
         title: null,
-        recap: null,
-        state: { text: 'Working', short: '   ' },
+        recap: { text: 'Working', short: '   ' },
         branch: null,
         unknown_field: 'ignored',
-        remaining: { text: '   ', short: null },
+        next: { text: '   ', short: null },
       },
     })
   );
   assert.deepEqual(parsed.changes, {
-    state: { text: 'Working', short: null },
-    remaining: null,
+    recap: { text: 'Working', short: null },
+    next: null,
   });
 
-  // Explicit null on remaining is preserved (clearable); null on stream goal is dropped.
-  const clearRem = parseInferenceResponse(req, toolReply({ changes: { remaining: null } }));
-  assert.deepEqual(clearRem.changes, { remaining: null });
+  // Explicit null on next is preserved (clearable); null on recap and stream goal is dropped.
+  const clearNext = parseInferenceResponse(req, toolReply({ changes: { recap: null, next: null } }));
+  assert.deepEqual(clearNext.changes, { next: null });
 
   const streamReq = { type: 'stream', catalog: makeCatalog(), messages: [] };
   const streamParsed = parseInferenceResponse(
@@ -190,9 +188,9 @@ test('parseInferenceResponse strips disallowed fields, drops non-clearable nulls
 
   // Nested leaf error suppresses parent anyOf/null noise.
   assert.throws(
-    () => parseInferenceResponse(req, toolReply({ changes: { remaining: { text: 'ok', short: 42 } } })),
+    () => parseInferenceResponse(req, toolReply({ changes: { next: { text: 'ok', short: 42 } } })),
     (err) => {
-      assert.match(err.message, /changes\.remaining\.short: expected string or null/);
+      assert.match(err.message, /changes\.next\.short: expected string or null/);
       assert.doesNotMatch(err.message, /anyOf/);
       return true;
     }
@@ -229,7 +227,7 @@ test('buildSessionReportEdit enforces manual/dropped protection, document contai
       title: 'Attempted overwrite',
       status: 'waiting',
       recap: { text: 'Implement format-5 CLI', short: 'Format-5 CLI' },
-      state: { text: 'Waiting on review', short: 'In review' },
+      next: { text: 'Waiting on review', short: 'In review' },
       branch: 'cli-by-entity',
     },
     [
@@ -327,27 +325,25 @@ test('buildStreamReportEdit respects manual flags and naming.stream policy', () 
   );
 });
 
-test('buildSessionReportEdit never wipes saved recap, state, or branch on null/blank input, while remaining clears', () => {
+test('buildSessionReportEdit never wipes saved recap or branch on null/blank input, while next clears', () => {
   const session = makeSession({
     recap: { text: 'Existing recap', short: 'Recap' },
-    state: { text: 'Existing state', short: 'State' },
-    remaining: { text: 'Next step', short: 'Next' },
+    next: { text: 'Next step', short: 'Next' },
   });
   const body = buildSessionReportEdit(
     session,
     { stream: 'automatic', session: 'automatic' },
     {
       recap: { text: '   ', short: null },
-      state: { text: '   ', short: null },
-      remaining: null,
+      next: null,
       branch: '   ',
     },
     []
   );
   assert.ok(body);
-  assert.deepEqual(Object.keys(body.changes), ['remaining']);
-  assert.equal(body.changes.remaining, null);
-  assert.deepEqual(body.before.remaining, { text: 'Next step', short: 'Next' });
+  assert.deepEqual(Object.keys(body.changes), ['next']);
+  assert.equal(body.changes.next, null);
+  assert.deepEqual(body.before.next, { text: 'Next step', short: 'Next' });
 });
 
 test('runReport executes enroll -> session -> stream and logs partial not_written without retrying', async () => {
@@ -373,7 +369,7 @@ test('runReport executes enroll -> session -> stream and logs partial not_writte
           return { meaningful: true, stream: { title: 'Streams' }, session: { title: 'CLI' } };
         }
         if (req.type === 'session') {
-          return { changes: { state: { text: 'Working on Phase 3', short: null } }, reference_proposals: [] };
+          return { changes: { next: { text: 'Working on Phase 3', short: null } }, reference_proposals: [] };
         }
         return { changes: { goal: { text: 'Simplify Streams CLI', short: null } } };
       },
@@ -387,8 +383,8 @@ test('runReport executes enroll -> session -> stream and logs partial not_writte
       },
       editSession: async (key, body) => {
         calls.push(['editSession', key]);
-        // Simulate concurrent conflict on `state` -> returned in `not_written`, no retry!
-        return { key, not_written: { state: { text: 'Concurrent', short: null } }, partial: true };
+        // Simulate concurrent conflict on `next` -> returned in `not_written`, no retry!
+        return { key, not_written: { next: { text: 'Concurrent', short: null } }, partial: true };
       },
       editStream: async (key, body) => {
         calls.push(['editStream', key]);
@@ -484,7 +480,7 @@ test('runReport enroll attaches to an existing candidate Stream via stream_key w
           return parsed;
         }
         if (req.type === 'session') {
-          return { changes: { state: { text: 'Migrating tab marks', short: null } }, reference_proposals: [] };
+          return { changes: { next: { text: 'Migrating tab marks', short: null } }, reference_proposals: [] };
         }
         return { changes: {} };
       },
@@ -630,7 +626,7 @@ test('Reporter skips Stream edit if Session moves during Stream inference while 
     }),
     infer: async (_ctx, req) => {
       if (req.type === 'session') {
-        return { changes: { state: { text: 'Updated state', short: null } }, reference_proposals: [] };
+        return { changes: { next: { text: 'Updated next', short: null } }, reference_proposals: [] };
       }
       if (req.type === 'stream') {
         // Session moves to another Stream while Stream inference is in flight.
@@ -874,8 +870,7 @@ test('derived wire and tool schemas round-trip cleanly against real Rust format-
         title: null,
         status: 'waiting',
         recap: { text: 'Verified schema parity end to end.', short: 'Schema parity' },
-        state: { text: 'Waiting on review.', short: 'In review' },
-        remaining: { text: 'Merge once approved.', short: 'Merge' },
+        next: { text: 'Merge once approved.', short: 'Merge' },
       },
       reference_proposals: [
         {

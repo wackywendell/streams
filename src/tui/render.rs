@@ -345,20 +345,10 @@ pub(super) fn render(
         )
         .trim()
         .to_owned();
-        let now = plain(
+        let next = plain(
             snapshot
                 .session()
-                .state
-                .as_ref()
-                .map(|p| p.text.as_str())
-                .unwrap_or_default(),
-        )
-        .trim()
-        .to_owned();
-        let remaining = plain(
-            snapshot
-                .session()
-                .remaining
+                .next
                 .as_ref()
                 .map(|p| p.text.as_str())
                 .unwrap_or_default(),
@@ -366,11 +356,7 @@ pub(super) fn render(
         .trim()
         .to_owned();
         let mut sections = vec![("", goal, true)];
-        for (label, body) in [
-            ("Session", recap),
-            ("Status", now),
-            ("Remaining", remaining),
-        ] {
+        for (label, body) in [("Recap", recap), ("Next", next)] {
             if !body.is_empty() {
                 sections.push((label, body, false));
             }
